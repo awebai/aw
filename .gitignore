@@ -1,0 +1,15 @@
+# Built binary
+/aw
+
+# Test binaries
+*.test
+
+# Coverage
+coverage.out
+
+# IDE
+.idea/
+.vscode/
+
+# OS files
+.DS_Store

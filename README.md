@@ -1,6 +1,6 @@
-# aweb-go
+# aw
 
-Go client library for the aweb (Agent Web) protocol, plus the `aw` CLI.
+Go client library for the [aweb](https://github.com/awebai/aweb) (Agent Web) protocol, plus the `aw` CLI.
 
 ## Install CLI
 
@@ -30,7 +30,6 @@ aw introspect
 aw chat send --from-agent-id ... --from-alias alice --to-alias bob --message "ping"
 ```
 
-## Versioning
+## License
 
-- We use SemVer tags (e.g. `v0.1.0`).
-- BeadHub pins to tagged releases for stability; local development can use a Go `replace` to a sibling checkout.
+MIT — see [LICENSE](LICENSE)
