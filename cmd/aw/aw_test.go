@@ -36,13 +36,17 @@ func TestAwIntrospect(t *testing.T) {
 	t.Parallel()
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/auth/introspect" {
+		switch r.URL.Path {
+		case "/v1/auth/introspect":
+			if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
+				t.Fatalf("auth=%q", r.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"project_id": "proj-123"})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
 			t.Fatalf("path=%s", r.URL.Path)
 		}
-		if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
-			t.Fatalf("auth=%q", r.Header.Get("Authorization"))
-		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"project_id": "proj-123"})
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -101,23 +105,31 @@ func TestAwIntrospectServerFlagSelectsConfiguredServer(t *testing.T) {
 	t.Parallel()
 
 	serverA := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/auth/introspect" {
+		switch r.URL.Path {
+		case "/v1/auth/introspect":
+			if r.Header.Get("Authorization") != "Bearer aw_sk_a" {
+				t.Fatalf("auth=%q", r.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"project_id": "proj-a"})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
 			t.Fatalf("path=%s", r.URL.Path)
 		}
-		if r.Header.Get("Authorization") != "Bearer aw_sk_a" {
-			t.Fatalf("auth=%q", r.Header.Get("Authorization"))
-		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"project_id": "proj-a"})
 	}))
 
 	serverB := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/auth/introspect" {
+		switch r.URL.Path {
+		case "/v1/auth/introspect":
+			if r.Header.Get("Authorization") != "Bearer aw_sk_b" {
+				t.Fatalf("auth=%q", r.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"project_id": "proj-b"})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
 			t.Fatalf("path=%s", r.URL.Path)
 		}
-		if r.Header.Get("Authorization") != "Bearer aw_sk_b" {
-			t.Fatalf("auth=%q", r.Header.Get("Authorization"))
-		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"project_id": "proj-b"})
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -192,13 +204,17 @@ func TestAwIntrospectEnvOverridesConfig(t *testing.T) {
 	t.Parallel()
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/auth/introspect" {
+		switch r.URL.Path {
+		case "/v1/auth/introspect":
+			if r.Header.Get("Authorization") != "Bearer aw_sk_env" {
+				t.Fatalf("auth=%q", r.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"project_id": "proj-123"})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
 			t.Fatalf("path=%s", r.URL.Path)
 		}
-		if r.Header.Get("Authorization") != "Bearer aw_sk_env" {
-			t.Fatalf("auth=%q", r.Header.Get("Authorization"))
-		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"project_id": "proj-123"})
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

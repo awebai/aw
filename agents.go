@@ -26,3 +26,19 @@ func (c *Client) ListAgents(ctx context.Context) (*ListAgentsResponse, error) {
 	return &out, nil
 }
 
+// HeartbeatResponse is returned by POST /v1/agents/heartbeat.
+type HeartbeatResponse struct {
+	AgentID  string `json:"agent_id"`
+	LastSeen string `json:"last_seen"`
+	TTL      int    `json:"ttl_seconds"`
+}
+
+// Heartbeat reports agent liveness to the aweb server.
+func (c *Client) Heartbeat(ctx context.Context) (*HeartbeatResponse, error) {
+	var out HeartbeatResponse
+	if err := c.post(ctx, "/v1/agents/heartbeat", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+

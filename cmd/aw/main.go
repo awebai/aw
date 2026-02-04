@@ -28,6 +28,11 @@ func main() {
 	cmd := os.Args[1]
 	args := os.Args[2:]
 
+	// Fire best-effort heartbeat for authenticated commands.
+	if cmd != "init" {
+		go fireHeartbeat()
+	}
+
 	switch cmd {
 	case "init":
 		runInit(args)
@@ -107,6 +112,30 @@ func mustResolve(serverName, accountName string) (*aweb.Client, *awconfig.Select
 func mustClient(serverName, accountName string) *aweb.Client {
 	c, _ := mustResolve(serverName, accountName)
 	return c
+}
+
+// fireHeartbeat sends a best-effort heartbeat to the aweb server.
+// Called as a goroutine on every authenticated command invocation.
+func fireHeartbeat() {
+	cfg, err := awconfig.LoadGlobal()
+	if err != nil {
+		return
+	}
+	wd, _ := os.Getwd()
+	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
+		WorkingDir:        wd,
+		AllowEnvOverrides: true,
+	})
+	if err != nil || sel.APIKey == "" {
+		return
+	}
+	c, err := aweb.NewWithAPIKey(sel.BaseURL, sel.APIKey)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = c.Heartbeat(ctx)
 }
 
 func resolveBaseURLForInit(urlFlag, serverFlag string) (baseURL string, serverName string, global *awconfig.GlobalConfig, err error) {
