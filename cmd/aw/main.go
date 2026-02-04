@@ -40,6 +40,8 @@ func main() {
 		runIntrospect(args)
 	case "agents":
 		runAgents(args)
+	case "project":
+		runProject(args)
 	case "mail":
 		runMail(args)
 	case "chat":
@@ -470,6 +472,24 @@ func runAgents(args []string) {
 	printJSON(resp)
 }
 
+func runProject(args []string) {
+	fs := flag.NewFlagSet("project", flag.ExitOnError)
+	var serverName string
+	var accountName string
+	fs.StringVar(&serverName, "server", "", "Server name from config.yaml (default: default_server)")
+	fs.StringVar(&accountName, "account", "", "Account name from config.yaml (default: context/default_account)")
+	_ = fs.Parse(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := mustClient(serverName, accountName).GetCurrentProject(ctx)
+	if err != nil {
+		fatal(err)
+	}
+	printJSON(resp)
+}
+
 func runMail(args []string) {
 	if len(args) < 1 {
 		usage()
@@ -761,6 +781,8 @@ func runLock(args []string) {
 		runLockRenew(args[1:])
 	case "release":
 		runLockRelease(args[1:])
+	case "revoke":
+		runLockRevoke(args[1:])
 	case "list":
 		runLockList(args[1:])
 	default:
@@ -848,6 +870,28 @@ func runLockRelease(args []string) {
 
 	resp, err := mustClient(serverName, accountName).ReservationRelease(ctx, &aweb.ReservationReleaseRequest{
 		ResourceKey: resourceKey,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	printJSON(resp)
+}
+
+func runLockRevoke(args []string) {
+	fs := flag.NewFlagSet("lock revoke", flag.ExitOnError)
+	var serverName string
+	var accountName string
+	var prefix string
+	fs.StringVar(&serverName, "server", "", "Server name from config.yaml (default: default_server)")
+	fs.StringVar(&accountName, "account", "", "Account name from config.yaml (default: context/default_account)")
+	fs.StringVar(&prefix, "prefix", "", "Optional prefix filter")
+	_ = fs.Parse(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := mustClient(serverName, accountName).ReservationRevoke(ctx, &aweb.ReservationRevokeRequest{
+		Prefix: prefix,
 	})
 	if err != nil {
 		fatal(err)

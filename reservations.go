@@ -122,6 +122,24 @@ type ReservationListResponse struct {
 	Reservations []ReservationView `json:"reservations"`
 }
 
+type ReservationRevokeRequest struct {
+	Prefix string `json:"prefix,omitempty"`
+}
+
+type ReservationRevokeResponse struct {
+	RevokedCount int      `json:"revoked_count"`
+	RevokedKeys  []string `json:"revoked_keys"`
+}
+
+// ReservationRevoke force-releases reservations, optionally filtered by prefix.
+func (c *Client) ReservationRevoke(ctx context.Context, req *ReservationRevokeRequest) (*ReservationRevokeResponse, error) {
+	var out ReservationRevokeResponse
+	if err := c.post(ctx, "/v1/reservations/revoke", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) ReservationList(ctx context.Context, prefix string) (*ReservationListResponse, error) {
 	path := "/v1/reservations"
 	if prefix != "" {
