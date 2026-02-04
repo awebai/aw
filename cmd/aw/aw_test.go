@@ -477,6 +477,167 @@ default_account: acct
 	}
 }
 
+func TestAwMailAck(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/messages/msg-42/ack":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method=%s", r.Method)
+			}
+			if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
+				t.Fatalf("auth=%q", r.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"message_id":      "msg-42",
+				"acknowledged_at": "2026-02-04T10:00:00Z",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "mail", "ack", "--message-id", "msg-42")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["message_id"] != "msg-42" {
+		t.Fatalf("message_id=%v", got["message_id"])
+	}
+}
+
+func TestAwLockRenew(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/reservations/renew":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method=%s", r.Method)
+			}
+			if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
+				t.Fatalf("auth=%q", r.Header.Get("Authorization"))
+			}
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if payload["resource_key"] != "my-lock" {
+				t.Fatalf("resource_key=%v", payload["resource_key"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":       "renewed",
+				"resource_key": "my-lock",
+				"expires_at":   "2026-02-04T11:00:00Z",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "lock", "renew", "--resource-key", "my-lock", "--ttl-seconds", "3600")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["resource_key"] != "my-lock" {
+		t.Fatalf("resource_key=%v", got["resource_key"])
+	}
+	if got["status"] != "renewed" {
+		t.Fatalf("status=%v", got["status"])
+	}
+}
+
 func TestAwInitWritesConfig(t *testing.T) {
 	t.Parallel()
 

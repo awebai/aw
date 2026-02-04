@@ -480,6 +480,8 @@ func runMail(args []string) {
 		runMailSend(args[1:])
 	case "inbox":
 		runMailInbox(args[1:])
+	case "ack":
+		runMailAck(args[1:])
 	default:
 		usage()
 		os.Exit(2)
@@ -540,6 +542,31 @@ func runMailInbox(args []string) {
 		UnreadOnly: unreadOnly,
 		Limit:      limit,
 	})
+	if err != nil {
+		fatal(err)
+	}
+	printJSON(resp)
+}
+
+func runMailAck(args []string) {
+	fs := flag.NewFlagSet("mail ack", flag.ExitOnError)
+	var serverName string
+	var accountName string
+	var messageID string
+	fs.StringVar(&serverName, "server", "", "Server name from config.yaml (default: default_server)")
+	fs.StringVar(&accountName, "account", "", "Account name from config.yaml (default: context/default_account)")
+	fs.StringVar(&messageID, "message-id", "", "Message ID to acknowledge")
+	_ = fs.Parse(args)
+
+	if messageID == "" {
+		fmt.Fprintln(os.Stderr, "Missing required flag: --message-id")
+		os.Exit(2)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := mustClient(serverName, accountName).AckMessage(ctx, messageID)
 	if err != nil {
 		fatal(err)
 	}
@@ -730,6 +757,8 @@ func runLock(args []string) {
 	switch args[0] {
 	case "acquire":
 		runLockAcquire(args[1:])
+	case "renew":
+		runLockRenew(args[1:])
 	case "release":
 		runLockRelease(args[1:])
 	case "list":
@@ -761,6 +790,36 @@ func runLockAcquire(args []string) {
 	defer cancel()
 
 	resp, err := mustClient(serverName, accountName).ReservationAcquire(ctx, &aweb.ReservationAcquireRequest{
+		ResourceKey: resourceKey,
+		TTLSeconds:  ttlSeconds,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	printJSON(resp)
+}
+
+func runLockRenew(args []string) {
+	fs := flag.NewFlagSet("lock renew", flag.ExitOnError)
+	var serverName string
+	var accountName string
+	var resourceKey string
+	var ttlSeconds int
+	fs.StringVar(&serverName, "server", "", "Server name from config.yaml (default: default_server)")
+	fs.StringVar(&accountName, "account", "", "Account name from config.yaml (default: context/default_account)")
+	fs.StringVar(&resourceKey, "resource-key", "", "Opaque resource key")
+	fs.IntVar(&ttlSeconds, "ttl-seconds", 3600, "TTL seconds")
+	_ = fs.Parse(args)
+
+	if resourceKey == "" {
+		fmt.Fprintln(os.Stderr, "Missing required flag: --resource-key")
+		os.Exit(2)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := mustClient(serverName, accountName).ReservationRenew(ctx, &aweb.ReservationRenewRequest{
 		ResourceKey: resourceKey,
 		TTLSeconds:  ttlSeconds,
 	})
