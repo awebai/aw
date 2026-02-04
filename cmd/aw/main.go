@@ -65,12 +65,12 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  aw mail send [--server ...] [--account ...] (--to-alias ... | --to-agent-id ...) --body ... [--subject ...]")
 	fmt.Fprintln(os.Stderr, "  aw mail inbox [--server ...] [--account ...] [--unread-only] [--limit N]")
 	fmt.Fprintln(os.Stderr, "  aw mail ack [--server ...] [--account ...] --message-id ...")
-	fmt.Fprintln(os.Stderr, "  aw chat send [flags] <alias> <message>    [--start-conversation] [--leave-conversation] [--wait N]")
+	fmt.Fprintln(os.Stderr, "  aw chat send [--wait N] [--start-conversation] [--leave-conversation] <alias> <message>")
 	fmt.Fprintln(os.Stderr, "  aw chat pending [--server ...] [--account ...]")
-	fmt.Fprintln(os.Stderr, "  aw chat open [flags] <alias>")
-	fmt.Fprintln(os.Stderr, "  aw chat history [flags] <alias>")
-	fmt.Fprintln(os.Stderr, "  aw chat hang-on [flags] <alias> <message>")
-	fmt.Fprintln(os.Stderr, "  aw chat show-pending [flags] <alias>")
+	fmt.Fprintln(os.Stderr, "  aw chat open <alias>")
+	fmt.Fprintln(os.Stderr, "  aw chat history <alias>")
+	fmt.Fprintln(os.Stderr, "  aw chat hang-on <alias> <message>")
+	fmt.Fprintln(os.Stderr, "  aw chat show-pending <alias>")
 	fmt.Fprintln(os.Stderr, "  aw lock acquire [--server ...] [--account ...] --resource-key ... [--ttl-seconds N]")
 	fmt.Fprintln(os.Stderr, "  aw lock renew [--server ...] [--account ...] --resource-key ... [--ttl-seconds N]")
 	fmt.Fprintln(os.Stderr, "  aw lock release [--server ...] [--account ...] --resource-key ...")
@@ -639,8 +639,8 @@ func runChatSend(args []string) {
 	_ = fs.Parse(args)
 
 	positional := fs.Args()
-	if len(positional) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: aw chat send <alias> <message> [--start-conversation] [--leave-conversation] [--wait N]")
+	if len(positional) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: aw chat send [--wait N] [--start-conversation] [--leave-conversation] <alias> <message>")
 		os.Exit(2)
 	}
 	toAlias := positional[0]
@@ -690,7 +690,7 @@ func runChatOpen(args []string) {
 	_ = fs.Parse(args)
 
 	positional := fs.Args()
-	if len(positional) < 1 {
+	if len(positional) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: aw chat open <alias>")
 		os.Exit(2)
 	}
@@ -714,7 +714,7 @@ func runChatHistory(args []string) {
 	_ = fs.Parse(args)
 
 	positional := fs.Args()
-	if len(positional) < 1 {
+	if len(positional) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: aw chat history <alias>")
 		os.Exit(2)
 	}
@@ -738,7 +738,7 @@ func runChatHangOn(args []string) {
 	_ = fs.Parse(args)
 
 	positional := fs.Args()
-	if len(positional) < 2 {
+	if len(positional) != 2 {
 		fmt.Fprintln(os.Stderr, "usage: aw chat hang-on <alias> <message>")
 		os.Exit(2)
 	}
@@ -763,7 +763,7 @@ func runChatShowPending(args []string) {
 	_ = fs.Parse(args)
 
 	positional := fs.Args()
-	if len(positional) < 1 {
+	if len(positional) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: aw chat show-pending <alias>")
 		os.Exit(2)
 	}

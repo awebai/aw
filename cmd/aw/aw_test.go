@@ -927,6 +927,38 @@ func TestAwChatSendMissingArgs(t *testing.T) {
 	}
 }
 
+func TestAwChatSendExtraArgsRejected(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	run := exec.CommandContext(ctx, bin, "chat", "send", "bob", "hello", "extra-arg")
+	run.Env = append(os.Environ(), "AW_CONFIG_PATH=/nonexistent")
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure for extra args, got: %s", string(out))
+	}
+	if !strings.Contains(string(out), "usage: aw chat send") {
+		t.Fatalf("expected usage message, got: %s", string(out))
+	}
+}
+
 func TestAwInitWritesConfig(t *testing.T) {
 	t.Parallel()
 
