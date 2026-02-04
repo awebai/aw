@@ -375,6 +375,108 @@ func TestAwInitRetriesWhenSuggestedAliasAlreadyExists(t *testing.T) {
 	}
 }
 
+func TestAwAgents(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/agents":
+			if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
+				t.Fatalf("auth=%q", r.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"agents": []map[string]any{
+					{
+						"agent_id":   "agent-1",
+						"alias":      "alice",
+						"human_name": "Alice",
+						"agent_type": "agent",
+						"status":     "active",
+						"last_seen":  "2026-02-04T10:00:00Z",
+						"online":     true,
+					},
+					{
+						"agent_id":   "agent-2",
+						"alias":      "bob",
+						"human_name": "Bob",
+						"agent_type": "agent",
+						"status":     nil,
+						"last_seen":  nil,
+						"online":     false,
+					},
+				},
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "agents")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["project_id"] != "proj-123" {
+		t.Fatalf("project_id=%v", got["project_id"])
+	}
+	agents, ok := got["agents"].([]any)
+	if !ok || len(agents) != 2 {
+		t.Fatalf("agents=%v", got["agents"])
+	}
+	first := agents[0].(map[string]any)
+	if first["alias"] != "alice" {
+		t.Fatalf("first alias=%v", first["alias"])
+	}
+	if first["online"] != true {
+		t.Fatalf("first online=%v", first["online"])
+	}
+}
+
 func TestAwInitWritesConfig(t *testing.T) {
 	t.Parallel()
 

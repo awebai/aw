@@ -38,6 +38,8 @@ func main() {
 		runInit(args)
 	case "introspect":
 		runIntrospect(args)
+	case "agents":
+		runAgents(args)
 	case "mail":
 		runMail(args)
 	case "chat":
@@ -444,6 +446,24 @@ func runIntrospect(args []string) {
 	defer cancel()
 
 	resp, err := mustClient(serverName, accountName).Introspect(ctx)
+	if err != nil {
+		fatal(err)
+	}
+	printJSON(resp)
+}
+
+func runAgents(args []string) {
+	fs := flag.NewFlagSet("agents", flag.ExitOnError)
+	var serverName string
+	var accountName string
+	fs.StringVar(&serverName, "server", "", "Server name from config.yaml (default: default_server)")
+	fs.StringVar(&accountName, "account", "", "Account name from config.yaml (default: context/default_account)")
+	_ = fs.Parse(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := mustClient(serverName, accountName).ListAgents(ctx)
 	if err != nil {
 		fatal(err)
 	}
