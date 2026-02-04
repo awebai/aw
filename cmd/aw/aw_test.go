@@ -859,8 +859,6 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	// Test: aw chat send --leave-conversation bob "hello there"
-	// Flags must come before positional args (Go flag package behavior).
 	run := exec.CommandContext(ctx, bin, "chat", "send", "--leave-conversation", "bob", "hello there")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -922,8 +920,8 @@ func TestAwChatSendMissingArgs(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected failure, got: %s", string(out))
 	}
-	if !strings.Contains(string(out), "usage: aw chat send") {
-		t.Fatalf("expected usage message, got: %s", string(out))
+	if !strings.Contains(string(out), "accepts 2 arg(s)") {
+		t.Fatalf("expected args error, got: %s", string(out))
 	}
 }
 
@@ -954,8 +952,8 @@ func TestAwChatSendExtraArgsRejected(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected failure for extra args, got: %s", string(out))
 	}
-	if !strings.Contains(string(out), "usage: aw chat send") {
-		t.Fatalf("expected usage message, got: %s", string(out))
+	if !strings.Contains(string(out), "accepts 2 arg(s)") {
+		t.Fatalf("expected args error, got: %s", string(out))
 	}
 }
 
@@ -1065,5 +1063,98 @@ func TestAwInitWritesConfig(t *testing.T) {
 	}
 	if acct["agent_alias"] != "alice" {
 		t.Fatalf("accounts.acct.agent_alias=%v", acct["agent_alias"])
+	}
+}
+
+func TestAwChatSendFlagsAfterPositionalArgs(t *testing.T) {
+	t.Parallel()
+
+	var gotReq map[string]any
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/sessions":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method=%s", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"session_id":        "sess-1",
+				"message_id":        "msg-1",
+				"participants":      []map[string]any{},
+				"sse_url":           "/v1/chat/sessions/sess-1/stream",
+				"targets_connected": []string{},
+				"targets_left":      []string{},
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s method=%s", r.URL.Path, r.Method)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+    agent_alias: eve
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Flags AFTER positional args — the main reason for the cobra migration.
+	run := exec.CommandContext(ctx, bin, "chat", "send", "bob", "hello there", "--leave-conversation")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["session_id"] != "sess-1" {
+		t.Fatalf("session_id=%v", got["session_id"])
+	}
+
+	aliases, ok := gotReq["to_aliases"].([]any)
+	if !ok || len(aliases) != 1 || aliases[0] != "bob" {
+		t.Fatalf("to_aliases=%v", gotReq["to_aliases"])
+	}
+	if gotReq["message"] != "hello there" {
+		t.Fatalf("message=%v", gotReq["message"])
+	}
+	if gotReq["leaving"] != true {
+		t.Fatalf("leaving=%v", gotReq["leaving"])
 	}
 }
