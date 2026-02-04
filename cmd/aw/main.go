@@ -65,12 +65,12 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  aw mail send [--server ...] [--account ...] (--to-alias ... | --to-agent-id ...) --body ... [--subject ...]")
 	fmt.Fprintln(os.Stderr, "  aw mail inbox [--server ...] [--account ...] [--unread-only] [--limit N]")
 	fmt.Fprintln(os.Stderr, "  aw mail ack [--server ...] [--account ...] --message-id ...")
-	fmt.Fprintln(os.Stderr, "  aw chat send [--server ...] [--account ...] --to-alias ... --message ... [--wait N] [--leaving] [--start-conversation]")
+	fmt.Fprintln(os.Stderr, "  aw chat send [flags] <alias> <message>    [--start-conversation] [--leave-conversation] [--wait N]")
 	fmt.Fprintln(os.Stderr, "  aw chat pending [--server ...] [--account ...]")
-	fmt.Fprintln(os.Stderr, "  aw chat open [--server ...] [--account ...] --alias ...")
-	fmt.Fprintln(os.Stderr, "  aw chat history [--server ...] [--account ...] --alias ...")
-	fmt.Fprintln(os.Stderr, "  aw chat hang-on [--server ...] [--account ...] --alias ... --message ...")
-	fmt.Fprintln(os.Stderr, "  aw chat show-pending [--server ...] [--account ...] --alias ...")
+	fmt.Fprintln(os.Stderr, "  aw chat open [flags] <alias>")
+	fmt.Fprintln(os.Stderr, "  aw chat history [flags] <alias>")
+	fmt.Fprintln(os.Stderr, "  aw chat hang-on [flags] <alias> <message>")
+	fmt.Fprintln(os.Stderr, "  aw chat show-pending [flags] <alias>")
 	fmt.Fprintln(os.Stderr, "  aw lock acquire [--server ...] [--account ...] --resource-key ... [--ttl-seconds N]")
 	fmt.Fprintln(os.Stderr, "  aw lock renew [--server ...] [--account ...] --resource-key ... [--ttl-seconds N]")
 	fmt.Fprintln(os.Stderr, "  aw lock release [--server ...] [--account ...] --resource-key ...")
@@ -628,22 +628,23 @@ func chatStderrCallback(kind, message string) {
 
 func runChatSend(args []string) {
 	fs := flag.NewFlagSet("chat send", flag.ExitOnError)
-	var serverName, accountName, toAlias, message string
+	var serverName, accountName string
 	var wait int
-	var leaving, startConversation bool
+	var leaveConversation, startConversation bool
 	fs.StringVar(&serverName, "server", "", "Server name from config.yaml")
 	fs.StringVar(&accountName, "account", "", "Account name from config.yaml")
-	fs.StringVar(&toAlias, "to-alias", "", "Recipient alias")
-	fs.StringVar(&message, "message", "", "Message body")
 	fs.IntVar(&wait, "wait", 60, "Seconds to wait for reply (0 = no wait)")
-	fs.BoolVar(&leaving, "leaving", false, "Send and leave conversation")
+	fs.BoolVar(&leaveConversation, "leave-conversation", false, "Send and leave conversation")
 	fs.BoolVar(&startConversation, "start-conversation", false, "Start conversation (5min default wait)")
 	_ = fs.Parse(args)
 
-	if toAlias == "" || message == "" {
-		fmt.Fprintln(os.Stderr, "Missing required flags: --to-alias and --message")
+	positional := fs.Args()
+	if len(positional) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: aw chat send <alias> <message> [--start-conversation] [--leave-conversation] [--wait N]")
 		os.Exit(2)
 	}
+	toAlias := positional[0]
+	message := positional[1]
 
 	timeout := time.Duration(wait+30) * time.Second
 	if timeout < 10*time.Second {
@@ -655,7 +656,7 @@ func runChatSend(args []string) {
 	c, sel := mustResolve(serverName, accountName)
 	result, err := chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, chat.SendOptions{
 		Wait:              wait,
-		Leaving:           leaving,
+		Leaving:           leaveConversation,
 		StartConversation: startConversation,
 	}, chatStderrCallback)
 	if err != nil {
@@ -683,16 +684,17 @@ func runChatPending(args []string) {
 
 func runChatOpen(args []string) {
 	fs := flag.NewFlagSet("chat open", flag.ExitOnError)
-	var serverName, accountName, alias string
+	var serverName, accountName string
 	fs.StringVar(&serverName, "server", "", "Server name from config.yaml")
 	fs.StringVar(&accountName, "account", "", "Account name from config.yaml")
-	fs.StringVar(&alias, "alias", "", "Target agent alias")
 	_ = fs.Parse(args)
 
-	if alias == "" {
-		fmt.Fprintln(os.Stderr, "Missing required flag: --alias")
+	positional := fs.Args()
+	if len(positional) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: aw chat open <alias>")
 		os.Exit(2)
 	}
+	alias := positional[0]
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -706,16 +708,17 @@ func runChatOpen(args []string) {
 
 func runChatHistory(args []string) {
 	fs := flag.NewFlagSet("chat history", flag.ExitOnError)
-	var serverName, accountName, alias string
+	var serverName, accountName string
 	fs.StringVar(&serverName, "server", "", "Server name from config.yaml")
 	fs.StringVar(&accountName, "account", "", "Account name from config.yaml")
-	fs.StringVar(&alias, "alias", "", "Target agent alias")
 	_ = fs.Parse(args)
 
-	if alias == "" {
-		fmt.Fprintln(os.Stderr, "Missing required flag: --alias")
+	positional := fs.Args()
+	if len(positional) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: aw chat history <alias>")
 		os.Exit(2)
 	}
+	alias := positional[0]
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -729,17 +732,18 @@ func runChatHistory(args []string) {
 
 func runChatHangOn(args []string) {
 	fs := flag.NewFlagSet("chat hang-on", flag.ExitOnError)
-	var serverName, accountName, alias, message string
+	var serverName, accountName string
 	fs.StringVar(&serverName, "server", "", "Server name from config.yaml")
 	fs.StringVar(&accountName, "account", "", "Account name from config.yaml")
-	fs.StringVar(&alias, "alias", "", "Target agent alias")
-	fs.StringVar(&message, "message", "", "Hang-on message")
 	_ = fs.Parse(args)
 
-	if alias == "" || message == "" {
-		fmt.Fprintln(os.Stderr, "Missing required flags: --alias and --message")
+	positional := fs.Args()
+	if len(positional) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: aw chat hang-on <alias> <message>")
 		os.Exit(2)
 	}
+	alias := positional[0]
+	message := positional[1]
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -753,16 +757,17 @@ func runChatHangOn(args []string) {
 
 func runChatShowPending(args []string) {
 	fs := flag.NewFlagSet("chat show-pending", flag.ExitOnError)
-	var serverName, accountName, alias string
+	var serverName, accountName string
 	fs.StringVar(&serverName, "server", "", "Server name from config.yaml")
 	fs.StringVar(&accountName, "account", "", "Account name from config.yaml")
-	fs.StringVar(&alias, "alias", "", "Target agent alias")
 	_ = fs.Parse(args)
 
-	if alias == "" {
-		fmt.Fprintln(os.Stderr, "Missing required flag: --alias")
+	positional := fs.Args()
+	if len(positional) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: aw chat show-pending <alias>")
 		os.Exit(2)
 	}
+	alias := positional[0]
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
