@@ -29,8 +29,12 @@ var mailSendCmd = &cobra.Command{
 	Use:   "send",
 	Short: "Send a message to another agent",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if (mailSendToAgentID == "" && mailSendToAlias == "") || mailSendBody == "" {
-			fmt.Fprintln(os.Stderr, "Missing required flags")
+		if mailSendToAgentID == "" && mailSendToAlias == "" {
+			fmt.Fprintln(os.Stderr, "Missing required flag: --to-alias or --to-agent-id")
+			os.Exit(2)
+		}
+		if mailSendBody == "" {
+			fmt.Fprintln(os.Stderr, "Missing required flag: --body")
 			os.Exit(2)
 		}
 

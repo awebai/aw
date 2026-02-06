@@ -27,7 +27,7 @@ var lockAcquireCmd = &cobra.Command{
 	Short: "Acquire a lock",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if lockAcquireResourceKey == "" {
-			fmt.Fprintln(os.Stderr, "Missing required flags")
+			fmt.Fprintln(os.Stderr, "Missing required flag: --resource-key")
 			os.Exit(2)
 		}
 
@@ -86,7 +86,7 @@ var lockReleaseCmd = &cobra.Command{
 	Short: "Release a lock",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if lockReleaseResourceKey == "" {
-			fmt.Fprintln(os.Stderr, "Missing required flags")
+			fmt.Fprintln(os.Stderr, "Missing required flag: --resource-key")
 			os.Exit(2)
 		}
 
