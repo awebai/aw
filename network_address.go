@@ -24,9 +24,15 @@ func ParseNetworkAddress(target string) NetworkAddress {
 		return NetworkAddress{Alias: target}
 	}
 
+	orgSlug := strings.TrimSpace(target[:idx])
+	alias := strings.TrimSpace(target[idx+1:])
+	if orgSlug == "" || alias == "" {
+		return NetworkAddress{}
+	}
+
 	return NetworkAddress{
-		OrgSlug:   target[:idx],
-		Alias:     target[idx+1:],
+		OrgSlug:   orgSlug,
+		Alias:     alias,
 		IsNetwork: true,
 	}
 }

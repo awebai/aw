@@ -24,6 +24,13 @@ func TestParseNetworkAddress(t *testing.T) {
 		// Edge cases
 		{"a/b", "a", "b", true},
 		{"", "", "", false},
+
+		// Malformed addresses (missing org or alias)
+		{"/bob", "", "", false},
+		{"org/", "", "", false},
+		{"/", "", "", false},
+		{"  /  ", "", "", false},
+		{" acme / researcher ", "acme", "researcher", true},
 	}
 
 	for _, tc := range tests {
