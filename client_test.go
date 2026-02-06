@@ -294,3 +294,26 @@ func TestChatPendingItemNullTimeRemaining(t *testing.T) {
 		t.Fatalf("expected 42, got %v", item2.TimeRemainingSeconds)
 	}
 }
+
+func TestHTTPStatusHelpers(t *testing.T) {
+	t.Parallel()
+
+	err := &apiError{StatusCode: 404, Body: "not found"}
+	status, ok := HTTPStatusCode(err)
+	if !ok || status != 404 {
+		t.Fatalf("status=(%d,%v)", status, ok)
+	}
+	body, ok := HTTPErrorBody(err)
+	if !ok || body != "not found" {
+		t.Fatalf("body=(%q,%v)", body, ok)
+	}
+
+	status, ok = HTTPStatusCode(context.DeadlineExceeded)
+	if ok || status != 0 {
+		t.Fatalf("non-api status=(%d,%v)", status, ok)
+	}
+	body, ok = HTTPErrorBody(context.Canceled)
+	if ok || body != "" {
+		t.Fatalf("non-api body=(%q,%v)", body, ok)
+	}
+}

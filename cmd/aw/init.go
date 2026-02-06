@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +36,7 @@ var (
 	initSetDefault   bool
 	initWriteContext bool
 	initPrintExports bool
+	initCloudToken   string
 )
 
 func init() {
@@ -47,12 +50,13 @@ func init() {
 	initCmd.Flags().BoolVar(&initSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
 	initCmd.Flags().BoolVar(&initWriteContext, "write-context", true, "Write/update .aw/context in the current worktree (non-secret pointer)")
 	initCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
+	initCmd.Flags().StringVar(&initCloudToken, "cloud-token", "", "Cloud auth bearer token for hosted aweb-cloud bootstrap (default: AWEB_CLOUD_TOKEN, then AWEB_API_KEY if non-aw_sk_*)")
 
 	rootCmd.AddCommand(initCmd)
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
-	baseURL, serverName, _, err := resolveBaseURLForInit(initURL, serverFlag)
+	baseURL, serverName, global, err := resolveBaseURLForInit(initURL, serverFlag)
 	if err != nil {
 		fatal(err)
 	}
@@ -167,22 +171,41 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	resp, err := bootstrapClient.Init(ctx, req)
+	usedCloudBootstrap := false
 	if err != nil {
-		fatal(err)
+		resp, usedCloudBootstrap, err = tryCloudBootstrapFallback(ctx, baseURL, serverName, global, req, err)
+		if err != nil {
+			fatal(err)
+		}
 	}
 
 	// If we got an existing alias using the default suggestion, retry with server allocation.
 	if !aliasExplicit && aliasWasDefaultSuggestion && !resp.Created {
 		req.Alias = nil
-		resp, err = bootstrapClient.Init(ctx, req)
-		if err != nil {
-			fatal(err)
+		if usedCloudBootstrap {
+			resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req)
+			if err != nil {
+				fatal(err)
+			}
+		} else {
+			resp, err = bootstrapClient.Init(ctx, req)
+			if err != nil {
+				resp, usedCloudBootstrap, err = tryCloudBootstrapFallback(ctx, baseURL, serverName, global, req, err)
+				if err != nil {
+					fatal(err)
+				}
+			}
 		}
 	}
 
 	accountName := strings.TrimSpace(accountFlag)
 	if accountName == "" {
 		accountName = deriveAccountName(serverName, projectSlug, resp.Alias)
+	}
+
+	defaultProject := strings.TrimSpace(resp.ProjectSlug)
+	if defaultProject == "" {
+		defaultProject = projectSlug
 	}
 
 	if initSaveConfig {
@@ -199,7 +222,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 			cfg.Accounts[accountName] = awconfig.Account{
 				Server:         serverName,
 				APIKey:         resp.APIKey,
-				DefaultProject: projectSlug,
+				DefaultProject: defaultProject,
 				AgentID:        resp.AgentID,
 				AgentAlias:     resp.Alias,
 			}
@@ -230,4 +253,127 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Println("export AWEB_AGENT_ALIAS=" + resp.Alias)
 	}
 	return nil
+}
+
+func tryCloudBootstrapFallback(
+	ctx context.Context,
+	baseURL string,
+	serverName string,
+	global *awconfig.GlobalConfig,
+	req *aweb.InitRequest,
+	initErr error,
+) (*aweb.InitResponse, bool, error) {
+	status, ok := aweb.HTTPStatusCode(initErr)
+	if !ok || (status != http.StatusForbidden && status != http.StatusNotFound) {
+		return nil, false, initErr
+	}
+
+	resp, err := bootstrapViaCloud(ctx, baseURL, serverName, global, req)
+	if err != nil {
+		return nil, false, fmt.Errorf("init endpoint unavailable (%w); %v", initErr, err)
+	}
+	return resp, true, nil
+}
+
+func bootstrapViaCloud(
+	ctx context.Context,
+	baseURL string,
+	serverName string,
+	global *awconfig.GlobalConfig,
+	req *aweb.InitRequest,
+) (*aweb.InitResponse, error) {
+	token := resolveCloudToken(serverName, global)
+	if strings.TrimSpace(token) == "" {
+		return nil, fmt.Errorf("hosted Cloud bootstrap requires --cloud-token or AWEB_CLOUD_TOKEN")
+	}
+
+	cloudBaseURL, err := cloudRootBaseURL(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("hosted Cloud bootstrap requires a valid URL: %w", err)
+	}
+
+	cloudClient, err := aweb.NewWithAPIKey(cloudBaseURL, token)
+	if err != nil {
+		return nil, err
+	}
+
+	cloudReq := &aweb.CloudBootstrapAgentRequest{
+		Alias:     req.Alias,
+		HumanName: req.HumanName,
+		AgentType: req.AgentType,
+	}
+
+	cloudResp, err := cloudClient.CloudBootstrapAgent(ctx, cloudReq)
+	if err != nil {
+		return nil, fmt.Errorf("cloud bootstrap failed: %w", err)
+	}
+
+	if strings.TrimSpace(cloudResp.APIKey) == "" {
+		return nil, fmt.Errorf("cloud bootstrap failed: missing api_key in response")
+	}
+
+	return &aweb.InitResponse{
+		Status:      "ok",
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
+		ProjectID:   cloudResp.ProjectID,
+		ProjectSlug: cloudResp.ProjectSlug,
+		AgentID:     cloudResp.AgentID,
+		Alias:       cloudResp.Alias,
+		APIKey:      cloudResp.APIKey,
+		Created:     cloudResp.Created,
+	}, nil
+}
+
+func resolveCloudToken(serverName string, global *awconfig.GlobalConfig) string {
+	if v := strings.TrimSpace(initCloudToken); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("AWEB_CLOUD_TOKEN")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); v != "" && !strings.HasPrefix(v, "aw_sk_") {
+		return v
+	}
+	if global == nil {
+		return ""
+	}
+
+	candidates := make([]string, 0, 2)
+	if v := strings.TrimSpace(accountFlag); v != "" {
+		candidates = append(candidates, v)
+	}
+	if v := strings.TrimSpace(global.DefaultAccount); v != "" {
+		candidates = append(candidates, v)
+	}
+
+	for _, accountName := range candidates {
+		acct, ok := global.Accounts[accountName]
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(serverName) != "" && strings.TrimSpace(acct.Server) != strings.TrimSpace(serverName) {
+			continue
+		}
+		token := strings.TrimSpace(acct.APIKey)
+		if token != "" && !strings.HasPrefix(token, "aw_sk_") {
+			return token
+		}
+	}
+
+	return ""
+}
+
+func cloudRootBaseURL(baseURL string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return "", err
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/")
+	if u.Path == "/api" {
+		u.Path = ""
+	}
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return strings.TrimSuffix(u.String(), "/"), nil
 }

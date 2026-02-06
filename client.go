@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -64,6 +65,24 @@ func (e *apiError) Error() string {
 		return fmt.Sprintf("aweb: http %d", e.StatusCode)
 	}
 	return fmt.Sprintf("aweb: http %d: %s", e.StatusCode, e.Body)
+}
+
+// HTTPStatusCode returns the HTTP status code for API errors.
+func HTTPStatusCode(err error) (int, bool) {
+	var e *apiError
+	if !errors.As(err, &e) {
+		return 0, false
+	}
+	return e.StatusCode, true
+}
+
+// HTTPErrorBody returns the response body for API errors.
+func HTTPErrorBody(err error) (string, bool) {
+	var e *apiError
+	if !errors.As(err, &e) {
+		return "", false
+	}
+	return e.Body, true
 }
 
 func (c *Client) get(ctx context.Context, path string, out any) error {
