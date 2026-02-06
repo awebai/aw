@@ -785,6 +785,37 @@ func TestStreamToChannelCleansUpOnCancel(t *testing.T) {
 	}
 }
 
+func TestStreamToChannelCleansUpWhileBlockedOnNext(t *testing.T) {
+	t.Parallel()
+
+	pr, pw := io.Pipe()
+	stream := aweb.NewSSEStream(pr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	events, cleanup := streamToChannel(ctx, stream)
+	_ = events
+
+	// Don't write anything — goroutine is blocked inside stream.Next().
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		cleanup()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// OK — goroutine unblocked from stream.Next() and exited.
+	case <-time.After(2 * time.Second):
+		t.Fatal("cleanup did not return — goroutine stuck in stream.Next()")
+	}
+
+	pw.Close()
+}
+
 func TestStreamToChannelCleansUpWhenBufferFull(t *testing.T) {
 	t.Parallel()
 

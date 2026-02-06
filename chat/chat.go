@@ -49,8 +49,8 @@ func streamToChannel(ctx context.Context, stream *aweb.SSEStream) (<-chan sseRes
 		}
 	}()
 	cleanup := func() {
-		stream.Close()
 		stopCancel()
+		stream.Close()
 		<-done
 	}
 	return ch, cleanup
