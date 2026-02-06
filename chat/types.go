@@ -35,13 +35,12 @@ type SendResult struct {
 
 // OpenResult is the result of opening unread messages for a conversation.
 type OpenResult struct {
-	SessionID           string  `json:"session_id"`
-	TargetAgent         string  `json:"target_agent"`
-	Messages            []Event `json:"messages"`
-	MarkedRead          int     `json:"marked_read"`
-	SenderWaiting       bool    `json:"sender_waiting"`
-	UnreadWasEmpty      bool    `json:"unread_was_empty,omitempty"`
-	WaitExtendedSeconds int     `json:"wait_extended_seconds,omitempty"`
+	SessionID      string  `json:"session_id"`
+	TargetAgent    string  `json:"target_agent"`
+	Messages       []Event `json:"messages"`
+	MarkedRead     int     `json:"marked_read"`
+	SenderWaiting  bool    `json:"sender_waiting"`
+	UnreadWasEmpty bool    `json:"unread_was_empty,omitempty"`
 }
 
 // HistoryResult is the result of fetching chat history.

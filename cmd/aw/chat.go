@@ -36,10 +36,7 @@ var chatSendCmd = &cobra.Command{
 		toAlias := args[0]
 		message := args[1]
 
-		timeout := time.Duration(chatSendWait+30) * time.Second
-		if timeout < 10*time.Second {
-			timeout = 10 * time.Second
-		}
+		timeout := chat.MaxSendTimeout
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
@@ -166,7 +163,7 @@ var chatShowPendingCmd = &cobra.Command{
 }
 
 func init() {
-	chatSendCmd.Flags().IntVar(&chatSendWait, "wait", 60, "Seconds to wait for reply (0 = no wait)")
+	chatSendCmd.Flags().IntVar(&chatSendWait, "wait", chat.DefaultWait, "Seconds to wait for reply (0 = no wait)")
 	chatSendCmd.Flags().BoolVar(&chatSendLeaveConversation, "leave-conversation", false, "Send and leave conversation")
 	chatSendCmd.Flags().BoolVar(&chatSendStartConversation, "start-conversation", false, "Start conversation (5min default wait)")
 

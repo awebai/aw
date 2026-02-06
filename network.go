@@ -86,9 +86,8 @@ type NetworkChatMarkReadRequest struct {
 }
 
 type NetworkChatMarkReadResponse struct {
-	Success            bool `json:"success"`
-	MessagesMarked     int  `json:"messages_marked"`
-	WaitExtendedSeconds int `json:"wait_extended_seconds"`
+	Success        bool `json:"success"`
+	MessagesMarked int  `json:"messages_marked"`
 }
 
 func (c *Client) NetworkChatMarkRead(ctx context.Context, sessionID string, req *NetworkChatMarkReadRequest) (*NetworkChatMarkReadResponse, error) {

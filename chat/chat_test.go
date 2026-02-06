@@ -150,9 +150,8 @@ func TestOpen(t *testing.T) {
 				t.Errorf("up_to_message_id=%s", req.UpToMessageID)
 			}
 			jsonResponse(w, aweb.ChatMarkReadResponse{
-				Success:             true,
-				MessagesMarked:      2,
-				WaitExtendedSeconds: 60,
+				Success:        true,
+				MessagesMarked: 2,
 			})
 		},
 	})
@@ -173,9 +172,6 @@ func TestOpen(t *testing.T) {
 	}
 	if !result.SenderWaiting {
 		t.Fatal("sender_waiting=false")
-	}
-	if result.WaitExtendedSeconds != 60 {
-		t.Fatalf("wait_extended_seconds=%d", result.WaitExtendedSeconds)
 	}
 }
 
@@ -558,9 +554,9 @@ func TestSendWithReadReceipt(t *testing.T) {
 				flusher.Flush()
 			}
 
-			// Read receipt from bob
+			// Read receipt from bob with 300s extension (matches server behavior)
 			rrData, _ := json.Marshal(map[string]any{
-				"type": "read_receipt", "reader_alias": "bob", "extends_wait_seconds": 0,
+				"type": "read_receipt", "reader_alias": "bob", "extends_wait_seconds": 300,
 			})
 			fmt.Fprintf(w, "event: read_receipt\ndata: %s\n\n", rrData)
 			if flusher != nil {
@@ -592,13 +588,100 @@ func TestSendWithReadReceipt(t *testing.T) {
 	}
 
 	foundReadReceipt := false
+	foundWaitExtended := false
 	for _, k := range callbackKinds {
 		if k == "read_receipt" {
 			foundReadReceipt = true
 		}
+		if k == "wait_extended" {
+			foundWaitExtended = true
+		}
 	}
 	if !foundReadReceipt {
 		t.Fatal("missing read_receipt callback")
+	}
+	if !foundWaitExtended {
+		t.Fatal("missing wait_extended callback from read receipt")
+	}
+}
+
+func TestSendStreamDeadlineExceedsWait(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	var capturedDeadline time.Time
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, r *http.Request) {
+			// Capture the deadline query parameter sent to the server.
+			deadlineStr := r.URL.Query().Get("deadline")
+			if deadlineStr != "" {
+				capturedDeadline, _ = time.Parse(time.RFC3339Nano, deadlineStr)
+			}
+
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			// Send our message then reply immediately.
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply", "from_agent": "bob", "body": "hi",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	before := time.Now()
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+
+	// The stream deadline should be at least maxStreamDeadline from now,
+	// not just the wait timeout (5s).
+	if capturedDeadline.IsZero() {
+		t.Fatal("server did not receive deadline parameter")
+	}
+	minExpected := before.Add(maxStreamDeadline - 1*time.Second)
+	if capturedDeadline.Before(minExpected) {
+		t.Fatalf("stream deadline %v is too close to now; expected at least %v from request time", capturedDeadline, maxStreamDeadline)
+	}
+}
+
+func TestDefaultWaitIs120(t *testing.T) {
+	t.Parallel()
+
+	if DefaultWait != 120 {
+		t.Fatalf("DefaultWait=%d, want 120", DefaultWait)
+	}
+}
+
+func TestMaxSendTimeoutIs16Min(t *testing.T) {
+	t.Parallel()
+
+	if MaxSendTimeout != 16*time.Minute {
+		t.Fatalf("MaxSendTimeout=%v, want 16m", MaxSendTimeout)
 	}
 }
 

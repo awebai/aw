@@ -13,7 +13,16 @@ import (
 	aweb "github.com/awebai/aw"
 )
 
-const defaultWait = 60 // Default wait timeout in seconds for replies
+const DefaultWait = 120 // Default wait timeout in seconds for replies
+
+// maxStreamDeadline is the server-side SSE connection safety net.
+// The local waitTimer manages actual wait semantics; this just prevents
+// orphaned server connections. Must exceed any possible wait extension chain.
+const maxStreamDeadline = 15 * time.Minute
+
+// MaxSendTimeout is the maximum duration a Send() call can take,
+// accounting for all possible wait extensions.
+const MaxSendTimeout = 16 * time.Minute
 
 // sseResult wraps an SSE event or error for channel-based processing.
 type sseResult struct {
@@ -146,7 +155,7 @@ func findSession(ctx context.Context, client *aweb.Client, targetAlias string) (
 // Wait logic:
 //   - opts.Leaving: send with leaving=true, exit immediately
 //   - opts.Wait == 0: send, return immediately
-//   - opts.StartConversation: ignore targets_left, use 5min default wait if opts.Wait == defaultWait
+//   - opts.StartConversation: ignore targets_left, use 5min default wait if opts.Wait == DefaultWait
 //   - default: send, if all targets in targets_left → skip wait; else wait opts.Wait seconds
 func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []string, message string, opts SendOptions, callback StatusCallback) (*SendResult, error) {
 	createResp, err := client.ChatCreateSession(ctx, &aweb.ChatCreateSessionRequest{
@@ -213,14 +222,15 @@ func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []st
 
 	// Determine wait timeout
 	waitSeconds := opts.Wait
-	if opts.StartConversation && waitSeconds == defaultWait {
+	if opts.StartConversation && waitSeconds == DefaultWait {
 		waitSeconds = 300 // 5 minutes
 	}
 	waitTimeout := time.Duration(waitSeconds) * time.Second
 
-	// SSE stream for reply waiting
+	// SSE stream for reply waiting. The server deadline is a safety net for
+	// orphaned connections — the local waitTimer manages actual wait semantics.
 	waitDeadline := time.Now().Add(waitTimeout)
-	stream, err := client.ChatStream(ctx, createResp.SessionID, waitDeadline)
+	stream, err := client.ChatStream(ctx, createResp.SessionID, time.Now().Add(maxStreamDeadline))
 	if err != nil {
 		return nil, fmt.Errorf("connecting to SSE: %w", err)
 	}
@@ -384,14 +394,13 @@ func Open(ctx context.Context, client *aweb.Client, targetAlias string) (*OpenRe
 	}
 
 	lastMessageID := messagesResp.Messages[len(messagesResp.Messages)-1].MessageID
-	markReadResp, err := client.ChatMarkRead(ctx, sessionID, &aweb.ChatMarkReadRequest{
+	_, err = client.ChatMarkRead(ctx, sessionID, &aweb.ChatMarkReadRequest{
 		UpToMessageID: lastMessageID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marking messages as read: %w", err)
 	}
 	result.MarkedRead = len(messagesResp.Messages)
-	result.WaitExtendedSeconds = markReadResp.WaitExtendedSeconds
 
 	return result, nil
 }

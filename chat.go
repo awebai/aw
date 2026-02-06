@@ -100,9 +100,8 @@ type ChatMarkReadRequest struct {
 }
 
 type ChatMarkReadResponse struct {
-	Success            bool `json:"success"`
-	MessagesMarked     int  `json:"messages_marked"`
-	WaitExtendedSeconds int `json:"wait_extended_seconds"`
+	Success        bool `json:"success"`
+	MessagesMarked int  `json:"messages_marked"`
 }
 
 func (c *Client) ChatMarkRead(ctx context.Context, sessionID string, req *ChatMarkReadRequest) (*ChatMarkReadResponse, error) {
