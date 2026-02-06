@@ -22,26 +22,38 @@ type sseResult struct {
 }
 
 // streamToChannel bridges SSEStream.Next() to a channel for select-based processing.
-// The goroutine exits when ctx is cancelled or the stream returns an error.
-func streamToChannel(ctx context.Context, stream *aweb.SSEStream) <-chan sseResult {
+// Returns the event channel and a cleanup function. The cleanup function closes the
+// stream, signals the goroutine to stop, and blocks until it has exited.
+// The caller must call cleanup to avoid goroutine leaks.
+func streamToChannel(ctx context.Context, stream *aweb.SSEStream) (<-chan sseResult, func()) {
 	ch := make(chan sseResult, 10)
+	stopCtx, stopCancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	go func() {
 		defer close(ch)
+		defer close(done)
 		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
 			ev, err := stream.Next()
 			if err != nil {
-				ch <- sseResult{err: err}
+				select {
+				case ch <- sseResult{err: err}:
+				case <-stopCtx.Done():
+				}
 				return
 			}
-			ch <- sseResult{event: ev}
+			select {
+			case ch <- sseResult{event: ev}:
+			case <-stopCtx.Done():
+				return
+			}
 		}
 	}()
-	return ch
+	cleanup := func() {
+		stream.Close()
+		stopCancel()
+		<-done
+	}
+	return ch, cleanup
 }
 
 // parseSSEEvent converts an SSE event to a chat Event.
@@ -212,9 +224,8 @@ func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []st
 	if err != nil {
 		return nil, fmt.Errorf("connecting to SSE: %w", err)
 	}
-	defer stream.Close()
-
-	events := streamToChannel(ctx, stream)
+	events, streamCleanup := streamToChannel(ctx, stream)
+	defer streamCleanup()
 
 	// Skip replayed messages — wait until we see our own sent message.
 	sentMessageID := createResp.MessageID
