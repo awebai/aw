@@ -88,28 +88,39 @@ func (c *GlobalConfig) SaveGlobalTo(path string) error {
 		c.Accounts = map[string]Account{}
 	}
 
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return err
 	}
 
-	tmp, err := os.CreateTemp(dir, ".config.yaml.*")
+	return atomicWriteFile(path, data)
+}
+
+// atomicWriteFile writes data to path using temp-file-and-rename.
+// The temp file is chmod'd to 0600 before any data is written.
+func atomicWriteFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp(dir, ".tmp.*")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
 
+	// Set restrictive permissions before writing any data.
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return err
 	}

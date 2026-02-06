@@ -70,17 +70,13 @@ func SaveWorktreeContextTo(path string, ctx *WorktreeContext) error {
 	if ctx.ServerAccounts == nil {
 		ctx.ServerAccounts = map[string]string{}
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
 
 	data, err := yaml.Marshal(ctx)
 	if err != nil {
 		return err
 	}
-	// Non-secret but keep private by default.
-	return os.WriteFile(path, append(bytesTrimRightNewlines(data), '\n'), 0o600)
+
+	return atomicWriteFile(path, append(bytesTrimRightNewlines(data), '\n'))
 }
 
 func bytesTrimRightNewlines(b []byte) []byte {
