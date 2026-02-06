@@ -28,7 +28,7 @@ Environment variables still work as overrides for scripts/CI:
 aw init --url http://localhost:8000 --project-slug demo --human-name "Alice"
 
 # Hosted aweb-cloud bootstrap fallback (when /v1/init is unavailable)
-AWEB_CLOUD_TOKEN=<jwt> aw init --url https://app.aweb.ai --alias analyst-bot
+AWEB_CLOUD_TOKEN=<jwt> aw init --cloud --url https://app.aweb.ai --project-slug demo --alias analyst-bot
 
 aw introspect
 aw chat send --from-agent-id ... --from-alias alice --to-alias bob --message "ping"

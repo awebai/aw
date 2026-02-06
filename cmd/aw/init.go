@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -37,6 +38,7 @@ var (
 	initWriteContext bool
 	initPrintExports bool
 	initCloudToken   string
+	initCloudMode    bool
 )
 
 func init() {
@@ -51,6 +53,7 @@ func init() {
 	initCmd.Flags().BoolVar(&initWriteContext, "write-context", true, "Write/update .aw/context in the current worktree (non-secret pointer)")
 	initCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
 	initCmd.Flags().StringVar(&initCloudToken, "cloud-token", "", "Cloud auth bearer token for hosted aweb-cloud bootstrap (default: AWEB_CLOUD_TOKEN, then AWEB_API_KEY if non-aw_sk_*)")
+	initCmd.Flags().BoolVar(&initCloudMode, "cloud", false, "Force hosted aweb-cloud bootstrap mode (skip probing /v1/init)")
 
 	rootCmd.AddCommand(initCmd)
 }
@@ -170,12 +173,21 @@ func runInit(cmd *cobra.Command, args []string) error {
 		req.Alias = &alias
 	}
 
-	resp, err := bootstrapClient.Init(ctx, req)
 	usedCloudBootstrap := false
-	if err != nil {
-		resp, usedCloudBootstrap, err = tryCloudBootstrapFallback(ctx, baseURL, serverName, global, req, err)
+	var resp *aweb.InitResponse
+	if shouldUseCloudBootstrapFirst(baseURL, serverName) {
+		resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req)
 		if err != nil {
 			fatal(err)
+		}
+		usedCloudBootstrap = true
+	} else {
+		resp, err = bootstrapClient.Init(ctx, req)
+		if err != nil {
+			resp, usedCloudBootstrap, err = tryCloudBootstrapFallback(ctx, baseURL, serverName, global, req, err)
+			if err != nil {
+				fatal(err)
+			}
 		}
 	}
 
@@ -282,7 +294,7 @@ func bootstrapViaCloud(
 	global *awconfig.GlobalConfig,
 	req *aweb.InitRequest,
 ) (*aweb.InitResponse, error) {
-	token := resolveCloudToken(serverName, global)
+	token := resolveCloudToken(baseURL, serverName, global)
 	if strings.TrimSpace(token) == "" {
 		return nil, fmt.Errorf("hosted Cloud bootstrap requires --cloud-token or AWEB_CLOUD_TOKEN")
 	}
@@ -324,7 +336,7 @@ func bootstrapViaCloud(
 	}, nil
 }
 
-func resolveCloudToken(serverName string, global *awconfig.GlobalConfig) string {
+func resolveCloudToken(baseURL, serverName string, global *awconfig.GlobalConfig) string {
 	if v := strings.TrimSpace(initCloudToken); v != "" {
 		return v
 	}
@@ -338,23 +350,51 @@ func resolveCloudToken(serverName string, global *awconfig.GlobalConfig) string 
 		return ""
 	}
 
-	candidates := make([]string, 0, 2)
+	candidates := make([]string, 0, 4)
 	if v := strings.TrimSpace(accountFlag); v != "" {
 		candidates = append(candidates, v)
+	}
+	for _, name := range sortedAccountNames(global) {
+		acct := global.Accounts[name]
+		if strings.TrimSpace(serverName) != "" && strings.TrimSpace(acct.Server) == strings.TrimSpace(serverName) {
+			candidates = append(candidates, name)
+		}
+	}
+	baseHost := hostFromBaseURL(baseURL)
+	if baseHost != "" {
+		for _, name := range sortedAccountNames(global) {
+			acct := global.Accounts[name]
+			srv, ok := global.Servers[strings.TrimSpace(acct.Server)]
+			if !ok || strings.TrimSpace(srv.URL) == "" {
+				continue
+			}
+			if hostFromBaseURL(srv.URL) == baseHost {
+				candidates = append(candidates, name)
+			}
+		}
 	}
 	if v := strings.TrimSpace(global.DefaultAccount); v != "" {
 		candidates = append(candidates, v)
 	}
 
+	seen := map[string]struct{}{}
 	for _, accountName := range candidates {
+		if _, ok := seen[accountName]; ok {
+			continue
+		}
+		seen[accountName] = struct{}{}
 		acct, ok := global.Accounts[accountName]
 		if !ok {
 			continue
 		}
-		if strings.TrimSpace(serverName) != "" && strings.TrimSpace(acct.Server) != strings.TrimSpace(serverName) {
-			continue
-		}
 		token := strings.TrimSpace(acct.APIKey)
+		if token != "" && !strings.HasPrefix(token, "aw_sk_") {
+			return token
+		}
+	}
+
+	for _, name := range sortedAccountNames(global) {
+		token := strings.TrimSpace(global.Accounts[name].APIKey)
 		if token != "" && !strings.HasPrefix(token, "aw_sk_") {
 			return token
 		}
@@ -369,11 +409,48 @@ func cloudRootBaseURL(baseURL string) (string, error) {
 		return "", err
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/")
-	if u.Path == "/api" {
+	if u.Path == "/api" || u.Path == "/api/v1" {
 		u.Path = ""
 	}
 	u.RawPath = ""
 	u.RawQuery = ""
 	u.Fragment = ""
 	return strings.TrimSuffix(u.String(), "/"), nil
+}
+
+func shouldUseCloudBootstrapFirst(baseURL, serverName string) bool {
+	if initCloudMode {
+		return true
+	}
+
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("AWEB_CLOUD_MODE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+
+	host := hostFromBaseURL(baseURL)
+	if host == "app.aweb.ai" {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(serverName), "app.aweb.ai") {
+		return true
+	}
+	return false
+}
+
+func hostFromBaseURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(u.Hostname()))
+}
+
+func sortedAccountNames(global *awconfig.GlobalConfig) []string {
+	names := make([]string, 0, len(global.Accounts))
+	for name := range global.Accounts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

@@ -1284,6 +1284,247 @@ func TestAwInitCloudFallbackRequiresCloudToken(t *testing.T) {
 	}
 }
 
+func TestAwInitCloudModeSkipsInitProbe(t *testing.T) {
+	t.Parallel()
+
+	var initCalls int
+	var cloudCalls int
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/init":
+			initCalls++
+			t.Fatalf("unexpected /v1/init probe in --cloud mode")
+		case "/api/v1/agents/bootstrap":
+			cloudCalls++
+			if got := r.Header.Get("Authorization"); got != "Bearer cloud_jwt_token" {
+				t.Fatalf("auth=%q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"org_id":             "org-1",
+				"org_slug":           "juan",
+				"org_name":           "Juan",
+				"project_id":         "proj-cloud",
+				"project_slug":       "default",
+				"project_name":       "Default",
+				"server_url":         "https://app.aweb.ai",
+				"bootstrap_endpoint": "/api/v1/agents/bootstrap",
+				"api_key":            "aw_sk_cloud",
+				"agent_id":           "agent-researcher",
+				"alias":              "researcher",
+				"created":            true,
+			})
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--project-slug", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--url", server.URL)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_CLOUD_TOKEN=cloud_jwt_token",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["api_key"] != "aw_sk_cloud" {
+		t.Fatalf("api_key=%v", got["api_key"])
+	}
+	if initCalls != 0 {
+		t.Fatalf("initCalls=%d", initCalls)
+	}
+	if cloudCalls != 1 {
+		t.Fatalf("cloudCalls=%d", cloudCalls)
+	}
+}
+
+func TestAwInitCloudTokenResolutionFromConfiguredServerKey(t *testing.T) {
+	t.Parallel()
+
+	var cloudCalls int
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/init":
+			http.NotFound(w, r)
+		case "/api/v1/agents/bootstrap":
+			cloudCalls++
+			if got := r.Header.Get("Authorization"); got != "Bearer cloud_jwt_config" {
+				t.Fatalf("auth=%q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"org_id":             "org-1",
+				"org_slug":           "juan",
+				"org_name":           "Juan",
+				"project_id":         "proj-cloud",
+				"project_slug":       "default",
+				"project_name":       "Default",
+				"server_url":         "https://app.aweb.ai",
+				"bootstrap_endpoint": "/api/v1/agents/bootstrap",
+				"api_key":            "aw_sk_cloud",
+				"agent_id":           "agent-researcher",
+				"alias":              "researcher",
+				"created":            true,
+			})
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  prod:
+    url: `+server.URL+`
+accounts:
+  cloud-acct:
+    server: prod
+    api_key: cloud_jwt_config
+default_account: cloud-acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--url", server.URL)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_CLOUD_TOKEN=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["api_key"] != "aw_sk_cloud" {
+		t.Fatalf("api_key=%v", got["api_key"])
+	}
+	if cloudCalls != 1 {
+		t.Fatalf("cloudCalls=%d", cloudCalls)
+	}
+}
+
+func TestAwInitCloudFallbackNormalizesAPIV1BaseURL(t *testing.T) {
+	t.Parallel()
+
+	var gotCloudPath string
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/v1/init":
+			http.NotFound(w, r)
+		case "/api/v1/agents/bootstrap":
+			gotCloudPath = r.URL.Path
+			if got := r.Header.Get("Authorization"); got != "Bearer cloud_jwt_token" {
+				t.Fatalf("auth=%q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"org_id":             "org-1",
+				"org_slug":           "juan",
+				"org_name":           "Juan",
+				"project_id":         "proj-cloud",
+				"project_slug":       "default",
+				"project_name":       "Default",
+				"server_url":         "https://app.aweb.ai",
+				"bootstrap_endpoint": "/api/v1/agents/bootstrap",
+				"api_key":            "aw_sk_cloud",
+				"agent_id":           "agent-researcher",
+				"alias":              "researcher",
+				"created":            true,
+			})
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--url", server.URL+"/api/v1")
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_CLOUD_TOKEN=cloud_jwt_token",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["api_key"] != "aw_sk_cloud" {
+		t.Fatalf("api_key=%v", got["api_key"])
+	}
+	if gotCloudPath != "/api/v1/agents/bootstrap" {
+		t.Fatalf("gotCloudPath=%q", gotCloudPath)
+	}
+}
+
 func TestAwChatSendFlagsAfterPositionalArgs(t *testing.T) {
 	t.Parallel()
 
