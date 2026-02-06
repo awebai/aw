@@ -37,6 +37,21 @@ var mailSendCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		addr := aweb.ParseNetworkAddress(mailSendToAlias)
+		if addr.IsNetwork {
+			resp, err := mustClient().NetworkSendMail(ctx, &aweb.NetworkMailRequest{
+				ToAddress: mailSendToAlias,
+				Subject:   mailSendSubject,
+				Body:      mailSendBody,
+				Priority:  mailSendPriority,
+			})
+			if err != nil {
+				fatal(err)
+			}
+			printJSON(resp)
+			return nil
+		}
+
 		resp, err := mustClient().SendMessage(ctx, &aweb.SendMessageRequest{
 			ToAgentID: mailSendToAgentID,
 			ToAlias:   mailSendToAlias,

@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/chat"
 	"github.com/spf13/cobra"
 )
@@ -41,6 +42,20 @@ var chatSendCmd = &cobra.Command{
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
+
+		addr := aweb.ParseNetworkAddress(toAlias)
+		if addr.IsNetwork {
+			resp, err := mustClient().NetworkCreateChat(ctx, &aweb.NetworkChatCreateRequest{
+				ToAddresses: []string{toAlias},
+				Message:     message,
+				Leaving:     chatSendLeaveConversation,
+			})
+			if err != nil {
+				fatal(err)
+			}
+			printJSON(resp)
+			return nil
+		}
 
 		c, sel := mustResolve()
 		result, err := chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, chat.SendOptions{
