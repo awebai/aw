@@ -56,6 +56,7 @@ func mustClient() *aweb.Client {
 func fireHeartbeat() {
 	cfg, err := awconfig.LoadGlobal()
 	if err != nil {
+		debugLog("heartbeat: load config: %v", err)
 		return
 	}
 	wd, _ := os.Getwd()
@@ -63,16 +64,24 @@ func fireHeartbeat() {
 		WorkingDir:        wd,
 		AllowEnvOverrides: true,
 	})
-	if err != nil || sel.APIKey == "" {
+	if err != nil {
+		debugLog("heartbeat: resolve account: %v", err)
+		return
+	}
+	if sel.APIKey == "" {
+		debugLog("heartbeat: no API key configured")
 		return
 	}
 	c, err := aweb.NewWithAPIKey(sel.BaseURL, sel.APIKey)
 	if err != nil {
+		debugLog("heartbeat: create client: %v", err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = c.Heartbeat(ctx)
+	if _, err := c.Heartbeat(ctx); err != nil {
+		debugLog("heartbeat: %v", err)
+	}
 }
 
 func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName string, global *awconfig.GlobalConfig, err error) {
@@ -249,4 +258,10 @@ func printJSON(v any) {
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, err.Error())
 	os.Exit(1)
+}
+
+func debugLog(format string, args ...any) {
+	if debugFlag {
+		fmt.Fprintf(os.Stderr, "[debug] "+format+"\n", args...)
+	}
 }
