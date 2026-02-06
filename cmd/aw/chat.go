@@ -46,7 +46,7 @@ var chatSendCmd = &cobra.Command{
 		addr := aweb.ParseNetworkAddress(toAlias)
 		if addr.IsNetwork {
 			resp, err := mustClient().NetworkCreateChat(ctx, &aweb.NetworkChatCreateRequest{
-				ToAddresses: []string{toAlias},
+				ToAddresses: []string{addr.String()},
 				Message:     message,
 				Leaving:     chatSendLeaveConversation,
 			})

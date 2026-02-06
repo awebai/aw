@@ -14,7 +14,6 @@ import (
 // publish
 
 var (
-	publishAlias        string
 	publishCapabilities string
 	publishDescription  string
 )
@@ -107,7 +106,7 @@ var directoryCmd = &cobra.Command{
 		if len(args) == 1 {
 			addr := aweb.ParseNetworkAddress(args[0])
 			if !addr.IsNetwork {
-				fmt.Fprintln(os.Stderr, "Directory lookup requires org-slug/alias format")
+				fmt.Fprintf(os.Stderr, "Directory lookup requires org-slug/alias format, got: %q\n", args[0])
 				os.Exit(2)
 			}
 			resp, err := c.NetworkDirectoryGet(ctx, addr.OrgSlug, addr.Alias)
@@ -133,7 +132,6 @@ var directoryCmd = &cobra.Command{
 }
 
 func init() {
-	publishCmd.Flags().StringVar(&publishAlias, "alias", "", "Agent alias (default: from config)")
 	publishCmd.Flags().StringVar(&publishCapabilities, "capabilities", "", "Comma-separated capabilities")
 	publishCmd.Flags().StringVar(&publishDescription, "description", "", "Agent description")
 

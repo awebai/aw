@@ -40,7 +40,7 @@ var mailSendCmd = &cobra.Command{
 		addr := aweb.ParseNetworkAddress(mailSendToAlias)
 		if addr.IsNetwork {
 			resp, err := mustClient().NetworkSendMail(ctx, &aweb.NetworkMailRequest{
-				ToAddress: mailSendToAlias,
+				ToAddress: addr.String(),
 				Subject:   mailSendSubject,
 				Body:      mailSendBody,
 				Priority:  mailSendPriority,
