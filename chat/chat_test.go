@@ -757,5 +757,99 @@ func TestParseSSEEvent(t *testing.T) {
 	}
 }
 
-// Suppress unused import warnings.
-var _ = io.EOF
+func TestStreamToChannelCleansUpOnCancel(t *testing.T) {
+	t.Parallel()
+
+	pr, pw := io.Pipe()
+	stream := aweb.NewSSEStream(pr)
+	defer pw.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	events, cleanup := streamToChannel(ctx, stream)
+	_ = events
+
+	cancel()
+
+	// cleanup must return (not hang), proving the goroutine exited.
+	done := make(chan struct{})
+	go func() {
+		cleanup()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// OK
+	case <-time.After(2 * time.Second):
+		t.Fatal("cleanup did not return — goroutine leaked")
+	}
+}
+
+func TestStreamToChannelCleansUpWhileBlockedOnNext(t *testing.T) {
+	t.Parallel()
+
+	pr, pw := io.Pipe()
+	stream := aweb.NewSSEStream(pr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	events, cleanup := streamToChannel(ctx, stream)
+	_ = events
+
+	// Don't write anything — goroutine is blocked inside stream.Next().
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		cleanup()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// OK — goroutine unblocked from stream.Next() and exited.
+	case <-time.After(2 * time.Second):
+		t.Fatal("cleanup did not return — goroutine stuck in stream.Next()")
+	}
+
+	pw.Close()
+}
+
+func TestStreamToChannelCleansUpWhenBufferFull(t *testing.T) {
+	t.Parallel()
+
+	pr, pw := io.Pipe()
+	stream := aweb.NewSSEStream(pr)
+
+	// Write enough events to fill the channel buffer (capacity 10).
+	go func() {
+		for i := 0; i < 15; i++ {
+			fmt.Fprintf(pw, "event: message\ndata: {\"i\":%d}\n\n", i)
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	events, cleanup := streamToChannel(ctx, stream)
+	_ = events // deliberately don't read
+
+	// Give goroutine time to fill the buffer.
+	time.Sleep(100 * time.Millisecond)
+
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		cleanup()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// OK — goroutine cleaned up even with full channel buffer.
+	case <-time.After(2 * time.Second):
+		t.Fatal("cleanup did not return — goroutine leaked with full channel buffer")
+	}
+
+	pw.Close()
+}
