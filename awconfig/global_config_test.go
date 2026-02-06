@@ -3,6 +3,7 @@ package awconfig
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -52,6 +53,33 @@ func TestSaveGlobalToWrites0600(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("perm=%o, want 600", got)
+	}
+}
+
+func TestSaveGlobalToNoTempFileLeftBehind(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, "cfg")
+	path := filepath.Join(dir, "config.yaml")
+
+	cfg := &GlobalConfig{
+		Accounts: map[string]Account{
+			"alice": {APIKey: "aw_sk_test"},
+		},
+	}
+	if err := cfg.SaveGlobalTo(path); err != nil {
+		t.Fatalf("SaveGlobalTo: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".tmp.") {
+			t.Fatalf("temp file left behind: %s", e.Name())
+		}
 	}
 }
 
