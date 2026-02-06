@@ -79,8 +79,7 @@ Cloud mode is auto-detected when the URL is `app.aweb.ai` or `AWEB_CLOUD_MODE=tr
 | `AWEB_HUMAN` | Human operator name (also: `AWEB_HUMAN_NAME`) |
 | `AWEB_AGENT_TYPE` | Agent type |
 | `AWEB_CLOUD_TOKEN` | Cloud bearer token |
-| `AWEB_CLOUD_MODE` | Force cloud bootstrap (`true`/`1`) |
-| `AW_DEBUG` | Enable debug logging (`1`) |
+| `AWEB_CLOUD_MODE` | Force cloud bootstrap (`1`, `true`, `yes`, `on`) |
 
 ## Worktree Context
 

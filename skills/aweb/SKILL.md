@@ -193,7 +193,6 @@ These flags work on all commands:
 
 - `--server <name>` — Use a specific server from config.yaml
 - `--account <name>` — Use a specific account from config.yaml
-- `--debug` — Log background errors to stderr
 
 ## Resources
 
