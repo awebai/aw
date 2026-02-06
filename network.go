@@ -2,6 +2,7 @@ package aweb
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -70,6 +71,9 @@ type NetworkChatSendMessageResponse struct {
 }
 
 func (c *Client) NetworkChatSendMessage(ctx context.Context, sessionID string, req *NetworkChatSendMessageRequest) (*NetworkChatSendMessageResponse, error) {
+	if sessionID == "" {
+		return nil, errors.New("aweb: sessionID is required")
+	}
 	var out NetworkChatSendMessageResponse
 	if err := c.post(ctx, "/api/v1/network/chat/"+urlPathEscape(sessionID)+"/messages", req, &out); err != nil {
 		return nil, err
@@ -88,6 +92,9 @@ type NetworkChatMarkReadResponse struct {
 }
 
 func (c *Client) NetworkChatMarkRead(ctx context.Context, sessionID string, req *NetworkChatMarkReadRequest) (*NetworkChatMarkReadResponse, error) {
+	if sessionID == "" {
+		return nil, errors.New("aweb: sessionID is required")
+	}
 	var out NetworkChatMarkReadResponse
 	if err := c.post(ctx, "/api/v1/network/chat/"+urlPathEscape(sessionID)+"/read", req, &out); err != nil {
 		return nil, err
@@ -121,6 +128,9 @@ func (c *Client) NetworkChatPending(ctx context.Context) (*NetworkChatPendingRes
 
 // NetworkChatStream opens an SSE stream for a network chat session.
 func (c *Client) NetworkChatStream(ctx context.Context, sessionID string, deadline time.Time) (*SSEStream, error) {
+	if sessionID == "" {
+		return nil, errors.New("aweb: sessionID is required")
+	}
 	path := "/api/v1/network/chat/" + urlPathEscape(sessionID) + "/stream?deadline=" + urlQueryEscape(deadline.UTC().Format(time.RFC3339Nano))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)

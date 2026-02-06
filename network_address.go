@@ -26,7 +26,7 @@ func ParseNetworkAddress(target string) NetworkAddress {
 
 	orgSlug := strings.TrimSpace(target[:idx])
 	alias := strings.TrimSpace(target[idx+1:])
-	if orgSlug == "" || alias == "" {
+	if orgSlug == "" || alias == "" || strings.ContainsRune(alias, '/') {
 		return NetworkAddress{}
 	}
 

@@ -31,6 +31,11 @@ func TestParseNetworkAddress(t *testing.T) {
 		{"/", "", "", false},
 		{"  /  ", "", "", false},
 		{" acme / researcher ", "acme", "researcher", true},
+
+		// Multiple slashes (invalid — org slugs and aliases don't contain slashes)
+		{"org//alias", "", "", false},
+		{"org/alias/extra", "", "", false},
+		{"a/b/c/d", "", "", false},
 	}
 
 	for _, tc := range tests {
