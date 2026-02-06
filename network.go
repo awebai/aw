@@ -1,0 +1,230 @@
+package aweb
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"time"
+)
+
+// --- Mail ---
+
+type NetworkMailRequest struct {
+	ToAddress string `json:"to_address"`
+	Subject   string `json:"subject,omitempty"`
+	Body      string `json:"body"`
+	Priority  string `json:"priority,omitempty"`
+	ThreadID  string `json:"thread_id,omitempty"`
+}
+
+type NetworkMailResponse struct {
+	MessageID   string `json:"message_id"`
+	Status      string `json:"status"`
+	DeliveredAt string `json:"delivered_at"`
+	FromAddress string `json:"from_address"`
+	ToAddress   string `json:"to_address"`
+}
+
+func (c *Client) NetworkSendMail(ctx context.Context, req *NetworkMailRequest) (*NetworkMailResponse, error) {
+	var out NetworkMailResponse
+	if err := c.post(ctx, "/api/v1/network/mail", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// --- Chat ---
+
+type NetworkChatCreateRequest struct {
+	ToAddresses []string `json:"to_addresses"`
+	Message     string   `json:"message"`
+	Leaving     bool     `json:"leaving,omitempty"`
+}
+
+type NetworkChatCreateResponse struct {
+	SessionID        string   `json:"session_id"`
+	MessageID        string   `json:"message_id"`
+	Participants     []string `json:"participants"`
+	SSEURL           string   `json:"sse_url"`
+	TargetsConnected []string `json:"targets_connected"`
+	TargetsLeft      []string `json:"targets_left"`
+}
+
+func (c *Client) NetworkCreateChat(ctx context.Context, req *NetworkChatCreateRequest) (*NetworkChatCreateResponse, error) {
+	var out NetworkChatCreateResponse
+	if err := c.post(ctx, "/api/v1/network/chat", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type NetworkChatSendMessageRequest struct {
+	Body   string `json:"body"`
+	HangOn bool   `json:"hang_on,omitempty"`
+}
+
+type NetworkChatSendMessageResponse struct {
+	MessageID          string `json:"message_id"`
+	Delivered          bool   `json:"delivered"`
+	ExtendsWaitSeconds int    `json:"extends_wait_seconds"`
+}
+
+func (c *Client) NetworkChatSendMessage(ctx context.Context, sessionID string, req *NetworkChatSendMessageRequest) (*NetworkChatSendMessageResponse, error) {
+	var out NetworkChatSendMessageResponse
+	if err := c.post(ctx, "/api/v1/network/chat/"+urlPathEscape(sessionID)+"/messages", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type NetworkChatMarkReadRequest struct {
+	UpToMessageID string `json:"up_to_message_id"`
+}
+
+type NetworkChatMarkReadResponse struct {
+	Success            bool `json:"success"`
+	MessagesMarked     int  `json:"messages_marked"`
+	WaitExtendedSeconds int `json:"wait_extended_seconds"`
+}
+
+func (c *Client) NetworkChatMarkRead(ctx context.Context, sessionID string, req *NetworkChatMarkReadRequest) (*NetworkChatMarkReadResponse, error) {
+	var out NetworkChatMarkReadResponse
+	if err := c.post(ctx, "/api/v1/network/chat/"+urlPathEscape(sessionID)+"/read", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type NetworkChatPendingItem struct {
+	SessionID            string   `json:"session_id"`
+	Participants         []string `json:"participants"`
+	LastMessage          string   `json:"last_message"`
+	LastFrom             string   `json:"last_from"`
+	UnreadCount          int      `json:"unread_count"`
+	LastActivity         string   `json:"last_activity"`
+	SenderWaiting        bool     `json:"sender_waiting"`
+	TimeRemainingSeconds *int     `json:"time_remaining_seconds"`
+}
+
+type NetworkChatPendingResponse struct {
+	Pending         []NetworkChatPendingItem `json:"pending"`
+	MessagesWaiting int                      `json:"messages_waiting"`
+}
+
+func (c *Client) NetworkChatPending(ctx context.Context) (*NetworkChatPendingResponse, error) {
+	var out NetworkChatPendingResponse
+	if err := c.get(ctx, "/api/v1/network/chat/pending", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// NetworkChatStream opens an SSE stream for a network chat session.
+func (c *Client) NetworkChatStream(ctx context.Context, sessionID string, deadline time.Time) (*SSEStream, error) {
+	path := "/api/v1/network/chat/" + urlPathEscape(sessionID) + "/stream?deadline=" + urlQueryEscape(deadline.UTC().Format(time.RFC3339Nano))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.sseClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		_ = resp.Body.Close()
+		return nil, &apiError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+	return NewSSEStream(resp.Body), nil
+}
+
+// --- Directory ---
+
+type NetworkDirectoryAgent struct {
+	OrgName      string   `json:"org_name"`
+	OrgSlug      string   `json:"org_slug"`
+	Alias        string   `json:"alias"`
+	Capabilities []string `json:"capabilities"`
+	Description  string   `json:"description"`
+}
+
+type NetworkDirectoryResponse struct {
+	Agents []NetworkDirectoryAgent `json:"agents"`
+	Total  int                     `json:"total"`
+}
+
+type NetworkDirectoryParams struct {
+	Capability string
+	OrgSlug    string
+	Query      string
+	Limit      int
+}
+
+func (c *Client) NetworkDirectorySearch(ctx context.Context, p NetworkDirectoryParams) (*NetworkDirectoryResponse, error) {
+	path := "/api/v1/network/directory"
+	sep := "?"
+	if p.Capability != "" {
+		path += sep + "capability=" + urlQueryEscape(p.Capability)
+		sep = "&"
+	}
+	if p.OrgSlug != "" {
+		path += sep + "org_slug=" + urlQueryEscape(p.OrgSlug)
+		sep = "&"
+	}
+	if p.Query != "" {
+		path += sep + "q=" + urlQueryEscape(p.Query)
+		sep = "&"
+	}
+	if p.Limit > 0 {
+		path += sep + "limit=" + itoa(p.Limit)
+	}
+	var out NetworkDirectoryResponse
+	if err := c.get(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) NetworkDirectoryGet(ctx context.Context, orgSlug, alias string) (*NetworkDirectoryAgent, error) {
+	var out NetworkDirectoryAgent
+	if err := c.get(ctx, "/api/v1/network/directory/"+urlPathEscape(orgSlug)+"/"+urlPathEscape(alias), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// --- Publish / Unpublish ---
+
+type NetworkPublishRequest struct {
+	AgentID      string   `json:"agent_id"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	Description  string   `json:"description,omitempty"`
+}
+
+type NetworkPublishResponse struct {
+	OrgID        string   `json:"org_id"`
+	AgentID      string   `json:"agent_id"`
+	Alias        string   `json:"alias"`
+	Capabilities []string `json:"capabilities"`
+	Description  string   `json:"description"`
+	PublishedAt  string   `json:"published_at"`
+}
+
+func (c *Client) NetworkPublishAgent(ctx context.Context, req *NetworkPublishRequest) (*NetworkPublishResponse, error) {
+	var out NetworkPublishResponse
+	if err := c.post(ctx, "/api/v1/agents/publish", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) NetworkUnpublishAgent(ctx context.Context, alias string) error {
+	return c.delete(ctx, "/api/v1/agents/"+urlPathEscape(alias)+"/publish")
+}

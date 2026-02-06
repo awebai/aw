@@ -93,6 +93,10 @@ func (c *Client) post(ctx context.Context, path string, in any, out any) error {
 	return c.do(ctx, http.MethodPost, path, in, out)
 }
 
+func (c *Client) delete(ctx context.Context, path string) error {
+	return c.do(ctx, http.MethodDelete, path, nil, nil)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, in any, out any) error {
 	resp, err := c.doRaw(ctx, method, path, "application/json", in)
 	if err != nil {
