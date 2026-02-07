@@ -126,12 +126,23 @@ func findSession(ctx context.Context, client *aweb.Client, targetAlias string) (
 		return "", false, fmt.Errorf("getting pending chats: %w", err)
 	}
 
+	var bestPendingID string
+	var bestPendingWaiting bool
+	bestPendingSize := 0
 	for _, p := range pendingResp.Pending {
 		for _, participant := range p.Participants {
 			if participant == targetAlias {
-				return p.SessionID, p.SenderWaiting, nil
+				if bestPendingSize == 0 || len(p.Participants) < bestPendingSize {
+					bestPendingID = p.SessionID
+					bestPendingWaiting = p.SenderWaiting
+					bestPendingSize = len(p.Participants)
+				}
+				break
 			}
 		}
+	}
+	if bestPendingID != "" {
+		return bestPendingID, bestPendingWaiting, nil
 	}
 
 	// Fallback to listing all sessions.
@@ -139,12 +150,21 @@ func findSession(ctx context.Context, client *aweb.Client, targetAlias string) (
 	if err != nil {
 		return "", false, fmt.Errorf("listing chat sessions: %w", err)
 	}
+	var bestSessionID string
+	bestSessionSize := 0
 	for _, s := range sessionsResp.Sessions {
 		for _, participant := range s.Participants {
 			if participant == targetAlias {
-				return s.SessionID, false, nil
+				if bestSessionSize == 0 || len(s.Participants) < bestSessionSize {
+					bestSessionID = s.SessionID
+					bestSessionSize = len(s.Participants)
+				}
+				break
 			}
 		}
+	}
+	if bestSessionID != "" {
+		return bestSessionID, false, nil
 	}
 
 	return "", false, fmt.Errorf("no conversation found with %s", targetAlias)
@@ -155,7 +175,7 @@ func findSession(ctx context.Context, client *aweb.Client, targetAlias string) (
 // Wait logic:
 //   - opts.Leaving: send with leaving=true, exit immediately
 //   - opts.Wait == 0: send, return immediately
-//   - opts.StartConversation: ignore targets_left, use 5min default wait if opts.Wait == DefaultWait
+//   - opts.StartConversation: ignore targets_left, use 5min wait unless WaitExplicit
 //   - default: send, if all targets in targets_left → skip wait; else wait opts.Wait seconds
 func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []string, message string, opts SendOptions, callback StatusCallback) (*SendResult, error) {
 	createResp, err := client.ChatCreateSession(ctx, &aweb.ChatCreateSessionRequest{
@@ -222,7 +242,7 @@ func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []st
 
 	// Determine wait timeout
 	waitSeconds := opts.Wait
-	if opts.StartConversation && waitSeconds == DefaultWait {
+	if opts.StartConversation && !opts.WaitExplicit {
 		waitSeconds = 300 // 5 minutes
 	}
 	waitTimeout := time.Duration(waitSeconds) * time.Second
@@ -348,6 +368,123 @@ func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []st
 					result.Reply = chatEvent.Body
 					return result, nil
 				}
+			}
+		}
+	}
+}
+
+// Listen waits for a message in an existing conversation without sending.
+// Returns on any message in the session (not filtered by sender).
+// Returns *SendResult for compatibility with existing formatting code.
+func Listen(ctx context.Context, client *aweb.Client, targetAlias string, waitSeconds int, callback StatusCallback) (*SendResult, error) {
+	sessionID, _, err := findSession(ctx, client, targetAlias)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &SendResult{
+		SessionID:   sessionID,
+		Status:      "sent",
+		TargetAgent: targetAlias,
+		Events:      []Event{},
+	}
+
+	waitTimeout := time.Duration(waitSeconds) * time.Second
+	waitDeadline := time.Now().Add(waitTimeout)
+
+	stream, err := client.ChatStream(ctx, sessionID, time.Now().Add(maxStreamDeadline))
+	if err != nil {
+		return nil, fmt.Errorf("connecting to SSE: %w", err)
+	}
+	events, streamCleanup := streamToChannel(ctx, stream)
+	defer streamCleanup()
+
+	waitStart := time.Now()
+	waitTimer := time.NewTimer(waitTimeout)
+	defer func() {
+		if !waitTimer.Stop() {
+			select {
+			case <-waitTimer.C:
+			default:
+			}
+		}
+	}()
+
+	extendWait := func(extendsSeconds int, reason string) {
+		if extendsSeconds <= 0 {
+			return
+		}
+		if time.Now().After(waitDeadline) {
+			waitDeadline = time.Now()
+		}
+		waitDeadline = waitDeadline.Add(time.Duration(extendsSeconds) * time.Second)
+
+		if !waitTimer.Stop() {
+			select {
+			case <-waitTimer.C:
+			default:
+			}
+		}
+		waitTimer.Reset(time.Until(waitDeadline))
+
+		if callback != nil {
+			minutes := extendsSeconds / 60
+			if minutes > 0 {
+				callback("wait_extended", fmt.Sprintf("wait extended by %d min (%s)", minutes, reason))
+			} else {
+				callback("wait_extended", fmt.Sprintf("wait extended by %ds (%s)", extendsSeconds, reason))
+			}
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-waitTimer.C:
+			result.WaitedSeconds = int(time.Since(waitStart).Seconds())
+			return result, nil
+		case sr, ok := <-events:
+			if !ok || sr.err != nil {
+				result.WaitedSeconds = int(time.Since(waitStart).Seconds())
+				return result, nil
+			}
+
+			chatEvent := parseSSEEvent(sr.event)
+			result.Events = append(result.Events, chatEvent)
+
+			if chatEvent.Type == "read_receipt" {
+				if callback != nil {
+					callback("read_receipt", fmt.Sprintf("%s opened the conversation", chatEvent.ReaderAlias))
+				}
+				if chatEvent.ExtendsWaitSeconds > 0 {
+					extendWait(chatEvent.ExtendsWaitSeconds, fmt.Sprintf("%s opened the conversation", chatEvent.ReaderAlias))
+				}
+				continue
+			}
+
+			if chatEvent.Type == "message" {
+				if chatEvent.HangOn {
+					if callback != nil {
+						callback("hang_on", fmt.Sprintf("%s: %s", chatEvent.FromAgent, chatEvent.Body))
+					}
+					if chatEvent.ExtendsWaitSeconds > 0 {
+						extendWait(chatEvent.ExtendsWaitSeconds, fmt.Sprintf("%s requested more time", chatEvent.FromAgent))
+					} else if callback != nil {
+						callback("hang_on", fmt.Sprintf("%s requested more time", chatEvent.FromAgent))
+					}
+					continue
+				}
+
+				if chatEvent.SenderLeaving {
+					result.Status = "sender_left"
+					result.Reply = chatEvent.Body
+					return result, nil
+				}
+
+				result.Status = "replied"
+				result.Reply = chatEvent.Body
+				return result, nil
 			}
 		}
 	}

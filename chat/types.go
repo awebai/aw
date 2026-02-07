@@ -78,6 +78,7 @@ type HangOnResult struct {
 // SendOptions configures message sending behavior.
 type SendOptions struct {
 	Wait              int  // Seconds to wait for reply (0 = no wait)
+	WaitExplicit      bool // true if caller explicitly set Wait
 	Leaving           bool // Sender is leaving the conversation
 	StartConversation bool // Ignore targets_left, use 5min default wait
 }

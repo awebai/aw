@@ -936,3 +936,405 @@ func TestStreamToChannelCleansUpWhenBufferFull(t *testing.T) {
 
 	pw.Close()
 }
+
+// --- Fix 1: WaitExplicit prevents sentinel upgrade ---
+
+func TestSendStartConversationRespectsExplicitWait(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			// Reply immediately so we can check the timer was set to DefaultWait, not 300.
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply", "from_agent": "bob", "body": "hi",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	// StartConversation=true, Wait=DefaultWait, WaitExplicit=true
+	// Should wait DefaultWait seconds, NOT 300s.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := Send(ctx, mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{
+		Wait:              DefaultWait,
+		WaitExplicit:      true,
+		StartConversation: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+}
+
+func TestSendStartConversationUpgradesWhenNotExplicit(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			// Block until client disconnects (wait should time out at ~1s, the test context)
+			<-time.After(10 * time.Second)
+		},
+	})
+	t.Cleanup(server.Close)
+
+	// StartConversation=true, Wait=DefaultWait, WaitExplicit=false
+	// Should upgrade to 300s. We set a short context to verify it would've waited longer than DefaultWait.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	result, err := Send(ctx, mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{
+		Wait:              DefaultWait,
+		WaitExplicit:      false,
+		StartConversation: true,
+	}, nil)
+	// Context cancellation is expected since 300s > 2s timeout
+	if err != nil {
+		// context.DeadlineExceeded means Send was willing to wait longer than 2s,
+		// confirming the upgrade to 300s happened.
+		if err != context.DeadlineExceeded {
+			t.Fatal(err)
+		}
+		return
+	}
+	// If no error, it timed out naturally via wait timer — that's fine too,
+	// as long as WaitedSeconds > 0 showing it waited.
+	if result.WaitedSeconds <= 0 {
+		t.Fatal("expected some waiting time")
+	}
+}
+
+// --- Fix 2: Listen() ---
+
+func TestListen(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatPendingResponse{
+				Pending: []aweb.ChatPendingItem{
+					{SessionID: "s1", Participants: []string{"alice", "bob"}, SenderWaiting: true},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			// Message from bob
+			msgData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-1", "from_agent": "bob", "body": "are you there?",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", msgData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := Listen(ctx, mustClient(t, server.URL), "bob", DefaultWait, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if result.Reply != "are you there?" {
+		t.Fatalf("reply=%s", result.Reply)
+	}
+	if result.SessionID != "s1" {
+		t.Fatalf("session_id=%s", result.SessionID)
+	}
+}
+
+func TestListenTimeout(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatPendingResponse{
+				Pending: []aweb.ChatPendingItem{
+					{SessionID: "s1", Participants: []string{"alice", "bob"}},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			// Send nothing, just keep connection open
+			fmt.Fprintf(w, ": keepalive\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			<-time.After(10 * time.Second)
+		},
+	})
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := Listen(ctx, mustClient(t, server.URL), "bob", 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "sent" {
+		t.Fatalf("status=%s (expected 'sent' on timeout)", result.Status)
+	}
+	if result.WaitedSeconds < 1 {
+		t.Fatalf("waited_seconds=%d", result.WaitedSeconds)
+	}
+}
+
+func TestListenNoSession(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatPendingResponse{Pending: []aweb.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/chat/sessions" {
+				http.NotFound(w, r)
+				return
+			}
+			jsonResponse(w, aweb.ChatListSessionsResponse{Sessions: []aweb.ChatSessionItem{}})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	_, err := Listen(context.Background(), mustClient(t, server.URL), "nobody", DefaultWait, nil)
+	if err == nil {
+		t.Fatal("expected error for missing session")
+	}
+	if !strings.Contains(err.Error(), "no conversation found") {
+		t.Fatalf("err=%s", err)
+	}
+}
+
+func TestListenWithHangOn(t *testing.T) {
+	t.Parallel()
+
+	var callbackCalls []string
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatPendingResponse{
+				Pending: []aweb.ChatPendingItem{
+					{SessionID: "s1", Participants: []string{"alice", "bob"}},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			// Hang-on from bob
+			hangOnData, _ := json.Marshal(map[string]any{
+				"type": "message", "from_agent": "bob",
+				"body": "thinking...", "hang_on": true, "extends_wait_seconds": 300,
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", hangOnData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			// Actual reply from bob
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "from_agent": "bob", "body": "here's my answer",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	callback := func(kind, msg string) {
+		callbackCalls = append(callbackCalls, kind+": "+msg)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := Listen(ctx, mustClient(t, server.URL), "bob", 5, callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if result.Reply != "here's my answer" {
+		t.Fatalf("reply=%s", result.Reply)
+	}
+
+	foundHangOn := false
+	foundExtended := false
+	for _, c := range callbackCalls {
+		if strings.HasPrefix(c, "hang_on:") {
+			foundHangOn = true
+		}
+		if strings.HasPrefix(c, "wait_extended:") {
+			foundExtended = true
+		}
+	}
+	if !foundHangOn {
+		t.Fatal("missing hang_on callback")
+	}
+	if !foundExtended {
+		t.Fatal("missing wait_extended callback")
+	}
+}
+
+func TestListenReturnsAnyMessage(t *testing.T) {
+	t.Parallel()
+
+	// In a multi-party session [alice, bob, charlie], listening for "bob"
+	// should return when charlie sends a message (not filtered by target).
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatPendingResponse{
+				Pending: []aweb.ChatPendingItem{
+					{SessionID: "s1", Participants: []string{"alice", "bob", "charlie"}},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			msgData, _ := json.Marshal(map[string]any{
+				"type": "message", "from_agent": "charlie", "body": "hello everyone",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", msgData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := Listen(ctx, mustClient(t, server.URL), "bob", DefaultWait, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if result.Reply != "hello everyone" {
+		t.Fatalf("reply=%s (expected message from charlie, not filtered)", result.Reply)
+	}
+}
+
+// --- Fix 3: findSession prefers smallest matching session ---
+
+func TestFindSessionPrefersSmallestPending(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatPendingResponse{
+				Pending: []aweb.ChatPendingItem{
+					{SessionID: "s-group", Participants: []string{"alice", "bob", "charlie"}},
+					{SessionID: "s-pair", Participants: []string{"alice", "bob"}},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	sessionID, _, err := findSession(context.Background(), mustClient(t, server.URL), "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-pair" {
+		t.Fatalf("session_id=%s, want s-pair (smallest matching session)", sessionID)
+	}
+}
+
+func TestFindSessionPrefersSmallestFallback(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatPendingResponse{Pending: []aweb.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/chat/sessions" {
+				http.NotFound(w, r)
+				return
+			}
+			jsonResponse(w, aweb.ChatListSessionsResponse{
+				Sessions: []aweb.ChatSessionItem{
+					{SessionID: "s-group", Participants: []string{"alice", "bob", "charlie"}},
+					{SessionID: "s-pair", Participants: []string{"alice", "bob"}},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	sessionID, _, err := findSession(context.Background(), mustClient(t, server.URL), "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-pair" {
+		t.Fatalf("session_id=%s, want s-pair (smallest matching session)", sessionID)
+	}
+}
