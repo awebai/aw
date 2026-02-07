@@ -26,6 +26,7 @@ var (
 	chatSendWait              int
 	chatSendLeaveConversation bool
 	chatSendStartConversation bool
+	chatListenWait            int
 )
 
 var chatSendCmd = &cobra.Command{
@@ -57,6 +58,7 @@ var chatSendCmd = &cobra.Command{
 		c, sel := mustResolve()
 		result, err := chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, chat.SendOptions{
 			Wait:              chatSendWait,
+			WaitExplicit:      cmd.Flags().Changed("wait"),
 			Leaving:           chatSendLeaveConversation,
 			StartConversation: chatSendStartConversation,
 		}, chatStderrCallback)
@@ -143,6 +145,26 @@ var chatHangOnCmd = &cobra.Command{
 	},
 }
 
+// chat listen
+
+var chatListenCmd = &cobra.Command{
+	Use:   "listen <alias>",
+	Short: "Wait for a message without sending",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		timeout := chat.MaxSendTimeout
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		result, err := chat.Listen(ctx, mustClient(), args[0], chatListenWait, chatStderrCallback)
+		if err != nil {
+			fatal(err)
+		}
+		printJSON(result)
+		return nil
+	},
+}
+
 // chat show-pending
 
 var chatShowPendingCmd = &cobra.Command{
@@ -167,6 +189,8 @@ func init() {
 	chatSendCmd.Flags().BoolVar(&chatSendLeaveConversation, "leave-conversation", false, "Send and leave conversation")
 	chatSendCmd.Flags().BoolVar(&chatSendStartConversation, "start-conversation", false, "Start conversation (5min default wait)")
 
-	chatCmd.AddCommand(chatSendCmd, chatPendingCmd, chatOpenCmd, chatHistoryCmd, chatHangOnCmd, chatShowPendingCmd)
+	chatListenCmd.Flags().IntVar(&chatListenWait, "wait", chat.DefaultWait, "Seconds to wait for a message (0 = no wait)")
+
+	chatCmd.AddCommand(chatSendCmd, chatPendingCmd, chatOpenCmd, chatHistoryCmd, chatHangOnCmd, chatShowPendingCmd, chatListenCmd)
 	rootCmd.AddCommand(chatCmd)
 }
