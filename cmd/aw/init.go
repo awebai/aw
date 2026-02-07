@@ -58,8 +58,16 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 }
 
+const defaultCloudURL = "https://app.claweb.ai"
+
 func runInit(cmd *cobra.Command, args []string) error {
-	baseURL, serverName, global, err := resolveBaseURLForInit(initURL, serverFlag)
+	// When --cloud is used without --url, default to the hosted cloud endpoint.
+	url := initURL
+	if initCloudMode && strings.TrimSpace(url) == "" && strings.TrimSpace(os.Getenv("AWEB_URL")) == "" {
+		url = defaultCloudURL
+	}
+
+	baseURL, serverName, global, err := resolveBaseURLForInit(url, serverFlag)
 	if err != nil {
 		fatal(err)
 	}
@@ -429,10 +437,11 @@ func shouldUseCloudBootstrapFirst(baseURL, serverName string) bool {
 	}
 
 	host := hostFromBaseURL(baseURL)
-	if host == "app.aweb.ai" {
+	if host == "app.aweb.ai" || host == "app.claweb.ai" {
 		return true
 	}
-	if strings.EqualFold(strings.TrimSpace(serverName), "app.aweb.ai") {
+	sn := strings.ToLower(strings.TrimSpace(serverName))
+	if sn == "app.aweb.ai" || sn == "app.claweb.ai" {
 		return true
 	}
 	return false

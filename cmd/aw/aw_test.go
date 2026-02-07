@@ -1617,3 +1617,63 @@ default_account: acct
 		t.Fatalf("leaving=%v", gotReq["leaving"])
 	}
 }
+
+func TestShouldUseCloudBootstrapFirst(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		baseURL    string
+		serverName string
+		want       bool
+	}{
+		{"aweb.ai URL", "https://app.aweb.ai/api/v1", "", true},
+		{"claweb.ai URL", "https://app.claweb.ai", "", true},
+		{"claweb.ai server name", "http://localhost:8000", "app.claweb.ai", true},
+		{"aweb.ai server name", "http://localhost:8000", "app.aweb.ai", true},
+		{"localhost", "http://localhost:8000", "", false},
+		{"custom server", "https://myserver.example.com", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			initCloudMode = false
+			got := shouldUseCloudBootstrapFirst(tt.baseURL, tt.serverName)
+			if got != tt.want {
+				t.Fatalf("shouldUseCloudBootstrapFirst(%q, %q) = %v, want %v", tt.baseURL, tt.serverName, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVersionCommand(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	run := exec.CommandContext(ctx, bin, "version")
+	run.Env = append(os.Environ(), "AWEB_URL=", "AWEB_API_KEY=")
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	if !strings.HasPrefix(string(out), "aw ") {
+		t.Fatalf("unexpected version output: %s", string(out))
+	}
+}
