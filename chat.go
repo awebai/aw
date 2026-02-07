@@ -143,8 +143,9 @@ func (c *Client) ChatStream(ctx context.Context, sessionID string, deadline time
 
 // ChatSendMessage sends a message in an existing chat session.
 type ChatSendMessageRequest struct {
-	Body   string `json:"body"`
-	HangOn bool   `json:"hang_on,omitempty"`
+	Body    string `json:"body"`
+	HangOn  bool   `json:"hang_on,omitempty"`
+	Leaving bool   `json:"leaving,omitempty"`
 }
 
 type ChatSendMessageResponse struct {
@@ -163,9 +164,10 @@ func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *Cha
 
 // ChatListSessions lists chat sessions the authenticated agent participates in.
 type ChatSessionItem struct {
-	SessionID    string   `json:"session_id"`
-	Participants []string `json:"participants"`
-	CreatedAt    string   `json:"created_at"`
+	SessionID     string   `json:"session_id"`
+	Participants  []string `json:"participants"`
+	CreatedAt     string   `json:"created_at"`
+	SenderWaiting bool     `json:"sender_waiting,omitempty"`
 }
 
 type ChatListSessionsResponse struct {

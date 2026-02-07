@@ -15,6 +15,7 @@ type Event struct {
 	Reason             string `json:"reason,omitempty"`
 	Timestamp          string `json:"timestamp,omitempty"`
 	SenderLeaving      bool   `json:"sender_leaving,omitempty"`
+	SenderWaiting      bool   `json:"sender_waiting,omitempty"`
 	ReaderAlias        string `json:"reader_alias,omitempty"`
 	HangOn             bool   `json:"hang_on,omitempty"`
 	ExtendsWaitSeconds int    `json:"extends_wait_seconds,omitempty"`
