@@ -31,7 +31,7 @@ aw init --url http://localhost:8000 --project-slug demo --human-name "Alice"
 AWEB_CLOUD_TOKEN=<jwt> aw init --cloud --url https://app.aweb.ai --project-slug demo --alias analyst-bot
 
 aw introspect
-aw chat send --from-agent-id ... --from-alias alice --to-alias bob --message "ping"
+aw chat send-and-wait bob "ping"
 ```
 
 ## License

@@ -218,7 +218,7 @@ default_account: acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "chat", "send", "--leave-conversation", "acme/bot", "hello network")
+	run := exec.CommandContext(ctx, bin, "chat", "send-and-leave", "acme/bot", "hello network")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()

@@ -799,7 +799,7 @@ default_account: acct
 	}
 }
 
-func TestAwChatSendPositionalArgs(t *testing.T) {
+func TestAwChatSendAndLeavePositionalArgs(t *testing.T) {
 	t.Parallel()
 
 	var gotReq map[string]any
@@ -859,7 +859,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "chat", "send", "--leave-conversation", "bob", "hello there")
+	run := exec.CommandContext(ctx, bin, "chat", "send-and-leave", "bob", "hello there")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -892,7 +892,7 @@ default_account: acct
 	}
 }
 
-func TestAwChatSendMissingArgs(t *testing.T) {
+func TestAwChatSendAndWaitMissingArgs(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -913,7 +913,7 @@ func TestAwChatSendMissingArgs(t *testing.T) {
 	}
 
 	// No positional args at all
-	run := exec.CommandContext(ctx, bin, "chat", "send")
+	run := exec.CommandContext(ctx, bin, "chat", "send-and-wait")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH=/nonexistent")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -925,7 +925,7 @@ func TestAwChatSendMissingArgs(t *testing.T) {
 	}
 }
 
-func TestAwChatSendExtraArgsRejected(t *testing.T) {
+func TestAwChatSendAndWaitExtraArgsRejected(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -945,7 +945,7 @@ func TestAwChatSendExtraArgsRejected(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "chat", "send", "bob", "hello", "extra-arg")
+	run := exec.CommandContext(ctx, bin, "chat", "send-and-wait", "bob", "hello", "extra-arg")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH=/nonexistent")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1525,7 +1525,7 @@ func TestAwInitCloudFallbackNormalizesAPIV1BaseURL(t *testing.T) {
 	}
 }
 
-func TestAwChatSendFlagsAfterPositionalArgs(t *testing.T) {
+func TestAwChatSendAndLeavePositionalArgsOrder(t *testing.T) {
 	t.Parallel()
 
 	var gotReq map[string]any
@@ -1585,8 +1585,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	// Flags AFTER positional args — the main reason for the cobra migration.
-	run := exec.CommandContext(ctx, bin, "chat", "send", "bob", "hello there", "--leave-conversation")
+	run := exec.CommandContext(ctx, bin, "chat", "send-and-leave", "bob", "hello there")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",

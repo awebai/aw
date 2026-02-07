@@ -20,18 +20,17 @@ func chatStderrCallback(kind, message string) {
 	fmt.Fprintf(os.Stderr, "[chat:%s] %s\n", kind, message)
 }
 
-// chat send
+// chat send-and-wait
 
 var (
-	chatSendWait              int
-	chatSendLeaveConversation bool
-	chatSendStartConversation bool
-	chatListenWait            int
+	chatSendAndWaitWait              int
+	chatSendAndWaitStartConversation bool
+	chatListenWait                   int
 )
 
-var chatSendCmd = &cobra.Command{
-	Use:   "send <alias> <message>",
-	Short: "Send a chat message",
+var chatSendAndWaitCmd = &cobra.Command{
+	Use:   "send-and-wait <alias> <message>",
+	Short: "Send a message and wait for a reply",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		toAlias := args[0]
@@ -46,7 +45,6 @@ var chatSendCmd = &cobra.Command{
 			resp, err := mustClient().NetworkCreateChat(ctx, &aweb.NetworkChatCreateRequest{
 				ToAddresses: []string{addr.String()},
 				Message:     message,
-				Leaving:     chatSendLeaveConversation,
 			})
 			if err != nil {
 				fatal(err)
@@ -57,10 +55,50 @@ var chatSendCmd = &cobra.Command{
 
 		c, sel := mustResolve()
 		result, err := chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, chat.SendOptions{
-			Wait:              chatSendWait,
+			Wait:              chatSendAndWaitWait,
 			WaitExplicit:      cmd.Flags().Changed("wait"),
-			Leaving:           chatSendLeaveConversation,
-			StartConversation: chatSendStartConversation,
+			StartConversation: chatSendAndWaitStartConversation,
+		}, chatStderrCallback)
+		if err != nil {
+			fatal(err)
+		}
+		printJSON(result)
+		return nil
+	},
+}
+
+// chat send-and-leave
+
+var chatSendAndLeaveCmd = &cobra.Command{
+	Use:   "send-and-leave <alias> <message>",
+	Short: "Send a message and leave the conversation",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		toAlias := args[0]
+		message := args[1]
+
+		timeout := chat.MaxSendTimeout
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		addr := aweb.ParseNetworkAddress(toAlias)
+		if addr.IsNetwork {
+			resp, err := mustClient().NetworkCreateChat(ctx, &aweb.NetworkChatCreateRequest{
+				ToAddresses: []string{addr.String()},
+				Message:     message,
+				Leaving:     true,
+			})
+			if err != nil {
+				fatal(err)
+			}
+			printJSON(resp)
+			return nil
+		}
+
+		c, sel := mustResolve()
+		result, err := chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, chat.SendOptions{
+			Wait:    0,
+			Leaving: true,
 		}, chatStderrCallback)
 		if err != nil {
 			fatal(err)
@@ -185,12 +223,11 @@ var chatShowPendingCmd = &cobra.Command{
 }
 
 func init() {
-	chatSendCmd.Flags().IntVar(&chatSendWait, "wait", chat.DefaultWait, "Seconds to wait for reply (0 = no wait)")
-	chatSendCmd.Flags().BoolVar(&chatSendLeaveConversation, "leave-conversation", false, "Send and leave conversation")
-	chatSendCmd.Flags().BoolVar(&chatSendStartConversation, "start-conversation", false, "Start conversation (5min default wait)")
+	chatSendAndWaitCmd.Flags().IntVar(&chatSendAndWaitWait, "wait", chat.DefaultWait, "Seconds to wait for reply")
+	chatSendAndWaitCmd.Flags().BoolVar(&chatSendAndWaitStartConversation, "start-conversation", false, "Start conversation (5min default wait)")
 
 	chatListenCmd.Flags().IntVar(&chatListenWait, "wait", chat.DefaultWait, "Seconds to wait for a message (0 = no wait)")
 
-	chatCmd.AddCommand(chatSendCmd, chatPendingCmd, chatOpenCmd, chatHistoryCmd, chatHangOnCmd, chatShowPendingCmd, chatListenCmd)
+	chatCmd.AddCommand(chatSendAndWaitCmd, chatSendAndLeaveCmd, chatPendingCmd, chatOpenCmd, chatHistoryCmd, chatHangOnCmd, chatShowPendingCmd, chatListenCmd)
 	rootCmd.AddCommand(chatCmd)
 }

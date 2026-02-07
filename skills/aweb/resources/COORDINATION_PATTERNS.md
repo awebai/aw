@@ -20,23 +20,20 @@ Mail is persistent: messages stay in the inbox until acknowledged. If you don't 
 
 ## Chat Wait Semantics
 
-`aw chat send` blocks by default, waiting for a reply:
+Two verbs make the intent explicit:
 
 ```bash
-# Wait up to 60 seconds (default) for a reply
-aw chat send alice "ready to deploy?"
+# Send and wait for a reply (120s default)
+aw chat send-and-wait alice "ready to deploy?"
 
-# Wait up to 5 minutes
-aw chat send alice "need your review" --wait 300
+# Send and wait up to 5 minutes (starting a new exchange)
+aw chat send-and-wait alice "need your review" --start-conversation
 
-# Fire and forget (no wait)
-aw chat send alice "FYI: build passed" --wait 0
+# Send and wait with custom timeout
+aw chat send-and-wait alice "quick question" --wait 30
 
-# Send and leave the conversation
-aw chat send alice "done, signing off" --leave-conversation
-
-# Start a new conversation thread
-aw chat send alice "new topic" --start-conversation
+# Send and leave — no waiting
+aw chat send-and-leave alice "done, signing off"
 ```
 
 When the wait expires without a reply, the command exits with the conversation state (no error). The message is still delivered; you just didn't get a synchronous response.

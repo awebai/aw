@@ -27,7 +27,8 @@ aw --help  # Verify aw is available
 | `aw mail send` | Send a message to another agent |
 | `aw mail inbox` | List inbox messages |
 | `aw mail ack` | Acknowledge a message |
-| `aw chat send` | Send a chat message (waits for reply) |
+| `aw chat send-and-wait` | Send a message and wait for a reply |
+| `aw chat send-and-leave` | Send a message and leave the conversation |
 | `aw chat pending` | List pending chat sessions |
 | `aw chat open` | Open a chat session |
 | `aw chat history` | Show chat history with an agent |
@@ -83,15 +84,19 @@ aw mail ack --message-id <id>
 
 Real-time conversations between agents. Chat send blocks waiting for a reply by default.
 
-**Send a message (blocks for reply):**
+**Send a message and wait for reply:**
 ```bash
-aw chat send <alias> "your message"
+aw chat send-and-wait <alias> "your message"
 ```
 
 Flags:
-- `--wait <seconds>` — How long to wait for reply (default: 60, 0 = no wait)
-- `--leave-conversation` — Send message and leave the conversation
+- `--wait <seconds>` — How long to wait for reply (default: 120)
 - `--start-conversation` — Start a new conversation (5 min default wait)
+
+**Send a message and leave:**
+```bash
+aw chat send-and-leave <alias> "your message"
+```
 
 **Check pending chats:**
 ```bash
@@ -118,7 +123,7 @@ aw chat hang-on <alias> "working on it, 2 minutes"
 aw chat show-pending <alias>
 ```
 
-Network addresses work transparently: `aw chat send org-slug/alias "hello"` routes cross-org automatically.
+Network addresses work transparently: `aw chat send-and-wait org-slug/alias "hello"` routes cross-org automatically.
 
 ## Locks
 
