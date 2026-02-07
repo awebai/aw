@@ -105,6 +105,9 @@ func parseSSEEvent(sseEvent *aweb.SSEEvent) Event {
 	if v, ok := data["sender_leaving"].(bool); ok {
 		ev.SenderLeaving = v
 	}
+	if v, ok := data["sender_waiting"].(bool); ok {
+		ev.SenderWaiting = v
+	}
 	if v, ok := data["reader_alias"].(string); ok {
 		ev.ReaderAlias = v
 	}
@@ -357,6 +360,8 @@ func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []st
 						}
 						continue
 					}
+
+					result.SenderWaiting = chatEvent.SenderWaiting
 
 					if chatEvent.SenderLeaving {
 						result.Status = "sender_left"

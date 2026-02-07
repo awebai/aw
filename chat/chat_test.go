@@ -1338,3 +1338,133 @@ func TestFindSessionPrefersSmallestFallback(t *testing.T) {
 		t.Fatalf("session_id=%s, want s-pair (smallest matching session)", sessionID)
 	}
 }
+
+// --- Wire protocol gaps (aw-j80 Phase A) ---
+
+func TestLeavingFieldOnChatSendMessageRequest(t *testing.T) {
+	t.Parallel()
+
+	req := &aweb.ChatSendMessageRequest{
+		Body:    "goodbye",
+		Leaving: true,
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := m["leaving"].(bool); !ok || !v {
+		t.Fatalf("leaving=%v, want true", m["leaving"])
+	}
+
+	// omitempty: absent when false
+	req2 := &aweb.ChatSendMessageRequest{Body: "hello"}
+	data2, _ := json.Marshal(req2)
+	var m2 map[string]any
+	_ = json.Unmarshal(data2, &m2)
+	if _, present := m2["leaving"]; present {
+		t.Fatal("leaving should be omitted when false")
+	}
+}
+
+func TestLeavingFieldOnNetworkChatSendMessageRequest(t *testing.T) {
+	t.Parallel()
+
+	req := &aweb.NetworkChatSendMessageRequest{
+		Body:    "goodbye",
+		Leaving: true,
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := m["leaving"].(bool); !ok || !v {
+		t.Fatalf("leaving=%v, want true", m["leaving"])
+	}
+
+	// omitempty: absent when false
+	req2 := &aweb.NetworkChatSendMessageRequest{Body: "hello"}
+	data2, _ := json.Marshal(req2)
+	var m2 map[string]any
+	_ = json.Unmarshal(data2, &m2)
+	if _, present := m2["leaving"]; present {
+		t.Fatal("leaving should be omitted when false")
+	}
+}
+
+func TestParseSSEEventSenderWaiting(t *testing.T) {
+	t.Parallel()
+
+	ev := parseSSEEvent(&aweb.SSEEvent{
+		Event: "message",
+		Data:  `{"type":"message","from_agent":"bob","body":"hello","sender_waiting":true}`,
+	})
+	if !ev.SenderWaiting {
+		t.Fatal("sender_waiting=false, want true")
+	}
+
+	// false when absent
+	ev2 := parseSSEEvent(&aweb.SSEEvent{
+		Event: "message",
+		Data:  `{"type":"message","from_agent":"bob","body":"hello"}`,
+	})
+	if ev2.SenderWaiting {
+		t.Fatal("sender_waiting=true, want false when absent")
+	}
+}
+
+func TestSendPropagatesSenderWaitingFromReply(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply", "from_agent": "bob",
+				"body": "what do you think?", "sender_waiting": true,
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if !result.SenderWaiting {
+		t.Fatal("result.SenderWaiting=false, want true from reply event")
+	}
+}
