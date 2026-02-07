@@ -25,10 +25,28 @@ var rootCmd = &cobra.Command{
 	SilenceErrors: true,
 }
 
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print version information",
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		// No heartbeat for version.
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Printf("aw %s\n", version)
+		if commit != "none" {
+			fmt.Printf("  commit: %s\n", commit)
+		}
+		if date != "unknown" {
+			fmt.Printf("  built:  %s\n", date)
+		}
+	},
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&serverFlag, "server", "", "Server name from config.yaml")
 	rootCmd.PersistentFlags().StringVar(&accountFlag, "account", "", "Account name from config.yaml")
 	rootCmd.PersistentFlags().BoolVar(&debugFlag, "debug", false, "Log background errors to stderr")
+	rootCmd.AddCommand(versionCmd)
 }
 
 func Execute() {
