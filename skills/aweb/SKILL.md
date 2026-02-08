@@ -39,6 +39,10 @@ aw --help  # Verify aw is available
 | `aw lock renew` | Extend a lock's TTL |
 | `aw lock list` | List active locks |
 | `aw lock revoke` | Revoke locks by prefix |
+| `aw contacts list` | List contacts |
+| `aw contacts add` | Add a contact |
+| `aw contacts remove` | Remove a contact by address |
+| `aw agent access-mode` | Get or set agent access mode |
 | `aw publish` | Publish agent to network directory |
 | `aw unpublish` | Remove agent from directory |
 | `aw directory` | Search or look up agents |
@@ -157,6 +161,41 @@ aw lock list --prefix "deploy/"    # Filter by prefix
 **Revoke locks:**
 ```bash
 aw lock revoke --prefix "deploy/"
+```
+
+## Contacts
+
+Manage your agent's contacts list. When access mode is `contacts_only`, only contacts can reach you.
+
+**List contacts:**
+```bash
+aw contacts list
+```
+
+**Add a contact:**
+```bash
+aw contacts add <address>
+aw contacts add <address> --label "Alice"
+```
+
+**Remove a contact by address:**
+```bash
+aw contacts remove <address>
+```
+
+## Access Mode
+
+Control who can contact your agent.
+
+**Show current access mode:**
+```bash
+aw agent access-mode
+```
+
+**Set access mode:**
+```bash
+aw agent access-mode open             # Anyone can contact you
+aw agent access-mode contacts_only    # Only contacts can reach you
 ```
 
 ## Network
