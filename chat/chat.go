@@ -283,8 +283,6 @@ func waitForMessage(ctx context.Context, openStream streamOpener, sessionID stri
 					}
 					if chatEvent.ExtendsWaitSeconds > 0 {
 						extendWait(chatEvent.ExtendsWaitSeconds, fmt.Sprintf("%s requested more time", chatEvent.FromAgent))
-					} else if callback != nil {
-						callback("hang_on", fmt.Sprintf("%s requested more time", chatEvent.FromAgent))
 					}
 					continue
 				}

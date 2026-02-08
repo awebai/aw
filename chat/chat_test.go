@@ -1239,6 +1239,77 @@ func TestListenWithHangOn(t *testing.T) {
 	}
 }
 
+func TestHangOnWithoutExtensionFiresOneCallback(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	var callbackCalls []string
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			// Hang-on without extension
+			hangOnData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-hangon", "from_agent": "bob",
+				"body": "working on it", "hang_on": true,
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", hangOnData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply", "from_agent": "bob", "body": "done",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	callback := func(kind, msg string) {
+		callbackCalls = append(callbackCalls, kind+": "+msg)
+	}
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 5}, callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+
+	// Should get exactly one hang_on callback with the body, not a redundant second one
+	hangOnCount := 0
+	for _, c := range callbackCalls {
+		if strings.HasPrefix(c, "hang_on:") {
+			hangOnCount++
+		}
+	}
+	if hangOnCount != 1 {
+		t.Fatalf("expected exactly 1 hang_on callback, got %d: %v", hangOnCount, callbackCalls)
+	}
+}
+
 func TestListenReturnsAnyMessage(t *testing.T) {
 	t.Parallel()
 
