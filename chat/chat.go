@@ -176,6 +176,135 @@ func findSession(ctx context.Context, client *aweb.Client, targetAlias string) (
 // streamOpener opens an SSE stream for a chat session.
 type streamOpener func(ctx context.Context, sessionID string, deadline time.Time) (*aweb.SSEStream, error)
 
+// messageAcceptor decides how to handle a received message event during the wait loop.
+//
+//	accept=true:  treat as the awaited reply
+//	skip=true:    silently ignore (e.g., replayed own message)
+//	both false:   unrelated message, continue waiting
+type messageAcceptor func(ev Event) (accept, skip bool)
+
+// waitForMessage opens an SSE stream and waits for a message matching the acceptor.
+// Handles read receipts, hang-on messages, and wait extensions.
+func waitForMessage(ctx context.Context, openStream streamOpener, sessionID string, waitSeconds int, callback StatusCallback, accept messageAcceptor) (*SendResult, error) {
+	result := &SendResult{
+		SessionID: sessionID,
+		Status:    "sent",
+		Events:    []Event{},
+	}
+
+	waitTimeout := time.Duration(waitSeconds) * time.Second
+	waitDeadline := time.Now().Add(waitTimeout)
+
+	// The server deadline is a safety net for orphaned connections —
+	// the local waitTimer manages actual wait semantics.
+	stream, err := openStream(ctx, sessionID, time.Now().Add(maxStreamDeadline))
+	if err != nil {
+		return nil, fmt.Errorf("connecting to SSE: %w", err)
+	}
+	events, streamCleanup := streamToChannel(ctx, stream)
+	defer streamCleanup()
+
+	waitStart := time.Now()
+	waitTimer := time.NewTimer(waitTimeout)
+	defer func() {
+		if !waitTimer.Stop() {
+			select {
+			case <-waitTimer.C:
+			default:
+			}
+		}
+	}()
+
+	extendWait := func(extendsSeconds int, reason string) {
+		if extendsSeconds <= 0 {
+			return
+		}
+		if time.Now().After(waitDeadline) {
+			waitDeadline = time.Now()
+		}
+		waitDeadline = waitDeadline.Add(time.Duration(extendsSeconds) * time.Second)
+
+		if !waitTimer.Stop() {
+			select {
+			case <-waitTimer.C:
+			default:
+			}
+		}
+		waitTimer.Reset(time.Until(waitDeadline))
+
+		if callback != nil {
+			minutes := extendsSeconds / 60
+			if minutes > 0 {
+				callback("wait_extended", fmt.Sprintf("wait extended by %d min (%s)", minutes, reason))
+			} else {
+				callback("wait_extended", fmt.Sprintf("wait extended by %ds (%s)", extendsSeconds, reason))
+			}
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-waitTimer.C:
+			result.WaitedSeconds = int(time.Since(waitStart).Seconds())
+			return result, nil
+		case sr, ok := <-events:
+			if !ok || sr.err != nil {
+				result.WaitedSeconds = int(time.Since(waitStart).Seconds())
+				return result, nil
+			}
+
+			chatEvent := parseSSEEvent(sr.event)
+			result.Events = append(result.Events, chatEvent)
+
+			if chatEvent.Type == "read_receipt" {
+				if callback != nil {
+					callback("read_receipt", fmt.Sprintf("%s opened the conversation", chatEvent.ReaderAlias))
+				}
+				if chatEvent.ExtendsWaitSeconds > 0 {
+					extendWait(chatEvent.ExtendsWaitSeconds, fmt.Sprintf("%s opened the conversation", chatEvent.ReaderAlias))
+				}
+				continue
+			}
+
+			if chatEvent.Type == "message" {
+				accepted, skip := accept(chatEvent)
+				if skip {
+					continue
+				}
+				if !accepted {
+					continue
+				}
+
+				if chatEvent.HangOn {
+					if callback != nil {
+						callback("hang_on", fmt.Sprintf("%s: %s", chatEvent.FromAgent, chatEvent.Body))
+					}
+					if chatEvent.ExtendsWaitSeconds > 0 {
+						extendWait(chatEvent.ExtendsWaitSeconds, fmt.Sprintf("%s requested more time", chatEvent.FromAgent))
+					} else if callback != nil {
+						callback("hang_on", fmt.Sprintf("%s requested more time", chatEvent.FromAgent))
+					}
+					continue
+				}
+
+				result.SenderWaiting = chatEvent.SenderWaiting
+
+				if chatEvent.SenderLeaving {
+					result.Status = "sender_left"
+					result.Reply = chatEvent.Body
+					return result, nil
+				}
+
+				result.Status = "replied"
+				result.Reply = chatEvent.Body
+				return result, nil
+			}
+		}
+	}
+}
+
 // sendResponse normalizes the response from ChatCreateSession or NetworkCreateChat.
 type sendResponse struct {
 	SessionID        string
@@ -289,251 +418,56 @@ func sendCommon(ctx context.Context, openStream streamOpener, resp sendResponse,
 	if opts.StartConversation && !opts.WaitExplicit {
 		waitSeconds = 300 // 5 minutes
 	}
-	waitTimeout := time.Duration(waitSeconds) * time.Second
 
-	// SSE stream for reply waiting. The server deadline is a safety net for
-	// orphaned connections — the local waitTimer manages actual wait semantics.
-	waitDeadline := time.Now().Add(waitTimeout)
-	stream, err := openStream(ctx, resp.SessionID, time.Now().Add(maxStreamDeadline))
-	if err != nil {
-		return nil, fmt.Errorf("connecting to SSE: %w", err)
-	}
-	events, streamCleanup := streamToChannel(ctx, stream)
-	defer streamCleanup()
-
-	// Skip replayed messages — wait until we see our own sent message.
+	// Build message acceptor: skip replays, accept only from targets.
 	sentMessageID := resp.MessageID
 	seenSentMessage := sentMessageID == ""
-
-	waitStart := time.Now()
-	waitTimer := time.NewTimer(waitTimeout)
-	defer func() {
-		if !waitTimer.Stop() {
-			select {
-			case <-waitTimer.C:
-			default:
+	acceptor := func(ev Event) (accept, skip bool) {
+		if !seenSentMessage {
+			if (ev.MessageID != "" && ev.MessageID == sentMessageID) ||
+				(ev.MessageID == "" && ev.FromAgent == myAlias && ev.Body == message) {
+				seenSentMessage = true
+			}
+			return false, true
+		}
+		for _, target := range targets {
+			if ev.FromAgent == target {
+				return true, false
 			}
 		}
-	}()
-
-	extendWait := func(extendsSeconds int, reason string) {
-		if extendsSeconds <= 0 {
-			return
-		}
-		if time.Now().After(waitDeadline) {
-			waitDeadline = time.Now()
-		}
-		waitDeadline = waitDeadline.Add(time.Duration(extendsSeconds) * time.Second)
-
-		if !waitTimer.Stop() {
-			select {
-			case <-waitTimer.C:
-			default:
-			}
-		}
-		waitTimer.Reset(time.Until(waitDeadline))
-
-		if callback != nil {
-			minutes := extendsSeconds / 60
-			if minutes > 0 {
-				callback("wait_extended", fmt.Sprintf("wait extended by %d min (%s)", minutes, reason))
-			} else {
-				callback("wait_extended", fmt.Sprintf("wait extended by %ds (%s)", extendsSeconds, reason))
-			}
-		}
+		return false, false
 	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-waitTimer.C:
-			result.WaitedSeconds = int(time.Since(waitStart).Seconds())
-			return result, nil
-		case sr, ok := <-events:
-			if !ok || sr.err != nil {
-				result.WaitedSeconds = int(time.Since(waitStart).Seconds())
-				return result, nil
-			}
-
-			chatEvent := parseSSEEvent(sr.event)
-			result.Events = append(result.Events, chatEvent)
-
-			if chatEvent.Type == "read_receipt" {
-				if callback != nil {
-					callback("read_receipt", fmt.Sprintf("%s opened the conversation", chatEvent.ReaderAlias))
-				}
-				if chatEvent.ExtendsWaitSeconds > 0 {
-					extendWait(chatEvent.ExtendsWaitSeconds, fmt.Sprintf("%s opened the conversation", chatEvent.ReaderAlias))
-				}
-				continue
-			}
-
-			if chatEvent.Type == "message" {
-				if !seenSentMessage {
-					if chatEvent.MessageID != "" && chatEvent.MessageID == sentMessageID {
-						seenSentMessage = true
-						continue
-					}
-					if chatEvent.MessageID == "" && chatEvent.FromAgent == myAlias && chatEvent.Body == message {
-						seenSentMessage = true
-						continue
-					}
-					continue
-				}
-
-				isFromTarget := false
-				for _, target := range targets {
-					if chatEvent.FromAgent == target {
-						isFromTarget = true
-						break
-					}
-				}
-				if isFromTarget {
-					if chatEvent.HangOn {
-						if callback != nil {
-							callback("hang_on", fmt.Sprintf("%s: %s", chatEvent.FromAgent, chatEvent.Body))
-						}
-						if chatEvent.ExtendsWaitSeconds > 0 {
-							extendWait(chatEvent.ExtendsWaitSeconds, fmt.Sprintf("%s requested more time", chatEvent.FromAgent))
-						} else if callback != nil {
-							callback("hang_on", fmt.Sprintf("%s requested more time", chatEvent.FromAgent))
-						}
-						continue
-					}
-
-					result.SenderWaiting = chatEvent.SenderWaiting
-
-					if chatEvent.SenderLeaving {
-						result.Status = "sender_left"
-						result.Reply = chatEvent.Body
-						return result, nil
-					}
-
-					result.Status = "replied"
-					result.Reply = chatEvent.Body
-					return result, nil
-				}
-			}
-		}
+	waitResult, err := waitForMessage(ctx, openStream, resp.SessionID, waitSeconds, callback, acceptor)
+	if err != nil {
+		return nil, err
 	}
+
+	result.Status = waitResult.Status
+	result.Reply = waitResult.Reply
+	result.Events = waitResult.Events
+	result.SenderWaiting = waitResult.SenderWaiting
+	result.WaitedSeconds = waitResult.WaitedSeconds
+	return result, nil
 }
 
 // Listen waits for a message in an existing conversation without sending.
 // Returns on any message in the session (not filtered by sender).
-// Returns *SendResult for compatibility with existing formatting code.
 func Listen(ctx context.Context, client *aweb.Client, targetAlias string, waitSeconds int, callback StatusCallback) (*SendResult, error) {
 	sessionID, _, err := findSession(ctx, client, targetAlias)
 	if err != nil {
 		return nil, err
 	}
 
-	result := &SendResult{
-		SessionID:   sessionID,
-		Status:      "sent",
-		TargetAgent: targetAlias,
-		Events:      []Event{},
-	}
+	acceptAll := func(ev Event) (bool, bool) { return true, false }
 
-	waitTimeout := time.Duration(waitSeconds) * time.Second
-	waitDeadline := time.Now().Add(waitTimeout)
-
-	stream, err := client.ChatStream(ctx, sessionID, time.Now().Add(maxStreamDeadline))
+	result, err := waitForMessage(ctx, client.ChatStream, sessionID, waitSeconds, callback, acceptAll)
 	if err != nil {
-		return nil, fmt.Errorf("connecting to SSE: %w", err)
-	}
-	events, streamCleanup := streamToChannel(ctx, stream)
-	defer streamCleanup()
-
-	waitStart := time.Now()
-	waitTimer := time.NewTimer(waitTimeout)
-	defer func() {
-		if !waitTimer.Stop() {
-			select {
-			case <-waitTimer.C:
-			default:
-			}
-		}
-	}()
-
-	extendWait := func(extendsSeconds int, reason string) {
-		if extendsSeconds <= 0 {
-			return
-		}
-		if time.Now().After(waitDeadline) {
-			waitDeadline = time.Now()
-		}
-		waitDeadline = waitDeadline.Add(time.Duration(extendsSeconds) * time.Second)
-
-		if !waitTimer.Stop() {
-			select {
-			case <-waitTimer.C:
-			default:
-			}
-		}
-		waitTimer.Reset(time.Until(waitDeadline))
-
-		if callback != nil {
-			minutes := extendsSeconds / 60
-			if minutes > 0 {
-				callback("wait_extended", fmt.Sprintf("wait extended by %d min (%s)", minutes, reason))
-			} else {
-				callback("wait_extended", fmt.Sprintf("wait extended by %ds (%s)", extendsSeconds, reason))
-			}
-		}
+		return nil, err
 	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-waitTimer.C:
-			result.WaitedSeconds = int(time.Since(waitStart).Seconds())
-			return result, nil
-		case sr, ok := <-events:
-			if !ok || sr.err != nil {
-				result.WaitedSeconds = int(time.Since(waitStart).Seconds())
-				return result, nil
-			}
-
-			chatEvent := parseSSEEvent(sr.event)
-			result.Events = append(result.Events, chatEvent)
-
-			if chatEvent.Type == "read_receipt" {
-				if callback != nil {
-					callback("read_receipt", fmt.Sprintf("%s opened the conversation", chatEvent.ReaderAlias))
-				}
-				if chatEvent.ExtendsWaitSeconds > 0 {
-					extendWait(chatEvent.ExtendsWaitSeconds, fmt.Sprintf("%s opened the conversation", chatEvent.ReaderAlias))
-				}
-				continue
-			}
-
-			if chatEvent.Type == "message" {
-				if chatEvent.HangOn {
-					if callback != nil {
-						callback("hang_on", fmt.Sprintf("%s: %s", chatEvent.FromAgent, chatEvent.Body))
-					}
-					if chatEvent.ExtendsWaitSeconds > 0 {
-						extendWait(chatEvent.ExtendsWaitSeconds, fmt.Sprintf("%s requested more time", chatEvent.FromAgent))
-					} else if callback != nil {
-						callback("hang_on", fmt.Sprintf("%s requested more time", chatEvent.FromAgent))
-					}
-					continue
-				}
-
-				if chatEvent.SenderLeaving {
-					result.Status = "sender_left"
-					result.Reply = chatEvent.Body
-					return result, nil
-				}
-
-				result.Status = "replied"
-				result.Reply = chatEvent.Body
-				return result, nil
-			}
-		}
-	}
+	result.TargetAgent = targetAlias
+	return result, nil
 }
 
 // Open fetches unread messages for a conversation and marks them as read.
