@@ -1754,3 +1754,155 @@ func TestShowPendingNetwork(t *testing.T) {
 		t.Fatal("sender_waiting=false")
 	}
 }
+
+// --- SSE after parameter and events filtering ---
+
+func TestSendPassesAfterParam(t *testing.T) {
+	t.Parallel()
+
+	var receivedAfter string
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, r *http.Request) {
+			receivedAfter = r.URL.Query().Get("after")
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply-1", "from_agent": "bob", "body": "hi back!",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	beforeSend := time.Now()
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if receivedAfter == "" {
+		t.Fatal("stream URL missing 'after' query parameter")
+	}
+	afterTime, err := time.Parse(time.RFC3339Nano, receivedAfter)
+	if err != nil {
+		t.Fatalf("invalid after timestamp: %s", receivedAfter)
+	}
+	if afterTime.Before(beforeSend.Add(-1 * time.Second)) {
+		t.Fatalf("after=%s is too old (before send at %s)", afterTime, beforeSend)
+	}
+}
+
+func TestListenNoAfterParam(t *testing.T) {
+	t.Parallel()
+
+	var receivedAfter string
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatPendingResponse{
+				Pending: []aweb.ChatPendingItem{
+					{SessionID: "s1", Participants: []string{"alice", "bob"}},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, r *http.Request) {
+			receivedAfter = r.URL.Query().Get("after")
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			msgData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-1", "from_agent": "bob", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", msgData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Listen(context.Background(), mustClient(t, server.URL), "bob", DefaultWait, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if receivedAfter != "" {
+		t.Fatalf("Listen should not pass 'after' param, got: %s", receivedAfter)
+	}
+}
+
+func TestSendSkippedEventsNotInResult(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			// Replay: old message (before our sent message — will be skipped)
+			oldData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "old-msg", "from_agent": "charlie", "body": "old stuff",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", oldData)
+
+			// Replay: our sent message (will be skipped)
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+
+			// Reply from bob (accepted)
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply-1", "from_agent": "bob", "body": "hi back!",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	// Only the reply should be in events, not the skipped replay messages
+	if len(result.Events) != 1 {
+		t.Fatalf("events count=%d, expected 1 (only the reply)", len(result.Events))
+	}
+	if result.Events[0].MessageID != "msg-reply-1" {
+		t.Fatalf("event[0].message_id=%s, expected msg-reply-1", result.Events[0].MessageID)
+	}
+}

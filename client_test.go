@@ -56,7 +56,7 @@ func TestChatStreamRequestsEventStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := c.ChatStream(context.Background(), "sess", time.Now().Add(2*time.Second))
+	stream, err := c.ChatStream(context.Background(), "sess", time.Now().Add(2*time.Second), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

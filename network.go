@@ -148,11 +148,16 @@ func (c *Client) NetworkChatPending(ctx context.Context) (*NetworkChatPendingRes
 }
 
 // NetworkChatStream opens an SSE stream for a network chat session.
-func (c *Client) NetworkChatStream(ctx context.Context, sessionID string, deadline time.Time) (*SSEStream, error) {
+// after controls replay: if non-nil, the server replays only messages created after
+// that timestamp; if nil, no replay (server polls from now).
+func (c *Client) NetworkChatStream(ctx context.Context, sessionID string, deadline time.Time, after *time.Time) (*SSEStream, error) {
 	if sessionID == "" {
 		return nil, errors.New("aweb: sessionID is required")
 	}
 	path := "/api/v1/network/chat/" + urlPathEscape(sessionID) + "/stream?deadline=" + urlQueryEscape(deadline.UTC().Format(time.RFC3339Nano))
+	if after != nil && !after.IsZero() {
+		path += "&after=" + urlQueryEscape(after.UTC().Format(time.RFC3339Nano))
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
