@@ -24,7 +24,7 @@ type Event struct {
 // SendResult is the result of sending a message and optionally waiting for a reply.
 type SendResult struct {
 	SessionID          string  `json:"session_id"`
-	Status             string  `json:"status"` // sent, replied, sender_left, pending, targets_left
+	Status             string  `json:"status"` // sent, replied, sender_left, pending, targets_left, timeout
 	TargetAgent        string  `json:"target_agent,omitempty"`
 	Reply              string  `json:"reply,omitempty"`
 	Events             []Event `json:"events"`

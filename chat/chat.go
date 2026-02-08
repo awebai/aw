@@ -188,7 +188,7 @@ type messageAcceptor func(ev Event) (accept, skip bool)
 func waitForMessage(ctx context.Context, openStream streamOpener, sessionID string, waitSeconds int, callback StatusCallback, accept messageAcceptor) (*SendResult, error) {
 	result := &SendResult{
 		SessionID: sessionID,
-		Status:    "sent",
+		Status:    "timeout",
 		Events:    []Event{},
 	}
 
@@ -441,7 +441,11 @@ func sendCommon(ctx context.Context, openStream streamOpener, resp sendResponse,
 		return nil, err
 	}
 
-	result.Status = waitResult.Status
+	if waitResult.Status == "timeout" {
+		result.Status = "sent" // backward compat: "sent" means "sent but no reply"
+	} else {
+		result.Status = waitResult.Status
+	}
 	result.Reply = waitResult.Reply
 	result.Events = waitResult.Events
 	result.SenderWaiting = waitResult.SenderWaiting

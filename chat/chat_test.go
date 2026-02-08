@@ -1130,8 +1130,8 @@ func TestListenTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "sent" {
-		t.Fatalf("status=%s (expected 'sent' on timeout)", result.Status)
+	if result.Status != "timeout" {
+		t.Fatalf("status=%s (expected 'timeout')", result.Status)
 	}
 	if result.WaitedSeconds < 1 {
 		t.Fatalf("waited_seconds=%d", result.WaitedSeconds)
