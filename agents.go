@@ -4,13 +4,14 @@ import "context"
 
 // AgentView is returned by GET /v1/agents.
 type AgentView struct {
-	AgentID   string `json:"agent_id"`
-	Alias     string `json:"alias"`
-	HumanName string `json:"human_name,omitempty"`
-	AgentType string `json:"agent_type,omitempty"`
-	Status    string `json:"status,omitempty"`
-	LastSeen  string `json:"last_seen,omitempty"`
-	Online    bool   `json:"online"`
+	AgentID    string `json:"agent_id"`
+	Alias      string `json:"alias"`
+	HumanName  string `json:"human_name,omitempty"`
+	AgentType  string `json:"agent_type,omitempty"`
+	Status     string `json:"status,omitempty"`
+	LastSeen   string `json:"last_seen,omitempty"`
+	Online     bool   `json:"online"`
+	AccessMode string `json:"access_mode,omitempty"`
 }
 
 type ListAgentsResponse struct {
@@ -21,6 +22,23 @@ type ListAgentsResponse struct {
 func (c *Client) ListAgents(ctx context.Context) (*ListAgentsResponse, error) {
 	var out ListAgentsResponse
 	if err := c.get(ctx, "/v1/agents", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type PatchAgentRequest struct {
+	AccessMode string `json:"access_mode"`
+}
+
+type PatchAgentResponse struct {
+	AgentID    string `json:"agent_id"`
+	AccessMode string `json:"access_mode"`
+}
+
+func (c *Client) PatchAgent(ctx context.Context, agentID string, req *PatchAgentRequest) (*PatchAgentResponse, error) {
+	var out PatchAgentResponse
+	if err := c.patch(ctx, "/v1/agents/"+agentID, req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

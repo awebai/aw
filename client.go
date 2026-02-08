@@ -93,6 +93,10 @@ func (c *Client) post(ctx context.Context, path string, in any, out any) error {
 	return c.do(ctx, http.MethodPost, path, in, out)
 }
 
+func (c *Client) patch(ctx context.Context, path string, in any, out any) error {
+	return c.do(ctx, http.MethodPatch, path, in, out)
+}
+
 func (c *Client) delete(ctx context.Context, path string) error {
 	return c.do(ctx, http.MethodDelete, path, nil, nil)
 }

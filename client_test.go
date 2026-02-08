@@ -317,3 +317,49 @@ func TestHTTPStatusHelpers(t *testing.T) {
 		t.Fatalf("non-api body=(%q,%v)", body, ok)
 	}
 }
+
+func TestPatchAgentAccessMode(t *testing.T) {
+	t.Parallel()
+
+	var gotMethod, gotPath, gotContentType string
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotContentType = r.Header.Get("Content-Type")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"agent_id":    "agent-1",
+			"access_mode": "open",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.PatchAgent(context.Background(), "agent-1", &PatchAgentRequest{
+		AccessMode: "open",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPatch {
+		t.Fatalf("method=%s", gotMethod)
+	}
+	if gotPath != "/v1/agents/agent-1" {
+		t.Fatalf("path=%s", gotPath)
+	}
+	if gotContentType != "application/json" {
+		t.Fatalf("content-type=%s", gotContentType)
+	}
+	if gotBody["access_mode"] != "open" {
+		t.Fatalf("access_mode=%v", gotBody["access_mode"])
+	}
+	if resp.AccessMode != "open" {
+		t.Fatalf("access_mode=%s", resp.AccessMode)
+	}
+}
