@@ -1019,35 +1019,24 @@ func TestSendStartConversationUpgradesWhenNotExplicit(t *testing.T) {
 				flusher.Flush()
 			}
 
-			// Block until client disconnects (wait should time out at ~1s, the test context)
 			<-time.After(10 * time.Second)
 		},
 	})
 	t.Cleanup(server.Close)
 
-	// StartConversation=true, Wait=DefaultWait, WaitExplicit=false
-	// Should upgrade to 300s. We set a short context to verify it would've waited longer than DefaultWait.
+	// Wait=1 with WaitExplicit=false + StartConversation=true should upgrade to 300s.
+	// Without the upgrade the wait timer would fire at 1s and return "sent".
+	// With the upgrade the wait is 300s, so the 2s context expires first.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	result, err := Send(ctx, mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{
-		Wait:              DefaultWait,
+	_, err := Send(ctx, mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{
+		Wait:              1,
 		WaitExplicit:      false,
 		StartConversation: true,
 	}, nil)
-	// Context cancellation is expected since 300s > 2s timeout
-	if err != nil {
-		// context.DeadlineExceeded means Send was willing to wait longer than 2s,
-		// confirming the upgrade to 300s happened.
-		if err != context.DeadlineExceeded {
-			t.Fatal(err)
-		}
-		return
-	}
-	// If no error, it timed out naturally via wait timer — that's fine too,
-	// as long as WaitedSeconds > 0 showing it waited.
-	if result.WaitedSeconds <= 0 {
-		t.Fatal("expected some waiting time")
+	if err != context.DeadlineExceeded {
+		t.Fatalf("expected context.DeadlineExceeded (proving wait was upgraded past 1s), got %v", err)
 	}
 }
 
