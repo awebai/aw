@@ -90,11 +90,29 @@ func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName
 		return "", "", nil, err
 	}
 
+	wd, _ := os.Getwd()
+	ctx, _, _ := awconfig.LoadWorktreeContextFromDir(wd)
+
 	baseURL = strings.TrimSpace(urlVal)
 	serverName = strings.TrimSpace(serverVal)
 
 	if baseURL == "" {
 		baseURL = strings.TrimSpace(os.Getenv("AWEB_URL"))
+	}
+	// If the user didn't specify a server/url, prefer the current worktree context
+	// (keeps "init/rotate" operations scoped to the same server as normal commands).
+	if baseURL == "" && serverName == "" && ctx != nil {
+		if v := strings.TrimSpace(ctx.DefaultAccount); v != "" {
+			if acct, ok := global.Accounts[v]; ok {
+				serverName = strings.TrimSpace(acct.Server)
+			}
+		}
+		if serverName == "" && len(ctx.ServerAccounts) == 1 {
+			for k := range ctx.ServerAccounts {
+				serverName = strings.TrimSpace(k)
+				break
+			}
+		}
 	}
 	if baseURL == "" && serverName != "" {
 		if srv, ok := global.Servers[serverName]; ok && strings.TrimSpace(srv.URL) != "" {
