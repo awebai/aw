@@ -1676,3 +1676,492 @@ func TestVersionCommand(t *testing.T) {
 		t.Fatalf("unexpected version output: %s", string(out))
 	}
 }
+
+func TestAwContactsList(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/contacts":
+			if r.Method != http.MethodGet {
+				t.Fatalf("method=%s", r.Method)
+			}
+			if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
+				t.Fatalf("auth=%q", r.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"contacts": []map[string]any{
+					{
+						"contact_id":      "ct-1",
+						"contact_address": "alice@example.com",
+						"label":           "Alice",
+						"created_at":      "2026-02-08T10:00:00Z",
+					},
+				},
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "contacts", "list")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	contacts, ok := got["contacts"].([]any)
+	if !ok || len(contacts) != 1 {
+		t.Fatalf("contacts=%v", got["contacts"])
+	}
+	first := contacts[0].(map[string]any)
+	if first["contact_address"] != "alice@example.com" {
+		t.Fatalf("contact_address=%v", first["contact_address"])
+	}
+}
+
+func TestAwContactsAdd(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/contacts":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method=%s", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"contact_id":      "ct-1",
+				"contact_address": gotBody["contact_address"],
+				"label":           gotBody["label"],
+				"created_at":      "2026-02-08T10:00:00Z",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "contacts", "add", "bob@example.com", "--label", "Bob")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["contact_id"] != "ct-1" {
+		t.Fatalf("contact_id=%v", got["contact_id"])
+	}
+	if got["contact_address"] != "bob@example.com" {
+		t.Fatalf("contact_address=%v", got["contact_address"])
+	}
+	if gotBody["contact_address"] != "bob@example.com" {
+		t.Fatalf("req contact_address=%v", gotBody["contact_address"])
+	}
+	if gotBody["label"] != "Bob" {
+		t.Fatalf("req label=%v", gotBody["label"])
+	}
+}
+
+func TestAwContactsRemove(t *testing.T) {
+	t.Parallel()
+
+	var deletePath string
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/contacts" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"contacts": []map[string]any{
+					{"contact_id": "ct-1", "contact_address": "alice@example.com", "created_at": "2026-02-08T10:00:00Z"},
+					{"contact_id": "ct-2", "contact_address": "bob@example.com", "created_at": "2026-02-08T11:00:00Z"},
+				},
+			})
+		case strings.HasPrefix(r.URL.Path, "/v1/contacts/") && r.Method == http.MethodDelete:
+			deletePath = r.URL.Path
+			_ = json.NewEncoder(w).Encode(map[string]any{"deleted": true})
+		case r.URL.Path == "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s method=%s", r.URL.Path, r.Method)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "contacts", "remove", "bob@example.com")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["deleted"] != true {
+		t.Fatalf("deleted=%v", got["deleted"])
+	}
+	if deletePath != "/v1/contacts/ct-2" {
+		t.Fatalf("delete path=%s (expected /v1/contacts/ct-2)", deletePath)
+	}
+}
+
+func TestAwContactsRemoveNotFound(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/contacts":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"contacts": []map[string]any{},
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "contacts", "remove", "nobody@example.com")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure, got: %s", string(out))
+	}
+	if !strings.Contains(string(out), "contact not found") {
+		t.Fatalf("expected 'contact not found' error, got: %s", string(out))
+	}
+}
+
+func TestAwAgentAccessModeGet(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/introspect":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-1",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
+			})
+		case "/v1/agents":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-1",
+				"agents": []map[string]any{
+					{
+						"agent_id":    "agent-1",
+						"alias":       "alice",
+						"online":      true,
+						"access_mode": "contacts_only",
+					},
+				},
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "agent", "access-mode")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["agent_id"] != "agent-1" {
+		t.Fatalf("agent_id=%v", got["agent_id"])
+	}
+	if got["access_mode"] != "contacts_only" {
+		t.Fatalf("access_mode=%v", got["access_mode"])
+	}
+}
+
+func TestAwAgentAccessModeSet(t *testing.T) {
+	t.Parallel()
+
+	var patchBody map[string]any
+	var patchPath string
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/auth/introspect":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-1",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
+			})
+		case strings.HasPrefix(r.URL.Path, "/v1/agents/") && r.Method == http.MethodPatch:
+			patchPath = r.URL.Path
+			if err := json.NewDecoder(r.Body).Decode(&patchBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"agent_id":    "agent-1",
+				"access_mode": patchBody["access_mode"],
+			})
+		case r.URL.Path == "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s method=%s", r.URL.Path, r.Method)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "agent", "access-mode", "open")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["agent_id"] != "agent-1" {
+		t.Fatalf("agent_id=%v", got["agent_id"])
+	}
+	if got["access_mode"] != "open" {
+		t.Fatalf("access_mode=%v", got["access_mode"])
+	}
+	if patchPath != "/v1/agents/agent-1" {
+		t.Fatalf("patch path=%s", patchPath)
+	}
+	if patchBody["access_mode"] != "open" {
+		t.Fatalf("patch access_mode=%v", patchBody["access_mode"])
+	}
+}
