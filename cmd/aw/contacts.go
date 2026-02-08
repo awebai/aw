@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	aweb "github.com/awebai/aw"
@@ -79,8 +78,7 @@ var contactsRemoveCmd = &cobra.Command{
 			}
 		}
 		if contactID == "" {
-			fmt.Fprintf(os.Stderr, "contact not found: %s\n", address)
-			os.Exit(1)
+			fatal(fmt.Errorf("contact not found: %s", address))
 		}
 
 		resp, err := client.DeleteContact(ctx, contactID)

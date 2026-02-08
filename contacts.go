@@ -49,7 +49,7 @@ func (c *Client) ListContacts(ctx context.Context) (*ContactListResponse, error)
 // existing delete() helper discards the response body.
 func (c *Client) DeleteContact(ctx context.Context, contactID string) (*ContactDeleteResponse, error) {
 	var out ContactDeleteResponse
-	if err := c.do(ctx, "DELETE", "/v1/contacts/"+contactID, nil, &out); err != nil {
+	if err := c.do(ctx, "DELETE", "/v1/contacts/"+urlPathEscape(contactID), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

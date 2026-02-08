@@ -3,12 +3,28 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awconfig"
 	"github.com/spf13/cobra"
 )
+
+// mustAgentID resolves the current agent's ID via introspect, falling back
+// to the configured agent_id in the selection.
+func mustAgentID(ctx context.Context, client *aweb.Client, sel *awconfig.Selection) string {
+	intro, err := client.Introspect(ctx)
+	if err != nil {
+		fatal(err)
+	}
+	if intro.AgentID == "" && sel.AgentID != "" {
+		return sel.AgentID
+	}
+	if intro.AgentID == "" {
+		fatal(fmt.Errorf("cannot determine agent_id: not an agent-scoped key"))
+	}
+	return intro.AgentID
+}
 
 var agentsCmd = &cobra.Command{
 	Use:   "agents",
@@ -40,27 +56,16 @@ var agentAccessModeCmd = &cobra.Command{
 		defer cancel()
 
 		client, sel := mustResolve()
+		agentID := mustAgentID(ctx, client, sel)
 
 		if len(args) == 0 {
-			// GET: show current access mode.
-			// Use introspect to find our agent_id, then list agents to find our entry.
-			intro, err := client.Introspect(ctx)
-			if err != nil {
-				fatal(err)
-			}
-			if intro.AgentID == "" && sel.AgentID != "" {
-				intro.AgentID = sel.AgentID
-			}
-			if intro.AgentID == "" {
-				fmt.Fprintln(os.Stderr, "cannot determine agent_id: not an agent-scoped key")
-				os.Exit(1)
-			}
+			// GET: list agents, find self, print access_mode.
 			agents, err := client.ListAgents(ctx)
 			if err != nil {
 				fatal(err)
 			}
 			for _, a := range agents.Agents {
-				if a.AgentID == intro.AgentID {
+				if a.AgentID == agentID {
 					printJSON(map[string]string{
 						"agent_id":    a.AgentID,
 						"access_mode": a.AccessMode,
@@ -68,30 +73,16 @@ var agentAccessModeCmd = &cobra.Command{
 					return nil
 				}
 			}
-			fmt.Fprintf(os.Stderr, "agent %s not found in agents list\n", intro.AgentID)
-			os.Exit(1)
+			fatal(fmt.Errorf("agent %s not found in agents list", agentID))
 		}
 
 		// SET: patch access mode.
 		mode := args[0]
 		if mode != "open" && mode != "contacts_only" {
-			fmt.Fprintf(os.Stderr, "invalid access mode: %s (must be \"open\" or \"contacts_only\")\n", mode)
-			os.Exit(1)
+			fatal(fmt.Errorf("invalid access mode: %s (must be \"open\" or \"contacts_only\")", mode))
 		}
 
-		intro, err := client.Introspect(ctx)
-		if err != nil {
-			fatal(err)
-		}
-		if intro.AgentID == "" && sel.AgentID != "" {
-			intro.AgentID = sel.AgentID
-		}
-		if intro.AgentID == "" {
-			fmt.Fprintln(os.Stderr, "cannot determine agent_id: not an agent-scoped key")
-			os.Exit(1)
-		}
-
-		resp, err := client.PatchAgent(ctx, intro.AgentID, &aweb.PatchAgentRequest{
+		resp, err := client.PatchAgent(ctx, agentID, &aweb.PatchAgentRequest{
 			AccessMode: mode,
 		})
 		if err != nil {

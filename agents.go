@@ -38,7 +38,7 @@ type PatchAgentResponse struct {
 
 func (c *Client) PatchAgent(ctx context.Context, agentID string, req *PatchAgentRequest) (*PatchAgentResponse, error) {
 	var out PatchAgentResponse
-	if err := c.patch(ctx, "/v1/agents/"+agentID, req, &out); err != nil {
+	if err := c.patch(ctx, "/v1/agents/"+urlPathEscape(agentID), req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
