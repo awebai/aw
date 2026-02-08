@@ -17,7 +17,7 @@ import (
 	aweb "github.com/awebai/aw"
 )
 
-// mockHandler dispatches requests to registered handlers by method+path.
+// mockHandler dispatches requests to registered handlers by exact method+path match.
 type mockHandler struct {
 	handlers map[string]http.HandlerFunc
 }
@@ -27,13 +27,6 @@ func (m *mockHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h, ok := m.handlers[key]; ok {
 		h(w, r)
 		return
-	}
-	// Try prefix match for parameterized paths
-	for k, h := range m.handlers {
-		if strings.HasPrefix(key, k) {
-			h(w, r)
-			return
-		}
 	}
 	http.NotFound(w, r)
 }
@@ -182,11 +175,7 @@ func TestOpenFallbackToListSessions(t *testing.T) {
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.ChatPendingResponse{Pending: []aweb.ChatPendingItem{}})
 		},
-		"GET /v1/chat/sessions": func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/v1/chat/sessions" {
-				http.NotFound(w, r)
-				return
-			}
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.ChatListSessionsResponse{
 				Sessions: []aweb.ChatSessionItem{
 					{SessionID: "s2", Participants: []string{"alice", "bob"}, CreatedAt: "2025-01-01T00:00:00Z"},
@@ -692,11 +681,7 @@ func TestFindSessionFallback(t *testing.T) {
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.ChatPendingResponse{Pending: []aweb.ChatPendingItem{}})
 		},
-		"GET /v1/chat/sessions": func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/v1/chat/sessions" {
-				http.NotFound(w, r)
-				return
-			}
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.ChatListSessionsResponse{
 				Sessions: []aweb.ChatSessionItem{
 					{SessionID: "s-fallback", Participants: []string{"alice", "bob"}},
@@ -725,11 +710,7 @@ func TestFindSessionNotFound(t *testing.T) {
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.ChatPendingResponse{Pending: []aweb.ChatPendingItem{}})
 		},
-		"GET /v1/chat/sessions": func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/v1/chat/sessions" {
-				http.NotFound(w, r)
-				return
-			}
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.ChatListSessionsResponse{Sessions: []aweb.ChatSessionItem{}})
 		},
 	})
@@ -1134,11 +1115,7 @@ func TestListenNoSession(t *testing.T) {
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.ChatPendingResponse{Pending: []aweb.ChatPendingItem{}})
 		},
-		"GET /v1/chat/sessions": func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/v1/chat/sessions" {
-				http.NotFound(w, r)
-				return
-			}
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.ChatListSessionsResponse{Sessions: []aweb.ChatSessionItem{}})
 		},
 	})
@@ -1375,11 +1352,7 @@ func TestFindSessionPrefersSmallestFallback(t *testing.T) {
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.ChatPendingResponse{Pending: []aweb.ChatPendingItem{}})
 		},
-		"GET /v1/chat/sessions": func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/v1/chat/sessions" {
-				http.NotFound(w, r)
-				return
-			}
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.ChatListSessionsResponse{
 				Sessions: []aweb.ChatSessionItem{
 					{SessionID: "s-group", Participants: []string{"alice", "bob", "charlie"}},
