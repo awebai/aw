@@ -143,9 +143,8 @@ func (c *Client) ChatStream(ctx context.Context, sessionID string, deadline time
 
 // ChatSendMessage sends a message in an existing chat session.
 type ChatSendMessageRequest struct {
-	Body    string `json:"body"`
-	HangOn  bool   `json:"hang_on,omitempty"`
-	Leaving bool   `json:"leaving,omitempty"`
+	Body   string `json:"body"`
+	HangOn bool   `json:"hang_on,omitempty"`
 }
 
 type ChatSendMessageResponse struct {

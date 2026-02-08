@@ -1372,66 +1372,6 @@ func TestFindSessionPrefersSmallestFallback(t *testing.T) {
 	}
 }
 
-// --- Wire protocol gaps (aw-j80 Phase A) ---
-
-func TestLeavingFieldOnChatSendMessageRequest(t *testing.T) {
-	t.Parallel()
-
-	req := &aweb.ChatSendMessageRequest{
-		Body:    "goodbye",
-		Leaving: true,
-	}
-	data, err := json.Marshal(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatal(err)
-	}
-	if v, ok := m["leaving"].(bool); !ok || !v {
-		t.Fatalf("leaving=%v, want true", m["leaving"])
-	}
-
-	// omitempty: absent when false
-	req2 := &aweb.ChatSendMessageRequest{Body: "hello"}
-	data2, _ := json.Marshal(req2)
-	var m2 map[string]any
-	_ = json.Unmarshal(data2, &m2)
-	if _, present := m2["leaving"]; present {
-		t.Fatal("leaving should be omitted when false")
-	}
-}
-
-func TestLeavingFieldOnNetworkChatSendMessageRequest(t *testing.T) {
-	t.Parallel()
-
-	req := &aweb.NetworkChatSendMessageRequest{
-		Body:    "goodbye",
-		Leaving: true,
-	}
-	data, err := json.Marshal(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatal(err)
-	}
-	if v, ok := m["leaving"].(bool); !ok || !v {
-		t.Fatalf("leaving=%v, want true", m["leaving"])
-	}
-
-	// omitempty: absent when false
-	req2 := &aweb.NetworkChatSendMessageRequest{Body: "hello"}
-	data2, _ := json.Marshal(req2)
-	var m2 map[string]any
-	_ = json.Unmarshal(data2, &m2)
-	if _, present := m2["leaving"]; present {
-		t.Fatal("leaving should be omitted when false")
-	}
-}
-
 func TestParseSSEEventSenderWaiting(t *testing.T) {
 	t.Parallel()
 
