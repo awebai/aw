@@ -60,8 +60,8 @@ func (c *Client) NetworkCreateChat(ctx context.Context, req *NetworkChatCreateRe
 }
 
 type NetworkChatSendMessageRequest struct {
-	Body   string `json:"body"`
-	HangOn bool   `json:"hang_on,omitempty"`
+	Body       string `json:"body"`
+	ExtendWait bool   `json:"hang_on,omitempty"`
 }
 
 type NetworkChatSendMessageResponse struct {

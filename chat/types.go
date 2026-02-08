@@ -17,7 +17,7 @@ type Event struct {
 	SenderLeaving      bool   `json:"sender_leaving,omitempty"`
 	SenderWaiting      bool   `json:"sender_waiting,omitempty"`
 	ReaderAlias        string `json:"reader_alias,omitempty"`
-	HangOn             bool   `json:"hang_on,omitempty"`
+	ExtendWait         bool   `json:"hang_on,omitempty"`
 	ExtendsWaitSeconds int    `json:"extends_wait_seconds,omitempty"`
 }
 
@@ -68,8 +68,8 @@ type PendingConversation struct {
 	TimeRemainingSeconds *int     `json:"time_remaining_seconds"`
 }
 
-// HangOnResult is the result of a hang-on acknowledgment.
-type HangOnResult struct {
+// ExtendWaitResult is the result of an extend-wait acknowledgment.
+type ExtendWaitResult struct {
 	SessionID          string `json:"session_id"`
 	TargetAgent        string `json:"target_agent"`
 	Message            string `json:"message"`
@@ -85,5 +85,5 @@ type SendOptions struct {
 }
 
 // StatusCallback receives protocol status updates.
-// kind is one of: "read_receipt", "hang_on", "wait_extended".
+// kind is one of: "read_receipt", "extend_wait", "wait_extended".
 type StatusCallback func(kind string, message string)

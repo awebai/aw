@@ -79,7 +79,7 @@ func TestPending(t *testing.T) {
 	}
 }
 
-func TestHangOn(t *testing.T) {
+func TestExtendWait(t *testing.T) {
 	t.Parallel()
 
 	server := newMockServer(map[string]http.HandlerFunc{
@@ -93,8 +93,8 @@ func TestHangOn(t *testing.T) {
 		"POST /v1/chat/sessions/s1/messages": func(w http.ResponseWriter, r *http.Request) {
 			var req aweb.ChatSendMessageRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			if !req.HangOn {
-				t.Error("expected hang_on=true")
+			if !req.ExtendWait {
+				t.Error("expected extend_wait=true")
 			}
 			jsonResponse(w, aweb.ChatSendMessageResponse{
 				MessageID:          "msg-1",
@@ -105,7 +105,7 @@ func TestHangOn(t *testing.T) {
 	})
 	t.Cleanup(server.Close)
 
-	result, err := HangOn(context.Background(), mustClient(t, server.URL), "bob", "thinking...")
+	result, err := ExtendWait(context.Background(), mustClient(t, server.URL), "bob", "thinking...")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,7 @@ func TestSendWithTimeout(t *testing.T) {
 	}
 }
 
-func TestSendWithHangOnReceived(t *testing.T) {
+func TestSendWithExtendWaitReceived(t *testing.T) {
 	t.Parallel()
 
 	sentMsgID := "msg-sent-1"
@@ -460,7 +460,7 @@ func TestSendWithHangOnReceived(t *testing.T) {
 				flusher.Flush()
 			}
 
-			// Bob sends hang-on
+			// Bob sends extend-wait
 			hangOnData, _ := json.Marshal(map[string]any{
 				"type": "message", "message_id": "msg-hangon", "from_agent": "bob",
 				"body": "thinking...", "hang_on": true, "extends_wait_seconds": 300,
@@ -497,19 +497,19 @@ func TestSendWithHangOnReceived(t *testing.T) {
 		t.Fatalf("reply=%s", result.Reply)
 	}
 
-	// Verify callbacks were called for hang_on and wait_extended
-	foundHangOn := false
+	// Verify callbacks were called for extend_wait and wait_extended
+	foundExtendWait := false
 	foundExtended := false
 	for _, c := range callbackCalls {
-		if strings.HasPrefix(c, "hang_on:") {
-			foundHangOn = true
+		if strings.HasPrefix(c, "extend_wait:") {
+			foundExtendWait = true
 		}
 		if strings.HasPrefix(c, "wait_extended:") {
 			foundExtended = true
 		}
 	}
-	if !foundHangOn {
-		t.Fatal("missing hang_on callback")
+	if !foundExtendWait {
+		t.Fatal("missing extend_wait callback")
 	}
 	if !foundExtended {
 		t.Fatal("missing wait_extended callback")
@@ -770,14 +770,14 @@ func TestParseSSEEvent(t *testing.T) {
 			},
 		},
 		{
-			name: "hang on event",
+			name: "extend wait event",
 			event: aweb.SSEEvent{
 				Event: "message",
 				Data:  `{"type":"message","from_agent":"bob","body":"thinking...","hang_on":true,"extends_wait_seconds":300}`,
 			},
 			check: func(t *testing.T, ev Event) {
-				if !ev.HangOn {
-					t.Fatal("hang_on=false")
+				if !ev.ExtendWait {
+					t.Fatal("extend_wait=false")
 				}
 				if ev.ExtendsWaitSeconds != 300 {
 					t.Fatalf("extends_wait_seconds=%d", ev.ExtendsWaitSeconds)
@@ -1130,7 +1130,7 @@ func TestListenNoSession(t *testing.T) {
 	}
 }
 
-func TestListenWithHangOn(t *testing.T) {
+func TestListenWithExtendWait(t *testing.T) {
 	t.Parallel()
 
 	var callbackCalls []string
@@ -1147,7 +1147,7 @@ func TestListenWithHangOn(t *testing.T) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			flusher, _ := w.(http.Flusher)
 
-			// Hang-on from bob
+			// Extend-wait from bob
 			hangOnData, _ := json.Marshal(map[string]any{
 				"type": "message", "from_agent": "bob",
 				"body": "thinking...", "hang_on": true, "extends_wait_seconds": 300,
@@ -1187,25 +1187,25 @@ func TestListenWithHangOn(t *testing.T) {
 		t.Fatalf("reply=%s", result.Reply)
 	}
 
-	foundHangOn := false
+	foundExtendWait := false
 	foundExtended := false
 	for _, c := range callbackCalls {
-		if strings.HasPrefix(c, "hang_on:") {
-			foundHangOn = true
+		if strings.HasPrefix(c, "extend_wait:") {
+			foundExtendWait = true
 		}
 		if strings.HasPrefix(c, "wait_extended:") {
 			foundExtended = true
 		}
 	}
-	if !foundHangOn {
-		t.Fatal("missing hang_on callback")
+	if !foundExtendWait {
+		t.Fatal("missing extend_wait callback")
 	}
 	if !foundExtended {
 		t.Fatal("missing wait_extended callback")
 	}
 }
 
-func TestHangOnWithoutExtensionFiresOneCallback(t *testing.T) {
+func TestExtendWaitWithoutExtensionFiresOneCallback(t *testing.T) {
 	t.Parallel()
 
 	sentMsgID := "msg-sent-1"
@@ -1231,7 +1231,7 @@ func TestHangOnWithoutExtensionFiresOneCallback(t *testing.T) {
 				flusher.Flush()
 			}
 
-			// Hang-on without extension
+			// Extend-wait without extension
 			hangOnData, _ := json.Marshal(map[string]any{
 				"type": "message", "message_id": "msg-hangon", "from_agent": "bob",
 				"body": "working on it", "hang_on": true,
@@ -1264,15 +1264,15 @@ func TestHangOnWithoutExtensionFiresOneCallback(t *testing.T) {
 		t.Fatalf("status=%s", result.Status)
 	}
 
-	// Should get exactly one hang_on callback with the body, not a redundant second one
-	hangOnCount := 0
+	// Should get exactly one extend_wait callback with the body, not a redundant second one
+	extendWaitCount := 0
 	for _, c := range callbackCalls {
-		if strings.HasPrefix(c, "hang_on:") {
-			hangOnCount++
+		if strings.HasPrefix(c, "extend_wait:") {
+			extendWaitCount++
 		}
 	}
-	if hangOnCount != 1 {
-		t.Fatalf("expected exactly 1 hang_on callback, got %d: %v", hangOnCount, callbackCalls)
+	if extendWaitCount != 1 {
+		t.Fatalf("expected exactly 1 extend_wait callback, got %d: %v", extendWaitCount, callbackCalls)
 	}
 }
 
@@ -1690,7 +1690,7 @@ func TestHistoryNetwork(t *testing.T) {
 	}
 }
 
-func TestHangOnNetwork(t *testing.T) {
+func TestExtendWaitNetwork(t *testing.T) {
 	t.Parallel()
 
 	server := newMockServer(map[string]http.HandlerFunc{
@@ -1704,8 +1704,8 @@ func TestHangOnNetwork(t *testing.T) {
 		"POST /api/v1/network/chat/ns1/messages": func(w http.ResponseWriter, r *http.Request) {
 			var req aweb.NetworkChatSendMessageRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			if !req.HangOn {
-				t.Error("expected hang_on=true")
+			if !req.ExtendWait {
+				t.Error("expected extend_wait=true")
 			}
 			jsonResponse(w, aweb.NetworkChatSendMessageResponse{
 				MessageID: "msg-1", Delivered: true, ExtendsWaitSeconds: 300,
@@ -1714,7 +1714,7 @@ func TestHangOnNetwork(t *testing.T) {
 	})
 	t.Cleanup(server.Close)
 
-	result, err := HangOnNetwork(context.Background(), mustClient(t, server.URL), "acme/bot", "thinking...")
+	result, err := ExtendWaitNetwork(context.Background(), mustClient(t, server.URL), "acme/bot", "thinking...")
 	if err != nil {
 		t.Fatal(err)
 	}

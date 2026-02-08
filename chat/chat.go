@@ -1,5 +1,5 @@
 // ABOUTME: Chat protocol functions composing low-level aweb-go client methods.
-// ABOUTME: Provides Send, Open, History, Pending, HangOn, and ShowPending.
+// ABOUTME: Provides Send, Open, History, Pending, ExtendWait, and ShowPending.
 
 package chat
 
@@ -112,7 +112,7 @@ func parseSSEEvent(sseEvent *aweb.SSEEvent) Event {
 		ev.ReaderAlias = v
 	}
 	if v, ok := data["hang_on"].(bool); ok {
-		ev.HangOn = v
+		ev.ExtendWait = v
 	}
 	if v, ok := data["extends_wait_seconds"].(float64); ok {
 		ev.ExtendsWaitSeconds = int(v)
@@ -231,7 +231,7 @@ type streamOpener func(ctx context.Context, sessionID string, deadline time.Time
 type messageAcceptor func(ev Event) (accept, skip bool)
 
 // waitForMessage opens an SSE stream and waits for a message matching the acceptor.
-// Handles read receipts, hang-on messages, and wait extensions.
+// Handles read receipts, extend-wait messages, and wait extensions.
 // after controls SSE replay: non-nil replays messages after that timestamp; nil skips replay.
 func waitForMessage(ctx context.Context, openStream streamOpener, sessionID string, waitSeconds int, after *time.Time, callback StatusCallback, accept messageAcceptor) (*SendResult, error) {
 	result := &SendResult{
@@ -328,9 +328,9 @@ func waitForMessage(ctx context.Context, openStream streamOpener, sessionID stri
 					continue
 				}
 
-				if chatEvent.HangOn {
+				if chatEvent.ExtendWait {
 					if callback != nil {
-						callback("hang_on", fmt.Sprintf("%s: %s", chatEvent.FromAgent, chatEvent.Body))
+						callback("extend_wait", fmt.Sprintf("%s: %s", chatEvent.FromAgent, chatEvent.Body))
 					}
 					if chatEvent.ExtendsWaitSeconds > 0 {
 						extendWait(chatEvent.ExtendsWaitSeconds, fmt.Sprintf("%s requested more time", chatEvent.FromAgent))
@@ -613,22 +613,22 @@ func Pending(ctx context.Context, client *aweb.Client) (*PendingResult, error) {
 	return result, nil
 }
 
-// HangOn sends a hang-on message requesting more time to reply.
-func HangOn(ctx context.Context, client *aweb.Client, targetAlias string, message string) (*HangOnResult, error) {
+// ExtendWait sends an extend-wait message requesting more time to reply.
+func ExtendWait(ctx context.Context, client *aweb.Client, targetAlias string, message string) (*ExtendWaitResult, error) {
 	sessionID, _, err := findSession(ctx, client, targetAlias)
 	if err != nil {
 		return nil, err
 	}
 
 	msgResp, err := client.ChatSendMessage(ctx, sessionID, &aweb.ChatSendMessageRequest{
-		Body:   message,
-		HangOn: true,
+		Body:       message,
+		ExtendWait: true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("sending hang-on message: %w", err)
+		return nil, fmt.Errorf("sending extend-wait message: %w", err)
 	}
 
-	return &HangOnResult{
+	return &ExtendWaitResult{
 		SessionID:          sessionID,
 		TargetAgent:        targetAlias,
 		Message:            message,
@@ -750,22 +750,22 @@ func HistoryNetwork(ctx context.Context, client *aweb.Client, targetAddress stri
 	}, nil
 }
 
-// HangOnNetwork sends a hang-on message in a network conversation.
-func HangOnNetwork(ctx context.Context, client *aweb.Client, targetAddress string, message string) (*HangOnResult, error) {
+// ExtendWaitNetwork sends an extend-wait message in a network conversation.
+func ExtendWaitNetwork(ctx context.Context, client *aweb.Client, targetAddress string, message string) (*ExtendWaitResult, error) {
 	sessionID, _, err := findNetworkSession(ctx, client, targetAddress)
 	if err != nil {
 		return nil, err
 	}
 
 	msgResp, err := client.NetworkChatSendMessage(ctx, sessionID, &aweb.NetworkChatSendMessageRequest{
-		Body:   message,
-		HangOn: true,
+		Body:       message,
+		ExtendWait: true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("sending hang-on message: %w", err)
+		return nil, fmt.Errorf("sending extend-wait message: %w", err)
 	}
 
-	return &HangOnResult{
+	return &ExtendWaitResult{
 		SessionID:          sessionID,
 		TargetAgent:        targetAddress,
 		Message:            message,

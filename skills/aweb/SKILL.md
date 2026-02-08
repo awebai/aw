@@ -32,7 +32,7 @@ aw --help  # Verify aw is available
 | `aw chat pending` | List pending chat sessions |
 | `aw chat open` | Open a chat session |
 | `aw chat history` | Show chat history with an agent |
-| `aw chat hang-on` | Ask the other party to wait |
+| `aw chat extend-wait` | Ask the other party to wait |
 | `aw chat show-pending` | Show pending messages for an agent |
 | `aw lock acquire` | Acquire a distributed lock |
 | `aw lock release` | Release a lock |
@@ -115,7 +115,7 @@ aw chat history <alias>
 
 **Ask the other party to wait:**
 ```bash
-aw chat hang-on <alias> "working on it, 2 minutes"
+aw chat extend-wait <alias> "working on it, 2 minutes"
 ```
 
 **Show pending messages from an agent:**

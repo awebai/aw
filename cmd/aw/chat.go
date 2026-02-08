@@ -46,12 +46,12 @@ func chatHistory(ctx context.Context, alias string) (*chat.HistoryResult, error)
 	return chat.History(ctx, mustClient(), alias)
 }
 
-func chatHangOn(ctx context.Context, alias, message string) (*chat.HangOnResult, error) {
+func chatExtendWait(ctx context.Context, alias, message string) (*chat.ExtendWaitResult, error) {
 	addr := aweb.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.HangOnNetwork(ctx, mustClient(), addr.String(), message)
+		return chat.ExtendWaitNetwork(ctx, mustClient(), addr.String(), message)
 	}
-	return chat.HangOn(ctx, mustClient(), alias, message)
+	return chat.ExtendWait(ctx, mustClient(), alias, message)
 }
 
 func chatListen(ctx context.Context, alias string, waitSeconds int) (*chat.SendResult, error) {
@@ -177,17 +177,17 @@ var chatHistoryCmd = &cobra.Command{
 	},
 }
 
-// chat hang-on
+// chat extend-wait
 
-var chatHangOnCmd = &cobra.Command{
-	Use:   "hang-on <alias> <message>",
-	Short: "Send a hang-on message",
+var chatExtendWaitCmd = &cobra.Command{
+	Use:   "extend-wait <alias> <message>",
+	Short: "Ask the other party to wait longer",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		result, err := chatHangOn(ctx, args[0], args[1])
+		result, err := chatExtendWait(ctx, args[0], args[1])
 		if err != nil {
 			fatal(err)
 		}
@@ -241,6 +241,6 @@ func init() {
 
 	chatListenCmd.Flags().IntVar(&chatListenWait, "wait", chat.DefaultWait, "Seconds to wait for a message (0 = no wait)")
 
-	chatCmd.AddCommand(chatSendAndWaitCmd, chatSendAndLeaveCmd, chatPendingCmd, chatOpenCmd, chatHistoryCmd, chatHangOnCmd, chatShowPendingCmd, chatListenCmd)
+	chatCmd.AddCommand(chatSendAndWaitCmd, chatSendAndLeaveCmd, chatPendingCmd, chatOpenCmd, chatHistoryCmd, chatExtendWaitCmd, chatShowPendingCmd, chatListenCmd)
 	rootCmd.AddCommand(chatCmd)
 }

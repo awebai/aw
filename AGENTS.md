@@ -60,7 +60,7 @@ Use `bdh :help` for bdh-specific help.
 
 ## Rules
 
-- Default to mail (`bdh :aweb mail list|open|send`) for coordination; use chat (`bdh :aweb chat pending|open|send|history|hang-on`) when you need a conversation with another agent.
+- Default to mail (`bdh :aweb mail list|open|send`) for coordination; use chat (`bdh :aweb chat pending|open|send|history|extend-wait`) when you need a conversation with another agent.
 - Respond immediately to WAITING notifications — someone is blocked.
 - Notifications are for YOU, the agent, not for the human.
 - Don't overwrite other agents' work without coordinating first.

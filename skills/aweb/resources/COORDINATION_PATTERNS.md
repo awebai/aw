@@ -43,7 +43,7 @@ When the wait expires without a reply, the command exits with the conversation s
 If you receive a chat but need time to respond:
 
 ```bash
-aw chat hang-on alice "checking the logs, 2 minutes"
+aw chat extend-wait alice "checking the logs, 2 minutes"
 ```
 
 This sends a signal that you're engaged but not ready to reply yet.

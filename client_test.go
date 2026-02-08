@@ -119,7 +119,7 @@ func TestChatSendMessage(t *testing.T) {
 	}
 }
 
-func TestChatSendMessageHangOn(t *testing.T) {
+func TestChatSendMessageExtendWait(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -127,8 +127,8 @@ func TestChatSendMessageHangOn(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		if !body.HangOn {
-			t.Fatal("expected hang_on=true")
+		if !body.ExtendWait {
+			t.Fatal("expected extend_wait=true")
 		}
 		_ = json.NewEncoder(w).Encode(ChatSendMessageResponse{
 			MessageID:          "msg-2",
@@ -143,8 +143,8 @@ func TestChatSendMessageHangOn(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp, err := c.ChatSendMessage(context.Background(), "test-session", &ChatSendMessageRequest{
-		Body:   "thinking...",
-		HangOn: true,
+		Body:       "thinking...",
+		ExtendWait: true,
 	})
 	if err != nil {
 		t.Fatal(err)
