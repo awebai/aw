@@ -173,6 +173,17 @@ func findSession(ctx context.Context, client *aweb.Client, targetAlias string) (
 	return "", false, fmt.Errorf("no conversation found with %s", targetAlias)
 }
 
+// streamOpener opens an SSE stream for a chat session.
+type streamOpener func(ctx context.Context, sessionID string, deadline time.Time) (*aweb.SSEStream, error)
+
+// sendResponse normalizes the response from ChatCreateSession or NetworkCreateChat.
+type sendResponse struct {
+	SessionID        string
+	MessageID        string
+	TargetsConnected []string
+	TargetsLeft      []string
+}
+
 // Send sends a message to target agents and optionally waits for a reply.
 //
 // Wait logic:
@@ -190,8 +201,38 @@ func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []st
 		return nil, fmt.Errorf("sending message: %w", err)
 	}
 
+	return sendCommon(ctx, client.ChatStream, sendResponse{
+		SessionID:        createResp.SessionID,
+		MessageID:        createResp.MessageID,
+		TargetsConnected: createResp.TargetsConnected,
+		TargetsLeft:      createResp.TargetsLeft,
+	}, myAlias, targets, message, opts, callback)
+}
+
+// SendNetwork sends a message via the network (cross-org) endpoint and optionally waits for a reply.
+// Uses the same wait semantics as Send but routes through /api/v1/network/chat.
+func SendNetwork(ctx context.Context, client *aweb.Client, myAlias string, targets []string, message string, opts SendOptions, callback StatusCallback) (*SendResult, error) {
+	createResp, err := client.NetworkCreateChat(ctx, &aweb.NetworkChatCreateRequest{
+		ToAddresses: targets,
+		Message:     message,
+		Leaving:     opts.Leaving,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sending network message: %w", err)
+	}
+
+	return sendCommon(ctx, client.NetworkChatStream, sendResponse{
+		SessionID:        createResp.SessionID,
+		MessageID:        createResp.MessageID,
+		TargetsConnected: createResp.TargetsConnected,
+		TargetsLeft:      createResp.TargetsLeft,
+	}, myAlias, targets, message, opts, callback)
+}
+
+// sendCommon handles the post-send wait logic shared by Send and SendNetwork.
+func sendCommon(ctx context.Context, openStream streamOpener, resp sendResponse, myAlias string, targets []string, message string, opts SendOptions, callback StatusCallback) (*SendResult, error) {
 	result := &SendResult{
-		SessionID:   createResp.SessionID,
+		SessionID:   resp.SessionID,
 		Status:      "sent",
 		TargetAgent: strings.Join(targets, ", "),
 		Events:      []Event{},
@@ -207,7 +248,7 @@ func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []st
 
 	// Check if any target has left
 	targetHasLeft := false
-	for _, leftAlias := range createResp.TargetsLeft {
+	for _, leftAlias := range resp.TargetsLeft {
 		for _, target := range targets {
 			if leftAlias == target {
 				targetHasLeft = true
@@ -228,7 +269,7 @@ func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []st
 	allTargetsConnected := true
 	for _, target := range targets {
 		found := false
-		for _, alias := range createResp.TargetsConnected {
+		for _, alias := range resp.TargetsConnected {
 			if alias == target {
 				found = true
 				break
@@ -253,7 +294,7 @@ func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []st
 	// SSE stream for reply waiting. The server deadline is a safety net for
 	// orphaned connections — the local waitTimer manages actual wait semantics.
 	waitDeadline := time.Now().Add(waitTimeout)
-	stream, err := client.ChatStream(ctx, createResp.SessionID, time.Now().Add(maxStreamDeadline))
+	stream, err := openStream(ctx, resp.SessionID, time.Now().Add(maxStreamDeadline))
 	if err != nil {
 		return nil, fmt.Errorf("connecting to SSE: %w", err)
 	}
@@ -261,7 +302,7 @@ func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []st
 	defer streamCleanup()
 
 	// Skip replayed messages — wait until we see our own sent message.
-	sentMessageID := createResp.MessageID
+	sentMessageID := resp.MessageID
 	seenSentMessage := sentMessageID == ""
 
 	waitStart := time.Now()

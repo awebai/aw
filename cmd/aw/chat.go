@@ -40,25 +40,21 @@ var chatSendAndWaitCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
-		addr := aweb.ParseNetworkAddress(toAlias)
-		if addr.IsNetwork {
-			resp, err := mustClient().NetworkCreateChat(ctx, &aweb.NetworkChatCreateRequest{
-				ToAddresses: []string{addr.String()},
-				Message:     message,
-			})
-			if err != nil {
-				fatal(err)
-			}
-			printJSON(resp)
-			return nil
-		}
-
 		c, sel := mustResolve()
-		result, err := chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, chat.SendOptions{
+		opts := chat.SendOptions{
 			Wait:              chatSendAndWaitWait,
 			WaitExplicit:      cmd.Flags().Changed("wait"),
 			StartConversation: chatSendAndWaitStartConversation,
-		}, chatStderrCallback)
+		}
+
+		var result *chat.SendResult
+		var err error
+		addr := aweb.ParseNetworkAddress(toAlias)
+		if addr.IsNetwork {
+			result, err = chat.SendNetwork(ctx, c, sel.AgentAlias, []string{addr.String()}, message, opts, chatStderrCallback)
+		} else {
+			result, err = chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, opts, chatStderrCallback)
+		}
 		if err != nil {
 			fatal(err)
 		}
@@ -81,25 +77,20 @@ var chatSendAndLeaveCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
-		addr := aweb.ParseNetworkAddress(toAlias)
-		if addr.IsNetwork {
-			resp, err := mustClient().NetworkCreateChat(ctx, &aweb.NetworkChatCreateRequest{
-				ToAddresses: []string{addr.String()},
-				Message:     message,
-				Leaving:     true,
-			})
-			if err != nil {
-				fatal(err)
-			}
-			printJSON(resp)
-			return nil
-		}
-
 		c, sel := mustResolve()
-		result, err := chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, chat.SendOptions{
+		opts := chat.SendOptions{
 			Wait:    0,
 			Leaving: true,
-		}, chatStderrCallback)
+		}
+
+		var result *chat.SendResult
+		var err error
+		addr := aweb.ParseNetworkAddress(toAlias)
+		if addr.IsNetwork {
+			result, err = chat.SendNetwork(ctx, c, sel.AgentAlias, []string{addr.String()}, message, opts, chatStderrCallback)
+		} else {
+			result, err = chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, opts, chatStderrCallback)
+		}
 		if err != nil {
 			fatal(err)
 		}

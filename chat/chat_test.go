@@ -1420,6 +1420,127 @@ func TestParseSSEEventSenderWaiting(t *testing.T) {
 	}
 }
 
+func TestSendNetworkWithReply(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "net-msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /api/v1/network/chat": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.NetworkChatCreateResponse{
+				SessionID:        "ns1",
+				MessageID:        sentMsgID,
+				Participants:     []string{"myorg/me", "acme/bot"},
+				SSEURL:           "/api/v1/network/chat/ns1/stream",
+				TargetsConnected: []string{},
+				TargetsLeft:      []string{},
+			})
+		},
+		"GET /api/v1/network/chat/ns1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			// Replay: our sent message
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "myorg/me", "body": "hello network",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			// Reply from remote agent
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "net-msg-reply-1", "from_agent": "acme/bot", "body": "hello back!",
+				"sender_waiting": true,
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := SendNetwork(context.Background(), mustClient(t, server.URL), "myorg/me", []string{"acme/bot"}, "hello network", SendOptions{Wait: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if result.Reply != "hello back!" {
+		t.Fatalf("reply=%s", result.Reply)
+	}
+	if !result.SenderWaiting {
+		t.Fatal("sender_waiting=false, want true")
+	}
+	if result.SessionID != "ns1" {
+		t.Fatalf("session_id=%s", result.SessionID)
+	}
+}
+
+func TestSendNetworkWithLeaving(t *testing.T) {
+	t.Parallel()
+
+	var gotLeaving bool
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /api/v1/network/chat": func(w http.ResponseWriter, r *http.Request) {
+			var req aweb.NetworkChatCreateRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			gotLeaving = req.Leaving
+			jsonResponse(w, aweb.NetworkChatCreateResponse{
+				SessionID: "ns1",
+				MessageID: "net-msg-1",
+				SSEURL:    "/api/v1/network/chat/ns1/stream",
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := SendNetwork(context.Background(), mustClient(t, server.URL), "myorg/me", []string{"acme/bot"}, "goodbye", SendOptions{Leaving: true, Wait: 60}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "sent" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if !gotLeaving {
+		t.Fatal("leaving not sent in request")
+	}
+}
+
+func TestSendNetworkNoWait(t *testing.T) {
+	t.Parallel()
+
+	sseHit := false
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /api/v1/network/chat": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.NetworkChatCreateResponse{
+				SessionID: "ns1",
+				MessageID: "net-msg-1",
+				SSEURL:    "/api/v1/network/chat/ns1/stream",
+			})
+		},
+		"GET /api/v1/network/chat/ns1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			sseHit = true
+			w.Header().Set("Content-Type", "text/event-stream")
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := SendNetwork(context.Background(), mustClient(t, server.URL), "myorg/me", []string{"acme/bot"}, "fire and forget", SendOptions{Wait: 0}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "sent" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if sseHit {
+		t.Fatal("SSE stream should not be opened when Wait=0")
+	}
+}
+
 func TestSendPropagatesSenderWaitingFromReply(t *testing.T) {
 	t.Parallel()
 
