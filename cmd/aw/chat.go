@@ -20,6 +20,16 @@ func chatStderrCallback(kind, message string) {
 	fmt.Fprintf(os.Stderr, "[chat:%s] %s\n", kind, message)
 }
 
+// chatSend routes a message through the OSS or network path based on the alias format.
+func chatSend(ctx context.Context, toAlias, message string, opts chat.SendOptions) (*chat.SendResult, error) {
+	c, sel := mustResolve()
+	addr := aweb.ParseNetworkAddress(toAlias)
+	if addr.IsNetwork {
+		return chat.SendNetwork(ctx, c, sel.AgentAlias, []string{addr.String()}, message, opts, chatStderrCallback)
+	}
+	return chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, opts, chatStderrCallback)
+}
+
 // chat send-and-wait
 
 var (
@@ -33,28 +43,14 @@ var chatSendAndWaitCmd = &cobra.Command{
 	Short: "Send a message and wait for a reply",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		toAlias := args[0]
-		message := args[1]
-
-		timeout := chat.MaxSendTimeout
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), chat.MaxSendTimeout)
 		defer cancel()
 
-		c, sel := mustResolve()
-		opts := chat.SendOptions{
+		result, err := chatSend(ctx, args[0], args[1], chat.SendOptions{
 			Wait:              chatSendAndWaitWait,
 			WaitExplicit:      cmd.Flags().Changed("wait"),
 			StartConversation: chatSendAndWaitStartConversation,
-		}
-
-		var result *chat.SendResult
-		var err error
-		addr := aweb.ParseNetworkAddress(toAlias)
-		if addr.IsNetwork {
-			result, err = chat.SendNetwork(ctx, c, sel.AgentAlias, []string{addr.String()}, message, opts, chatStderrCallback)
-		} else {
-			result, err = chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, opts, chatStderrCallback)
-		}
+		})
 		if err != nil {
 			fatal(err)
 		}
@@ -70,27 +66,13 @@ var chatSendAndLeaveCmd = &cobra.Command{
 	Short: "Send a message and leave the conversation",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		toAlias := args[0]
-		message := args[1]
-
-		timeout := chat.MaxSendTimeout
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), chat.MaxSendTimeout)
 		defer cancel()
 
-		c, sel := mustResolve()
-		opts := chat.SendOptions{
+		result, err := chatSend(ctx, args[0], args[1], chat.SendOptions{
 			Wait:    0,
 			Leaving: true,
-		}
-
-		var result *chat.SendResult
-		var err error
-		addr := aweb.ParseNetworkAddress(toAlias)
-		if addr.IsNetwork {
-			result, err = chat.SendNetwork(ctx, c, sel.AgentAlias, []string{addr.String()}, message, opts, chatStderrCallback)
-		} else {
-			result, err = chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, opts, chatStderrCallback)
-		}
+		})
 		if err != nil {
 			fatal(err)
 		}
