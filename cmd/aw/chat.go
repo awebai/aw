@@ -30,6 +30,46 @@ func chatSend(ctx context.Context, toAlias, message string, opts chat.SendOption
 	return chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, opts, chatStderrCallback)
 }
 
+func chatOpen(ctx context.Context, alias string) (*chat.OpenResult, error) {
+	addr := aweb.ParseNetworkAddress(alias)
+	if addr.IsNetwork {
+		return chat.OpenNetwork(ctx, mustClient(), addr.String())
+	}
+	return chat.Open(ctx, mustClient(), alias)
+}
+
+func chatHistory(ctx context.Context, alias string) (*chat.HistoryResult, error) {
+	addr := aweb.ParseNetworkAddress(alias)
+	if addr.IsNetwork {
+		return chat.HistoryNetwork(ctx, mustClient(), addr.String())
+	}
+	return chat.History(ctx, mustClient(), alias)
+}
+
+func chatHangOn(ctx context.Context, alias, message string) (*chat.HangOnResult, error) {
+	addr := aweb.ParseNetworkAddress(alias)
+	if addr.IsNetwork {
+		return chat.HangOnNetwork(ctx, mustClient(), addr.String(), message)
+	}
+	return chat.HangOn(ctx, mustClient(), alias, message)
+}
+
+func chatListen(ctx context.Context, alias string, waitSeconds int) (*chat.SendResult, error) {
+	addr := aweb.ParseNetworkAddress(alias)
+	if addr.IsNetwork {
+		return chat.ListenNetwork(ctx, mustClient(), addr.String(), waitSeconds, chatStderrCallback)
+	}
+	return chat.Listen(ctx, mustClient(), alias, waitSeconds, chatStderrCallback)
+}
+
+func chatShowPending(ctx context.Context, alias string) (*chat.SendResult, error) {
+	addr := aweb.ParseNetworkAddress(alias)
+	if addr.IsNetwork {
+		return chat.ShowPendingNetwork(ctx, mustClient(), addr.String())
+	}
+	return chat.ShowPending(ctx, mustClient(), alias)
+}
+
 // chat send-and-wait
 
 var (
@@ -109,7 +149,7 @@ var chatOpenCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		result, err := chat.Open(ctx, mustClient(), args[0])
+		result, err := chatOpen(ctx, args[0])
 		if err != nil {
 			fatal(err)
 		}
@@ -128,7 +168,7 @@ var chatHistoryCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		result, err := chat.History(ctx, mustClient(), args[0])
+		result, err := chatHistory(ctx, args[0])
 		if err != nil {
 			fatal(err)
 		}
@@ -147,7 +187,7 @@ var chatHangOnCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		result, err := chat.HangOn(ctx, mustClient(), args[0], args[1])
+		result, err := chatHangOn(ctx, args[0], args[1])
 		if err != nil {
 			fatal(err)
 		}
@@ -167,7 +207,7 @@ var chatListenCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
-		result, err := chat.Listen(ctx, mustClient(), args[0], chatListenWait, chatStderrCallback)
+		result, err := chatListen(ctx, args[0], chatListenWait)
 		if err != nil {
 			fatal(err)
 		}
@@ -186,7 +226,7 @@ var chatShowPendingCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		result, err := chat.ShowPending(ctx, mustClient(), args[0])
+		result, err := chatShowPending(ctx, args[0])
 		if err != nil {
 			fatal(err)
 		}

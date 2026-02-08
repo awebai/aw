@@ -81,6 +81,28 @@ func (c *Client) NetworkChatSendMessage(ctx context.Context, sessionID string, r
 	return &out, nil
 }
 
+// NetworkChatHistory fetches messages for a network chat session.
+// Reuses ChatHistoryParams and ChatHistoryResponse since the wire format is identical.
+func (c *Client) NetworkChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHistoryResponse, error) {
+	if p.SessionID == "" {
+		return nil, errors.New("aweb: sessionID is required")
+	}
+	path := "/api/v1/network/chat/" + urlPathEscape(p.SessionID) + "/messages"
+	sep := "?"
+	if p.UnreadOnly {
+		path += sep + "unread_only=true"
+		sep = "&"
+	}
+	if p.Limit > 0 {
+		path += sep + "limit=" + itoa(p.Limit)
+	}
+	var out ChatHistoryResponse
+	if err := c.get(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 type NetworkChatMarkReadRequest struct {
 	UpToMessageID string `json:"up_to_message_id"`
 }

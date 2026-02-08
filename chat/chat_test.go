@@ -1562,3 +1562,195 @@ func TestSendPropagatesSenderWaitingFromReply(t *testing.T) {
 		t.Fatal("result.SenderWaiting=false, want true from reply event")
 	}
 }
+
+// --- Network variants ---
+
+func TestListenNetwork(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /api/v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.NetworkChatPendingResponse{
+				Pending: []aweb.NetworkChatPendingItem{
+					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}, SenderWaiting: true},
+				},
+			})
+		},
+		"GET /api/v1/network/chat/ns1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			msgData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-1", "from_agent": "acme/bot", "body": "network hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", msgData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := ListenNetwork(ctx, mustClient(t, server.URL), "acme/bot", DefaultWait, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if result.Reply != "network hello" {
+		t.Fatalf("reply=%s", result.Reply)
+	}
+	if result.TargetAgent != "acme/bot" {
+		t.Fatalf("target_agent=%s", result.TargetAgent)
+	}
+}
+
+func TestOpenNetwork(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /api/v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.NetworkChatPendingResponse{
+				Pending: []aweb.NetworkChatPendingItem{
+					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}, SenderWaiting: true},
+				},
+			})
+		},
+		"GET /api/v1/network/chat/ns1/messages": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatHistoryResponse{
+				Messages: []aweb.ChatMessage{
+					{MessageID: "m1", FromAgent: "acme/bot", Body: "network msg", Timestamp: "2025-01-01T00:00:00Z"},
+				},
+			})
+		},
+		"POST /api/v1/network/chat/ns1/read": func(w http.ResponseWriter, r *http.Request) {
+			var req aweb.NetworkChatMarkReadRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req.UpToMessageID != "m1" {
+				t.Errorf("up_to_message_id=%s", req.UpToMessageID)
+			}
+			jsonResponse(w, aweb.NetworkChatMarkReadResponse{Success: true, MessagesMarked: 1})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := OpenNetwork(context.Background(), mustClient(t, server.URL), "acme/bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != "ns1" {
+		t.Fatalf("session_id=%s", result.SessionID)
+	}
+	if len(result.Messages) != 1 {
+		t.Fatalf("messages=%d", len(result.Messages))
+	}
+	if result.MarkedRead != 1 {
+		t.Fatalf("marked_read=%d", result.MarkedRead)
+	}
+	if !result.SenderWaiting {
+		t.Fatal("sender_waiting=false")
+	}
+}
+
+func TestHistoryNetwork(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /api/v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.NetworkChatPendingResponse{
+				Pending: []aweb.NetworkChatPendingItem{
+					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}},
+				},
+			})
+		},
+		"GET /api/v1/network/chat/ns1/messages": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatHistoryResponse{
+				Messages: []aweb.ChatMessage{
+					{MessageID: "m1", FromAgent: "myorg/me", Body: "hello", Timestamp: "2025-01-01T00:00:00Z"},
+					{MessageID: "m2", FromAgent: "acme/bot", Body: "hi!", Timestamp: "2025-01-01T00:00:01Z"},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := HistoryNetwork(context.Background(), mustClient(t, server.URL), "acme/bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != "ns1" {
+		t.Fatalf("session_id=%s", result.SessionID)
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("messages=%d", len(result.Messages))
+	}
+}
+
+func TestHangOnNetwork(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /api/v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.NetworkChatPendingResponse{
+				Pending: []aweb.NetworkChatPendingItem{
+					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}},
+				},
+			})
+		},
+		"POST /api/v1/network/chat/ns1/messages": func(w http.ResponseWriter, r *http.Request) {
+			var req aweb.NetworkChatSendMessageRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if !req.HangOn {
+				t.Error("expected hang_on=true")
+			}
+			jsonResponse(w, aweb.NetworkChatSendMessageResponse{
+				MessageID: "msg-1", Delivered: true, ExtendsWaitSeconds: 300,
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := HangOnNetwork(context.Background(), mustClient(t, server.URL), "acme/bot", "thinking...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != "ns1" {
+		t.Fatalf("session_id=%s", result.SessionID)
+	}
+	if result.ExtendsWaitSeconds != 300 {
+		t.Fatalf("extends_wait_seconds=%d", result.ExtendsWaitSeconds)
+	}
+}
+
+func TestShowPendingNetwork(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /api/v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.NetworkChatPendingResponse{
+				Pending: []aweb.NetworkChatPendingItem{
+					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}, LastMessage: "help!", LastFrom: "acme/bot", SenderWaiting: true},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := ShowPendingNetwork(context.Background(), mustClient(t, server.URL), "acme/bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "pending" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if result.Reply != "help!" {
+		t.Fatalf("reply=%s", result.Reply)
+	}
+	if !result.SenderWaiting {
+		t.Fatal("sender_waiting=false")
+	}
+}
