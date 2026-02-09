@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -40,7 +41,7 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 		os.Exit(2)
 	}
 
-	baseURL, err := normalizeMountBaseURL(sel.BaseURL)
+	baseURL, err := resolveWorkingBaseURL(sel.BaseURL)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -60,18 +61,7 @@ func mustClient() *aweb.Client {
 	return c
 }
 
-var knownWrapperHostsRequireAPIMount = map[string]struct{}{
-	"app.aweb.ai":    {},
-	"app.claweb.ai":  {},
-	"app.beadhub.ai": {},
-}
-
-// normalizeMountBaseURL enforces that the base URL points at the mounted OSS app root.
-//
-// The client always calls /v1/* relative to this base, so the base must not include
-// a version prefix like /v1 or /api/v1. Custom mount roots (e.g. https://host/foo)
-// are allowed.
-func normalizeMountBaseURL(raw string) (string, error) {
+func cleanBaseURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("empty base url")
@@ -83,31 +73,76 @@ func normalizeMountBaseURL(raw string) (string, error) {
 	if u.Scheme == "" || u.Host == "" {
 		return "", fmt.Errorf("invalid base url %q", raw)
 	}
-	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
-
-	path := strings.TrimSuffix(strings.TrimSpace(u.Path), "/")
-	switch path {
-	case "", "/":
-		if _, ok := knownWrapperHostsRequireAPIMount[host]; ok {
-			return "", fmt.Errorf("base url for %s must include /api (got %q)", host, raw)
-		}
-		u.Path = ""
-	case "/api":
-		u.Path = "/api"
-	default:
-		if path == "/v1" || strings.HasSuffix(path, "/v1") {
-			return "", fmt.Errorf("base url must not include /v1 (pass the OSS mount root, e.g. https://HOST or https://HOST/api), got %q", raw)
-		}
-		if path == "/api/v1" || strings.HasSuffix(path, "/api/v1") {
-			return "", fmt.Errorf("base url must not include /api/v1 (pass the OSS mount root, e.g. https://HOST/api), got %q", raw)
-		}
-		u.Path = path
-	}
-
+	u.Path = strings.TrimSuffix(u.Path, "/")
 	u.RawPath = ""
 	u.RawQuery = ""
 	u.Fragment = ""
 	return strings.TrimSuffix(u.String(), "/"), nil
+}
+
+func probeAwebBaseURL(ctx context.Context, baseURL string) (bool, error) {
+	// Stable across our servers: exists (POST) on /v1/agents/heartbeat.
+	// We use GET to avoid side effects; success is any non-404 response.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/agents/heartbeat", nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
+	if err != nil {
+		return false, err
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode != http.StatusNotFound, nil
+}
+
+func resolveWorkingBaseURL(raw string) (string, error) {
+	base, err := cleanBaseURL(raw)
+	if err != nil {
+		return "", err
+	}
+
+	candidates := make([]string, 0, 4)
+	add := func(v string) {
+		v = strings.TrimSuffix(strings.TrimSpace(v), "/")
+		if v == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == v {
+				return
+			}
+		}
+		candidates = append(candidates, v)
+	}
+
+	add(base)
+	if strings.HasSuffix(base, "/v1") {
+		add(strings.TrimSuffix(base, "/v1"))
+	}
+	if strings.HasSuffix(base, "/api/v1") {
+		add(strings.TrimSuffix(base, "/v1"))
+	}
+	if !strings.HasSuffix(base, "/api") {
+		add(base + "/api")
+	}
+
+	var lastErr error
+	for _, cand := range candidates {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ok, err := probeAwebBaseURL(ctx, cand)
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if ok {
+			return cand, nil
+		}
+	}
+	if lastErr != nil {
+		return "", fmt.Errorf("no aweb API detected at %q (tried %v): %w", raw, candidates, lastErr)
+	}
+	return "", fmt.Errorf("no aweb API detected at %q (tried %v)", raw, candidates)
 }
 
 // fireHeartbeat sends a best-effort heartbeat to the aweb server.
@@ -131,7 +166,7 @@ func fireHeartbeat() {
 		debugLog("heartbeat: no API key configured")
 		return
 	}
-	baseURL, err := normalizeMountBaseURL(sel.BaseURL)
+	baseURL, err := resolveWorkingBaseURL(sel.BaseURL)
 	if err != nil {
 		debugLog("heartbeat: %v", err)
 		return
@@ -213,8 +248,7 @@ func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName
 	if err := awconfig.ValidateBaseURL(baseURL); err != nil {
 		return "", "", nil, err
 	}
-
-	baseURL, err = normalizeMountBaseURL(baseURL)
+	baseURL, err = resolveWorkingBaseURL(baseURL)
 	if err != nil {
 		return "", "", nil, err
 	}

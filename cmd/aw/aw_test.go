@@ -23,9 +23,18 @@ func newLocalHTTPServer(t *testing.T, handler http.Handler) *httptest.Server {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
+	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// aw probes for aweb by calling GET /v1/agents/heartbeat on candidate bases.
+		// Return any non-404 to indicate "endpoint exists" without side effects.
+		if r.URL.Path == "/v1/agents/heartbeat" || r.URL.Path == "/api/v1/agents/heartbeat" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
 	srv := &httptest.Server{
 		Listener: l,
-		Config:   &http.Server{Handler: handler},
+		Config:   &http.Server{Handler: wrapped},
 	}
 	srv.Start()
 	t.Cleanup(srv.Close)
@@ -1193,11 +1202,34 @@ func TestAwInitCloudModeSkipsInitProbe(t *testing.T) {
 	}
 }
 
-func TestAwInitRejectsAPIV1BaseURL(t *testing.T) {
+func TestAwInitAcceptsAPIV1BaseURL(t *testing.T) {
 	t.Parallel()
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		switch r.URL.Path {
+		case "/api/v1/agents/heartbeat":
+			// Probe path (GET) - any non-404 response is treated as "exists".
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		case "/api/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_slug": "demo",
+				"project_id":   nil,
+				"name_prefix":  "alice",
+			})
+		case "/api/v1/init":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":       "ok",
+				"created_at":   "now",
+				"project_id":   "proj-1",
+				"project_slug": "demo",
+				"agent_id":     "agent-alice",
+				"alias":        "alice",
+				"api_key":      "aw_sk_alice",
+				"created":      true,
+			})
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1222,7 +1254,7 @@ func TestAwInitRejectsAPIV1BaseURL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--url", server.URL+"/api/v1")
+	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--print-exports=false", "--write-context=false", "--url", server.URL+"/api/v1")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1231,11 +1263,15 @@ func TestAwInitRejectsAPIV1BaseURL(t *testing.T) {
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
-	if err == nil {
-		t.Fatalf("expected error, got success:\n%s", string(out))
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
-	if !strings.Contains(string(out), "must not include /v1") {
-		t.Fatalf("expected base URL guidance, got: %s", string(out))
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["api_key"] != "aw_sk_alice" {
+		t.Fatalf("api_key=%v", got["api_key"])
 	}
 }
 
@@ -1245,6 +1281,8 @@ func TestAwInitAllowsCustomMountRoot(t *testing.T) {
 	var gotInitPath string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/custom/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusMethodNotAllowed)
 		case "/custom/v1/init":
 			gotInitPath = r.URL.Path
 			_ = json.NewEncoder(w).Encode(map[string]any{

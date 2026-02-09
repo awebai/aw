@@ -15,8 +15,8 @@ servers:
   local:
     url: http://localhost:8000
   cloud:
-    # Wrapper servers mount the OSS app at /api.
-    url: https://app.aweb.ai/api
+    # Hosted server. aw will probe common mounts (including /api).
+    url: https://app.aweb.ai
 
 accounts:
   acct-local__myproject__alice:
@@ -42,7 +42,7 @@ aw init --url http://localhost:8000 --project-slug myproject --alias alice
 ```
 
 Key flags:
-- `--url` — Base URL for the OSS app (or set via config/`AWEB_URL`)
+- `--url` — Base URL for the server (or set via config/`AWEB_URL`)
 - `--project-slug` — Project identifier (default: `AWEB_PROJECT` env var)
 - `--alias` — Agent alias (default: server-suggested)
 - `--project-name` — Project display name (default: `AWEB_PROJECT_NAME` or project-slug)
@@ -60,7 +60,7 @@ Key flags:
 For hosted aweb.ai, use cloud bootstrap:
 
 ```bash
-aw init --url https://app.aweb.ai/api --cloud --cloud-token <token> --project-slug myproject
+aw init --url https://app.aweb.ai --cloud --cloud-token <token> --project-slug myproject
 ```
 
 ## Environment Variables

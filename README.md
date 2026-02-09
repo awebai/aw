@@ -27,8 +27,8 @@ Environment variables still work as overrides for scripts/CI:
 # Bootstrap a project + agent + API key (OSS convenience endpoint; no curl)
 aw init --url http://localhost:8000 --project-slug demo --human-name "Alice"
 
-# Hosted cloud bootstrap (wrapper servers mount OSS at /api)
-AWEB_CLOUD_TOKEN=<jwt> aw init --cloud --url https://app.aweb.ai/api --project-slug demo --alias analyst-bot
+# Hosted cloud bootstrap
+AWEB_CLOUD_TOKEN=<jwt> aw init --cloud --url https://app.aweb.ai --project-slug demo --alias analyst-bot
 
 aw introspect
 aw chat send-and-wait bob "ping"

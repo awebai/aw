@@ -41,7 +41,7 @@ var (
 )
 
 func init() {
-	initCmd.Flags().StringVar(&initURL, "url", "", "Base URL for the aweb OSS app (configured server/account or AWEB_URL; wrappers use https://HOST/api)")
+	initCmd.Flags().StringVar(&initURL, "url", "", "Base URL for the aweb server (or AWEB_URL). Any URL is accepted; aw probes common mounts (including /api).")
 	initCmd.Flags().StringVar(&initProjectSlug, "project-slug", "", "Project slug (default: AWEB_PROJECT or prompt in TTY)")
 	initCmd.Flags().StringVar(&initProjectName, "project-name", "", "Project name (default: AWEB_PROJECT_NAME or project-slug)")
 	initCmd.Flags().StringVar(&initAlias, "alias", "", "Agent alias (optional; default: server-suggested)")
