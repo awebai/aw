@@ -2053,3 +2053,383 @@ default_account: acct
 		t.Fatalf("patch access_mode=%v", patchBody["access_mode"])
 	}
 }
+
+func TestAwRegisterMissingEmail(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Non-TTY (no stdin) + no --email flag → should fail with usage error.
+	run := exec.CommandContext(ctx, bin, "register", "--server", server.URL)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure, got success:\n%s", string(out))
+	}
+	if !strings.Contains(strings.ToLower(string(out)), "email") {
+		t.Fatalf("expected email-related error, got: %s", string(out))
+	}
+}
+
+func TestAwRegisterSuccess(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/register":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method=%s", r.Method)
+			}
+			// Should be unauthenticated.
+			if auth := r.Header.Get("Authorization"); auth != "" {
+				t.Fatalf("unexpected auth header: %q", auth)
+			}
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if payload["email"] != "test@example.com" {
+				t.Fatalf("email=%v", payload["email"])
+			}
+			if payload["username"] != "testuser" {
+				t.Fatalf("username=%v", payload["username"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"api_key":               "aw_sk_register_test",
+				"agent_id":              "agent-reg-1",
+				"alias":                 "alice",
+				"username":              "testuser",
+				"project_slug":          "default",
+				"project_name":          "Default",
+				"server_url":            "http://localhost:9999",
+				"verification_required": true,
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server", server.URL,
+		"--email", "test@example.com",
+		"--username", "testuser",
+		"--save-config=false",
+		"--write-context=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["api_key"] != "aw_sk_register_test" {
+		t.Fatalf("api_key=%v", got["api_key"])
+	}
+	if got["agent_id"] != "agent-reg-1" {
+		t.Fatalf("agent_id=%v", got["agent_id"])
+	}
+	if got["alias"] != "alice" {
+		t.Fatalf("alias=%v", got["alias"])
+	}
+	if got["username"] != "testuser" {
+		t.Fatalf("username=%v", got["username"])
+	}
+	if got["verification_required"] != true {
+		t.Fatalf("verification_required=%v", got["verification_required"])
+	}
+}
+
+func TestAwRegisterServerNotSupported(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/register":
+			http.NotFound(w, r)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server", server.URL,
+		"--email", "test@example.com",
+		"--save-config=false",
+		"--write-context=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure, got success:\n%s", string(out))
+	}
+	if !strings.Contains(strings.ToLower(string(out)), "does not support cli registration") {
+		t.Fatalf("expected 'does not support CLI registration' error, got: %s", string(out))
+	}
+}
+
+func TestAwRegisterEmailTaken(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/register":
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"detail": "email already registered",
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server", server.URL,
+		"--email", "taken@example.com",
+		"--save-config=false",
+		"--write-context=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure, got success:\n%s", string(out))
+	}
+	if !strings.Contains(strings.ToLower(string(out)), "already taken") {
+		t.Fatalf("expected 'already taken' error, got: %s", string(out))
+	}
+}
+
+func TestAwRegisterWritesConfig(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/register":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"api_key":               "aw_sk_reg",
+				"agent_id":              "agent-reg-1",
+				"alias":                 "alice",
+				"username":              "testuser",
+				"project_slug":          "myproject",
+				"project_name":          "My Project",
+				"server_url":            "http://localhost:9999",
+				"verification_required": false,
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server", server.URL,
+		"--email", "test@example.com",
+		"--username", "testuser",
+		"--write-context=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["api_key"] != "aw_sk_reg" {
+		t.Fatalf("api_key=%v", got["api_key"])
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg struct {
+		Servers        map[string]map[string]any `yaml:"servers"`
+		Accounts       map[string]map[string]any `yaml:"accounts"`
+		DefaultAccount string                    `yaml:"default_account"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(data))
+	}
+	// Should have set a default account since config was empty.
+	if cfg.DefaultAccount == "" {
+		t.Fatalf("default_account is empty")
+	}
+	// Find the account entry and verify fields.
+	var found bool
+	for name, acct := range cfg.Accounts {
+		if acct["api_key"] == "aw_sk_reg" {
+			found = true
+			if acct["agent_id"] != "agent-reg-1" {
+				t.Fatalf("accounts.%s.agent_id=%v", name, acct["agent_id"])
+			}
+			if acct["agent_alias"] != "alice" {
+				t.Fatalf("accounts.%s.agent_alias=%v", name, acct["agent_alias"])
+			}
+			if acct["default_project"] != "myproject" {
+				t.Fatalf("accounts.%s.default_project=%v", name, acct["default_project"])
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no account with api_key=aw_sk_reg in config:\n%s", string(data))
+	}
+	// Should have a server entry with the test server URL.
+	var serverFound bool
+	for _, srv := range cfg.Servers {
+		if srv["url"] == server.URL {
+			serverFound = true
+			break
+		}
+	}
+	if !serverFound {
+		t.Fatalf("no server with url=%s in config:\n%s", server.URL, string(data))
+	}
+}
