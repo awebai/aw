@@ -39,6 +39,7 @@ var versionCmd = &cobra.Command{
 		if date != "unknown" {
 			fmt.Printf("  built:  %s\n", date)
 		}
+		checkLatestVersion(os.Stdout, "")
 	},
 }
 
@@ -47,6 +48,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&accountFlag, "account", "", "Account name from config.yaml")
 	rootCmd.PersistentFlags().BoolVar(&debugFlag, "debug", false, "Log background errors to stderr")
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(updateCmd)
 }
 
 func Execute() {
