@@ -76,7 +76,28 @@ bdh ready      # find unblocked work
 ```
 
 **Key rules:**
+- Use `bdh` (not `bdh`) so work is coordinated
+- Default to mail (`bdh :aweb mail send <alias> "message"`); use chat (`bdh :aweb chat`) when blocked
+- Respond immediately to WAITING notifications
+- Prioritize good communication — your goal is for the team to succeed
+
+<!-- BEADHUB:START -->
+## BeadHub Coordination
+
+This project uses `bdh` for multi-agent coordination and issue tracking.
+
+**Start every session:**
+```bash
+bdh :policy    # READ CAREFULLY and follow diligently, start here now
+bdh :status    # your identity + team status
+bdh ready      # find unblocked work
+bdh --help     # command reference
+```
+
+**Key rules:**
 - Use `bdh` (not `bd`) so work is coordinated
 - Default to mail (`bdh :aweb mail send <alias> "message"`); use chat (`bdh :aweb chat`) when blocked
 - Respond immediately to WAITING notifications
 - Prioritize good communication — your goal is for the team to succeed
+- Before saying "done", follow the session close protocol in `bdh :policy` (includes `git push`)
+<!-- BEADHUB:END -->
