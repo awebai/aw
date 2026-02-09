@@ -147,3 +147,52 @@ func TestResolveMissingDefaults(t *testing.T) {
 		t.Fatalf("test expects no env")
 	}
 }
+
+func TestResolveAccountByAgentAlias(t *testing.T) {
+	t.Parallel()
+
+	global := &GlobalConfig{
+		Servers: map[string]Server{
+			"prod": {URL: "https://app.aweb.ai"},
+		},
+		Accounts: map[string]Account{
+			"acct-prod__default__alice": {Server: "prod", APIKey: "aw_sk_alice", AgentAlias: "alice"},
+			"acct-prod__default__bob":   {Server: "prod", APIKey: "aw_sk_bob", AgentAlias: "bob"},
+		},
+		DefaultAccount: "acct-prod__default__alice",
+	}
+
+	// "bob" doesn't match any config key, but matches agent_alias on one account.
+	sel, err := Resolve(global, ResolveOptions{AccountName: "bob"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if sel.AccountName != "acct-prod__default__bob" {
+		t.Fatalf("account=%q", sel.AccountName)
+	}
+	if sel.APIKey != "aw_sk_bob" {
+		t.Fatalf("apiKey=%q", sel.APIKey)
+	}
+}
+
+func TestResolveAccountByAgentAliasAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	global := &GlobalConfig{
+		Servers: map[string]Server{
+			"prod":    {URL: "https://app.aweb.ai"},
+			"staging": {URL: "https://staging.aweb.ai"},
+		},
+		Accounts: map[string]Account{
+			"acct-prod":    {Server: "prod", APIKey: "aw_sk_1", AgentAlias: "alice"},
+			"acct-staging": {Server: "staging", APIKey: "aw_sk_2", AgentAlias: "alice"},
+		},
+		DefaultAccount: "acct-prod",
+	}
+
+	// "alice" matches two accounts — should error, not silently pick one.
+	_, err := Resolve(global, ResolveOptions{AccountName: "alice"})
+	if err == nil {
+		t.Fatalf("expected error for ambiguous alias")
+	}
+}

@@ -100,7 +100,21 @@ func Resolve(global *GlobalConfig, opts ResolveOptions) (*Selection, error) {
 	if accountName != "" {
 		acct, ok := global.Accounts[accountName]
 		if !ok {
-			return nil, fmt.Errorf("unknown account %q (configure it in your aw config file)", accountName)
+			// Fall back: match by agent_alias.
+			var matchedName string
+			for name, a := range global.Accounts {
+				if strings.TrimSpace(a.AgentAlias) == accountName {
+					if matchedName != "" {
+						return nil, fmt.Errorf("ambiguous alias %q matches multiple accounts (%s, %s); use the full account name", accountName, matchedName, name)
+					}
+					matchedName = name
+				}
+			}
+			if matchedName == "" {
+				return nil, fmt.Errorf("unknown account %q (configure it in your aw config file)", accountName)
+			}
+			accountName = matchedName
+			acct = global.Accounts[accountName]
 		}
 		if strings.TrimSpace(acct.Server) == "" {
 			return nil, fmt.Errorf("account %q missing server", accountName)
