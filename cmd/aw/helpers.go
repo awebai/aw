@@ -66,12 +66,11 @@ var knownWrapperHostsRequireAPIMount = map[string]struct{}{
 	"app.beadhub.ai": {},
 }
 
-// normalizeMountBaseURL enforces that the base URL points at the mounted OSS app root:
-// - OSS server:       https://host (Path="")
-// - Wrapper servers:  https://host/api (Path="/api")
+// normalizeMountBaseURL enforces that the base URL points at the mounted OSS app root.
 //
-// We intentionally do not accept /api/v1, /v1, or other path prefixes; the client
-// always calls /v1/* paths relative to this base.
+// The client always calls /v1/* relative to this base, so the base must not include
+// a version prefix like /v1 or /api/v1. Custom mount roots (e.g. https://host/foo)
+// are allowed.
 func normalizeMountBaseURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -96,7 +95,13 @@ func normalizeMountBaseURL(raw string) (string, error) {
 	case "/api":
 		u.Path = "/api"
 	default:
-		return "", fmt.Errorf("base url must be the OSS mount root (use https://HOST or https://HOST/api), got %q", raw)
+		if path == "/v1" || strings.HasSuffix(path, "/v1") {
+			return "", fmt.Errorf("base url must not include /v1 (pass the OSS mount root, e.g. https://HOST or https://HOST/api), got %q", raw)
+		}
+		if path == "/api/v1" || strings.HasSuffix(path, "/api/v1") {
+			return "", fmt.Errorf("base url must not include /api/v1 (pass the OSS mount root, e.g. https://HOST/api), got %q", raw)
+		}
+		u.Path = path
 	}
 
 	u.RawPath = ""

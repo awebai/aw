@@ -1234,8 +1234,84 @@ func TestAwInitRejectsAPIV1BaseURL(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error, got success:\n%s", string(out))
 	}
-	if !strings.Contains(string(out), "OSS mount root") {
+	if !strings.Contains(string(out), "must not include /v1") {
 		t.Fatalf("expected base URL guidance, got: %s", string(out))
+	}
+}
+
+func TestAwInitAllowsCustomMountRoot(t *testing.T) {
+	t.Parallel()
+
+	var gotInitPath string
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/custom/v1/init":
+			gotInitPath = r.URL.Path
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":       "ok",
+				"created_at":   "now",
+				"project_id":   "proj-1",
+				"project_slug": "demo",
+				"agent_id":     "agent-alice",
+				"alias":        "alice",
+				"api_key":      "aw_sk_alice",
+				"created":      true,
+			})
+		case "/custom/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_slug": "demo",
+				"project_id":   nil,
+				"name_prefix":  "alice",
+			})
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--print-exports=false", "--write-context=false", "--url", server.URL+"/custom")
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["api_key"] != "aw_sk_alice" {
+		t.Fatalf("api_key=%v", got["api_key"])
+	}
+	if gotInitPath != "/custom/v1/init" {
+		t.Fatalf("gotInitPath=%q", gotInitPath)
 	}
 }
 
