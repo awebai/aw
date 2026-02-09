@@ -389,7 +389,7 @@ func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []st
 }
 
 // SendNetwork sends a message via the network (cross-org) endpoint and optionally waits for a reply.
-// Uses the same wait semantics as Send but routes through /api/v1/network/chat.
+// Uses the same wait semantics as Send but routes through /v1/network/chat.
 func SendNetwork(ctx context.Context, client *aweb.Client, myAlias string, targets []string, message string, opts SendOptions, callback StatusCallback) (*SendResult, error) {
 	sentAt := time.Now()
 	createResp, err := client.NetworkCreateChat(ctx, &aweb.NetworkChatCreateRequest{

@@ -28,7 +28,7 @@ type NetworkMailResponse struct {
 
 func (c *Client) NetworkSendMail(ctx context.Context, req *NetworkMailRequest) (*NetworkMailResponse, error) {
 	var out NetworkMailResponse
-	if err := c.post(ctx, "/api/v1/network/mail", req, &out); err != nil {
+	if err := c.post(ctx, "/v1/network/mail", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -53,7 +53,7 @@ type NetworkChatCreateResponse struct {
 
 func (c *Client) NetworkCreateChat(ctx context.Context, req *NetworkChatCreateRequest) (*NetworkChatCreateResponse, error) {
 	var out NetworkChatCreateResponse
-	if err := c.post(ctx, "/api/v1/network/chat", req, &out); err != nil {
+	if err := c.post(ctx, "/v1/network/chat", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -75,7 +75,7 @@ func (c *Client) NetworkChatSendMessage(ctx context.Context, sessionID string, r
 		return nil, errors.New("aweb: sessionID is required")
 	}
 	var out NetworkChatSendMessageResponse
-	if err := c.post(ctx, "/api/v1/network/chat/"+urlPathEscape(sessionID)+"/messages", req, &out); err != nil {
+	if err := c.post(ctx, "/v1/network/chat/"+urlPathEscape(sessionID)+"/messages", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -87,7 +87,7 @@ func (c *Client) NetworkChatHistory(ctx context.Context, p ChatHistoryParams) (*
 	if p.SessionID == "" {
 		return nil, errors.New("aweb: sessionID is required")
 	}
-	path := "/api/v1/network/chat/" + urlPathEscape(p.SessionID) + "/messages"
+	path := "/v1/network/chat/" + urlPathEscape(p.SessionID) + "/messages"
 	sep := "?"
 	if p.UnreadOnly {
 		path += sep + "unread_only=true"
@@ -117,7 +117,7 @@ func (c *Client) NetworkChatMarkRead(ctx context.Context, sessionID string, req 
 		return nil, errors.New("aweb: sessionID is required")
 	}
 	var out NetworkChatMarkReadResponse
-	if err := c.post(ctx, "/api/v1/network/chat/"+urlPathEscape(sessionID)+"/read", req, &out); err != nil {
+	if err := c.post(ctx, "/v1/network/chat/"+urlPathEscape(sessionID)+"/read", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -141,7 +141,7 @@ type NetworkChatPendingResponse struct {
 
 func (c *Client) NetworkChatPending(ctx context.Context) (*NetworkChatPendingResponse, error) {
 	var out NetworkChatPendingResponse
-	if err := c.get(ctx, "/api/v1/network/chat/pending", &out); err != nil {
+	if err := c.get(ctx, "/v1/network/chat/pending", &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -154,7 +154,7 @@ func (c *Client) NetworkChatStream(ctx context.Context, sessionID string, deadli
 	if sessionID == "" {
 		return nil, errors.New("aweb: sessionID is required")
 	}
-	path := "/api/v1/network/chat/" + urlPathEscape(sessionID) + "/stream?deadline=" + urlQueryEscape(deadline.UTC().Format(time.RFC3339Nano))
+	path := "/v1/network/chat/" + urlPathEscape(sessionID) + "/stream?deadline=" + urlQueryEscape(deadline.UTC().Format(time.RFC3339Nano))
 	if after != nil && !after.IsZero() {
 		path += "&after=" + urlQueryEscape(after.UTC().Format(time.RFC3339Nano))
 	}
@@ -204,7 +204,7 @@ type NetworkDirectoryParams struct {
 }
 
 func (c *Client) NetworkDirectorySearch(ctx context.Context, p NetworkDirectoryParams) (*NetworkDirectoryResponse, error) {
-	path := "/api/v1/network/directory"
+	path := "/v1/network/directory"
 	sep := "?"
 	if p.Capability != "" {
 		path += sep + "capability=" + urlQueryEscape(p.Capability)
@@ -230,7 +230,7 @@ func (c *Client) NetworkDirectorySearch(ctx context.Context, p NetworkDirectoryP
 
 func (c *Client) NetworkDirectoryGet(ctx context.Context, orgSlug, alias string) (*NetworkDirectoryAgent, error) {
 	var out NetworkDirectoryAgent
-	if err := c.get(ctx, "/api/v1/network/directory/"+urlPathEscape(orgSlug)+"/"+urlPathEscape(alias), &out); err != nil {
+	if err := c.get(ctx, "/v1/network/directory/"+urlPathEscape(orgSlug)+"/"+urlPathEscape(alias), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -255,12 +255,12 @@ type NetworkPublishResponse struct {
 
 func (c *Client) NetworkPublishAgent(ctx context.Context, req *NetworkPublishRequest) (*NetworkPublishResponse, error) {
 	var out NetworkPublishResponse
-	if err := c.post(ctx, "/api/v1/agents/publish", req, &out); err != nil {
+	if err := c.post(ctx, "/v1/agents/publish", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
 func (c *Client) NetworkUnpublishAgent(ctx context.Context, alias string) error {
-	return c.delete(ctx, "/api/v1/agents/"+urlPathEscape(alias)+"/publish")
+	return c.delete(ctx, "/v1/agents/"+urlPathEscape(alias)+"/publish")
 }

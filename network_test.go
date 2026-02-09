@@ -15,7 +15,7 @@ func TestNetworkSendMail(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method=%s", r.Method)
 		}
-		if r.URL.Path != "/api/v1/network/mail" {
+		if r.URL.Path != "/v1/network/mail" {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer aw_sk_test" {
@@ -67,7 +67,7 @@ func TestNetworkCreateChat(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method=%s", r.Method)
 		}
-		if r.URL.Path != "/api/v1/network/chat" {
+		if r.URL.Path != "/v1/network/chat" {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		var body NetworkChatCreateRequest
@@ -77,14 +77,14 @@ func TestNetworkCreateChat(t *testing.T) {
 		if len(body.ToAddresses) != 1 || body.ToAddresses[0] != "acme/bot" {
 			t.Fatalf("to_addresses=%v", body.ToAddresses)
 		}
-		_ = json.NewEncoder(w).Encode(NetworkChatCreateResponse{
-			SessionID:        "net-sess-1",
-			MessageID:        "net-msg-2",
-			Participants:     []string{"myorg/me", "acme/bot"},
-			SSEURL:           "/api/v1/network/chat/net-sess-1/stream",
-			TargetsConnected: []string{},
-			TargetsLeft:      []string{},
-		})
+			_ = json.NewEncoder(w).Encode(NetworkChatCreateResponse{
+				SessionID:        "net-sess-1",
+				MessageID:        "net-msg-2",
+				Participants:     []string{"myorg/me", "acme/bot"},
+				SSEURL:           "/v1/network/chat/net-sess-1/stream",
+				TargetsConnected: []string{},
+				TargetsLeft:      []string{},
+			})
 	}))
 	t.Cleanup(server.Close)
 
@@ -108,7 +108,7 @@ func TestNetworkChatSendMessage(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/network/chat/sess-1/messages" {
+		if r.URL.Path != "/v1/network/chat/sess-1/messages" {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(NetworkChatSendMessageResponse{
@@ -132,7 +132,7 @@ func TestNetworkChatPending(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/network/chat/pending" {
+		if r.URL.Path != "/v1/network/chat/pending" {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(NetworkChatPendingResponse{
@@ -156,7 +156,7 @@ func TestNetworkChatMarkRead(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/network/chat/sess-1/read" {
+		if r.URL.Path != "/v1/network/chat/sess-1/read" {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(NetworkChatMarkReadResponse{
@@ -180,7 +180,7 @@ func TestNetworkDirectorySearch(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/network/directory" {
+		if r.URL.Path != "/v1/network/directory" {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		if r.URL.Query().Get("capability") != "translate" {
@@ -207,7 +207,7 @@ func TestNetworkDirectoryGet(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/network/directory/acme/researcher" {
+		if r.URL.Path != "/v1/network/directory/acme/researcher" {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(NetworkDirectoryAgent{
@@ -234,7 +234,7 @@ func TestNetworkPublishAgent(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/agents/publish" {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/agents/publish" {
 			t.Fatalf("method=%s path=%s", r.Method, r.URL.Path)
 		}
 		var body NetworkPublishRequest
@@ -272,7 +272,7 @@ func TestNetworkUnpublishAgent(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete || r.URL.Path != "/api/v1/agents/researcher/publish" {
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/agents/researcher/publish" {
 			t.Fatalf("method=%s path=%s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusNoContent)

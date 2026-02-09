@@ -1399,19 +1399,19 @@ func TestSendNetworkWithReply(t *testing.T) {
 	sentMsgID := "net-msg-sent-1"
 
 	server := newMockServer(map[string]http.HandlerFunc{
-		"POST /api/v1/network/chat": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.NetworkChatCreateResponse{
-				SessionID:        "ns1",
-				MessageID:        sentMsgID,
-				Participants:     []string{"myorg/me", "acme/bot"},
-				SSEURL:           "/api/v1/network/chat/ns1/stream",
-				TargetsConnected: []string{},
-				TargetsLeft:      []string{},
-			})
-		},
-		"GET /api/v1/network/chat/ns1/stream": func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "text/event-stream")
-			flusher, _ := w.(http.Flusher)
+			"POST /v1/network/chat": func(w http.ResponseWriter, _ *http.Request) {
+				jsonResponse(w, aweb.NetworkChatCreateResponse{
+					SessionID:        "ns1",
+					MessageID:        sentMsgID,
+					Participants:     []string{"myorg/me", "acme/bot"},
+					SSEURL:           "/v1/network/chat/ns1/stream",
+					TargetsConnected: []string{},
+					TargetsLeft:      []string{},
+				})
+			},
+			"GET /v1/network/chat/ns1/stream": func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				flusher, _ := w.(http.Flusher)
 
 			// Replay: our sent message
 			sentData, _ := json.Marshal(map[string]any{
@@ -1431,8 +1431,8 @@ func TestSendNetworkWithReply(t *testing.T) {
 			if flusher != nil {
 				flusher.Flush()
 			}
-		},
-	})
+			},
+		})
 	t.Cleanup(server.Close)
 
 	result, err := SendNetwork(context.Background(), mustClient(t, server.URL), "myorg/me", []string{"acme/bot"}, "hello network", SendOptions{Wait: 5}, nil)
@@ -1458,14 +1458,14 @@ func TestSendNetworkWithLeaving(t *testing.T) {
 
 	var gotLeaving bool
 	server := newMockServer(map[string]http.HandlerFunc{
-		"POST /api/v1/network/chat": func(w http.ResponseWriter, r *http.Request) {
+		"POST /v1/network/chat": func(w http.ResponseWriter, r *http.Request) {
 			var req aweb.NetworkChatCreateRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			gotLeaving = req.Leaving
 			jsonResponse(w, aweb.NetworkChatCreateResponse{
 				SessionID: "ns1",
 				MessageID: "net-msg-1",
-				SSEURL:    "/api/v1/network/chat/ns1/stream",
+				SSEURL:    "/v1/network/chat/ns1/stream",
 			})
 		},
 	})
@@ -1488,14 +1488,14 @@ func TestSendNetworkNoWait(t *testing.T) {
 
 	sseHit := false
 	server := newMockServer(map[string]http.HandlerFunc{
-		"POST /api/v1/network/chat": func(w http.ResponseWriter, _ *http.Request) {
+		"POST /v1/network/chat": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.NetworkChatCreateResponse{
 				SessionID: "ns1",
 				MessageID: "net-msg-1",
-				SSEURL:    "/api/v1/network/chat/ns1/stream",
+				SSEURL:    "/v1/network/chat/ns1/stream",
 			})
 		},
-		"GET /api/v1/network/chat/ns1/stream": func(w http.ResponseWriter, _ *http.Request) {
+		"GET /v1/network/chat/ns1/stream": func(w http.ResponseWriter, _ *http.Request) {
 			sseHit = true
 			w.Header().Set("Content-Type", "text/event-stream")
 		},
@@ -1569,14 +1569,14 @@ func TestListenNetwork(t *testing.T) {
 	t.Parallel()
 
 	server := newMockServer(map[string]http.HandlerFunc{
-		"GET /api/v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+		"GET /v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.NetworkChatPendingResponse{
 				Pending: []aweb.NetworkChatPendingItem{
 					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}, SenderWaiting: true},
 				},
 			})
 		},
-		"GET /api/v1/network/chat/ns1/stream": func(w http.ResponseWriter, _ *http.Request) {
+		"GET /v1/network/chat/ns1/stream": func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			flusher, _ := w.(http.Flusher)
 
@@ -1613,21 +1613,21 @@ func TestOpenNetwork(t *testing.T) {
 	t.Parallel()
 
 	server := newMockServer(map[string]http.HandlerFunc{
-		"GET /api/v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+		"GET /v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.NetworkChatPendingResponse{
 				Pending: []aweb.NetworkChatPendingItem{
 					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}, SenderWaiting: true},
 				},
 			})
 		},
-		"GET /api/v1/network/chat/ns1/messages": func(w http.ResponseWriter, _ *http.Request) {
+		"GET /v1/network/chat/ns1/messages": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.ChatHistoryResponse{
 				Messages: []aweb.ChatMessage{
 					{MessageID: "m1", FromAgent: "acme/bot", Body: "network msg", Timestamp: "2025-01-01T00:00:00Z"},
 				},
 			})
 		},
-		"POST /api/v1/network/chat/ns1/read": func(w http.ResponseWriter, r *http.Request) {
+		"POST /v1/network/chat/ns1/read": func(w http.ResponseWriter, r *http.Request) {
 			var req aweb.NetworkChatMarkReadRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			if req.UpToMessageID != "m1" {
@@ -1660,14 +1660,14 @@ func TestHistoryNetwork(t *testing.T) {
 	t.Parallel()
 
 	server := newMockServer(map[string]http.HandlerFunc{
-		"GET /api/v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+		"GET /v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.NetworkChatPendingResponse{
 				Pending: []aweb.NetworkChatPendingItem{
 					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}},
 				},
 			})
 		},
-		"GET /api/v1/network/chat/ns1/messages": func(w http.ResponseWriter, _ *http.Request) {
+		"GET /v1/network/chat/ns1/messages": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.ChatHistoryResponse{
 				Messages: []aweb.ChatMessage{
 					{MessageID: "m1", FromAgent: "myorg/me", Body: "hello", Timestamp: "2025-01-01T00:00:00Z"},
@@ -1694,14 +1694,14 @@ func TestExtendWaitNetwork(t *testing.T) {
 	t.Parallel()
 
 	server := newMockServer(map[string]http.HandlerFunc{
-		"GET /api/v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+		"GET /v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.NetworkChatPendingResponse{
 				Pending: []aweb.NetworkChatPendingItem{
 					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}},
 				},
 			})
 		},
-		"POST /api/v1/network/chat/ns1/messages": func(w http.ResponseWriter, r *http.Request) {
+		"POST /v1/network/chat/ns1/messages": func(w http.ResponseWriter, r *http.Request) {
 			var req aweb.NetworkChatSendMessageRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			if !req.ExtendWait {
@@ -1730,7 +1730,7 @@ func TestShowPendingNetwork(t *testing.T) {
 	t.Parallel()
 
 	server := newMockServer(map[string]http.HandlerFunc{
-		"GET /api/v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+		"GET /v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
 			jsonResponse(w, aweb.NetworkChatPendingResponse{
 				Pending: []aweb.NetworkChatPendingItem{
 					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}, LastMessage: "help!", LastFrom: "acme/bot", SenderWaiting: true},

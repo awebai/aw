@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -42,7 +41,7 @@ var (
 )
 
 func init() {
-	initCmd.Flags().StringVar(&initURL, "url", "", "Base URL for the aweb server (default: config selection, then http://localhost:8000)")
+	initCmd.Flags().StringVar(&initURL, "url", "", "Base URL for the aweb OSS app (configured server/account or AWEB_URL; wrappers use https://HOST/api)")
 	initCmd.Flags().StringVar(&initProjectSlug, "project-slug", "", "Project slug (default: AWEB_PROJECT or prompt in TTY)")
 	initCmd.Flags().StringVar(&initProjectName, "project-name", "", "Project name (default: AWEB_PROJECT_NAME or project-slug)")
 	initCmd.Flags().StringVar(&initAlias, "alias", "", "Agent alias (optional; default: server-suggested)")
@@ -58,16 +57,8 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 }
 
-const defaultCloudURL = "https://app.claweb.ai"
-
 func runInit(cmd *cobra.Command, args []string) error {
-	// When --cloud is used without --url, default to the hosted cloud endpoint.
-	url := initURL
-	if initCloudMode && strings.TrimSpace(url) == "" && strings.TrimSpace(os.Getenv("AWEB_URL")) == "" {
-		url = defaultCloudURL
-	}
-
-	baseURL, serverName, global, err := resolveBaseURLForInit(url, serverFlag)
+	baseURL, serverName, global, err := resolveBaseURLForInit(initURL, serverFlag)
 	if err != nil {
 		fatal(err)
 	}
@@ -181,40 +172,26 @@ func runInit(cmd *cobra.Command, args []string) error {
 		req.Alias = &alias
 	}
 
-	usedCloudBootstrap := false
 	var resp *aweb.InitResponse
-	if shouldUseCloudBootstrapFirst(baseURL, serverName) {
+	if initCloudMode {
 		resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req)
-		if err != nil {
-			fatal(err)
-		}
-		usedCloudBootstrap = true
 	} else {
 		resp, err = bootstrapClient.Init(ctx, req)
-		if err != nil {
-			resp, usedCloudBootstrap, err = tryCloudBootstrapFallback(ctx, baseURL, serverName, global, req, err)
-			if err != nil {
-				fatal(err)
-			}
-		}
+	}
+	if err != nil {
+		fatal(err)
 	}
 
 	// If we got an existing alias using the default suggestion, retry with server allocation.
 	if !aliasExplicit && aliasWasDefaultSuggestion && !resp.Created {
 		req.Alias = nil
-		if usedCloudBootstrap {
+		if initCloudMode {
 			resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req)
-			if err != nil {
-				fatal(err)
-			}
 		} else {
 			resp, err = bootstrapClient.Init(ctx, req)
-			if err != nil {
-				resp, usedCloudBootstrap, err = tryCloudBootstrapFallback(ctx, baseURL, serverName, global, req, err)
-				if err != nil {
-					fatal(err)
-				}
-			}
+		}
+		if err != nil {
+			fatal(err)
 		}
 	}
 
@@ -273,26 +250,6 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Println("export AWEB_AGENT_ALIAS=" + resp.Alias)
 	}
 	return nil
-}
-
-func tryCloudBootstrapFallback(
-	ctx context.Context,
-	baseURL string,
-	serverName string,
-	global *awconfig.GlobalConfig,
-	req *aweb.InitRequest,
-	initErr error,
-) (*aweb.InitResponse, bool, error) {
-	status, ok := aweb.HTTPStatusCode(initErr)
-	if !ok || (status != http.StatusForbidden && status != http.StatusNotFound) {
-		return nil, false, initErr
-	}
-
-	resp, err := bootstrapViaCloud(ctx, baseURL, serverName, global, req)
-	if err != nil {
-		return nil, false, fmt.Errorf("init endpoint unavailable (%w); %v", initErr, err)
-	}
-	return resp, true, nil
 }
 
 func bootstrapViaCloud(
@@ -417,34 +374,13 @@ func cloudRootBaseURL(baseURL string) (string, error) {
 		return "", err
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/")
-	if u.Path == "/api" || u.Path == "/api/v1" {
+	if u.Path == "/api" {
 		u.Path = ""
 	}
 	u.RawPath = ""
 	u.RawQuery = ""
 	u.Fragment = ""
 	return strings.TrimSuffix(u.String(), "/"), nil
-}
-
-func shouldUseCloudBootstrapFirst(baseURL, serverName string) bool {
-	if initCloudMode {
-		return true
-	}
-
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("AWEB_CLOUD_MODE"))) {
-	case "1", "true", "yes", "on":
-		return true
-	}
-
-	host := hostFromBaseURL(baseURL)
-	if host == "app.aweb.ai" || host == "app.claweb.ai" {
-		return true
-	}
-	sn := strings.ToLower(strings.TrimSpace(serverName))
-	if sn == "app.aweb.ai" || sn == "app.claweb.ai" {
-		return true
-	}
-	return false
 }
 
 func hostFromBaseURL(raw string) string {

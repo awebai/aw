@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,7 +39,15 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	c, err := aweb.NewWithAPIKey(sel.BaseURL, sel.APIKey)
+
+	baseURL, err := normalizeMountBaseURL(sel.BaseURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	sel.BaseURL = baseURL
+
+	c, err := aweb.NewWithAPIKey(baseURL, sel.APIKey)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Invalid base URL:", err)
 		os.Exit(2)
@@ -49,6 +58,51 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 func mustClient() *aweb.Client {
 	c, _ := mustResolve()
 	return c
+}
+
+var knownWrapperHostsRequireAPIMount = map[string]struct{}{
+	"app.aweb.ai":    {},
+	"app.claweb.ai":  {},
+	"app.beadhub.ai": {},
+}
+
+// normalizeMountBaseURL enforces that the base URL points at the mounted OSS app root:
+// - OSS server:       https://host (Path="")
+// - Wrapper servers:  https://host/api (Path="/api")
+//
+// We intentionally do not accept /api/v1, /v1, or other path prefixes; the client
+// always calls /v1/* paths relative to this base.
+func normalizeMountBaseURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("empty base url")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("invalid base url %q", raw)
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+
+	path := strings.TrimSuffix(strings.TrimSpace(u.Path), "/")
+	switch path {
+	case "", "/":
+		if _, ok := knownWrapperHostsRequireAPIMount[host]; ok {
+			return "", fmt.Errorf("base url for %s must include /api (got %q)", host, raw)
+		}
+		u.Path = ""
+	case "/api":
+		u.Path = "/api"
+	default:
+		return "", fmt.Errorf("base url must be the OSS mount root (use https://HOST or https://HOST/api), got %q", raw)
+	}
+
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return strings.TrimSuffix(u.String(), "/"), nil
 }
 
 // fireHeartbeat sends a best-effort heartbeat to the aweb server.
@@ -72,7 +126,12 @@ func fireHeartbeat() {
 		debugLog("heartbeat: no API key configured")
 		return
 	}
-	c, err := aweb.NewWithAPIKey(sel.BaseURL, sel.APIKey)
+	baseURL, err := normalizeMountBaseURL(sel.BaseURL)
+	if err != nil {
+		debugLog("heartbeat: %v", err)
+		return
+	}
+	c, err := aweb.NewWithAPIKey(baseURL, sel.APIKey)
 	if err != nil {
 		debugLog("heartbeat: create client: %v", err)
 		return
@@ -138,7 +197,7 @@ func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName
 		}
 	}
 	if baseURL == "" {
-		baseURL = "http://localhost:8000"
+		return "", "", nil, fmt.Errorf("no server selected (pass --url, set AWEB_URL, or configure a default account in your aw config)")
 	}
 	if serverName == "" {
 		derived, derr := awconfig.DeriveServerNameFromURL(baseURL)
@@ -147,6 +206,11 @@ func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName
 		}
 	}
 	if err := awconfig.ValidateBaseURL(baseURL); err != nil {
+		return "", "", nil, err
+	}
+
+	baseURL, err = normalizeMountBaseURL(baseURL)
+	if err != nil {
 		return "", "", nil, err
 	}
 	return baseURL, serverName, global, nil

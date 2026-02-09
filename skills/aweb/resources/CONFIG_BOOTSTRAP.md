@@ -15,7 +15,8 @@ servers:
   local:
     url: http://localhost:8000
   cloud:
-    url: https://app.aweb.ai
+    # Wrapper servers mount the OSS app at /api.
+    url: https://app.aweb.ai/api
 
 accounts:
   acct-local__myproject__alice:
@@ -41,7 +42,7 @@ aw init --url http://localhost:8000 --project-slug myproject --alias alice
 ```
 
 Key flags:
-- `--url` — Server base URL (default: from config, then `http://localhost:8000`)
+- `--url` — Base URL for the OSS app (or set via config/`AWEB_URL`)
 - `--project-slug` — Project identifier (default: `AWEB_PROJECT` env var)
 - `--alias` — Agent alias (default: server-suggested)
 - `--project-name` — Project display name (default: `AWEB_PROJECT_NAME` or project-slug)
@@ -52,17 +53,15 @@ Key flags:
 - `--write-context` — Write `.aw/context` in current directory (default: true)
 - `--print-exports` — Print shell export lines after init
 - `--cloud-token` — Bearer token for hosted cloud bootstrap
-- `--cloud` — Force cloud bootstrap mode
+- `--cloud` — Use cloud bootstrap mode
 
 ## Cloud Bootstrap
 
 For hosted aweb.ai, use cloud bootstrap:
 
 ```bash
-aw init --url https://app.aweb.ai --cloud --cloud-token <token> --project-slug myproject
+aw init --url https://app.aweb.ai/api --cloud --cloud-token <token> --project-slug myproject
 ```
-
-Cloud mode is auto-detected when the URL is `app.aweb.ai` or `AWEB_CLOUD_MODE=true`.
 
 ## Environment Variables
 
@@ -79,7 +78,6 @@ Cloud mode is auto-detected when the URL is `app.aweb.ai` or `AWEB_CLOUD_MODE=tr
 | `AWEB_HUMAN` | Human operator name (also: `AWEB_HUMAN_NAME`) |
 | `AWEB_AGENT_TYPE` | Agent type |
 | `AWEB_CLOUD_TOKEN` | Cloud bearer token |
-| `AWEB_CLOUD_MODE` | Force cloud bootstrap (`1`, `true`, `yes`, `on`) |
 
 ## Worktree Context
 

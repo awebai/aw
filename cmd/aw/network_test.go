@@ -31,11 +31,11 @@ func TestMailSendNetworkAddressRoutesToCloudEndpoint(t *testing.T) {
 				"from_address": "myorg/me",
 				"to_address":   "acme/researcher",
 			})
-		case "/v1/agents/heartbeat":
-			w.WriteHeader(http.StatusOK)
-		default:
-			t.Fatalf("unexpected path=%s", r.URL.Path)
-		}
+			case "/api/v1/agents/heartbeat":
+				w.WriteHeader(http.StatusOK)
+			default:
+				t.Fatalf("unexpected path=%s", r.URL.Path)
+			}
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -56,7 +56,7 @@ func TestMailSendNetworkAddressRoutesToCloudEndpoint(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
 servers:
   local:
-    url: `+server.URL+`
+    url: `+server.URL+`/api
 accounts:
   acct:
     server: local
@@ -182,11 +182,11 @@ func TestChatSendNetworkAddressRoutesToCloudEndpoint(t *testing.T) {
 				"targets_connected": []string{},
 				"targets_left":      []string{},
 			})
-		case "/v1/agents/heartbeat":
-			w.WriteHeader(http.StatusOK)
-		default:
-			t.Fatalf("unexpected path=%s", r.URL.Path)
-		}
+			case "/api/v1/agents/heartbeat":
+				w.WriteHeader(http.StatusOK)
+			default:
+				t.Fatalf("unexpected path=%s", r.URL.Path)
+			}
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -207,7 +207,7 @@ func TestChatSendNetworkAddressRoutesToCloudEndpoint(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
 servers:
   local:
-    url: `+server.URL+`
+    url: `+server.URL+`/api
 accounts:
   acct:
     server: local
@@ -268,11 +268,11 @@ func TestDirectorySearch(t *testing.T) {
 				}},
 				"total": 1,
 			})
-		case "/v1/agents/heartbeat":
-			w.WriteHeader(http.StatusOK)
-		default:
-			t.Fatalf("unexpected path=%s", r.URL.Path)
-		}
+			case "/api/v1/agents/heartbeat":
+				w.WriteHeader(http.StatusOK)
+			default:
+				t.Fatalf("unexpected path=%s", r.URL.Path)
+			}
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -293,7 +293,7 @@ func TestDirectorySearch(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
 servers:
   local:
-    url: `+server.URL+`
+    url: `+server.URL+`/api
 accounts:
   acct:
     server: local
@@ -338,11 +338,11 @@ func TestDirectoryGetByAddress(t *testing.T) {
 				"capabilities": []string{"research"},
 				"description":  "Research agent",
 			})
-		case "/v1/agents/heartbeat":
-			w.WriteHeader(http.StatusOK)
-		default:
-			t.Fatalf("unexpected path=%s", r.URL.Path)
-		}
+			case "/api/v1/agents/heartbeat":
+				w.WriteHeader(http.StatusOK)
+			default:
+				t.Fatalf("unexpected path=%s", r.URL.Path)
+			}
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -363,7 +363,7 @@ func TestDirectoryGetByAddress(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
 servers:
   local:
-    url: `+server.URL+`
+    url: `+server.URL+`/api
 accounts:
   acct:
     server: local
