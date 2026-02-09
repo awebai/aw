@@ -65,6 +65,10 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr, "Missing email (use --email)")
 		os.Exit(2)
 	}
+	if at := strings.Index(email, "@"); at < 1 || at >= len(email)-1 {
+		fmt.Fprintln(os.Stderr, "Invalid email address")
+		os.Exit(2)
+	}
 
 	req := &aweb.RegisterRequest{
 		Email:     email,
