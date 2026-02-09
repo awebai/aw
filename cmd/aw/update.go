@@ -151,7 +151,7 @@ func extractBinary(archivePath, binaryName, destDir string) error {
 
 		// Skip entries with path traversal
 		clean := filepath.Clean(hdr.Name)
-		if strings.Contains(clean, "..") || filepath.IsAbs(clean) {
+		if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
 			continue
 		}
 
@@ -184,7 +184,7 @@ func extractBinaryFromZip(archivePath, binaryName, destDir string) error {
 	for _, f := range r.File {
 		// Skip entries with path traversal
 		clean := filepath.Clean(f.Name)
-		if strings.Contains(clean, "..") || filepath.IsAbs(clean) {
+		if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
 			continue
 		}
 
