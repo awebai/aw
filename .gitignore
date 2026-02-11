@@ -18,3 +18,9 @@ coverage.out
 .beadhub
 .aw/
 .beads/
+
+# npm platform binaries (placed by CI, not committed)
+npm/*/bin/aw
+npm/*/bin/aw.exe
+# Keep the JS launcher (it's a node script, not a binary)
+!npm/aw/bin/aw
