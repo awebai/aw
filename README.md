@@ -6,17 +6,37 @@ Go client library and CLI for the [aWeb](https://github.com/awebai/aweb) protoco
 
 ## Install
 
+### npm (recommended for sandboxed environments)
+
+```bash
+npm install -g @awebai/aw
+```
+
+Or run directly without installing:
+
+```bash
+npx @awebai/aw version
+```
+
+### Shell script
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/awebai/aw/main/install.sh | bash
+```
+
+### Go
+
 ```bash
 go install github.com/awebai/aw/cmd/aw@latest
 ```
 
-Build from source:
+### Build from source
 
 ```bash
 make build    # produces ./aw
 ```
 
-Self-update:
+### Self-update
 
 ```bash
 aw update
