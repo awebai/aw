@@ -79,6 +79,83 @@ func TestPending(t *testing.T) {
 	}
 }
 
+func TestPendingIncludesNetworkChats(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatPendingResponse{
+				Pending: []aweb.ChatPendingItem{
+					{SessionID: "local-1", Participants: []string{"alice", "bob"}, LastMessage: "hi", LastFrom: "bob", UnreadCount: 1},
+				},
+				MessagesWaiting: 1,
+			})
+		},
+		"GET /v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.NetworkChatPendingResponse{
+				Pending: []aweb.NetworkChatPendingItem{
+					{SessionID: "net-1", Participants: []string{"myorg/me", "acme/bot"}, LastMessage: "hello", LastFrom: "acme/bot", UnreadCount: 2},
+				},
+				MessagesWaiting: 2,
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Pending(context.Background(), mustClient(t, server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Pending) != 2 {
+		t.Fatalf("pending=%d, want 2 (local + network)", len(result.Pending))
+	}
+	if result.MessagesWaiting != 3 {
+		t.Fatalf("messages_waiting=%d, want 3", result.MessagesWaiting)
+	}
+
+	ids := map[string]bool{}
+	for _, p := range result.Pending {
+		ids[p.SessionID] = true
+	}
+	if !ids["local-1"] {
+		t.Fatal("missing local pending chat")
+	}
+	if !ids["net-1"] {
+		t.Fatal("missing network pending chat")
+	}
+}
+
+func TestPendingGracefulWithoutNetwork(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatPendingResponse{
+				Pending: []aweb.ChatPendingItem{
+					{SessionID: "s1", Participants: []string{"alice", "bob"}, UnreadCount: 1},
+				},
+				MessagesWaiting: 1,
+			})
+		},
+		// No /v1/network/chat/pending handler — returns 404.
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Pending(context.Background(), mustClient(t, server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Pending) != 1 {
+		t.Fatalf("pending=%d, want 1 (local only, network gracefully skipped)", len(result.Pending))
+	}
+	if result.Pending[0].SessionID != "s1" {
+		t.Fatalf("session_id=%s", result.Pending[0].SessionID)
+	}
+	if result.MessagesWaiting != 1 {
+		t.Fatalf("messages_waiting=%d, want 1", result.MessagesWaiting)
+	}
+}
+
 func TestExtendWait(t *testing.T) {
 	t.Parallel()
 

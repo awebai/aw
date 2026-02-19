@@ -586,7 +586,7 @@ func History(ctx context.Context, client *aweb.Client, targetAlias string) (*His
 	}, nil
 }
 
-// Pending lists conversations with unread messages.
+// Pending lists conversations with unread messages (both local and network).
 func Pending(ctx context.Context, client *aweb.Client) (*PendingResult, error) {
 	resp, err := client.ChatPending(ctx)
 	if err != nil {
@@ -594,11 +594,11 @@ func Pending(ctx context.Context, client *aweb.Client) (*PendingResult, error) {
 	}
 
 	result := &PendingResult{
-		Pending:         make([]PendingConversation, len(resp.Pending)),
+		Pending:         make([]PendingConversation, 0, len(resp.Pending)),
 		MessagesWaiting: resp.MessagesWaiting,
 	}
-	for i, p := range resp.Pending {
-		result.Pending[i] = PendingConversation{
+	for _, p := range resp.Pending {
+		result.Pending = append(result.Pending, PendingConversation{
 			SessionID:            p.SessionID,
 			Participants:         p.Participants,
 			LastMessage:          p.LastMessage,
@@ -607,6 +607,26 @@ func Pending(ctx context.Context, client *aweb.Client) (*PendingResult, error) {
 			LastActivity:         p.LastActivity,
 			SenderWaiting:        p.SenderWaiting,
 			TimeRemainingSeconds: p.TimeRemainingSeconds,
+		})
+	}
+
+	netResp, err := client.NetworkChatPending(ctx)
+	if err != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if err == nil {
+		result.MessagesWaiting += netResp.MessagesWaiting
+		for _, p := range netResp.Pending {
+			result.Pending = append(result.Pending, PendingConversation{
+				SessionID:            p.SessionID,
+				Participants:         p.Participants,
+				LastMessage:          p.LastMessage,
+				LastFrom:             p.LastFrom,
+				UnreadCount:          p.UnreadCount,
+				LastActivity:         p.LastActivity,
+				SenderWaiting:        p.SenderWaiting,
+				TimeRemainingSeconds: p.TimeRemainingSeconds,
+			})
 		}
 	}
 
