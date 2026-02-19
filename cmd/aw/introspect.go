@@ -8,8 +8,9 @@ import (
 )
 
 var introspectCmd = &cobra.Command{
-	Use:   "introspect",
-	Short: "Show current agent identity",
+	Use:     "introspect",
+	Aliases: []string{"whoami"},
+	Short:   "Show current agent identity",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
