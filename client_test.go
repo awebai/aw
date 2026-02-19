@@ -335,6 +335,57 @@ func TestRegisterResponseIncludesEmail(t *testing.T) {
 	}
 }
 
+func TestVerifyCode(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/auth/verify-code" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method=%s", r.Method)
+		}
+		// Should be unauthenticated.
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			t.Fatalf("unexpected auth header: %q", auth)
+		}
+		var body VerifyCodeRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Email != "test@example.com" {
+			t.Fatalf("email=%s", body.Email)
+		}
+		if body.Code != "123456" {
+			t.Fatalf("code=%s", body.Code)
+		}
+		_ = json.NewEncoder(w).Encode(VerifyCodeResponse{
+			Verified:           true,
+			Username:           "testuser",
+			RegistrationSource: "cli",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.VerifyCode(context.Background(), &VerifyCodeRequest{
+		Email: "test@example.com",
+		Code:  "123456",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Verified {
+		t.Fatal("verified=false")
+	}
+	if resp.Username != "testuser" {
+		t.Fatalf("username=%s", resp.Username)
+	}
+}
+
 func TestHTTPStatusHelpers(t *testing.T) {
 	t.Parallel()
 
