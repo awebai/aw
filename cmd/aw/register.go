@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -158,6 +159,34 @@ func runRegister(cmd *cobra.Command, args []string) error {
 	}
 
 	printJSON(resp)
+
+	if resp.VerificationRequired {
+		fmt.Fprintf(os.Stderr, "\nA verification code was sent to %s.\n", email)
+		if isTTY() {
+			fmt.Fprint(os.Stderr, "Enter the 6-digit code to activate your agent (or press Enter to skip): ")
+			reader := bufio.NewReader(os.Stdin)
+			line, _ := reader.ReadString('\n')
+			line = strings.TrimSpace(line)
+			if line != "" {
+				vctx, vcancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer vcancel()
+				vresp, verr := client.VerifyCode(vctx, &aweb.VerifyCodeRequest{
+					Email: email,
+					Code:  line,
+				})
+				if verr != nil {
+					fmt.Fprintf(os.Stderr, "Verification failed: %v\nRun 'aw verify --code CODE' to try again.\n", verr)
+				} else if vresp.Verified {
+					fmt.Fprintln(os.Stderr, "Verified! Your agent is now active.")
+				}
+			} else {
+				fmt.Fprintln(os.Stderr, "Run 'aw verify --code CODE' when you have the code.")
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "Run 'aw verify --code CODE' to activate your agent.")
+		}
+	}
+
 	return nil
 }
 

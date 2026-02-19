@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net"
@@ -2221,20 +2222,22 @@ func TestAwRegisterSuccess(t *testing.T) {
 		"--write-context=false",
 	)
 	run.Stdin = strings.NewReader("")
+	var stdout, stderr bytes.Buffer
+	run.Stdout = &stdout
+	run.Stderr = &stderr
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
 	)
 	run.Dir = tmp
-	out, err := run.CombinedOutput()
-	if err != nil {
-		t.Fatalf("run failed: %v\n%s", err, string(out))
+	if err := run.Run(); err != nil {
+		t.Fatalf("run failed: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
-		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, stdout.String())
 	}
 	if got["api_key"] != "aw_sk_register_test" {
 		t.Fatalf("api_key=%v", got["api_key"])
@@ -2250,6 +2253,11 @@ func TestAwRegisterSuccess(t *testing.T) {
 	}
 	if got["verification_required"] != true {
 		t.Fatalf("verification_required=%v", got["verification_required"])
+	}
+	// Non-TTY: should print verification instructions on stderr.
+	stderrStr := stderr.String()
+	if !strings.Contains(stderrStr, "aw verify") {
+		t.Fatalf("expected 'aw verify' in stderr, got: %s", stderrStr)
 	}
 }
 
