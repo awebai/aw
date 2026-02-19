@@ -6,6 +6,7 @@ package chat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -613,12 +614,17 @@ func Pending(ctx context.Context, client *aweb.Client) (*PendingResult, error) {
 	}
 
 	netResp, err := client.NetworkChatPending(ctx)
-	if err != nil && ctx.Err() != nil {
-		return nil, ctx.Err()
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		// Server doesn't support network chats — skip gracefully.
 	}
 	if err == nil {
+		netExtra := netResp.MessagesWaiting
 		for _, p := range netResp.Pending {
 			if _, dup := seen[p.SessionID]; dup {
+				netExtra -= p.UnreadCount
 				continue
 			}
 			seen[p.SessionID] = struct{}{}
@@ -632,8 +638,8 @@ func Pending(ctx context.Context, client *aweb.Client) (*PendingResult, error) {
 				SenderWaiting:        p.SenderWaiting,
 				TimeRemainingSeconds: p.TimeRemainingSeconds,
 			})
-			result.MessagesWaiting += p.UnreadCount
 		}
+		result.MessagesWaiting += netExtra
 	}
 
 	return result, nil
