@@ -36,8 +36,8 @@ var registerCmd = &cobra.Command{
 func init() {
 	registerCmd.Flags().StringVar(&registerServer, "server", "", "Base URL for the aweb server (required)")
 	registerCmd.Flags().StringVar(&registerEmail, "email", "", "Email address for the new account (required)")
-	registerCmd.Flags().StringVar(&registerUsername, "username", "", "Username (optional; server may auto-generate)")
-	registerCmd.Flags().StringVar(&registerAlias, "alias", "", "Agent alias (optional; server may auto-generate)")
+	registerCmd.Flags().StringVar(&registerUsername, "username", "", "Username for the new account (required)")
+	registerCmd.Flags().StringVar(&registerAlias, "alias", "", "Agent alias (required)")
 	registerCmd.Flags().StringVar(&registerHumanName, "human-name", "", "Human name (optional)")
 	registerCmd.Flags().BoolVar(&registerSaveConfig, "save-config", true, "Write/update ~/.config/aw/config.yaml with the new credentials")
 	registerCmd.Flags().BoolVar(&registerSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
@@ -70,15 +70,23 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		os.Exit(2)
 	}
 
+	username := strings.TrimSpace(registerUsername)
+	if username == "" {
+		fmt.Fprintln(os.Stderr, "Missing username (use --username)")
+		os.Exit(2)
+	}
+
+	alias := strings.TrimSpace(registerAlias)
+	if alias == "" {
+		fmt.Fprintln(os.Stderr, "Missing alias (use --alias)")
+		os.Exit(2)
+	}
+
 	req := &aweb.RegisterRequest{
 		Email:     email,
+		Username:  &username,
+		Alias:     &alias,
 		HumanName: strings.TrimSpace(registerHumanName),
-	}
-	if v := strings.TrimSpace(registerUsername); v != "" {
-		req.Username = &v
-	}
-	if v := strings.TrimSpace(registerAlias); v != "" {
-		req.Alias = &v
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -111,10 +119,9 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	alias := resp.Alias
 	accountName := strings.TrimSpace(accountFlag)
 	if accountName == "" {
-		accountName = deriveAccountName(serverName, resp.ProjectSlug, alias)
+		accountName = deriveAccountName(serverName, resp.ProjectSlug, resp.Alias)
 	}
 
 	if registerSaveConfig {

@@ -2084,7 +2084,8 @@ func TestAwRegisterMissingEmail(t *testing.T) {
 	}
 
 	// Non-TTY (no stdin) + no --email flag → should fail with usage error.
-	run := exec.CommandContext(ctx, bin, "register", "--server", server.URL)
+	run := exec.CommandContext(ctx, bin, "register", "--server", server.URL,
+		"--username", "testuser", "--alias", "alice")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -2130,7 +2131,8 @@ func TestAwRegisterInvalidEmail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "register", "--server", server.URL, "--email", "not-an-email")
+	run := exec.CommandContext(ctx, bin, "register", "--server", server.URL, "--email", "not-an-email",
+		"--username", "testuser", "--alias", "alice")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -2169,6 +2171,9 @@ func TestAwRegisterSuccess(t *testing.T) {
 			}
 			if payload["username"] != "testuser" {
 				t.Fatalf("username=%v", payload["username"])
+			}
+			if payload["alias"] != "alice" {
+				t.Fatalf("alias=%v", payload["alias"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"api_key":               "aw_sk_register_test",
@@ -2211,6 +2216,7 @@ func TestAwRegisterSuccess(t *testing.T) {
 		"--server", server.URL,
 		"--email", "test@example.com",
 		"--username", "testuser",
+		"--alias", "alice",
 		"--save-config=false",
 		"--write-context=false",
 	)
@@ -2284,6 +2290,8 @@ func TestAwRegisterServerNotSupported(t *testing.T) {
 	run := exec.CommandContext(ctx, bin, "register",
 		"--server", server.URL,
 		"--email", "test@example.com",
+		"--username", "testuser",
+		"--alias", "alice",
 		"--save-config=false",
 		"--write-context=false",
 	)
@@ -2343,6 +2351,8 @@ func TestAwRegisterEmailTaken(t *testing.T) {
 	run := exec.CommandContext(ctx, bin, "register",
 		"--server", server.URL,
 		"--email", "taken@example.com",
+		"--username", "testuser",
+		"--alias", "alice",
 		"--save-config=false",
 		"--write-context=false",
 	)
@@ -2409,6 +2419,7 @@ func TestAwRegisterWritesConfig(t *testing.T) {
 		"--server", server.URL,
 		"--email", "test@example.com",
 		"--username", "testuser",
+		"--alias", "alice",
 		"--write-context=false",
 	)
 	run.Stdin = strings.NewReader("")
@@ -2477,5 +2488,105 @@ func TestAwRegisterWritesConfig(t *testing.T) {
 	}
 	if !serverFound {
 		t.Fatalf("no server with url=%s in config:\n%s", server.URL, string(data))
+	}
+}
+
+func TestAwRegisterMissingUsername(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server", server.URL,
+		"--email", "test@example.com",
+		"--alias", "alice",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure, got success:\n%s", string(out))
+	}
+	if !strings.Contains(strings.ToLower(string(out)), "username") {
+		t.Fatalf("expected username-related error, got: %s", string(out))
+	}
+}
+
+func TestAwRegisterMissingAlias(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server", server.URL,
+		"--email", "test@example.com",
+		"--username", "testuser",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure, got success:\n%s", string(out))
+	}
+	if !strings.Contains(strings.ToLower(string(out)), "alias") {
+		t.Fatalf("expected alias-related error, got: %s", string(out))
 	}
 }
