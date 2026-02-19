@@ -17,6 +17,7 @@ type Selection struct {
 	DefaultProject string
 	AgentID        string
 	AgentAlias     string
+	Email          string
 }
 
 type ResolveOptions struct {
@@ -202,6 +203,7 @@ func finalizeSelection(accountName, serverName, baseURL, apiKey string, acct Acc
 		DefaultProject: strings.TrimSpace(acct.DefaultProject),
 		AgentID:        strings.TrimSpace(acct.AgentID),
 		AgentAlias:     strings.TrimSpace(acct.AgentAlias),
+		Email:          strings.TrimSpace(acct.Email),
 	}
 }
 

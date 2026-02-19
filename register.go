@@ -20,6 +20,7 @@ type RegisterResponse struct {
 	AgentID              string `json:"agent_id"`
 	Alias                string `json:"alias"`
 	Username             string `json:"username"`
+	Email                string `json:"email"`
 	ProjectSlug          string `json:"project_slug"`
 	ProjectName          string `json:"project_name"`
 	ServerURL            string `json:"server_url"`

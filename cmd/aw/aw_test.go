@@ -2383,6 +2383,7 @@ func TestAwRegisterWritesConfig(t *testing.T) {
 				"agent_id":              "agent-reg-1",
 				"alias":                 "alice",
 				"username":              "testuser",
+				"email":                 "test@example.com",
 				"project_slug":          "myproject",
 				"project_name":          "My Project",
 				"server_url":            "http://localhost:9999",
@@ -2471,6 +2472,9 @@ func TestAwRegisterWritesConfig(t *testing.T) {
 			}
 			if acct["default_project"] != "myproject" {
 				t.Fatalf("accounts.%s.default_project=%v", name, acct["default_project"])
+			}
+			if acct["email"] != "test@example.com" {
+				t.Fatalf("accounts.%s.email=%v", name, acct["email"])
 			}
 			break
 		}

@@ -83,6 +83,38 @@ func TestSaveGlobalToNoTempFileLeftBehind(t *testing.T) {
 	}
 }
 
+func TestAccountEmailFieldRoundTrips(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.yaml")
+
+	if err := UpdateGlobalAt(path, func(cfg *GlobalConfig) error {
+		cfg.Accounts["alice"] = Account{
+			Server:     "localhost:8000",
+			APIKey:     "aw_sk_test",
+			AgentAlias: "alice",
+			Email:      "alice@example.com",
+		}
+		cfg.DefaultAccount = "alice"
+		return nil
+	}); err != nil {
+		t.Fatalf("UpdateGlobalAt: %v", err)
+	}
+
+	cfg, err := LoadGlobalFrom(path)
+	if err != nil {
+		t.Fatalf("LoadGlobalFrom: %v", err)
+	}
+	acct, ok := cfg.Accounts["alice"]
+	if !ok {
+		t.Fatal("missing account alice")
+	}
+	if acct.Email != "alice@example.com" {
+		t.Fatalf("email=%q, want alice@example.com", acct.Email)
+	}
+}
+
 func TestUpdateGlobalAtMergesAccounts(t *testing.T) {
 	t.Parallel()
 

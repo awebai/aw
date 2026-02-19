@@ -295,6 +295,46 @@ func TestChatPendingItemNullTimeRemaining(t *testing.T) {
 	}
 }
 
+func TestRegisterResponseIncludesEmail(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/auth/register" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"api_key":               "aw_sk_test",
+			"agent_id":              "agent-1",
+			"alias":                 "alice",
+			"username":              "testuser",
+			"email":                 "test@example.com",
+			"project_slug":          "default",
+			"project_name":          "Default",
+			"server_url":            "http://localhost",
+			"verification_required": true,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := "alice"
+	username := "testuser"
+	resp, err := c.Register(context.Background(), &RegisterRequest{
+		Email:    "test@example.com",
+		Alias:    &alias,
+		Username: &username,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Email != "test@example.com" {
+		t.Fatalf("email=%q, want test@example.com", resp.Email)
+	}
+}
+
 func TestHTTPStatusHelpers(t *testing.T) {
 	t.Parallel()
 
