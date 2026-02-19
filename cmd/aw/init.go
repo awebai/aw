@@ -51,7 +51,7 @@ func init() {
 	initCmd.Flags().BoolVar(&initSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
 	initCmd.Flags().BoolVar(&initWriteContext, "write-context", true, "Write/update .aw/context in the current worktree (non-secret pointer)")
 	initCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
-	initCmd.Flags().StringVar(&initCloudToken, "cloud-token", "", "Cloud auth bearer token for hosted aweb-cloud bootstrap (default: AWEB_CLOUD_TOKEN, then AWEB_API_KEY if non-aw_sk_*)")
+	initCmd.Flags().StringVar(&initCloudToken, "cloud-token", "", "Cloud auth bearer token for hosted aweb-cloud bootstrap (default: AWEB_CLOUD_TOKEN, then AWEB_API_KEY if non-aw_sk_, then existing aw_sk_ keys from config)")
 	initCmd.Flags().BoolVar(&initCloudMode, "cloud", false, "Force hosted aweb-cloud bootstrap mode (skip probing /v1/init)")
 
 	rootCmd.AddCommand(initCmd)
@@ -121,6 +121,16 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if !aliasExplicit {
 		alias = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
 		aliasExplicit = alias != ""
+	}
+
+	// When using an existing API key for cloud bootstrap, --alias is required
+	// because the server cannot auto-assign unique aliases for peer agents.
+	if initCloudMode && !aliasExplicit {
+		token := resolveCloudToken(baseURL, serverName, global)
+		if strings.HasPrefix(token, "aw_sk_") {
+			fmt.Fprintln(os.Stderr, "--alias is required when bootstrapping a new agent with an existing API key")
+			os.Exit(2)
+		}
 	}
 
 	aliasWasDefaultSuggestion := false
@@ -261,7 +271,7 @@ func bootstrapViaCloud(
 ) (*aweb.InitResponse, error) {
 	token := resolveCloudToken(baseURL, serverName, global)
 	if strings.TrimSpace(token) == "" {
-		return nil, fmt.Errorf("hosted Cloud bootstrap requires --cloud-token or AWEB_CLOUD_TOKEN")
+		return nil, fmt.Errorf("hosted Cloud bootstrap requires --cloud-token, AWEB_CLOUD_TOKEN, or an existing aw_sk_ key in config")
 	}
 
 	cloudBaseURL, err := cloudRootBaseURL(baseURL)
@@ -363,6 +373,35 @@ func resolveCloudToken(baseURL, serverName string, global *awconfig.GlobalConfig
 		if token != "" && !strings.HasPrefix(token, "aw_sk_") {
 			return token
 		}
+	}
+
+	// Fall back to aw_sk_ keys — the server-side bootstrap endpoint accepts
+	// them to add a new agent to the same project as the existing key.
+	seenSK := map[string]struct{}{}
+	for _, accountName := range candidates {
+		if _, dup := seenSK[accountName]; dup {
+			continue
+		}
+		seenSK[accountName] = struct{}{}
+		acct, ok := global.Accounts[accountName]
+		if !ok {
+			continue
+		}
+		token := strings.TrimSpace(acct.APIKey)
+		if token != "" && strings.HasPrefix(token, "aw_sk_") {
+			return token
+		}
+	}
+	for _, name := range sortedAccountNames(global) {
+		token := strings.TrimSpace(global.Accounts[name].APIKey)
+		if token != "" && strings.HasPrefix(token, "aw_sk_") {
+			return token
+		}
+	}
+
+	// Last resort: AWEB_API_KEY with aw_sk_ prefix (skipped earlier in favor of JWT tokens).
+	if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); v != "" && strings.HasPrefix(v, "aw_sk_") {
+		return v
 	}
 
 	return ""

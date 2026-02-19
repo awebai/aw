@@ -1444,6 +1444,156 @@ default_account: cloud-acct
 	}
 }
 
+func TestAwInitCloudWithExistingAPIKey(t *testing.T) {
+	t.Parallel()
+
+	var cloudCalls int
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/agents/bootstrap":
+			cloudCalls++
+			if got := r.Header.Get("Authorization"); got != "Bearer aw_sk_existing" {
+				t.Fatalf("auth=%q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"org_id":             "org-1",
+				"org_slug":           "juan",
+				"org_name":           "Juan",
+				"project_id":         "proj-1",
+				"project_slug":       "default",
+				"project_name":       "Default",
+				"server_url":         "https://app.aweb.ai",
+				"bootstrap_endpoint": "/api/v1/agents/bootstrap",
+				"api_key":            "aw_sk_newagent",
+				"agent_id":           "agent-bob",
+				"alias":              "bob",
+				"created":            true,
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  prod:
+    url: `+server.URL+`
+accounts:
+  existing-acct:
+    server: prod
+    api_key: aw_sk_existing
+default_account: existing-acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--project-slug", "demo",
+		"--alias", "bob", "--print-exports=false", "--write-context=false", "--url", server.URL)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_CLOUD_TOKEN=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["api_key"] != "aw_sk_newagent" {
+		t.Fatalf("api_key=%v", got["api_key"])
+	}
+	if cloudCalls != 1 {
+		t.Fatalf("cloudCalls=%d", cloudCalls)
+	}
+}
+
+func TestAwInitCloudWithAPIKeyRequiresAlias(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/agents/bootstrap":
+			t.Fatal("bootstrap should not be called when alias is missing")
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  prod:
+    url: `+server.URL+`
+accounts:
+  existing-acct:
+    server: prod
+    api_key: aw_sk_existing
+default_account: existing-acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--project-slug", "demo",
+		"--print-exports=false", "--write-context=false", "--url", server.URL)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_CLOUD_TOKEN=",
+		"AWEB_API_KEY=",
+		"AWEB_ALIAS=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure, got success:\n%s", string(out))
+	}
+	outStr := string(out)
+	if !strings.Contains(outStr, "--alias") {
+		t.Fatalf("expected '--alias' hint in error, got: %s", outStr)
+	}
+}
+
 func TestAwChatSendAndLeavePositionalArgsOrder(t *testing.T) {
 	t.Parallel()
 
