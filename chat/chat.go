@@ -593,11 +593,13 @@ func Pending(ctx context.Context, client *aweb.Client) (*PendingResult, error) {
 		return nil, fmt.Errorf("getting pending chats: %w", err)
 	}
 
+	seen := map[string]struct{}{}
 	result := &PendingResult{
 		Pending:         make([]PendingConversation, 0, len(resp.Pending)),
 		MessagesWaiting: resp.MessagesWaiting,
 	}
 	for _, p := range resp.Pending {
+		seen[p.SessionID] = struct{}{}
 		result.Pending = append(result.Pending, PendingConversation{
 			SessionID:            p.SessionID,
 			Participants:         p.Participants,
@@ -615,8 +617,11 @@ func Pending(ctx context.Context, client *aweb.Client) (*PendingResult, error) {
 		return nil, ctx.Err()
 	}
 	if err == nil {
-		result.MessagesWaiting += netResp.MessagesWaiting
 		for _, p := range netResp.Pending {
+			if _, dup := seen[p.SessionID]; dup {
+				continue
+			}
+			seen[p.SessionID] = struct{}{}
 			result.Pending = append(result.Pending, PendingConversation{
 				SessionID:            p.SessionID,
 				Participants:         p.Participants,
@@ -627,6 +632,7 @@ func Pending(ctx context.Context, client *aweb.Client) (*PendingResult, error) {
 				SenderWaiting:        p.SenderWaiting,
 				TimeRemainingSeconds: p.TimeRemainingSeconds,
 			})
+			result.MessagesWaiting += p.UnreadCount
 		}
 	}
 

@@ -125,6 +125,42 @@ func TestPendingIncludesNetworkChats(t *testing.T) {
 	}
 }
 
+func TestPendingDeduplicatesOverlappingSessions(t *testing.T) {
+	t.Parallel()
+
+	// Some servers return the same session in both local and network pending.
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatPendingResponse{
+				Pending: []aweb.ChatPendingItem{
+					{SessionID: "shared-1", Participants: []string{"myorg/me", "acme/bot"}, UnreadCount: 3},
+				},
+				MessagesWaiting: 3,
+			})
+		},
+		"GET /v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.NetworkChatPendingResponse{
+				Pending: []aweb.NetworkChatPendingItem{
+					{SessionID: "shared-1", Participants: []string{"myorg/me", "acme/bot"}, UnreadCount: 3},
+				},
+				MessagesWaiting: 3,
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Pending(context.Background(), mustClient(t, server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Pending) != 1 {
+		t.Fatalf("pending=%d, want 1 (deduplicated)", len(result.Pending))
+	}
+	if result.MessagesWaiting != 3 {
+		t.Fatalf("messages_waiting=%d, want 3 (not double-counted)", result.MessagesWaiting)
+	}
+}
+
 func TestPendingGracefulWithoutNetwork(t *testing.T) {
 	t.Parallel()
 
