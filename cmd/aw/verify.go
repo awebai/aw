@@ -44,8 +44,9 @@ func runVerify(cmd *cobra.Command, args []string) error {
 
 	email := strings.TrimSpace(verifyEmail)
 	serverURL := strings.TrimSpace(serverFlag)
+	var apiKey string
 
-	// Resolve email and server from config if not provided.
+	// Resolve email, server, and API key from config if not fully provided.
 	if email == "" || serverURL == "" {
 		cfg, loadErr := awconfig.LoadGlobal()
 		if loadErr != nil && email == "" {
@@ -69,6 +70,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 				if serverURL == "" {
 					serverURL = sel.BaseURL
 				}
+				apiKey = sel.APIKey
 			}
 		}
 	}
@@ -122,7 +124,23 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		fatal(fmt.Errorf("verification failed"))
 	}
 
-	fmt.Println("Verified! Your agent is now active.")
+	fmt.Println("Verified!")
+
+	// Fire a heartbeat to confirm the API key is now active.
+	if apiKey != "" {
+		hbClient, hbErr := aweb.NewWithAPIKey(baseURL, apiKey)
+		if hbErr == nil {
+			hbCtx, hbCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, hbErr = hbClient.Heartbeat(hbCtx)
+			hbCancel()
+			if hbErr == nil {
+				fmt.Println("Your agent is now active.")
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: heartbeat failed after verification: %v\n", hbErr)
+			}
+		}
+	}
+
 	return nil
 }
 

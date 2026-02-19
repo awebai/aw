@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,7 +28,8 @@ func newLocalHTTPServer(t *testing.T, handler http.Handler) *httptest.Server {
 	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// aw probes for aweb by calling GET /v1/agents/heartbeat on candidate bases.
 		// Return any non-404 to indicate "endpoint exists" without side effects.
-		if r.URL.Path == "/v1/agents/heartbeat" || r.URL.Path == "/api/v1/agents/heartbeat" {
+		// Only intercept GET; POST is the actual heartbeat and should reach the inner handler.
+		if r.Method == http.MethodGet && (r.URL.Path == "/v1/agents/heartbeat" || r.URL.Path == "/api/v1/agents/heartbeat") {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
@@ -2932,6 +2934,88 @@ func TestAwVerifySuccess(t *testing.T) {
 	}
 }
 
+func TestAwVerifyHeartbeatAfterSuccess(t *testing.T) {
+	t.Parallel()
+
+	var heartbeatReceived int32
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/auth/verify-code" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verified":            true,
+				"username":            "testuser",
+				"registration_source": "cli",
+			})
+		case r.URL.Path == "/v1/agents/heartbeat" && r.Method == http.MethodPost:
+			atomic.AddInt32(&heartbeatReceived, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"agent_id": "ag_test",
+				"alias":    "tester",
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_testapikey
+    email: test@example.com
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "verify",
+		"--code", "123456",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+	outStr := string(out)
+	if !strings.Contains(strings.ToLower(outStr), "verified") {
+		t.Fatalf("expected 'verified' in output, got: %s", outStr)
+	}
+	if !strings.Contains(strings.ToLower(outStr), "active") {
+		t.Fatalf("expected 'active' in output, got: %s", outStr)
+	}
+	if atomic.LoadInt32(&heartbeatReceived) == 0 {
+		t.Fatal("expected heartbeat POST after verify, but server did not receive one")
+	}
+}
+
 func TestAwVerifyInvalidCode(t *testing.T) {
 	t.Parallel()
 
@@ -3012,8 +3096,13 @@ func TestAwVerifyResolvesEmailFromConfig(t *testing.T) {
 				"username":            "testuser",
 				"registration_source": "cli",
 			})
+		case "/v1/agents/heartbeat":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"agent_id": "ag_test",
+				"alias":    "tester",
+			})
 		default:
-			t.Fatalf("unexpected path=%s", r.URL.Path)
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 	}))
 
