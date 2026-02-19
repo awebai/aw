@@ -2754,6 +2754,107 @@ func TestAwRegisterMissingAlias(t *testing.T) {
 	}
 }
 
+func TestAwIntrospectVerificationRequired(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		maskedEmail string
+		wantEmail   bool
+	}{
+		{"with_masked_email", "t***@example.com", true},
+		{"without_masked_email", "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			details := map[string]any{}
+			if tc.maskedEmail != "" {
+				details["masked_email"] = tc.maskedEmail
+			}
+
+			server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/auth/introspect":
+					w.WriteHeader(http.StatusForbidden)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"error": map[string]any{
+							"code":    "EMAIL_VERIFICATION_REQUIRED",
+							"message": "Email verification pending.",
+							"details": details,
+						},
+					})
+				default:
+					// Accept heartbeat probes.
+				}
+			}))
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			tmp := t.TempDir()
+			bin := filepath.Join(tmp, "aw")
+			cfgPath := filepath.Join(tmp, "config.yaml")
+
+			build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+			wd, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+			build.Env = os.Environ()
+			if out, err := build.CombinedOutput(); err != nil {
+				t.Fatalf("build failed: %v\n%s", err, string(out))
+			}
+
+			if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+    email: test@example.com
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			run := exec.CommandContext(ctx, bin, "introspect")
+			run.Env = append(os.Environ(),
+				"AW_CONFIG_PATH="+cfgPath,
+				"AWEB_URL=",
+				"AWEB_API_KEY=",
+			)
+			run.Dir = tmp
+			out, err := run.CombinedOutput()
+			if err == nil {
+				t.Fatalf("expected failure, got success:\n%s", string(out))
+			}
+			outStr := string(out)
+			if !strings.Contains(outStr, "aw verify") {
+				t.Fatalf("expected 'aw verify' hint in error, got: %s", outStr)
+			}
+			if tc.wantEmail {
+				if !strings.Contains(outStr, tc.maskedEmail) {
+					t.Fatalf("expected masked email %q in output, got: %s", tc.maskedEmail, outStr)
+				}
+			} else {
+				if strings.Contains(outStr, "(") {
+					t.Fatalf("expected no parenthetical email in output, got: %s", outStr)
+				}
+			}
+			// Should NOT show the raw error code.
+			if strings.Contains(outStr, "EMAIL_VERIFICATION_REQUIRED") {
+				t.Fatalf("expected parsed error, not raw code: %s", outStr)
+			}
+		})
+	}
+}
+
 func TestAwVerifySuccess(t *testing.T) {
 	t.Parallel()
 

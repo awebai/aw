@@ -377,8 +377,42 @@ func printJSON(v any) {
 }
 
 func fatal(err error) {
-	fmt.Fprintln(os.Stderr, err.Error())
+	msg := err.Error()
+	if hint := checkVerificationRequired(err); hint != "" {
+		msg = hint
+	}
+	fmt.Fprintln(os.Stderr, msg)
 	os.Exit(1)
+}
+
+// checkVerificationRequired detects EMAIL_VERIFICATION_REQUIRED 403 errors
+// and returns a user-friendly message. Returns "" for non-matching errors.
+func checkVerificationRequired(err error) string {
+	statusCode, ok := aweb.HTTPStatusCode(err)
+	if !ok || statusCode != 403 {
+		return ""
+	}
+	body, ok := aweb.HTTPErrorBody(err)
+	if !ok {
+		return ""
+	}
+	var envelope struct {
+		Error struct {
+			Code    string `json:"code"`
+			Details struct {
+				MaskedEmail string `json:"masked_email"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(body), &envelope) != nil || envelope.Error.Code != "EMAIL_VERIFICATION_REQUIRED" {
+		return ""
+	}
+	hint := "email verification required"
+	if envelope.Error.Details.MaskedEmail != "" {
+		hint += " (" + envelope.Error.Details.MaskedEmail + ")"
+	}
+	hint += ". Run 'aw verify --code CODE' to activate your agent."
+	return hint
 }
 
 func debugLog(format string, args ...any) {
