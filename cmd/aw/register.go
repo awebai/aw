@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -108,10 +109,7 @@ func runRegister(cmd *cobra.Command, args []string) error {
 			fatal(fmt.Errorf("this server does not support CLI registration. Visit %s to create an account", serverURL))
 		case 409:
 			body, _ := aweb.HTTPErrorBody(err)
-			if strings.TrimSpace(body) != "" {
-				fatal(fmt.Errorf("email or username already taken: %s", body))
-			}
-			fatal(fmt.Errorf("email or username already taken"))
+			fatal(formatConflictError(body))
 		case 429:
 			fatal(fmt.Errorf("rate limited. Please try again later"))
 		default:
@@ -161,4 +159,39 @@ func runRegister(cmd *cobra.Command, args []string) error {
 
 	printJSON(resp)
 	return nil
+}
+
+// formatConflictError parses structured 409 error bodies from the server.
+// Expected format: {"error": {"code": "USERNAME_TAKEN", "message": "...", "details": {...}}}
+func formatConflictError(body string) error {
+	var envelope struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Details struct {
+				AttemptedUsername string `json:"attempted_username"`
+				AttemptedAlias   string `json:"attempted_alias"`
+				Source           string `json:"source"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &envelope); err == nil && envelope.Error.Code != "" {
+		switch envelope.Error.Code {
+		case "USERNAME_TAKEN":
+			name := envelope.Error.Details.AttemptedUsername
+			return fmt.Errorf("username %q is already taken; use --username to choose a different one", name)
+		case "ALIAS_TAKEN":
+			name := envelope.Error.Details.AttemptedAlias
+			return fmt.Errorf("alias %q is already taken; use --alias to choose a different one", name)
+		default:
+			if envelope.Error.Message != "" {
+				return fmt.Errorf("%s", envelope.Error.Message)
+			}
+		}
+	}
+	// Fall back to generic message for unstructured errors.
+	if strings.TrimSpace(body) != "" {
+		return fmt.Errorf("registration failed: %s", body)
+	}
+	return fmt.Errorf("registration failed (conflict)")
 }

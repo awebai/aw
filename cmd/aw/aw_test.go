@@ -2367,8 +2367,159 @@ func TestAwRegisterEmailTaken(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected failure, got success:\n%s", string(out))
 	}
-	if !strings.Contains(strings.ToLower(string(out)), "already taken") {
-		t.Fatalf("expected 'already taken' error, got: %s", string(out))
+	if !strings.Contains(strings.ToLower(string(out)), "already registered") {
+		t.Fatalf("expected 'already registered' error, got: %s", string(out))
+	}
+}
+
+func TestAwRegisterUsernameTaken(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/register":
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":    "USERNAME_TAKEN",
+					"message": "Username \"alice\" is already taken.",
+					"details": map[string]any{
+						"attempted_username": "alice",
+						"source":             "explicit",
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server", server.URL,
+		"--email", "test@example.com",
+		"--username", "alice",
+		"--alias", "myalias",
+		"--save-config=false",
+		"--write-context=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure, got success:\n%s", string(out))
+	}
+	outStr := string(out)
+	// Should show a clean message, not a raw JSON dump.
+	if strings.Contains(outStr, "USERNAME_TAKEN") {
+		t.Fatalf("expected parsed error, not raw JSON dump: %s", outStr)
+	}
+	if !strings.Contains(outStr, "alice") {
+		t.Fatalf("expected username 'alice' in error, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "--username") {
+		t.Fatalf("expected '--username' hint in error, got: %s", outStr)
+	}
+}
+
+func TestAwRegisterAliasTaken(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/register":
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":    "ALIAS_TAKEN",
+					"message": "Alias \"bob\" is already taken.",
+					"details": map[string]any{
+						"attempted_alias": "bob",
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server", server.URL,
+		"--email", "test@example.com",
+		"--username", "testuser",
+		"--alias", "bob",
+		"--save-config=false",
+		"--write-context=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure, got success:\n%s", string(out))
+	}
+	outStr := string(out)
+	// Should show a clean message, not a raw JSON dump.
+	if strings.Contains(outStr, "ALIAS_TAKEN") {
+		t.Fatalf("expected parsed error, not raw JSON dump: %s", outStr)
+	}
+	if !strings.Contains(outStr, "bob") {
+		t.Fatalf("expected alias 'bob' in error, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "--alias") {
+		t.Fatalf("expected '--alias' hint in error, got: %s", outStr)
 	}
 }
 
