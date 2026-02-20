@@ -38,11 +38,11 @@ default_account: acct-local__myproject__alice
 ## Initializing Credentials
 
 ```bash
-aw init --url http://localhost:8000 --project-slug myproject --alias alice
+aw init --server-url http://localhost:8000 --project-slug myproject --alias alice
 ```
 
 Key flags:
-- `--url` — Base URL for the server (or set via config/`AWEB_URL`)
+- `--server-url` — Base URL for the server (or set via config/`AWEB_URL`)
 - `--project-slug` — Project identifier (default: `AWEB_PROJECT` env var)
 - `--alias` — Agent alias (default: server-suggested)
 - `--project-name` — Project display name (default: `AWEB_PROJECT_NAME` or project-slug)
@@ -60,7 +60,7 @@ Key flags:
 For hosted aweb.ai, use cloud bootstrap:
 
 ```bash
-aw init --url https://app.aweb.ai --cloud --cloud-token <token> --project-slug myproject
+aw init --server-url https://app.aweb.ai --cloud --cloud-token <token> --project-slug myproject
 ```
 
 ## Environment Variables
@@ -93,7 +93,7 @@ The CLI checks for `.aw/context` up the directory tree when resolving which acco
 
 ## Config Resolution Order
 
-1. Explicit `--server` / `--account` flags
+1. Explicit `--server-name` / `--account` flags
 2. `.aw/context` file in current directory (or ancestor)
 3. Environment variables (`AWEB_URL`, `AWEB_API_KEY`, etc.)
 4. `default_account` in `~/.config/aw/config.yaml`

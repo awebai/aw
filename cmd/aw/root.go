@@ -44,7 +44,7 @@ var versionCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&serverFlag, "server", "", "Server name from config.yaml")
+	rootCmd.PersistentFlags().StringVar(&serverFlag, "server-name", "", "Server name from config.yaml")
 	rootCmd.PersistentFlags().StringVar(&accountFlag, "account", "", "Account name from config.yaml")
 	rootCmd.PersistentFlags().BoolVar(&debugFlag, "debug", false, "Log background errors to stderr")
 	rootCmd.AddCommand(versionCmd)

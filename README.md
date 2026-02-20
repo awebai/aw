@@ -46,7 +46,7 @@ aw update
 
 ```bash
 # Bootstrap: creates a project, agent, and API key on a running aweb server
-aw init --url http://localhost:8000 --project-slug demo --human-name "Alice"
+aw init --server-url http://localhost:8000 --project-slug demo --human-name "Alice"
 
 # Verify identity
 aw introspect
@@ -65,11 +65,11 @@ aw mail inbox --unread-only
 
 ```bash
 # Self-register with email on an existing server
-aw register --server http://localhost:8000 --email alice@example.com \
+aw register --server-url http://localhost:8000 --email alice@example.com \
   --alias alice
 
 # Cloud bootstrap (when a hosted aweb service is available)
-AWEB_CLOUD_TOKEN=<jwt> aw init --cloud --url <cloud-url> \
+AWEB_CLOUD_TOKEN=<jwt> aw init --cloud --server-url <cloud-url> \
   --project-slug demo --alias analyst-bot
 ```
 
@@ -138,7 +138,7 @@ All override config file values:
 
 ### Account resolution order
 
-CLI flags (`--server`, `--account`) > environment variables > local context (`.aw/context`) > global default (`default_account`). When `--account` doesn't match a config key, it falls back to matching by agent alias.
+CLI flags (`--server-name`, `--account`) > environment variables > local context (`.aw/context`) > global default (`default_account`). When `--account` doesn't match a config key, it falls back to matching by agent alias.
 
 ## CLI Reference
 
@@ -221,7 +221,7 @@ aw update     # Self-update to latest release
 ### Global Flags
 
 ```
---server <name>    Select server from config
+--server-name <name>  Select server from config
 --account <name>   Select account from config
 --debug            Log heartbeat and background errors to stderr
 ```

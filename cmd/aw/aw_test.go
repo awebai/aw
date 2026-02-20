@@ -191,7 +191,7 @@ server_accounts:
 		t.Fatalf("write context: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "introspect", "--server", "b")
+	run := exec.CommandContext(ctx, bin, "introspect", "--server-name", "b")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -1016,7 +1016,7 @@ func TestAwInitWritesConfig(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--server", "local", "--url", server.URL, "--account", "acct", "--print-exports=false", "--write-context=false")
+	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--server-name", "local", "--server-url", server.URL, "--account", "acct", "--print-exports=false", "--write-context=false")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1178,7 +1178,7 @@ func TestAwInitCloudModeSkipsInitProbe(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--project-slug", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--url", server.URL)
+	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--project-slug", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--server-url", server.URL)
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1257,7 +1257,7 @@ func TestAwInitAcceptsAPIV1BaseURL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--print-exports=false", "--write-context=false", "--url", server.URL+"/api/v1")
+	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/api/v1")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1331,7 +1331,7 @@ func TestAwInitAllowsCustomMountRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--print-exports=false", "--write-context=false", "--url", server.URL+"/custom")
+	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/custom")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1419,7 +1419,7 @@ default_account: cloud-acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--project-slug", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--url", server.URL)
+	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--project-slug", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--server-url", server.URL)
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1506,7 +1506,7 @@ default_account: existing-acct
 	}
 
 	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--project-slug", "demo",
-		"--alias", "bob", "--print-exports=false", "--write-context=false", "--url", server.URL)
+		"--alias", "bob", "--print-exports=false", "--write-context=false", "--server-url", server.URL)
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1575,7 +1575,7 @@ default_account: existing-acct
 	}
 
 	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--project-slug", "demo",
-		"--print-exports=false", "--write-context=false", "--url", server.URL)
+		"--print-exports=false", "--write-context=false", "--server-url", server.URL)
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -2237,7 +2237,7 @@ func TestAwRegisterMissingEmail(t *testing.T) {
 	}
 
 	// Non-TTY (no stdin) + no --email flag → should fail with usage error.
-	run := exec.CommandContext(ctx, bin, "register", "--server", server.URL,
+	run := exec.CommandContext(ctx, bin, "register", "--server-url", server.URL,
 		"--username", "testuser", "--alias", "alice")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
@@ -2284,7 +2284,7 @@ func TestAwRegisterInvalidEmail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "register", "--server", server.URL, "--email", "not-an-email",
+	run := exec.CommandContext(ctx, bin, "register", "--server-url", server.URL, "--email", "not-an-email",
 		"--username", "testuser", "--alias", "alice")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
@@ -2366,7 +2366,7 @@ func TestAwRegisterSuccess(t *testing.T) {
 	}
 
 	run := exec.CommandContext(ctx, bin, "register",
-		"--server", server.URL,
+		"--server-url", server.URL,
 		"--email", "test@example.com",
 		"--username", "testuser",
 		"--alias", "alice",
@@ -2448,7 +2448,7 @@ func TestAwRegisterServerNotSupported(t *testing.T) {
 	}
 
 	run := exec.CommandContext(ctx, bin, "register",
-		"--server", server.URL,
+		"--server-url", server.URL,
 		"--email", "test@example.com",
 		"--username", "testuser",
 		"--alias", "alice",
@@ -2509,7 +2509,7 @@ func TestAwRegisterEmailTaken(t *testing.T) {
 	}
 
 	run := exec.CommandContext(ctx, bin, "register",
-		"--server", server.URL,
+		"--server-url", server.URL,
 		"--email", "taken@example.com",
 		"--username", "testuser",
 		"--alias", "alice",
@@ -2577,7 +2577,7 @@ func TestAwRegisterUsernameTaken(t *testing.T) {
 	}
 
 	run := exec.CommandContext(ctx, bin, "register",
-		"--server", server.URL,
+		"--server-url", server.URL,
 		"--email", "test@example.com",
 		"--username", "alice",
 		"--alias", "myalias",
@@ -2652,7 +2652,7 @@ func TestAwRegisterAliasTaken(t *testing.T) {
 	}
 
 	run := exec.CommandContext(ctx, bin, "register",
-		"--server", server.URL,
+		"--server-url", server.URL,
 		"--email", "test@example.com",
 		"--username", "testuser",
 		"--alias", "bob",
@@ -2728,7 +2728,7 @@ func TestAwRegisterWritesConfig(t *testing.T) {
 	}
 
 	run := exec.CommandContext(ctx, bin, "register",
-		"--server", server.URL,
+		"--server-url", server.URL,
 		"--email", "test@example.com",
 		"--username", "testuser",
 		"--alias", "alice",
@@ -2836,7 +2836,7 @@ func TestAwRegisterMissingUsername(t *testing.T) {
 	}
 
 	run := exec.CommandContext(ctx, bin, "register",
-		"--server", server.URL,
+		"--server-url", server.URL,
 		"--email", "test@example.com",
 		"--alias", "alice",
 	)
@@ -2886,7 +2886,7 @@ func TestAwRegisterMissingAlias(t *testing.T) {
 	}
 
 	run := exec.CommandContext(ctx, bin, "register",
-		"--server", server.URL,
+		"--server-url", server.URL,
 		"--email", "test@example.com",
 		"--username", "testuser",
 	)
@@ -3063,7 +3063,7 @@ func TestAwVerifySuccess(t *testing.T) {
 	}
 
 	run := exec.CommandContext(ctx, bin, "verify",
-		"--server", server.URL,
+		"--server-url", server.URL,
 		"--email", "test@example.com",
 		"--code", "123456",
 	)
@@ -3207,7 +3207,7 @@ func TestAwVerifyInvalidCode(t *testing.T) {
 	}
 
 	run := exec.CommandContext(ctx, bin, "verify",
-		"--server", server.URL,
+		"--server-url", server.URL,
 		"--email", "test@example.com",
 		"--code", "000000",
 	)

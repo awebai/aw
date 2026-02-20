@@ -36,7 +36,7 @@ var registerCmd = &cobra.Command{
 }
 
 func init() {
-	registerCmd.Flags().StringVar(&registerServer, "server", "", "Base URL for the aweb server (required)")
+	registerCmd.Flags().StringVar(&registerServer, "server-url", "", "Base URL for the aweb server (required)")
 	registerCmd.Flags().StringVar(&registerEmail, "email", "", "Email address for the new account (required)")
 	registerCmd.Flags().StringVar(&registerUsername, "username", "", "Username for the new account (required)")
 	registerCmd.Flags().StringVar(&registerAlias, "alias", "", "Agent alias (required)")
@@ -51,7 +51,7 @@ func init() {
 func runRegister(cmd *cobra.Command, args []string) error {
 	serverURL := strings.TrimSpace(registerServer)
 	if serverURL == "" {
-		fmt.Fprintln(os.Stderr, "Missing server URL (use --server)")
+		fmt.Fprintln(os.Stderr, "Missing server URL (use --server-url)")
 		os.Exit(2)
 	}
 

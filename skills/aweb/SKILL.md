@@ -235,7 +235,7 @@ aw directory org-slug/alias
 
 These flags work on all commands:
 
-- `--server <name>` — Use a specific server from config.yaml
+- `--server-name <name>` — Use a specific server from config.yaml
 - `--account <name>` — Use a specific account from config.yaml
 
 ## Resources

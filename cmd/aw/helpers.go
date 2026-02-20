@@ -237,7 +237,7 @@ func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName
 		}
 	}
 	if baseURL == "" {
-		return "", "", nil, fmt.Errorf("no server selected (pass --url, set AWEB_URL, or configure a default account in your aw config)")
+		return "", "", nil, fmt.Errorf("no server selected (pass --server-url, set AWEB_URL, or configure a default account in your aw config)")
 	}
 	if serverName == "" {
 		derived, derr := awconfig.DeriveServerNameFromURL(baseURL)

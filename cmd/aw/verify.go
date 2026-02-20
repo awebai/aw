@@ -14,8 +14,9 @@ import (
 )
 
 var (
-	verifyEmail string
-	verifyCode  string
+	verifyEmail     string
+	verifyCode      string
+	verifyServerURL string
 )
 
 var verifyCmd = &cobra.Command{
@@ -31,6 +32,7 @@ var verifyCmd = &cobra.Command{
 func init() {
 	verifyCmd.Flags().StringVar(&verifyEmail, "email", "", "Email address to verify (resolved from config if omitted)")
 	verifyCmd.Flags().StringVar(&verifyCode, "code", "", "6-digit verification code from email (required)")
+	verifyCmd.Flags().StringVar(&verifyServerURL, "server-url", "", "Base URL for the aweb server (resolved from config if omitted)")
 
 	rootCmd.AddCommand(verifyCmd)
 }
@@ -43,7 +45,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	}
 
 	email := strings.TrimSpace(verifyEmail)
-	serverURL := strings.TrimSpace(serverFlag)
+	serverURL := strings.TrimSpace(verifyServerURL)
 	var apiKey string
 
 	// Resolve email, server, and API key from config if not fully provided.
@@ -61,7 +63,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 				AllowEnvOverrides: true,
 			})
 			if selErr != nil && (email == "" || serverURL == "") {
-				fatal(fmt.Errorf("failed to resolve account: %w (use --email and --server to specify directly)", selErr))
+				fatal(fmt.Errorf("failed to resolve account: %w (use --email and --server-url to specify directly)", selErr))
 			}
 			if selErr == nil {
 				if email == "" {
@@ -81,7 +83,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	}
 
 	if serverURL == "" {
-		fmt.Fprintln(os.Stderr, "Missing server (use --server, or configure a default account)")
+		fmt.Fprintln(os.Stderr, "Missing server URL (use --server-url, or configure a default account)")
 		os.Exit(2)
 	}
 

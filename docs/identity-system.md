@@ -286,7 +286,7 @@ Every CLI invocation resolves exactly one identity via a priority cascade.
 1. --account flag  (or AWEB_ACCOUNT env var)
    └─ Directly selects the named account. Server is implied.
 
-2. --server flag  (or AWEB_SERVER env var)
+2. --server-name flag  (or AWEB_SERVER env var)
    └─ Pick account for that server via:
       a. .aw/context → server_accounts[server]
       b. .aw/context → default_account (if on matching server)
@@ -304,7 +304,7 @@ Every CLI invocation resolves exactly one identity via a priority cascade.
 | Variable | Overrides | Notes |
 |---|---|---|
 | `AWEB_ACCOUNT` | Account selection | Same as `--account` |
-| `AWEB_SERVER` | Server selection | Same as `--server` |
+| `AWEB_SERVER` | Server selection | Same as `--server-name` |
 | `AWEB_URL` | Base URL | Skips server URL derivation |
 | `AWEB_API_KEY` | API key | Skips account's stored key |
 
@@ -551,7 +551,7 @@ accounts:
     api_key: aw_sk_...
 ```
 
-Switch with `--server prod` or map servers to accounts in `.aw/context`:
+Switch with `--server-name prod` or map servers to accounts in `.aw/context`:
 ```yaml
 server_accounts:
   prod: prod-alice
@@ -568,7 +568,7 @@ the nearest `.aw/context` walking up from the working directory.
   (account + server + key) at startup. There is no mid-command identity
   switching.
 - **Manual switching.** Moving between identities requires `--account`,
-  `--server`, or changing `.aw/context`. There is no automatic routing based
+  `--server-name`, or changing `.aw/context`. There is no automatic routing based
   on message target (e.g. a network message to `prod-org/alice` still uses
   the locally resolved identity, not an identity on that org's server).
 - **No key rotation UI.** Each `aw init` call generates a new key but does
