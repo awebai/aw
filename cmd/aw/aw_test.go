@@ -3307,3 +3307,105 @@ default_account: acct
 		t.Fatalf("expected 'verified' in output, got: %s", string(out))
 	}
 }
+
+func TestAwVerifyResolvesServerFromName(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/verify-code":
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["email"] != "alice@example.com" {
+				t.Fatalf("email=%s, expected alice@example.com", body["email"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verified":            true,
+				"username":            "alice",
+				"registration_source": "cli",
+			})
+		case "/v1/agents/heartbeat":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"agent_id": "ag_alice",
+				"alias":    "alice",
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// Config with two servers; default_account points to "other" (wrong server).
+	// Passing --server-name=target should select the target server's account.
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  target:
+    url: `+server.URL+`
+  other:
+    url: http://localhost:1
+accounts:
+  acct-target:
+    server: target
+    api_key: aw_sk_target
+    email: alice@example.com
+  acct-other:
+    server: other
+    api_key: aw_sk_other
+    email: other@example.com
+default_account: acct-other
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write .aw/context to map server name to account.
+	awDir := filepath.Join(tmp, ".aw")
+	if err := os.MkdirAll(awDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(awDir, "context"), []byte(strings.TrimSpace(`
+default_account: acct-target
+server_accounts:
+  target: acct-target
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// No --server-url; should resolve URL from config via --server-name.
+	run := exec.CommandContext(ctx, bin, "verify",
+		"--server-name", "target",
+		"--code", "123456",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+	if !strings.Contains(strings.ToLower(string(out)), "verified") {
+		t.Fatalf("expected 'verified' in output, got: %s", string(out))
+	}
+}
