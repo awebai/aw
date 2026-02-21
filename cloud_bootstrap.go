@@ -4,10 +4,11 @@ import "context"
 
 // CloudBootstrapAgentRequest is sent to POST /api/v1/agents/bootstrap.
 type CloudBootstrapAgentRequest struct {
-	ProjectID *string `json:"project_id,omitempty"`
-	Alias     *string `json:"alias,omitempty"`
-	HumanName string  `json:"human_name,omitempty"`
-	AgentType string  `json:"agent_type,omitempty"`
+	ProjectID     *string `json:"project_id,omitempty"`
+	Alias         *string `json:"alias,omitempty"`
+	HumanName     string  `json:"human_name,omitempty"`
+	AgentType     string  `json:"agent_type,omitempty"`
+	NamespaceSlug string  `json:"namespace_slug,omitempty"`
 }
 
 // CloudBootstrapAgentResponse is returned by POST /api/v1/agents/bootstrap.

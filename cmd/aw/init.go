@@ -26,7 +26,7 @@ var initCmd = &cobra.Command{
 }
 
 var (
-	initServerURL          string
+	initServerURL    string
 	initProjectSlug  string
 	initProjectName  string
 	initAlias        string
@@ -38,6 +38,7 @@ var (
 	initPrintExports bool
 	initCloudToken   string
 	initCloudMode    bool
+	initNamespace    string
 )
 
 func init() {
@@ -53,11 +54,20 @@ func init() {
 	initCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
 	initCmd.Flags().StringVar(&initCloudToken, "cloud-token", "", "Cloud auth bearer token for hosted aweb-cloud bootstrap (default: AWEB_CLOUD_TOKEN, then AWEB_API_KEY if non-aw_sk_, then existing aw_sk_ keys from config)")
 	initCmd.Flags().BoolVar(&initCloudMode, "cloud", false, "Force hosted aweb-cloud bootstrap mode (skip probing /v1/init)")
+	initCmd.Flags().StringVar(&initNamespace, "namespace", "", "Namespace slug (forces cloud mode; requires --alias)")
 
 	rootCmd.AddCommand(initCmd)
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
+	if strings.TrimSpace(initNamespace) != "" {
+		if strings.TrimSpace(initAlias) == "" && strings.TrimSpace(os.Getenv("AWEB_ALIAS")) == "" {
+			fmt.Fprintln(os.Stderr, "--namespace requires --alias (server cannot auto-assign in a specific namespace)")
+			os.Exit(2)
+		}
+		initCloudMode = true
+	}
+
 	baseURL, serverName, global, err := resolveBaseURLForInit(initServerURL, serverFlag)
 	if err != nil {
 		fatal(err)
@@ -184,7 +194,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	var resp *aweb.InitResponse
 	if initCloudMode {
-		resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req)
+		resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req, strings.TrimSpace(initNamespace))
 	} else {
 		resp, err = bootstrapClient.Init(ctx, req)
 	}
@@ -196,7 +206,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if !aliasExplicit && aliasWasDefaultSuggestion && !resp.Created {
 		req.Alias = nil
 		if initCloudMode {
-			resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req)
+			resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req, strings.TrimSpace(initNamespace))
 		} else {
 			resp, err = bootstrapClient.Init(ctx, req)
 		}
@@ -269,6 +279,7 @@ func bootstrapViaCloud(
 	serverName string,
 	global *awconfig.GlobalConfig,
 	req *aweb.InitRequest,
+	namespaceSlug string,
 ) (*aweb.InitResponse, error) {
 	token := resolveCloudToken(baseURL, serverName, global)
 	if strings.TrimSpace(token) == "" {
@@ -286,9 +297,10 @@ func bootstrapViaCloud(
 	}
 
 	cloudReq := &aweb.CloudBootstrapAgentRequest{
-		Alias:     req.Alias,
-		HumanName: req.HumanName,
-		AgentType: req.AgentType,
+		Alias:         req.Alias,
+		HumanName:     req.HumanName,
+		AgentType:     req.AgentType,
+		NamespaceSlug: namespaceSlug,
 	}
 
 	cloudResp, err := cloudClient.CloudBootstrapAgent(ctx, cloudReq)

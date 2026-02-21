@@ -4128,3 +4128,236 @@ default_account: acct
 		t.Fatalf("post address=%v", postBody["address"])
 	}
 }
+
+func TestAwInitNamespaceRequiresAlias(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: http://localhost:9999
+accounts:
+  acct:
+    server: local
+    api_key: cloudtoken123
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "init",
+		"--server-url", "http://localhost:9999",
+		"--namespace", "mycomp",
+		"--project-slug", "demo",
+	)
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected error without --alias, got success: %s", string(out))
+	}
+	if !strings.Contains(string(out), "--alias") {
+		t.Fatalf("expected error about --alias, got: %s", string(out))
+	}
+}
+
+func TestAwInitNamespaceForcesCloudMode(t *testing.T) {
+	t.Parallel()
+
+	var bootstrapBody map[string]any
+	var bootstrapCalled atomic.Bool
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/agents/bootstrap":
+			bootstrapCalled.Store(true)
+			if err := json.NewDecoder(r.Body).Decode(&bootstrapBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"org_id":       "org-1",
+				"org_slug":     "mycomp",
+				"org_name":     "My Company",
+				"project_id":   "proj-1",
+				"project_slug": "demo",
+				"project_name": "Demo",
+				"server_url":   "http://localhost:9999",
+				"api_key":      "aw_sk_new",
+				"agent_id":     "agent-new",
+				"alias":        "billing",
+				"created":      true,
+			})
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_slug": "demo",
+				"name_prefix":  "alice",
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "init",
+		"--server-url", server.URL,
+		"--namespace", "mycomp",
+		"--alias", "billing",
+		"--project-slug", "demo",
+		"--cloud-token", "jwt_token_123",
+		"--write-context=false",
+	)
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	if !bootstrapCalled.Load() {
+		t.Fatal("expected cloud bootstrap to be called")
+	}
+	if bootstrapBody["namespace_slug"] != "mycomp" {
+		t.Fatalf("namespace_slug=%v, want mycomp", bootstrapBody["namespace_slug"])
+	}
+}
+
+func TestAwInitNamespaceStoresInConfig(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/agents/bootstrap":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"org_id":       "org-1",
+				"org_slug":     "mycomp",
+				"org_name":     "My Company",
+				"project_id":   "proj-1",
+				"project_slug": "demo",
+				"project_name": "Demo",
+				"server_url":   "http://localhost:9999",
+				"api_key":      "aw_sk_new",
+				"agent_id":     "agent-new",
+				"alias":        "billing",
+				"created":      true,
+			})
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_slug": "demo",
+				"name_prefix":  "alice",
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "init",
+		"--server-url", server.URL,
+		"--namespace", "mycomp",
+		"--alias", "billing",
+		"--project-slug", "demo",
+		"--cloud-token", "jwt_token_123",
+		"--write-context=false",
+	)
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg struct {
+		Accounts map[string]map[string]any `yaml:"accounts"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(data))
+	}
+	var found bool
+	for name, acct := range cfg.Accounts {
+		if acct["api_key"] == "aw_sk_new" {
+			found = true
+			if acct["namespace_slug"] != "mycomp" {
+				t.Fatalf("accounts.%s.namespace_slug=%v, want mycomp", name, acct["namespace_slug"])
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no account with api_key=aw_sk_new in config:\n%s", string(data))
+	}
+}
