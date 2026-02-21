@@ -93,8 +93,53 @@ var agentAccessModeCmd = &cobra.Command{
 	},
 }
 
+var agentPrivacyCmd = &cobra.Command{
+	Use:   "privacy [public|private]",
+	Short: "Get or set agent privacy",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		client, sel := mustResolve()
+		agentID := mustAgentID(ctx, client, sel)
+
+		if len(args) == 0 {
+			agents, err := client.ListAgents(ctx)
+			if err != nil {
+				fatal(err)
+			}
+			for _, a := range agents.Agents {
+				if a.AgentID == agentID {
+					printJSON(map[string]string{
+						"agent_id": a.AgentID,
+						"privacy":  a.Privacy,
+					})
+					return nil
+				}
+			}
+			fatal(fmt.Errorf("agent %s not found in agents list", agentID))
+		}
+
+		privacy := args[0]
+		if privacy != "public" && privacy != "private" {
+			fatal(fmt.Errorf("invalid privacy: %s (must be \"public\" or \"private\")", privacy))
+		}
+
+		resp, err := client.PatchAgent(ctx, agentID, &aweb.PatchAgentRequest{
+			Privacy: privacy,
+		})
+		if err != nil {
+			fatal(err)
+		}
+		printJSON(resp)
+		return nil
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(agentsCmd)
 	agentCmd.AddCommand(agentAccessModeCmd)
+	agentCmd.AddCommand(agentPrivacyCmd)
 	rootCmd.AddCommand(agentCmd)
 }

@@ -12,6 +12,7 @@ type AgentView struct {
 	LastSeen   string `json:"last_seen,omitempty"`
 	Online     bool   `json:"online"`
 	AccessMode string `json:"access_mode,omitempty"`
+	Privacy    string `json:"privacy,omitempty"`
 }
 
 type ListAgentsResponse struct {
@@ -28,12 +29,14 @@ func (c *Client) ListAgents(ctx context.Context) (*ListAgentsResponse, error) {
 }
 
 type PatchAgentRequest struct {
-	AccessMode string `json:"access_mode"`
+	AccessMode string `json:"access_mode,omitempty"`
+	Privacy    string `json:"privacy,omitempty"`
 }
 
 type PatchAgentResponse struct {
 	AgentID    string `json:"agent_id"`
-	AccessMode string `json:"access_mode"`
+	AccessMode string `json:"access_mode,omitempty"`
+	Privacy    string `json:"privacy,omitempty"`
 }
 
 func (c *Client) PatchAgent(ctx context.Context, agentID string, req *PatchAgentRequest) (*PatchAgentResponse, error) {

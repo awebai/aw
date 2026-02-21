@@ -3498,3 +3498,182 @@ func TestAwRegisterNamespaceSlugStoredInConfig(t *testing.T) {
 		t.Fatalf("no account with api_key=aw_sk_ns in config:\n%s", string(data))
 	}
 }
+
+func TestAwAgentPrivacyGet(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/introspect":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-1",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
+			})
+		case "/v1/agents":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-1",
+				"agents": []map[string]any{
+					{
+						"agent_id": "agent-1",
+						"alias":    "alice",
+						"online":   true,
+						"privacy":  "private",
+					},
+				},
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "agent", "privacy")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["agent_id"] != "agent-1" {
+		t.Fatalf("agent_id=%v", got["agent_id"])
+	}
+	if got["privacy"] != "private" {
+		t.Fatalf("privacy=%v", got["privacy"])
+	}
+}
+
+func TestAwAgentPrivacySet(t *testing.T) {
+	t.Parallel()
+
+	var patchBody map[string]any
+	var patchPath string
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/auth/introspect":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-1",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
+			})
+		case strings.HasPrefix(r.URL.Path, "/v1/agents/") && r.Method == http.MethodPatch:
+			patchPath = r.URL.Path
+			if err := json.NewDecoder(r.Body).Decode(&patchBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"agent_id": "agent-1",
+				"privacy":  patchBody["privacy"],
+			})
+		case r.URL.Path == "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s method=%s", r.URL.Path, r.Method)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "agent", "privacy", "private")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["agent_id"] != "agent-1" {
+		t.Fatalf("agent_id=%v", got["agent_id"])
+	}
+	if got["privacy"] != "private" {
+		t.Fatalf("privacy=%v", got["privacy"])
+	}
+	if patchPath != "/v1/agents/agent-1" {
+		t.Fatalf("patch path=%s", patchPath)
+	}
+	if patchBody["privacy"] != "private" {
+		t.Fatalf("patch privacy=%v", patchBody["privacy"])
+	}
+	// Verify access_mode is NOT sent (omitempty should suppress it).
+	if _, hasAccessMode := patchBody["access_mode"]; hasAccessMode {
+		t.Fatalf("access_mode should not be in patch body when only setting privacy, got: %v", patchBody)
+	}
+}
