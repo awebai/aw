@@ -16,14 +16,15 @@ type InitRequest struct {
 
 // InitResponse is returned by POST /v1/init.
 type InitResponse struct {
-	Status      string `json:"status"`
-	CreatedAt   string `json:"created_at"`
-	ProjectID   string `json:"project_id"`
-	ProjectSlug string `json:"project_slug"`
-	AgentID     string `json:"agent_id"`
-	Alias       string `json:"alias"`
-	APIKey      string `json:"api_key"`
-	Created     bool   `json:"created"`
+	Status        string `json:"status"`
+	CreatedAt     string `json:"created_at"`
+	ProjectID     string `json:"project_id"`
+	ProjectSlug   string `json:"project_slug"`
+	AgentID       string `json:"agent_id"`
+	Alias         string `json:"alias"`
+	APIKey        string `json:"api_key"`
+	NamespaceSlug string `json:"namespace_slug,omitempty"`
+	Created       bool   `json:"created"`
 }
 
 // Init bootstraps a project, agent, and API key.

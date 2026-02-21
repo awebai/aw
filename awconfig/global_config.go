@@ -27,6 +27,7 @@ type Account struct {
 	AgentID        string `yaml:"agent_id,omitempty"`
 	AgentAlias     string `yaml:"agent_alias,omitempty"`
 	Email          string `yaml:"email,omitempty"`
+	NamespaceSlug  string `yaml:"namespace_slug,omitempty"`
 }
 
 func DefaultGlobalConfigPath() (string, error) {

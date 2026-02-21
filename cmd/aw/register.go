@@ -141,6 +141,7 @@ func runRegister(cmd *cobra.Command, args []string) error {
 				AgentID:        resp.AgentID,
 				AgentAlias:     resp.Alias,
 				Email:          resp.Email,
+				NamespaceSlug:  resp.NamespaceSlug,
 			}
 			if strings.TrimSpace(cfg.DefaultAccount) == "" || registerSetDefault {
 				cfg.DefaultAccount = accountName

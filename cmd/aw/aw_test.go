@@ -3409,3 +3409,92 @@ server_accounts:
 		t.Fatalf("expected 'verified' in output, got: %s", string(out))
 	}
 }
+
+func TestAwRegisterNamespaceSlugStoredInConfig(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/register":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"api_key":               "aw_sk_ns",
+				"agent_id":              "agent-ns-1",
+				"alias":                 "alice",
+				"username":              "testuser",
+				"email":                 "test@example.com",
+				"project_slug":          "myproject",
+				"project_name":          "My Project",
+				"server_url":            "http://localhost:9999",
+				"namespace_slug":        "mycompany",
+				"verification_required": false,
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server-url", server.URL,
+		"--email", "test@example.com",
+		"--username", "testuser",
+		"--alias", "alice",
+		"--write-context=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg struct {
+		Accounts map[string]map[string]any `yaml:"accounts"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(data))
+	}
+	var found bool
+	for name, acct := range cfg.Accounts {
+		if acct["api_key"] == "aw_sk_ns" {
+			found = true
+			if acct["namespace_slug"] != "mycompany" {
+				t.Fatalf("accounts.%s.namespace_slug=%v, want mycompany", name, acct["namespace_slug"])
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no account with api_key=aw_sk_ns in config:\n%s", string(data))
+	}
+}

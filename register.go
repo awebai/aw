@@ -24,6 +24,7 @@ type RegisterResponse struct {
 	ProjectSlug          string `json:"project_slug"`
 	ProjectName          string `json:"project_name"`
 	ServerURL            string `json:"server_url"`
+	NamespaceSlug        string `json:"namespace_slug,omitempty"`
 	VerificationRequired bool   `json:"verification_required"`
 }
 

@@ -18,6 +18,7 @@ type Selection struct {
 	AgentID        string
 	AgentAlias     string
 	Email          string
+	NamespaceSlug  string
 }
 
 type ResolveOptions struct {
@@ -204,6 +205,7 @@ func finalizeSelection(accountName, serverName, baseURL, apiKey string, acct Acc
 		AgentID:        strings.TrimSpace(acct.AgentID),
 		AgentAlias:     strings.TrimSpace(acct.AgentAlias),
 		Email:          strings.TrimSpace(acct.Email),
+		NamespaceSlug:  strings.TrimSpace(acct.NamespaceSlug),
 	}
 }
 

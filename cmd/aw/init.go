@@ -232,6 +232,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 				DefaultProject: defaultProject,
 				AgentID:        resp.AgentID,
 				AgentAlias:     resp.Alias,
+				NamespaceSlug:  resp.NamespaceSlug,
 			}
 			if strings.TrimSpace(cfg.DefaultAccount) == "" || initSetDefault {
 				cfg.DefaultAccount = accountName
@@ -300,14 +301,15 @@ func bootstrapViaCloud(
 	}
 
 	return &aweb.InitResponse{
-		Status:      "ok",
-		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
-		ProjectID:   cloudResp.ProjectID,
-		ProjectSlug: cloudResp.ProjectSlug,
-		AgentID:     cloudResp.AgentID,
-		Alias:       cloudResp.Alias,
-		APIKey:      cloudResp.APIKey,
-		Created:     cloudResp.Created,
+		Status:        "ok",
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		ProjectID:     cloudResp.ProjectID,
+		ProjectSlug:   cloudResp.ProjectSlug,
+		AgentID:       cloudResp.AgentID,
+		Alias:         cloudResp.Alias,
+		APIKey:        cloudResp.APIKey,
+		NamespaceSlug: cloudResp.OrgSlug,
+		Created:       cloudResp.Created,
 	}, nil
 }
 
