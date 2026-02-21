@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	aweb "github.com/awebai/aw"
@@ -40,6 +41,24 @@ var mailSendCmd = &cobra.Command{
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
+		if strings.HasPrefix(mailSendToAlias, "@") {
+			handle := strings.TrimPrefix(mailSendToAlias, "@")
+			if handle == "" {
+				fatal(fmt.Errorf("empty handle: use @username"))
+			}
+			resp, err := mustClient().SendDM(ctx, &aweb.DMRequest{
+				ToHandle: handle,
+				Subject:  mailSendSubject,
+				Body:     mailSendBody,
+				Priority: mailSendPriority,
+			})
+			if err != nil {
+				fatal(err)
+			}
+			printJSON(resp)
+			return nil
+		}
 
 		addr := aweb.ParseNetworkAddress(mailSendToAlias)
 		if addr.IsNetwork {
