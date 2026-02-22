@@ -1443,3 +1443,101 @@ func TestChatHistoryVerifiesSignedMessages(t *testing.T) {
 		t.Fatalf("VerificationStatus=%q, want verified", msg.VerificationStatus)
 	}
 }
+
+func TestRotateKeySendsSignedRequest(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDID := ComputeDIDKey(pub)
+
+	newPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newDID := ComputeDIDKey(newPub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Fatalf("method=%s", r.Method)
+		}
+		if r.URL.Path != "/v1/agents/me/rotate" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"old_did":    oldDID,
+			"new_did":    newDID,
+			"rotated_at": "2026-02-22T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, oldDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.RotateKey(context.Background(), &RotateKeyRequest{
+		NewDID:       newDID,
+		NewPublicKey: newPub,
+		Custody:      CustodySelf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.OldDID != oldDID {
+		t.Fatalf("OldDID=%q", resp.OldDID)
+	}
+	if resp.NewDID != newDID {
+		t.Fatalf("NewDID=%q", resp.NewDID)
+	}
+
+	// Verify request fields.
+	if gotBody["new_did"] != newDID {
+		t.Fatalf("new_did=%v", gotBody["new_did"])
+	}
+	if gotBody["custody"] != CustodySelf {
+		t.Fatalf("custody=%v", gotBody["custody"])
+	}
+	// Verify rotation_signature is present.
+	rotSig, ok := gotBody["rotation_signature"].(string)
+	if !ok || rotSig == "" {
+		t.Fatal("rotation_signature missing")
+	}
+	if gotBody["new_public_key"] == nil || gotBody["new_public_key"] == "" {
+		t.Fatal("new_public_key missing")
+	}
+
+	// Verify the rotation signature using the old public key.
+	status, err := VerifyRotationSignature(pub, oldDID, newDID, gotBody["timestamp"].(string), rotSig)
+	if err != nil {
+		t.Fatalf("VerifyRotationSignature: %v", err)
+	}
+	if !status {
+		t.Fatal("rotation signature invalid")
+	}
+}
+
+func TestRotateKeyRequiresIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("should not reach server")
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.RotateKey(context.Background(), &RotateKeyRequest{
+		NewDID:  "did:key:z6MkTest",
+		Custody: CustodySelf,
+	})
+	if err == nil {
+		t.Fatal("expected error for legacy client")
+	}
+}
