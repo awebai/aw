@@ -30,6 +30,7 @@ func (c *Client) signEnvelope(env *MessageEnvelope) (signedFields, error) {
 	if c.signingKey == nil {
 		return signedFields{}, nil
 	}
+	env.From = c.address
 	env.FromDID = c.did
 	env.Timestamp = time.Now().UTC().Format(time.RFC3339)
 	sig, err := SignMessage(c.signingKey, env)
@@ -63,6 +64,7 @@ type Client struct {
 	apiKey     string
 	signingKey ed25519.PrivateKey // nil for legacy/custodial
 	did        string            // empty for legacy/custodial
+	address    string            // namespace/alias, used in signed envelopes
 }
 
 // New creates a new client.
@@ -116,6 +118,10 @@ func (c *Client) SigningKey() ed25519.PrivateKey { return c.signingKey }
 
 // DID returns the client's DID, or empty for legacy/custodial clients.
 func (c *Client) DID() string { return c.did }
+
+// SetAddress sets the client's agent address (namespace/alias) for use in
+// signed message envelopes.
+func (c *Client) SetAddress(address string) { c.address = address }
 
 type apiError struct {
 	StatusCode int

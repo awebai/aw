@@ -861,6 +861,7 @@ func TestSendMessageSignsWhenIdentitySet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.SetAddress("myco/agent")
 	resp, err := c.SendMessage(context.Background(), &SendMessageRequest{
 		ToAlias: "otherco/monitor",
 		Subject: "task complete",
@@ -885,12 +886,12 @@ func TestSendMessageSignsWhenIdentitySet(t *testing.T) {
 		t.Fatal("signature missing or empty")
 	}
 
-	// Verify the signature is valid by reconstructing the envelope.
+	// Verify using the same field mapping that Inbox() uses.
+	// This simulates a receive-side round-trip verification.
 	env := &MessageEnvelope{
-		From:      "", // sender address not known to library
+		From:      "myco/agent",
 		FromDID:   did,
 		To:        "otherco/monitor",
-		ToDID:     "",
 		Type:      "mail",
 		Subject:   "task complete",
 		Body:      "results attached",
@@ -1251,5 +1252,194 @@ func TestNetworkChatSendMessageSignsWhenIdentitySet(t *testing.T) {
 	}
 	if gotBody["signature"] == nil || gotBody["signature"] == "" {
 		t.Fatal("signature missing")
+	}
+}
+
+func TestInboxVerifiesSignedMessages(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	// Build a valid signed envelope.
+	env := &MessageEnvelope{
+		From:      "myco/agent",
+		FromDID:   did,
+		To:        "otherco/monitor",
+		Type:      "mail",
+		Subject:   "hello",
+		Body:      "world",
+		Timestamp: "2026-02-22T00:00:00Z",
+	}
+	sig, err := SignMessage(priv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{
+				"message_id":     "msg-1",
+				"from_agent_id":  "agent-uuid",
+				"from_alias":     "myco/agent",
+				"to_alias":       "otherco/monitor",
+				"subject":        "hello",
+				"body":           "world",
+				"priority":       "normal",
+				"created_at":     "2026-02-22T00:00:00Z",
+				"from_did":       did,
+				"to_did":         "",
+				"signature":      sig,
+				"signing_key_id": did,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 1 {
+		t.Fatalf("len=%d", len(resp.Messages))
+	}
+	msg := resp.Messages[0]
+	if msg.VerificationStatus != Verified {
+		t.Fatalf("VerificationStatus=%q, want verified", msg.VerificationStatus)
+	}
+}
+
+func TestInboxUnverifiedWithoutDID(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{
+				"message_id":    "msg-1",
+				"from_agent_id": "agent-uuid",
+				"from_alias":    "myco/agent",
+				"subject":       "hello",
+				"body":          "world",
+				"priority":      "normal",
+				"created_at":    "2026-02-22T00:00:00Z",
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := resp.Messages[0]
+	if msg.VerificationStatus != Unverified {
+		t.Fatalf("VerificationStatus=%q, want unverified", msg.VerificationStatus)
+	}
+}
+
+func TestInboxFailedBadSignature(t *testing.T) {
+	t.Parallel()
+
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{
+				"message_id":     "msg-1",
+				"from_agent_id":  "agent-uuid",
+				"from_alias":     "myco/agent",
+				"subject":        "hello",
+				"body":           "world",
+				"priority":       "normal",
+				"created_at":     "2026-02-22T00:00:00Z",
+				"from_did":       did,
+				"signature":      "dGhpcyBpcyBhIGJhZCBzaWduYXR1cmU", // invalid sig
+				"signing_key_id": did,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := resp.Messages[0]
+	if msg.VerificationStatus != Failed {
+		t.Fatalf("VerificationStatus=%q, want failed", msg.VerificationStatus)
+	}
+}
+
+func TestChatHistoryVerifiesSignedMessages(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	env := &MessageEnvelope{
+		From:      "myco/agent",
+		FromDID:   did,
+		To:        "",
+		Type:      "chat",
+		Subject:   "",
+		Body:      "hello chat",
+		Timestamp: "2026-02-22T00:00:00Z",
+	}
+	sig, err := SignMessage(priv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{
+				"message_id":     "msg-1",
+				"from_agent":     "myco/agent",
+				"body":           "hello chat",
+				"timestamp":      "2026-02-22T00:00:00Z",
+				"from_did":       did,
+				"signature":      sig,
+				"signing_key_id": did,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.ChatHistory(context.Background(), ChatHistoryParams{SessionID: "sess-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 1 {
+		t.Fatalf("len=%d", len(resp.Messages))
+	}
+	msg := resp.Messages[0]
+	if msg.VerificationStatus != Verified {
+		t.Fatalf("VerificationStatus=%q, want verified", msg.VerificationStatus)
 	}
 }

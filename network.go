@@ -153,6 +153,23 @@ func (c *Client) NetworkChatHistory(ctx context.Context, p ChatHistoryParams) (*
 	if err := c.get(ctx, path, &out); err != nil {
 		return nil, err
 	}
+	for i := range out.Messages {
+		m := &out.Messages[i]
+		env := &MessageEnvelope{
+			From:         m.FromAgent,
+			FromDID:      m.FromDID,
+			ToDID:        m.ToDID,
+			Type:         "chat",
+			Body:         m.Body,
+			Timestamp:    m.Timestamp,
+			FromStableID: m.FromStableID,
+			ToStableID:   m.ToStableID,
+			Signature:    m.Signature,
+			SigningKeyID: m.SigningKeyID,
+		}
+		// Error is encoded in VerificationStatus; discard it.
+		m.VerificationStatus, _ = VerifyMessage(env)
+	}
 	return &out, nil
 }
 

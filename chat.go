@@ -82,11 +82,18 @@ type ChatHistoryResponse struct {
 }
 
 type ChatMessage struct {
-	MessageID     string `json:"message_id"`
-	FromAgent     string `json:"from_agent"`
-	Body          string `json:"body"`
-	Timestamp     string `json:"timestamp"`
-	SenderLeaving bool   `json:"sender_leaving"`
+	MessageID          string             `json:"message_id"`
+	FromAgent          string             `json:"from_agent"`
+	Body               string             `json:"body"`
+	Timestamp          string             `json:"timestamp"`
+	SenderLeaving      bool               `json:"sender_leaving"`
+	FromDID            string             `json:"from_did,omitempty"`
+	ToDID              string             `json:"to_did,omitempty"`
+	FromStableID       string             `json:"from_stable_id,omitempty"`
+	ToStableID         string             `json:"to_stable_id,omitempty"`
+	Signature          string             `json:"signature,omitempty"`
+	SigningKeyID       string             `json:"signing_key_id,omitempty"`
+	VerificationStatus VerificationStatus `json:"verification_status,omitempty"`
 }
 
 type ChatHistoryParams struct {
@@ -109,6 +116,23 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 	var out ChatHistoryResponse
 	if err := c.get(ctx, path, &out); err != nil {
 		return nil, err
+	}
+	for i := range out.Messages {
+		m := &out.Messages[i]
+		env := &MessageEnvelope{
+			From:         m.FromAgent,
+			FromDID:      m.FromDID,
+			ToDID:        m.ToDID,
+			Type:         "chat",
+			Body:         m.Body,
+			Timestamp:    m.Timestamp,
+			FromStableID: m.FromStableID,
+			ToStableID:   m.ToStableID,
+			Signature:    m.Signature,
+			SigningKeyID: m.SigningKeyID,
+		}
+		// Error is encoded in VerificationStatus; discard it.
+		m.VerificationStatus, _ = VerifyMessage(env)
 	}
 	return &out, nil
 }
