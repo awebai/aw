@@ -7,6 +7,7 @@ require github.com/joho/godotenv v1.5.1
 require gopkg.in/yaml.v3 v3.0.1
 
 require (
+	github.com/mr-tron/base58 v1.2.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.39.0
 )
