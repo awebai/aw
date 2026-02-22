@@ -42,7 +42,7 @@ func init() {
 }
 
 func runDidRotateKey(cmd *cobra.Command, args []string) error {
-	_, sel := mustResolve()
+	c, sel := mustResolve()
 
 	// Custodial graduation: no local signing key, server signs on behalf.
 	if rotateKeySelfCustody {
@@ -52,27 +52,17 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 		return runCustodialGraduation(sel)
 	}
 
-	// Load the current signing key.
 	if sel.SigningKey == "" {
 		fmt.Fprintln(os.Stderr, "No signing key configured. Use --self-custody to graduate from custodial to self-custody.")
 		os.Exit(2)
 	}
-
-	oldPriv, err := awconfig.LoadSigningKey(sel.SigningKey)
-	if err != nil {
-		fatal(fmt.Errorf("load signing key: %w", err))
-	}
-	oldPub := oldPriv.Public().(ed25519.PublicKey)
-	oldDID := sel.DID
-	if oldDID == "" {
+	if sel.DID == "" {
 		fatal(fmt.Errorf("no DID configured for this account"))
 	}
 
-	// Create an identity client with the old key.
-	identityClient, err := aweb.NewWithIdentity(sel.BaseURL, sel.APIKey, oldPriv, oldDID)
-	if err != nil {
-		fatal(fmt.Errorf("create identity client: %w", err))
-	}
+	oldPriv := c.SigningKey()
+	oldPub := oldPriv.Public().(ed25519.PublicKey)
+	oldDID := c.DID()
 
 	// Generate new keypair.
 	newPub, newPriv, err := awconfig.GenerateKeypair()
@@ -84,7 +74,7 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	resp, err := identityClient.RotateKey(ctx, &aweb.RotateKeyRequest{
+	resp, err := c.RotateKey(ctx, &aweb.RotateKeyRequest{
 		NewDID:       newDID,
 		NewPublicKey: newPub,
 		Custody:      aweb.CustodySelf,

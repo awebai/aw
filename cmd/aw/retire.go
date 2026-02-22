@@ -7,7 +7,6 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
-	"github.com/awebai/aw/awconfig"
 	"github.com/spf13/cobra"
 )
 
@@ -27,7 +26,7 @@ func init() {
 }
 
 func runAgentRetire(cmd *cobra.Command, args []string) error {
-	_, sel := mustResolve()
+	c, sel := mustResolve()
 
 	// Validate successor address format.
 	parts := strings.SplitN(retireSuccessor, "/", 2)
@@ -38,31 +37,21 @@ func runAgentRetire(cmd *cobra.Command, args []string) error {
 	if sel.SigningKey == "" {
 		fatal(fmt.Errorf("no signing key configured; retirement requires a self-custody identity"))
 	}
-
-	priv, err := awconfig.LoadSigningKey(sel.SigningKey)
-	if err != nil {
-		fatal(fmt.Errorf("load signing key: %w", err))
-	}
 	if sel.DID == "" {
 		fatal(fmt.Errorf("no DID configured for this account"))
-	}
-
-	identityClient, err := aweb.NewWithIdentity(sel.BaseURL, sel.APIKey, priv, sel.DID)
-	if err != nil {
-		fatal(fmt.Errorf("create identity client: %w", err))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Resolve successor's DID from their address.
-	resolver := &aweb.ServerResolver{Client: identityClient}
+	resolver := &aweb.ServerResolver{Client: c}
 	successorIdentity, err := resolver.Resolve(ctx, retireSuccessor)
 	if err != nil {
 		fatal(fmt.Errorf("resolve successor %q: %w", retireSuccessor, err))
 	}
 
-	resp, err := identityClient.RetireAgent(ctx, &aweb.RetireAgentRequest{
+	resp, err := c.RetireAgent(ctx, &aweb.RetireAgentRequest{
 		SuccessorDID:     successorIdentity.DID,
 		SuccessorAddress: successorIdentity.Address,
 	})
