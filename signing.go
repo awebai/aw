@@ -18,6 +18,15 @@ const (
 	IdentityMismatch  VerificationStatus = "identity_mismatch"
 )
 
+// RotationAnnouncement is attached to messages after key rotation.
+// The old key signs the transition to the new key.
+type RotationAnnouncement struct {
+	OldDID          string `json:"old_did"`
+	NewDID          string `json:"new_did"`
+	Timestamp       string `json:"timestamp"`
+	OldKeySignature string `json:"old_key_signature"`
+}
+
 // MessageEnvelope holds the fields used for signing and verification.
 // Transport-only fields (Signature, SigningKeyID) are not part of the
 // signed payload but are carried here for convenience.

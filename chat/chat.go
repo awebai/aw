@@ -136,6 +136,21 @@ func parseSSEEvent(sseEvent *aweb.SSEEvent) Event {
 	if v, ok := data["signing_key_id"].(string); ok {
 		ev.SigningKeyID = v
 	}
+	if raData, ok := data["rotation_announcement"].(map[string]any); ok {
+		ev.RotationAnnouncement = &aweb.RotationAnnouncement{}
+		if v, ok := raData["old_did"].(string); ok {
+			ev.RotationAnnouncement.OldDID = v
+		}
+		if v, ok := raData["new_did"].(string); ok {
+			ev.RotationAnnouncement.NewDID = v
+		}
+		if v, ok := raData["timestamp"].(string); ok {
+			ev.RotationAnnouncement.Timestamp = v
+		}
+		if v, ok := raData["old_key_signature"].(string); ok {
+			ev.RotationAnnouncement.OldKeySignature = v
+		}
+	}
 
 	// Verify message signature when identity fields are present.
 	env := &aweb.MessageEnvelope{
@@ -255,8 +270,9 @@ func buildMessages(messages []aweb.ChatMessage) []Event {
 			FromStableID:       m.FromStableID,
 			ToStableID:         m.ToStableID,
 			Signature:          m.Signature,
-			SigningKeyID:       m.SigningKeyID,
-			VerificationStatus: m.VerificationStatus,
+			SigningKeyID:         m.SigningKeyID,
+			RotationAnnouncement: m.RotationAnnouncement,
+			VerificationStatus:   m.VerificationStatus,
 		}
 	}
 	return events
@@ -347,7 +363,7 @@ func waitForMessage(ctx context.Context, client *aweb.Client, openStream streamO
 			}
 
 			chatEvent := parseSSEEvent(sr.event)
-			chatEvent.VerificationStatus = client.CheckTOFUPin(chatEvent.VerificationStatus, chatEvent.FromAgent, chatEvent.FromDID)
+			chatEvent.VerificationStatus = client.CheckTOFUPin(chatEvent.VerificationStatus, chatEvent.FromAgent, chatEvent.FromDID, chatEvent.RotationAnnouncement)
 
 			if chatEvent.Type == "read_receipt" {
 				result.Events = append(result.Events, chatEvent)

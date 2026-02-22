@@ -77,9 +77,10 @@ type InboxMessage struct {
 	ToDID              string             `json:"to_did,omitempty"`
 	FromStableID       string             `json:"from_stable_id,omitempty"`
 	ToStableID         string             `json:"to_stable_id,omitempty"`
-	Signature          string             `json:"signature,omitempty"`
-	SigningKeyID       string             `json:"signing_key_id,omitempty"`
-	VerificationStatus VerificationStatus `json:"verification_status,omitempty"`
+	Signature              string                `json:"signature,omitempty"`
+	SigningKeyID           string                `json:"signing_key_id,omitempty"`
+	RotationAnnouncement   *RotationAnnouncement `json:"rotation_announcement,omitempty"`
+	VerificationStatus     VerificationStatus    `json:"verification_status,omitempty"`
 }
 
 type InboxResponse struct {
@@ -126,7 +127,7 @@ func (c *Client) Inbox(ctx context.Context, p InboxParams) (*InboxResponse, erro
 		// Error is encoded in VerificationStatus; discard it.
 		m.VerificationStatus, _ = VerifyMessage(env)
 		m.VerificationStatus = c.checkRecipientBinding(m.VerificationStatus, m.ToDID)
-		m.VerificationStatus = c.CheckTOFUPin(m.VerificationStatus, m.FromAlias, m.FromDID)
+		m.VerificationStatus = c.CheckTOFUPin(m.VerificationStatus, m.FromAlias, m.FromDID, m.RotationAnnouncement)
 	}
 	return &out, nil
 }

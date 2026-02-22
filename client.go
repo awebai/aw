@@ -156,10 +156,11 @@ func (c *Client) SetPinStore(ps *PinStore, path string) {
 
 // CheckTOFUPin checks a verified message against the TOFU pin store.
 // On first contact, creates a pin. On subsequent contact with matching DID,
-// updates last_seen. On DID mismatch, returns IdentityMismatch.
+// updates last_seen. On DID mismatch, checks for a valid rotation announcement
+// before returning IdentityMismatch.
 // Returns the status unchanged if no pin store is set, the message is not
 // verified, or from_did/from_alias is empty.
-func (c *Client) CheckTOFUPin(status VerificationStatus, fromAlias, fromDID string) VerificationStatus {
+func (c *Client) CheckTOFUPin(status VerificationStatus, fromAlias, fromDID string, ra *RotationAnnouncement) VerificationStatus {
 	if c.pinStore == nil || (status != Verified && status != VerifiedCustodial) || fromDID == "" || fromAlias == "" {
 		return status
 	}
@@ -168,18 +169,46 @@ func (c *Client) CheckTOFUPin(status VerificationStatus, fromAlias, fromDID stri
 
 	result := c.pinStore.CheckPin(fromAlias, fromDID, LifetimePersistent)
 	switch result {
-	case PinNew:
-		c.pinStore.StorePin(fromDID, fromAlias, "", "")
-		c.savePinStore()
-	case PinOK:
+	case PinNew, PinOK:
 		c.pinStore.StorePin(fromDID, fromAlias, "", "")
 		c.savePinStore()
 	case PinMismatch:
+		pinnedDID := c.pinStore.Addresses[fromAlias]
+		if ra != nil && c.verifyRotationAnnouncement(ra, fromDID, pinnedDID) {
+			delete(c.pinStore.Pins, pinnedDID)
+			c.pinStore.StorePin(fromDID, fromAlias, "", "")
+			c.savePinStore()
+			return status
+		}
 		return IdentityMismatch
 	case PinSkipped:
 		// Ephemeral agent — no pin check.
 	}
 	return status
+}
+
+// verifyRotationAnnouncement checks that a rotation announcement is valid:
+// the old key signed the transition from old_did to new_did, the message's
+// from_did matches the announcement's new_did, and the announcement's old_did
+// matches the currently pinned DID.
+func (c *Client) verifyRotationAnnouncement(ra *RotationAnnouncement, messageDID, pinnedDID string) bool {
+	if ra.OldDID == "" || ra.NewDID == "" || ra.OldKeySignature == "" || ra.Timestamp == "" {
+		return false
+	}
+	// The announcement's new_did must match the message's from_did.
+	if ra.NewDID != messageDID {
+		return false
+	}
+	// The announcement's old_did must match the pinned DID for this address.
+	if ra.OldDID != pinnedDID {
+		return false
+	}
+	oldPub, err := ExtractPublicKey(ra.OldDID)
+	if err != nil {
+		return false
+	}
+	ok, err := VerifyRotationSignature(oldPub, ra.OldDID, ra.NewDID, ra.Timestamp, ra.OldKeySignature)
+	return err == nil && ok
 }
 
 func (c *Client) savePinStore() {

@@ -3,6 +3,7 @@ package aweb
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -2177,5 +2178,484 @@ func TestInboxTOFUPinMismatch(t *testing.T) {
 	// Signature is valid for impostorDID, but TOFU pin expects originalDID → mismatch.
 	if resp.Messages[0].VerificationStatus != IdentityMismatch {
 		t.Fatalf("status=%s, want identity_mismatch", resp.Messages[0].VerificationStatus)
+	}
+}
+
+func TestInboxRotationAnnouncementAccepted(t *testing.T) {
+	t.Parallel()
+
+	// Old key (currently pinned).
+	oldPub, oldPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDID := ComputeDIDKey(oldPub)
+
+	// New key (sender has rotated to this).
+	newPub, newPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newDID := ComputeDIDKey(newPub)
+
+	// Create the rotation announcement: old key signs {new_did, old_did, timestamp}.
+	rotationTS := time.Now().UTC().Format(time.RFC3339)
+	rotationPayload := canonicalRotationJSON(oldDID, newDID, rotationTS)
+	rotationSig := ed25519.Sign(oldPriv, []byte(rotationPayload))
+	rotationSigStr := base64.RawStdEncoding.EncodeToString(rotationSig)
+
+	// Message signed by the new key.
+	env := &MessageEnvelope{
+		From:      "otherco/sender",
+		FromDID:   newDID,
+		To:        "myco/agent",
+		Type:      "mail",
+		Subject:   "post-rotation",
+		Body:      "hello after rotation",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		MessageID: "msg-rotated-1",
+	}
+	sig, err := SignMessage(newPriv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(InboxResponse{
+			Messages: []InboxMessage{{
+				MessageID:   "msg-rotated-1",
+				FromAgentID: "agent-1",
+				FromAlias:   "otherco/sender",
+				ToAlias:     "myco/agent",
+				Subject:     "post-rotation",
+				Body:        "hello after rotation",
+				CreatedAt:   env.Timestamp,
+				FromDID:     newDID,
+				Signature:   sig,
+				SigningKeyID: newDID,
+				RotationAnnouncement: &RotationAnnouncement{
+					OldDID:          oldDID,
+					NewDID:          newDID,
+					Timestamp:       rotationTS,
+					OldKeySignature: rotationSigStr,
+				},
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	receiverPub, receiverPriv, _ := ed25519.GenerateKey(nil)
+	receiverDID := ComputeDIDKey(receiverPub)
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-pin the old DID.
+	ps := NewPinStore()
+	ps.StorePin(oldDID, "otherco/sender", "", "")
+	c.SetPinStore(ps, "")
+
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(resp.Messages))
+	}
+
+	// Rotation announcement is valid → message should be accepted as Verified.
+	if resp.Messages[0].VerificationStatus != Verified {
+		t.Fatalf("status=%s, want verified (rotation should be accepted)", resp.Messages[0].VerificationStatus)
+	}
+
+	// Pin should be updated to the new DID.
+	if ps.Addresses["otherco/sender"] != newDID {
+		t.Fatalf("pin should be updated to new DID, got %q", ps.Addresses["otherco/sender"])
+	}
+	if _, ok := ps.Pins[newDID]; !ok {
+		t.Fatal("new DID should be pinned")
+	}
+	// Old DID's pin entry should be cleaned up.
+	if _, ok := ps.Pins[oldDID]; ok {
+		t.Fatal("old DID pin entry should be removed after rotation")
+	}
+}
+
+func TestInboxRotationAnnouncementInvalid(t *testing.T) {
+	t.Parallel()
+
+	// Old key (currently pinned).
+	oldPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDID := ComputeDIDKey(oldPub)
+
+	// New key (sender claims rotation).
+	newPub, newPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newDID := ComputeDIDKey(newPub)
+
+	// Forged rotation announcement: new key signs (not old key).
+	rotationTS := time.Now().UTC().Format(time.RFC3339)
+	rotationPayload := canonicalRotationJSON(oldDID, newDID, rotationTS)
+	forgedSig := ed25519.Sign(newPriv, []byte(rotationPayload)) // Wrong key!
+	forgedSigStr := base64.RawStdEncoding.EncodeToString(forgedSig)
+
+	// Message signed by the new key.
+	env := &MessageEnvelope{
+		From:      "otherco/sender",
+		FromDID:   newDID,
+		To:        "myco/agent",
+		Type:      "mail",
+		Subject:   "forged rotation",
+		Body:      "should be rejected",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		MessageID: "msg-forged-rot-1",
+	}
+	sig, err := SignMessage(newPriv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(InboxResponse{
+			Messages: []InboxMessage{{
+				MessageID:   "msg-forged-rot-1",
+				FromAgentID: "agent-1",
+				FromAlias:   "otherco/sender",
+				ToAlias:     "myco/agent",
+				Subject:     "forged rotation",
+				Body:        "should be rejected",
+				CreatedAt:   env.Timestamp,
+				FromDID:     newDID,
+				Signature:   sig,
+				SigningKeyID: newDID,
+				RotationAnnouncement: &RotationAnnouncement{
+					OldDID:          oldDID,
+					NewDID:          newDID,
+					Timestamp:       rotationTS,
+					OldKeySignature: forgedSigStr,
+				},
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	receiverPub, receiverPriv, _ := ed25519.GenerateKey(nil)
+	receiverDID := ComputeDIDKey(receiverPub)
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-pin the old DID.
+	ps := NewPinStore()
+	ps.StorePin(oldDID, "otherco/sender", "", "")
+	c.SetPinStore(ps, "")
+
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(resp.Messages))
+	}
+
+	// Forged announcement → IdentityMismatch.
+	if resp.Messages[0].VerificationStatus != IdentityMismatch {
+		t.Fatalf("status=%s, want identity_mismatch (forged rotation)", resp.Messages[0].VerificationStatus)
+	}
+
+	// Pin should NOT be updated.
+	if ps.Addresses["otherco/sender"] != oldDID {
+		t.Fatalf("pin should remain old DID, got %q", ps.Addresses["otherco/sender"])
+	}
+}
+
+func TestInboxRotationAnnouncementUnrelatedOldDID(t *testing.T) {
+	t.Parallel()
+
+	// Pinned key (the real sender).
+	pinnedPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinnedDID := ComputeDIDKey(pinnedPub)
+
+	// Attacker's key (unrelated to the pinned identity).
+	_, attackerPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attackerDID := ComputeDIDKey(attackerPriv.Public().(ed25519.PublicKey))
+
+	// New key the attacker wants to rotate to.
+	newPub, newPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newDID := ComputeDIDKey(newPub)
+
+	// Attacker crafts a rotation announcement from their own key (not the pinned one).
+	// The signature is valid (attacker signs with their own key), but old_did != pinned DID.
+	rotationTS := time.Now().UTC().Format(time.RFC3339)
+	rotationPayload := canonicalRotationJSON(attackerDID, newDID, rotationTS)
+	rotationSig := ed25519.Sign(attackerPriv, []byte(rotationPayload))
+	rotationSigStr := base64.RawStdEncoding.EncodeToString(rotationSig)
+
+	// Message signed by the new key.
+	env := &MessageEnvelope{
+		From:      "otherco/sender",
+		FromDID:   newDID,
+		To:        "myco/agent",
+		Type:      "mail",
+		Subject:   "hijack attempt",
+		Body:      "attacker tries to take over",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		MessageID: "msg-hijack-1",
+	}
+	sig, err := SignMessage(newPriv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(InboxResponse{
+			Messages: []InboxMessage{{
+				MessageID:   "msg-hijack-1",
+				FromAgentID: "agent-1",
+				FromAlias:   "otherco/sender",
+				ToAlias:     "myco/agent",
+				Subject:     "hijack attempt",
+				Body:        "attacker tries to take over",
+				CreatedAt:   env.Timestamp,
+				FromDID:     newDID,
+				Signature:   sig,
+				SigningKeyID: newDID,
+				RotationAnnouncement: &RotationAnnouncement{
+					OldDID:          attackerDID, // NOT the pinned DID!
+					NewDID:          newDID,
+					Timestamp:       rotationTS,
+					OldKeySignature: rotationSigStr,
+				},
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	receiverPub, receiverPriv, _ := ed25519.GenerateKey(nil)
+	receiverDID := ComputeDIDKey(receiverPub)
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pin the REAL sender's DID.
+	ps := NewPinStore()
+	ps.StorePin(pinnedDID, "otherco/sender", "", "")
+	c.SetPinStore(ps, "")
+
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(resp.Messages))
+	}
+
+	// Rotation announcement has valid signature but old_did != pinned DID → IdentityMismatch.
+	if resp.Messages[0].VerificationStatus != IdentityMismatch {
+		t.Fatalf("status=%s, want identity_mismatch (old_did doesn't match pinned DID)", resp.Messages[0].VerificationStatus)
+	}
+
+	// Pin must NOT be updated to the attacker's new DID.
+	if ps.Addresses["otherco/sender"] != pinnedDID {
+		t.Fatalf("pin should remain pinned DID, got %q", ps.Addresses["otherco/sender"])
+	}
+}
+
+func TestInboxRotationAnnouncementNewDIDMismatch(t *testing.T) {
+	t.Parallel()
+
+	// Old key (currently pinned).
+	oldPub, oldPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDID := ComputeDIDKey(oldPub)
+
+	// The DID declared in the rotation announcement (ra.NewDID).
+	declaredPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaredDID := ComputeDIDKey(declaredPub)
+
+	// The actual sender key (from_did in the message) — differs from ra.NewDID.
+	senderPub, senderPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderDID := ComputeDIDKey(senderPub)
+
+	// Rotation announcement: old key signs old→declared (not old→sender).
+	rotationTS := time.Now().UTC().Format(time.RFC3339)
+	rotationPayload := canonicalRotationJSON(oldDID, declaredDID, rotationTS)
+	rotationSig := ed25519.Sign(oldPriv, []byte(rotationPayload))
+	rotationSigStr := base64.RawStdEncoding.EncodeToString(rotationSig)
+
+	// Message signed by the actual sender (from_did = senderDID ≠ ra.NewDID).
+	env := &MessageEnvelope{
+		From:      "otherco/sender",
+		FromDID:   senderDID,
+		To:        "myco/agent",
+		Type:      "mail",
+		Subject:   "mismatch test",
+		Body:      "new_did != from_did",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		MessageID: "msg-newdid-mismatch-1",
+	}
+	sig, err := SignMessage(senderPriv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(InboxResponse{
+			Messages: []InboxMessage{{
+				MessageID:   "msg-newdid-mismatch-1",
+				FromAgentID: "agent-1",
+				FromAlias:   "otherco/sender",
+				ToAlias:     "myco/agent",
+				Subject:     "mismatch test",
+				Body:        "new_did != from_did",
+				CreatedAt:   env.Timestamp,
+				FromDID:     senderDID,
+				Signature:   sig,
+				SigningKeyID: senderDID,
+				RotationAnnouncement: &RotationAnnouncement{
+					OldDID:          oldDID,
+					NewDID:          declaredDID, // Different from from_did!
+					Timestamp:       rotationTS,
+					OldKeySignature: rotationSigStr,
+				},
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	receiverPub, receiverPriv, _ := ed25519.GenerateKey(nil)
+	receiverDID := ComputeDIDKey(receiverPub)
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ps := NewPinStore()
+	ps.StorePin(oldDID, "otherco/sender", "", "")
+	c.SetPinStore(ps, "")
+
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(resp.Messages))
+	}
+
+	// ra.NewDID != from_did → rotation rejected → IdentityMismatch.
+	if resp.Messages[0].VerificationStatus != IdentityMismatch {
+		t.Fatalf("status=%s, want identity_mismatch (ra.NewDID != from_did)", resp.Messages[0].VerificationStatus)
+	}
+}
+
+func TestInboxRotationAnnouncementEmptyFields(t *testing.T) {
+	t.Parallel()
+
+	// Old key (currently pinned).
+	oldPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDID := ComputeDIDKey(oldPub)
+
+	// New key.
+	newPub, newPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newDID := ComputeDIDKey(newPub)
+
+	// Message signed by the new key.
+	env := &MessageEnvelope{
+		From:      "otherco/sender",
+		FromDID:   newDID,
+		To:        "myco/agent",
+		Type:      "mail",
+		Subject:   "empty fields test",
+		Body:      "rotation with missing fields",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		MessageID: "msg-empty-rot-1",
+	}
+	sig, err := SignMessage(newPriv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(InboxResponse{
+			Messages: []InboxMessage{{
+				MessageID:   "msg-empty-rot-1",
+				FromAgentID: "agent-1",
+				FromAlias:   "otherco/sender",
+				ToAlias:     "myco/agent",
+				Subject:     "empty fields test",
+				Body:        "rotation with missing fields",
+				CreatedAt:   env.Timestamp,
+				FromDID:     newDID,
+				Signature:   sig,
+				SigningKeyID: newDID,
+				RotationAnnouncement: &RotationAnnouncement{
+					OldDID:          oldDID,
+					NewDID:          newDID,
+					Timestamp:       "", // Missing timestamp!
+					OldKeySignature: "",  // Missing signature!
+				},
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	receiverPub, receiverPriv, _ := ed25519.GenerateKey(nil)
+	receiverDID := ComputeDIDKey(receiverPub)
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ps := NewPinStore()
+	ps.StorePin(oldDID, "otherco/sender", "", "")
+	c.SetPinStore(ps, "")
+
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(resp.Messages))
+	}
+
+	// Malformed rotation announcement → IdentityMismatch.
+	if resp.Messages[0].VerificationStatus != IdentityMismatch {
+		t.Fatalf("status=%s, want identity_mismatch (empty rotation fields)", resp.Messages[0].VerificationStatus)
+	}
+
+	// Pin must NOT be updated.
+	if ps.Addresses["otherco/sender"] != oldDID {
+		t.Fatalf("pin should remain old DID, got %q", ps.Addresses["otherco/sender"])
 	}
 }

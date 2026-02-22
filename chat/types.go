@@ -27,9 +27,10 @@ type Event struct {
 	ToDID              string `json:"to_did,omitempty"`
 	FromStableID       string `json:"from_stable_id,omitempty"`
 	ToStableID         string `json:"to_stable_id,omitempty"`
-	Signature          string `json:"signature,omitempty"`
-	SigningKeyID       string `json:"signing_key_id,omitempty"`
-	VerificationStatus aweb.VerificationStatus `json:"verification_status,omitempty"`
+	Signature              string                    `json:"signature,omitempty"`
+	SigningKeyID           string                    `json:"signing_key_id,omitempty"`
+	RotationAnnouncement   *aweb.RotationAnnouncement `json:"rotation_announcement,omitempty"`
+	VerificationStatus     aweb.VerificationStatus    `json:"verification_status,omitempty"`
 }
 
 // SendResult is the result of sending a message and optionally waiting for a reply.
