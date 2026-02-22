@@ -2,6 +2,7 @@ package aweb
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -406,6 +407,101 @@ func TestHTTPStatusHelpers(t *testing.T) {
 	body, ok = HTTPErrorBody(context.Canceled)
 	if ok || body != "" {
 		t.Fatalf("non-api body=(%q,%v)", body, ok)
+	}
+}
+
+func TestNewWithIdentitySetsFields(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	c, err := NewWithIdentity("http://localhost:8000", "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SigningKey() == nil {
+		t.Fatal("SigningKey is nil")
+	}
+	if !c.SigningKey().Equal(priv) {
+		t.Fatal("SigningKey does not match")
+	}
+	if c.DID() != did {
+		t.Fatalf("DID=%q, want %q", c.DID(), did)
+	}
+}
+
+func TestNewWithIdentityValidation(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	if _, err := NewWithIdentity("http://localhost:8000", "aw_sk_test", nil, did); err == nil {
+		t.Fatal("expected error for nil signingKey")
+	}
+	if _, err := NewWithIdentity("http://localhost:8000", "aw_sk_test", priv, ""); err == nil {
+		t.Fatal("expected error for empty did")
+	}
+	if _, err := NewWithIdentity("http://localhost:8000", "aw_sk_test", priv, "did:key:z6Mkf5rGMoatrSj1f4CyvuHBeXJELe9RPdzo2PKGNCKVtZxP"); err == nil {
+		t.Fatal("expected error for mismatched did")
+	}
+}
+
+func TestNewWithAPIKeyLeavesIdentityNil(t *testing.T) {
+	t.Parallel()
+
+	c, err := NewWithAPIKey("http://localhost:8000", "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SigningKey() != nil {
+		t.Fatal("expected nil SigningKey for legacy client")
+	}
+	if c.DID() != "" {
+		t.Fatalf("expected empty DID for legacy client, got %q", c.DID())
+	}
+}
+
+func TestPutHelper(t *testing.T) {
+	t.Parallel()
+
+	var gotMethod, gotPath string
+	var gotBody map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out map[string]string
+	if err := c.put(context.Background(), "/v1/agents/me/rotate", map[string]string{"key": "val"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Fatalf("method=%s, want PUT", gotMethod)
+	}
+	if gotPath != "/v1/agents/me/rotate" {
+		t.Fatalf("path=%s", gotPath)
+	}
+	if out["status"] != "ok" {
+		t.Fatalf("status=%q", out["status"])
+	}
+	if gotBody["key"] != "val" {
+		t.Fatalf("body key=%q, want %q", gotBody["key"], "val")
 	}
 }
 

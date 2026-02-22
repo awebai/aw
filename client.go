@@ -3,6 +3,7 @@ package aweb
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,8 @@ type Client struct {
 	httpClient *http.Client
 	sseClient  *http.Client // No response timeout; SSE connections are long-lived.
 	apiKey     string
+	signingKey ed25519.PrivateKey // nil for legacy/custodial
+	did        string            // empty for legacy/custodial
 }
 
 // New creates a new client.
@@ -46,6 +49,7 @@ func New(baseURL string) (*Client, error) {
 }
 
 // NewWithAPIKey creates a new client authenticated with a project API key.
+// The client operates in legacy/custodial mode (no signing).
 func NewWithAPIKey(baseURL, apiKey string) (*Client, error) {
 	c, err := New(baseURL)
 	if err != nil {
@@ -54,6 +58,33 @@ func NewWithAPIKey(baseURL, apiKey string) (*Client, error) {
 	c.apiKey = apiKey
 	return c, nil
 }
+
+// NewWithIdentity creates an authenticated client with signing capability.
+func NewWithIdentity(baseURL, apiKey string, signingKey ed25519.PrivateKey, did string) (*Client, error) {
+	if signingKey == nil {
+		return nil, fmt.Errorf("signingKey must not be nil")
+	}
+	if did == "" {
+		return nil, fmt.Errorf("did must not be empty")
+	}
+	expected := ComputeDIDKey(signingKey.Public().(ed25519.PublicKey))
+	if did != expected {
+		return nil, fmt.Errorf("did does not match signingKey")
+	}
+	c, err := NewWithAPIKey(baseURL, apiKey)
+	if err != nil {
+		return nil, err
+	}
+	c.signingKey = signingKey
+	c.did = did
+	return c, nil
+}
+
+// SigningKey returns the client's signing key, or nil for legacy/custodial clients.
+func (c *Client) SigningKey() ed25519.PrivateKey { return c.signingKey }
+
+// DID returns the client's DID, or empty for legacy/custodial clients.
+func (c *Client) DID() string { return c.did }
 
 type apiError struct {
 	StatusCode int
@@ -95,6 +126,10 @@ func (c *Client) post(ctx context.Context, path string, in any, out any) error {
 
 func (c *Client) patch(ctx context.Context, path string, in any, out any) error {
 	return c.do(ctx, http.MethodPatch, path, in, out)
+}
+
+func (c *Client) put(ctx context.Context, path string, in any, out any) error {
+	return c.do(ctx, http.MethodPut, path, in, out)
 }
 
 func (c *Client) delete(ctx context.Context, path string) error {
