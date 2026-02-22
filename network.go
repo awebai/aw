@@ -167,9 +167,18 @@ func (c *Client) NetworkChatHistory(ctx context.Context, p ChatHistoryParams) (*
 	}
 	for i := range out.Messages {
 		m := &out.Messages[i]
+		from := m.FromAgent
+		if m.FromAddress != "" {
+			from = m.FromAddress
+		}
+		to := ""
+		if m.ToAddress != "" {
+			to = m.ToAddress
+		}
 		env := &MessageEnvelope{
-			From:         m.FromAgent,
+			From:         from,
 			FromDID:      m.FromDID,
+			To:           to,
 			ToDID:        m.ToDID,
 			Type:         "chat",
 			Body:         m.Body,
@@ -182,7 +191,7 @@ func (c *Client) NetworkChatHistory(ctx context.Context, p ChatHistoryParams) (*
 		}
 		// Error is encoded in VerificationStatus; discard it.
 		m.VerificationStatus, _ = VerifyMessage(env)
-		m.VerificationStatus = c.CheckTOFUPin(m.VerificationStatus, m.FromAgent, m.FromDID, m.RotationAnnouncement)
+		m.VerificationStatus = c.CheckTOFUPin(m.VerificationStatus, from, m.FromDID, m.RotationAnnouncement)
 	}
 	return &out, nil
 }

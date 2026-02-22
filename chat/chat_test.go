@@ -2079,3 +2079,42 @@ func TestParseSSEEventNoIdentityUnverified(t *testing.T) {
 		t.Fatalf("verification_status=%s, want %s", ev.VerificationStatus, aweb.Unverified)
 	}
 }
+
+func TestParseSSEEventUsesFromAddressForVerification(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := aweb.ComputeDIDKey(pub)
+
+	// Sign with full address.
+	env := &aweb.MessageEnvelope{
+		From:      "myco/alice",
+		FromDID:   did,
+		Type:      "chat",
+		Body:      "signed hello",
+		Timestamp: "2026-01-01T00:00:00Z",
+	}
+	sig, err := aweb.SignMessage(priv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// SSE data has from_agent="alice" (alias-only) but from_address="myco/alice".
+	data := fmt.Sprintf(`{"from_agent":"alice","from_address":"myco/alice","body":"signed hello","from_did":%q,"signature":%q,"signing_key_id":%q,"timestamp":"2026-01-01T00:00:00Z"}`, did, sig, did)
+
+	ev := parseSSEEvent(&aweb.SSEEvent{
+		Event: "message",
+		Data:  data,
+	})
+
+	if ev.FromAddress != "myco/alice" {
+		t.Fatalf("from_address=%q, want myco/alice", ev.FromAddress)
+	}
+	// Verification should succeed because From in envelope uses from_address.
+	if ev.VerificationStatus != aweb.Verified {
+		t.Fatalf("verification_status=%s, want verified (from_address should be used)", ev.VerificationStatus)
+	}
+}

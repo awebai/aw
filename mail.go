@@ -67,6 +67,8 @@ type InboxMessage struct {
 	FromAgentID        string             `json:"from_agent_id"`
 	FromAlias          string             `json:"from_alias"`
 	ToAlias            string             `json:"to_alias,omitempty"`
+	FromAddress        string             `json:"from_address,omitempty"`
+	ToAddress          string             `json:"to_address,omitempty"`
 	Subject            string             `json:"subject"`
 	Body               string             `json:"body"`
 	Priority           MessagePriority    `json:"priority"`
@@ -109,10 +111,18 @@ func (c *Client) Inbox(ctx context.Context, p InboxParams) (*InboxResponse, erro
 	}
 	for i := range out.Messages {
 		m := &out.Messages[i]
+		from := m.FromAlias
+		if m.FromAddress != "" {
+			from = m.FromAddress
+		}
+		to := m.ToAlias
+		if m.ToAddress != "" {
+			to = m.ToAddress
+		}
 		env := &MessageEnvelope{
-			From:         m.FromAlias,
+			From:         from,
 			FromDID:      m.FromDID,
-			To:           m.ToAlias,
+			To:           to,
 			ToDID:        m.ToDID,
 			Type:         "mail",
 			Subject:      m.Subject,
@@ -127,7 +137,7 @@ func (c *Client) Inbox(ctx context.Context, p InboxParams) (*InboxResponse, erro
 		// Error is encoded in VerificationStatus; discard it.
 		m.VerificationStatus, _ = VerifyMessage(env)
 		m.VerificationStatus = c.checkRecipientBinding(m.VerificationStatus, m.ToDID)
-		m.VerificationStatus = c.CheckTOFUPin(m.VerificationStatus, m.FromAlias, m.FromDID, m.RotationAnnouncement)
+		m.VerificationStatus = c.CheckTOFUPin(m.VerificationStatus, from, m.FromDID, m.RotationAnnouncement)
 	}
 	return &out, nil
 }

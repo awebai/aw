@@ -2762,3 +2762,181 @@ func TestInboxRotationAnnouncementEmptyFields(t *testing.T) {
 		t.Fatalf("pin should remain old DID, got %q", ps.Addresses["otherco/sender"])
 	}
 }
+
+func TestInboxUsesFromAddressForVerification(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	// Sign envelope with full address (namespace/alias).
+	env := &MessageEnvelope{
+		From:      "myco/agent",
+		FromDID:   did,
+		To:        "otherco/monitor",
+		Type:      "mail",
+		Subject:   "hello",
+		Body:      "world",
+		Timestamp: "2026-02-22T00:00:00Z",
+		MessageID: "msg-1",
+	}
+	sig, err := SignMessage(priv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{
+				"message_id":     "msg-1",
+				"from_agent_id":  "agent-uuid",
+				"from_alias":     "agent",
+				"to_alias":       "monitor",
+				"from_address":   "myco/agent",
+				"to_address":     "otherco/monitor",
+				"subject":        "hello",
+				"body":           "world",
+				"priority":       "normal",
+				"created_at":     "2026-02-22T00:00:00Z",
+				"from_did":       did,
+				"to_did":         "",
+				"signature":      sig,
+				"signing_key_id": did,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 1 {
+		t.Fatalf("len=%d", len(resp.Messages))
+	}
+	msg := resp.Messages[0]
+	// Signed with from_address="myco/agent", so verification should succeed
+	// only if Inbox uses from_address (not from_alias="agent").
+	if msg.VerificationStatus != Verified {
+		t.Fatalf("VerificationStatus=%q, want verified (from_address should be used)", msg.VerificationStatus)
+	}
+}
+
+func TestChatHistoryUsesFromAddressForVerification(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	env := &MessageEnvelope{
+		From:      "myco/agent",
+		FromDID:   did,
+		Type:      "chat",
+		Body:      "hi there",
+		Timestamp: "2026-02-22T00:00:00Z",
+		MessageID: "msg-chat-1",
+	}
+	sig, err := SignMessage(priv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{
+				"message_id":     "msg-chat-1",
+				"from_agent":     "agent",
+				"from_address":   "myco/agent",
+				"body":           "hi there",
+				"timestamp":      "2026-02-22T00:00:00Z",
+				"from_did":       did,
+				"signature":      sig,
+				"signing_key_id": did,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.ChatHistory(context.Background(), ChatHistoryParams{SessionID: "sess-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 1 {
+		t.Fatalf("len=%d", len(resp.Messages))
+	}
+	msg := resp.Messages[0]
+	// Signed with from="myco/agent", so verification should succeed
+	// only if ChatHistory uses from_address (not from_agent="agent").
+	if msg.VerificationStatus != Verified {
+		t.Fatalf("VerificationStatus=%q, want verified (from_address should be used)", msg.VerificationStatus)
+	}
+}
+
+func TestNetworkChatHistoryUsesFromAddressForVerification(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	env := &MessageEnvelope{
+		From:      "myco/agent",
+		FromDID:   did,
+		Type:      "chat",
+		Body:      "network hello",
+		Timestamp: "2026-02-22T00:00:00Z",
+		MessageID: "msg-net-1",
+	}
+	sig, err := SignMessage(priv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{
+				"message_id":     "msg-net-1",
+				"from_agent":     "agent",
+				"from_address":   "myco/agent",
+				"body":           "network hello",
+				"timestamp":      "2026-02-22T00:00:00Z",
+				"from_did":       did,
+				"signature":      sig,
+				"signing_key_id": did,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.NetworkChatHistory(context.Background(), ChatHistoryParams{SessionID: "net-sess-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 1 {
+		t.Fatalf("len=%d", len(resp.Messages))
+	}
+	msg := resp.Messages[0]
+	if msg.VerificationStatus != Verified {
+		t.Fatalf("VerificationStatus=%q, want verified (from_address should be used)", msg.VerificationStatus)
+	}
+}

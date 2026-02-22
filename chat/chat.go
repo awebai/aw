@@ -91,6 +91,12 @@ func parseSSEEvent(sseEvent *aweb.SSEEvent) Event {
 	} else if v, ok := data["from"].(string); ok {
 		ev.FromAgent = v
 	}
+	if v, ok := data["from_address"].(string); ok {
+		ev.FromAddress = v
+	}
+	if v, ok := data["to_address"].(string); ok {
+		ev.ToAddress = v
+	}
 	if v, ok := data["body"].(string); ok {
 		ev.Body = v
 	}
@@ -153,9 +159,14 @@ func parseSSEEvent(sseEvent *aweb.SSEEvent) Event {
 	}
 
 	// Verify message signature when identity fields are present.
+	from := ev.FromAgent
+	if ev.FromAddress != "" {
+		from = ev.FromAddress
+	}
 	env := &aweb.MessageEnvelope{
-		From:         ev.FromAgent,
+		From:         from,
 		FromDID:      ev.FromDID,
+		To:           ev.ToAddress,
 		ToDID:        ev.ToDID,
 		Type:         "chat",
 		Body:         ev.Body,
@@ -262,6 +273,8 @@ func buildMessages(messages []aweb.ChatMessage) []Event {
 			Type:               "message",
 			MessageID:          m.MessageID,
 			FromAgent:          m.FromAgent,
+			FromAddress:        m.FromAddress,
+			ToAddress:          m.ToAddress,
 			Body:               m.Body,
 			Timestamp:          m.Timestamp,
 			SenderLeaving:      m.SenderLeaving,
@@ -363,7 +376,11 @@ func waitForMessage(ctx context.Context, client *aweb.Client, openStream streamO
 			}
 
 			chatEvent := parseSSEEvent(sr.event)
-			chatEvent.VerificationStatus = client.CheckTOFUPin(chatEvent.VerificationStatus, chatEvent.FromAgent, chatEvent.FromDID, chatEvent.RotationAnnouncement)
+			tofuFrom := chatEvent.FromAgent
+			if chatEvent.FromAddress != "" {
+				tofuFrom = chatEvent.FromAddress
+			}
+			chatEvent.VerificationStatus = client.CheckTOFUPin(chatEvent.VerificationStatus, tofuFrom, chatEvent.FromDID, chatEvent.RotationAnnouncement)
 
 			if chatEvent.Type == "read_receipt" {
 				result.Events = append(result.Events, chatEvent)

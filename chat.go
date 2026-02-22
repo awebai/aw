@@ -88,6 +88,8 @@ type ChatHistoryResponse struct {
 type ChatMessage struct {
 	MessageID          string             `json:"message_id"`
 	FromAgent          string             `json:"from_agent"`
+	FromAddress        string             `json:"from_address,omitempty"`
+	ToAddress          string             `json:"to_address,omitempty"`
 	Body               string             `json:"body"`
 	Timestamp          string             `json:"timestamp"`
 	SenderLeaving      bool               `json:"sender_leaving"`
@@ -124,9 +126,18 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 	}
 	for i := range out.Messages {
 		m := &out.Messages[i]
+		from := m.FromAgent
+		if m.FromAddress != "" {
+			from = m.FromAddress
+		}
+		to := ""
+		if m.ToAddress != "" {
+			to = m.ToAddress
+		}
 		env := &MessageEnvelope{
-			From:         m.FromAgent,
+			From:         from,
 			FromDID:      m.FromDID,
+			To:           to,
 			ToDID:        m.ToDID,
 			Type:         "chat",
 			Body:         m.Body,
@@ -139,7 +150,7 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 		}
 		// Error is encoded in VerificationStatus; discard it.
 		m.VerificationStatus, _ = VerifyMessage(env)
-		m.VerificationStatus = c.CheckTOFUPin(m.VerificationStatus, m.FromAgent, m.FromDID, m.RotationAnnouncement)
+		m.VerificationStatus = c.CheckTOFUPin(m.VerificationStatus, from, m.FromDID, m.RotationAnnouncement)
 	}
 	return &out, nil
 }

@@ -12,6 +12,8 @@ type Event struct {
 	SessionID          string `json:"session_id,omitempty"`
 	MessageID          string `json:"message_id,omitempty"`
 	FromAgent          string `json:"from_agent,omitempty"`
+	FromAddress        string `json:"from_address,omitempty"`
+	ToAddress          string `json:"to_address,omitempty"`
 	Body               string `json:"body,omitempty"`
 	By                 string `json:"by,omitempty"`
 	Reason             string `json:"reason,omitempty"`
