@@ -9,6 +9,10 @@ type CloudBootstrapAgentRequest struct {
 	HumanName     string  `json:"human_name,omitempty"`
 	AgentType     string  `json:"agent_type,omitempty"`
 	NamespaceSlug string  `json:"namespace_slug,omitempty"`
+	DID           string  `json:"did,omitempty"`
+	PublicKey     string  `json:"public_key,omitempty"`
+	Custody       string  `json:"custody,omitempty"`
+	Lifetime      string  `json:"lifetime,omitempty"`
 }
 
 // CloudBootstrapAgentResponse is returned by POST /api/v1/agents/bootstrap.
@@ -25,6 +29,9 @@ type CloudBootstrapAgentResponse struct {
 	AgentID           string `json:"agent_id"`
 	Alias             string `json:"alias"`
 	Created           bool   `json:"created"`
+	DID               string `json:"did,omitempty"`
+	Custody           string `json:"custody,omitempty"`
+	Lifetime          string `json:"lifetime,omitempty"`
 }
 
 // CloudBootstrapAgent bootstraps an agent through the aweb-cloud wrapper.

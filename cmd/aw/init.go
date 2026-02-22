@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"os"
@@ -182,11 +183,23 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fatal(err)
 	}
 
+	// Generate Ed25519 keypair for self-custodial identity.
+	pub, priv, err := awconfig.GenerateKeypair()
+	if err != nil {
+		fatal(err)
+	}
+	did := aweb.ComputeDIDKey(pub)
+	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
+
 	req := &aweb.InitRequest{
 		ProjectSlug: projectSlug,
 		ProjectName: projectName,
 		HumanName:   humanName,
 		AgentType:   agentType,
+		DID:         did,
+		PublicKey:    pubKeyB64,
+		Custody:     aweb.CustodySelf,
+		Lifetime:    aweb.LifetimePersistent,
 	}
 	if strings.TrimSpace(alias) != "" {
 		req.Alias = &alias
@@ -225,8 +238,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 		defaultProject = projectSlug
 	}
 
+	address := deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
+	cfgPath := mustDefaultGlobalPath()
+	keysDir := awconfig.KeysDir(cfgPath)
+	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
+
 	if initSaveConfig {
-		updateErr := awconfig.UpdateGlobalAt(mustDefaultGlobalPath(), func(cfg *awconfig.GlobalConfig) error {
+		updateErr := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
 			if cfg.Servers == nil {
 				cfg.Servers = map[string]awconfig.Server{}
 			}
@@ -243,6 +261,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 				AgentID:        resp.AgentID,
 				AgentAlias:     resp.Alias,
 				NamespaceSlug:  resp.NamespaceSlug,
+				DID:           resp.DID,
+				SigningKey:     signingKeyPath,
+				Custody:        resp.Custody,
+				Lifetime:       resp.Lifetime,
 			}
 			if strings.TrimSpace(cfg.DefaultAccount) == "" || initSetDefault {
 				cfg.DefaultAccount = accountName
@@ -252,6 +274,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if updateErr != nil {
 			fatal(updateErr)
 		}
+	}
+
+	// Save keypair after config is written so a failed config update
+	// does not leave orphaned key files on disk.
+	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+		fatal(err)
 	}
 
 	if initWriteContext {
@@ -301,6 +329,10 @@ func bootstrapViaCloud(
 		HumanName:     req.HumanName,
 		AgentType:     req.AgentType,
 		NamespaceSlug: namespaceSlug,
+		DID:           req.DID,
+		PublicKey:     req.PublicKey,
+		Custody:       req.Custody,
+		Lifetime:      req.Lifetime,
 	}
 
 	cloudResp, err := cloudClient.CloudBootstrapAgent(ctx, cloudReq)
@@ -322,6 +354,9 @@ func bootstrapViaCloud(
 		APIKey:        cloudResp.APIKey,
 		NamespaceSlug: cloudResp.OrgSlug,
 		Created:       cloudResp.Created,
+		DID:           cloudResp.DID,
+		Custody:       cloudResp.Custody,
+		Lifetime:      cloudResp.Lifetime,
 	}, nil
 }
 

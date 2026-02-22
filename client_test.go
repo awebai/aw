@@ -492,6 +492,131 @@ func TestVerifyCode(t *testing.T) {
 	}
 }
 
+func TestInitRequestIncludesIdentityFields(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":       "ok",
+			"project_id":   "proj-1",
+			"project_slug": "default",
+			"agent_id":     "agent-1",
+			"alias":        "alice",
+			"api_key":      "aw_sk_test",
+			"created":      true,
+			"did":          "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+			"custody":      "self",
+			"lifetime":     "persistent",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := "alice"
+	resp, err := c.Init(context.Background(), &InitRequest{
+		ProjectSlug: "default",
+		Alias:       &alias,
+		DID:         "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+		PublicKey:    "Lm/M42cB3HkUiODQsXRcweM6TByfzEHGO9ND274JcOY",
+		Custody:      "self",
+		Lifetime:     "persistent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify request body.
+	if gotBody["did"] != "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" {
+		t.Fatalf("request did=%v", gotBody["did"])
+	}
+	if gotBody["public_key"] != "Lm/M42cB3HkUiODQsXRcweM6TByfzEHGO9ND274JcOY" {
+		t.Fatalf("request public_key=%v", gotBody["public_key"])
+	}
+
+	// Verify response.
+	if resp.DID != "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" {
+		t.Fatalf("response did=%q", resp.DID)
+	}
+	if resp.Custody != "self" {
+		t.Fatalf("response custody=%q", resp.Custody)
+	}
+	if resp.Lifetime != "persistent" {
+		t.Fatalf("response lifetime=%q", resp.Lifetime)
+	}
+}
+
+func TestCloudBootstrapRequestIncludesIdentityFields(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"org_id":       "org-1",
+			"org_slug":     "mycompany",
+			"org_name":     "My Company",
+			"project_id":   "proj-1",
+			"project_slug": "default",
+			"project_name": "Default",
+			"server_url":   "http://localhost",
+			"api_key":      "aw_sk_test",
+			"agent_id":     "agent-1",
+			"alias":        "alice",
+			"created":      true,
+			"did":          "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+			"custody":      "custodial",
+			"lifetime":     "ephemeral",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "cloud-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := "alice"
+	resp, err := c.CloudBootstrapAgent(context.Background(), &CloudBootstrapAgentRequest{
+		Alias:     &alias,
+		DID:       "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+		PublicKey: "Lm/M42cB3HkUiODQsXRcweM6TByfzEHGO9ND274JcOY",
+		Custody:   "custodial",
+		Lifetime:  "ephemeral",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify request body.
+	if gotBody["did"] != "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" {
+		t.Fatalf("request did=%v", gotBody["did"])
+	}
+	if gotBody["public_key"] != "Lm/M42cB3HkUiODQsXRcweM6TByfzEHGO9ND274JcOY" {
+		t.Fatalf("request public_key=%v", gotBody["public_key"])
+	}
+	if gotBody["custody"] != "custodial" {
+		t.Fatalf("request custody=%v", gotBody["custody"])
+	}
+	if gotBody["lifetime"] != "ephemeral" {
+		t.Fatalf("request lifetime=%v", gotBody["lifetime"])
+	}
+
+	// Verify response.
+	if resp.DID != "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" {
+		t.Fatalf("response did=%q", resp.DID)
+	}
+	if resp.Custody != "custodial" {
+		t.Fatalf("response custody=%q", resp.Custody)
+	}
+	if resp.Lifetime != "ephemeral" {
+		t.Fatalf("response lifetime=%q", resp.Lifetime)
+	}
+}
+
 func TestHTTPStatusHelpers(t *testing.T) {
 	t.Parallel()
 

@@ -7,11 +7,15 @@ import "context"
 // This endpoint is an OSS convenience for clean-start deployments.
 // It typically does not require an API key.
 type InitRequest struct {
-	ProjectSlug string `json:"project_slug"`
-	ProjectName string `json:"project_name,omitempty"`
+	ProjectSlug string  `json:"project_slug"`
+	ProjectName string  `json:"project_name,omitempty"`
 	Alias       *string `json:"alias,omitempty"`
-	HumanName   string `json:"human_name,omitempty"`
-	AgentType   string `json:"agent_type,omitempty"`
+	HumanName   string  `json:"human_name,omitempty"`
+	AgentType   string  `json:"agent_type,omitempty"`
+	DID         string  `json:"did,omitempty"`
+	PublicKey   string  `json:"public_key,omitempty"`
+	Custody     string  `json:"custody,omitempty"`
+	Lifetime    string  `json:"lifetime,omitempty"`
 }
 
 // InitResponse is returned by POST /v1/init.
@@ -25,6 +29,9 @@ type InitResponse struct {
 	APIKey        string `json:"api_key"`
 	NamespaceSlug string `json:"namespace_slug,omitempty"`
 	Created       bool   `json:"created"`
+	DID           string `json:"did,omitempty"`
+	Custody       string `json:"custody,omitempty"`
+	Lifetime      string `json:"lifetime,omitempty"`
 }
 
 // Init bootstraps a project, agent, and API key.
