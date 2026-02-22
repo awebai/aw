@@ -24,11 +24,20 @@ var didRotateKeyCmd = &cobra.Command{
 	RunE:  runDidRotateKey,
 }
 
+var didLogCmd = &cobra.Command{
+	Use:   "log [namespace/alias]",
+	Short: "Show an agent's identity log",
+	Long:  "Display rotation and status history. Without arguments, shows your own log.",
+	Args:  cobra.MaximumNArgs(1),
+	RunE:  runDidLog,
+}
+
 var rotateKeySelfCustody bool
 
 func init() {
 	didRotateKeyCmd.Flags().BoolVar(&rotateKeySelfCustody, "self-custody", false, "Graduate from custodial to self-custody")
 	didCmd.AddCommand(didRotateKeyCmd)
+	didCmd.AddCommand(didLogCmd)
 	rootCmd.AddCommand(didCmd)
 }
 
@@ -155,6 +164,46 @@ func runCustodialGraduation(sel *awconfig.Selection) error {
 	fmt.Printf("Graduated to self-custody.\n")
 	fmt.Printf("  old DID: %s\n", resp.OldDID)
 	fmt.Printf("  new DID: %s\n", resp.NewDID)
+
+	return nil
+}
+
+func runDidLog(cmd *cobra.Command, args []string) error {
+	c := mustClient()
+
+	var address string
+	if len(args) > 0 {
+		address = args[0]
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.AgentLog(ctx, address)
+	if err != nil {
+		fatal(err)
+	}
+
+	if len(resp.Entries) == 0 {
+		fmt.Println("No log entries.")
+		return nil
+	}
+
+	for _, e := range resp.Entries {
+		fmt.Printf("[%s] %s\n", e.Timestamp, e.Operation)
+		if e.DID != "" {
+			fmt.Printf("  did: %s\n", e.DID)
+		}
+		if e.OldDID != "" {
+			fmt.Printf("  old_did: %s\n", e.OldDID)
+		}
+		if e.NewDID != "" {
+			fmt.Printf("  new_did: %s\n", e.NewDID)
+		}
+		if e.SignedBy != "" {
+			fmt.Printf("  signed_by: %s\n", e.SignedBy)
+		}
+	}
 
 	return nil
 }

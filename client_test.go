@@ -1541,3 +1541,106 @@ func TestRotateKeyRequiresIdentity(t *testing.T) {
 		t.Fatal("expected error for legacy client")
 	}
 }
+
+func TestAgentLogSelf(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method=%s", r.Method)
+		}
+		if r.URL.Path != "/v1/agents/me/log" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer aw_sk_test" {
+			t.Fatalf("auth=%q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"entries": []map[string]any{
+				{
+					"operation": "create",
+					"did":       "did:key:z6MkOldKey",
+					"timestamp": "2026-03-15T10:00:00Z",
+					"signed_by": "did:key:z6MkOldKey",
+				},
+				{
+					"operation": "rotate",
+					"old_did":   "did:key:z6MkOldKey",
+					"new_did":   "did:key:z6MkNewKey",
+					"timestamp": "2026-06-01T12:00:00Z",
+					"signed_by": "did:key:z6MkOldKey",
+				},
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.AgentLog(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Entries) != 2 {
+		t.Fatalf("entries=%d", len(resp.Entries))
+	}
+	if resp.Entries[0].Operation != "create" {
+		t.Fatalf("entry[0].operation=%s", resp.Entries[0].Operation)
+	}
+	if resp.Entries[0].DID != "did:key:z6MkOldKey" {
+		t.Fatalf("entry[0].did=%s", resp.Entries[0].DID)
+	}
+	if resp.Entries[1].Operation != "rotate" {
+		t.Fatalf("entry[1].operation=%s", resp.Entries[1].Operation)
+	}
+	if resp.Entries[1].OldDID != "did:key:z6MkOldKey" {
+		t.Fatalf("entry[1].old_did=%s", resp.Entries[1].OldDID)
+	}
+	if resp.Entries[1].NewDID != "did:key:z6MkNewKey" {
+		t.Fatalf("entry[1].new_did=%s", resp.Entries[1].NewDID)
+	}
+	if resp.Entries[1].SignedBy != "did:key:z6MkOldKey" {
+		t.Fatalf("entry[1].signed_by=%s", resp.Entries[1].SignedBy)
+	}
+}
+
+func TestAgentLogPeer(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method=%s", r.Method)
+		}
+		if r.URL.Path != "/v1/agents/acme/bot/log" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"entries": []map[string]any{
+				{
+					"operation": "create",
+					"did":       "did:key:z6MkPeer",
+					"timestamp": "2026-01-01T00:00:00Z",
+					"signed_by": "did:key:z6MkPeer",
+				},
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.AgentLog(context.Background(), "acme/bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Entries) != 1 {
+		t.Fatalf("entries=%d", len(resp.Entries))
+	}
+	if resp.Entries[0].DID != "did:key:z6MkPeer" {
+		t.Fatalf("entry[0].did=%s", resp.Entries[0].DID)
+	}
+}
