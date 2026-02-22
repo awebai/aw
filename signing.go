@@ -32,6 +32,7 @@ type MessageEnvelope struct {
 	Timestamp    string `json:"timestamp"`
 	FromStableID string `json:"from_stable_id,omitempty"`
 	ToStableID   string `json:"to_stable_id,omitempty"`
+	MessageID    string `json:"message_id,omitempty"`
 
 	Signature    string `json:"signature,omitempty"`
 	SigningKeyID string `json:"signing_key_id,omitempty"`
@@ -103,6 +104,9 @@ func canonicalJSON(env *MessageEnvelope) string {
 	// Optional fields included when present.
 	if env.FromStableID != "" {
 		fields = append(fields, field{"from_stable_id", env.FromStableID})
+	}
+	if env.MessageID != "" {
+		fields = append(fields, field{"message_id", env.MessageID})
 	}
 	if env.ToStableID != "" {
 		fields = append(fields, field{"to_stable_id", env.ToStableID})

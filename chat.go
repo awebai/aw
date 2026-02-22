@@ -16,6 +16,7 @@ type ChatCreateSessionRequest struct {
 	Signature    string   `json:"signature,omitempty"`
 	SigningKeyID string   `json:"signing_key_id,omitempty"`
 	Timestamp    string   `json:"timestamp,omitempty"`
+	MessageID    string   `json:"message_id,omitempty"`
 }
 
 type ChatCreateSessionResponse struct {
@@ -45,6 +46,7 @@ func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRe
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
+	req.MessageID = sf.MessageID
 
 	var out ChatCreateSessionResponse
 	if err := c.post(ctx, "/v1/chat/sessions", req, &out); err != nil {
@@ -128,6 +130,7 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 			Timestamp:    m.Timestamp,
 			FromStableID: m.FromStableID,
 			ToStableID:   m.ToStableID,
+			MessageID:    m.MessageID,
 			Signature:    m.Signature,
 			SigningKeyID: m.SigningKeyID,
 		}
@@ -196,6 +199,7 @@ type ChatSendMessageRequest struct {
 	Signature    string `json:"signature,omitempty"`
 	SigningKeyID string `json:"signing_key_id,omitempty"`
 	Timestamp    string `json:"timestamp,omitempty"`
+	MessageID    string `json:"message_id,omitempty"`
 }
 
 type ChatSendMessageResponse struct {
@@ -217,6 +221,7 @@ func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *Cha
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
+	req.MessageID = sf.MessageID
 
 	var out ChatSendMessageResponse
 	if err := c.post(ctx, "/v1/chat/sessions/"+urlPathEscape(sessionID)+"/messages", req, &out); err != nil {

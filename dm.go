@@ -12,6 +12,7 @@ type DMRequest struct {
 	Signature    string `json:"signature,omitempty"`
 	SigningKeyID string `json:"signing_key_id,omitempty"`
 	Timestamp    string `json:"timestamp,omitempty"`
+	MessageID    string `json:"message_id,omitempty"`
 }
 
 // DMResponse is returned by POST /v1/network/dm.
@@ -36,6 +37,7 @@ func (c *Client) SendDM(ctx context.Context, req *DMRequest) (*DMResponse, error
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
+	req.MessageID = sf.MessageID
 
 	var out DMResponse
 	if err := c.post(ctx, "/v1/network/dm", req, &out); err != nil {

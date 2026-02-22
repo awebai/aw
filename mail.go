@@ -24,6 +24,7 @@ type SendMessageRequest struct {
 	Signature    string          `json:"signature,omitempty"`
 	SigningKeyID string          `json:"signing_key_id,omitempty"`
 	Timestamp    string          `json:"timestamp,omitempty"`
+	MessageID    string          `json:"message_id,omitempty"`
 }
 
 type SendMessageResponse struct {
@@ -50,6 +51,7 @@ func (c *Client) SendMessage(ctx context.Context, req *SendMessageRequest) (*Sen
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
+	req.MessageID = sf.MessageID
 
 	var out SendMessageResponse
 	if err := c.post(ctx, "/v1/messages", req, &out); err != nil {
@@ -115,6 +117,7 @@ func (c *Client) Inbox(ctx context.Context, p InboxParams) (*InboxResponse, erro
 			Timestamp:    m.CreatedAt,
 			FromStableID: m.FromStableID,
 			ToStableID:   m.ToStableID,
+			MessageID:    m.MessageID,
 			Signature:    m.Signature,
 			SigningKeyID: m.SigningKeyID,
 		}

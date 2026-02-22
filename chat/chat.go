@@ -147,6 +147,7 @@ func parseSSEEvent(sseEvent *aweb.SSEEvent) Event {
 		Timestamp:    ev.Timestamp,
 		FromStableID: ev.FromStableID,
 		ToStableID:   ev.ToStableID,
+		MessageID:    ev.MessageID,
 		Signature:    ev.Signature,
 		SigningKeyID: ev.SigningKeyID,
 	}

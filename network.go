@@ -21,6 +21,7 @@ type NetworkMailRequest struct {
 	Signature    string `json:"signature,omitempty"`
 	SigningKeyID string `json:"signing_key_id,omitempty"`
 	Timestamp    string `json:"timestamp,omitempty"`
+	MessageID    string `json:"message_id,omitempty"`
 }
 
 type NetworkMailResponse struct {
@@ -45,6 +46,7 @@ func (c *Client) NetworkSendMail(ctx context.Context, req *NetworkMailRequest) (
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
+	req.MessageID = sf.MessageID
 
 	var out NetworkMailResponse
 	if err := c.post(ctx, "/v1/network/mail", req, &out); err != nil {
@@ -63,6 +65,7 @@ type NetworkChatCreateRequest struct {
 	Signature    string   `json:"signature,omitempty"`
 	SigningKeyID string   `json:"signing_key_id,omitempty"`
 	Timestamp    string   `json:"timestamp,omitempty"`
+	MessageID    string   `json:"message_id,omitempty"`
 }
 
 type NetworkChatCreateResponse struct {
@@ -87,6 +90,7 @@ func (c *Client) NetworkCreateChat(ctx context.Context, req *NetworkChatCreateRe
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
+	req.MessageID = sf.MessageID
 
 	var out NetworkChatCreateResponse
 	if err := c.post(ctx, "/v1/network/chat", req, &out); err != nil {
@@ -102,6 +106,7 @@ type NetworkChatSendMessageRequest struct {
 	Signature    string `json:"signature,omitempty"`
 	SigningKeyID string `json:"signing_key_id,omitempty"`
 	Timestamp    string `json:"timestamp,omitempty"`
+	MessageID    string `json:"message_id,omitempty"`
 }
 
 type NetworkChatSendMessageResponse struct {
@@ -126,6 +131,7 @@ func (c *Client) NetworkChatSendMessage(ctx context.Context, sessionID string, r
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
+	req.MessageID = sf.MessageID
 
 	var out NetworkChatSendMessageResponse
 	if err := c.post(ctx, "/v1/network/chat/"+urlPathEscape(sessionID)+"/messages", req, &out); err != nil {
@@ -164,6 +170,7 @@ func (c *Client) NetworkChatHistory(ctx context.Context, p ChatHistoryParams) (*
 			Timestamp:    m.Timestamp,
 			FromStableID: m.FromStableID,
 			ToStableID:   m.ToStableID,
+			MessageID:    m.MessageID,
 			Signature:    m.Signature,
 			SigningKeyID: m.SigningKeyID,
 		}

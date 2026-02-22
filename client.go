@@ -20,6 +20,7 @@ type signedFields struct {
 	Signature    string
 	SigningKeyID string
 	Timestamp    string
+	MessageID    string
 }
 
 // signEnvelope signs a MessageEnvelope and returns the fields to embed
@@ -33,6 +34,11 @@ func (c *Client) signEnvelope(env *MessageEnvelope) (signedFields, error) {
 	env.From = c.address
 	env.FromDID = c.did
 	env.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	msgID, err := generateUUID4()
+	if err != nil {
+		return signedFields{}, err
+	}
+	env.MessageID = msgID
 	sig, err := SignMessage(c.signingKey, env)
 	if err != nil {
 		return signedFields{}, fmt.Errorf("sign message: %w", err)
@@ -42,6 +48,7 @@ func (c *Client) signEnvelope(env *MessageEnvelope) (signedFields, error) {
 		Signature:    sig,
 		SigningKeyID: c.did,
 		Timestamp:    env.Timestamp,
+		MessageID:    env.MessageID,
 	}, nil
 }
 
