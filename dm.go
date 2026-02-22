@@ -9,6 +9,7 @@ type DMRequest struct {
 	Body         string `json:"body"`
 	Priority     string `json:"priority,omitempty"`
 	FromDID      string `json:"from_did,omitempty"`
+	ToDID        string `json:"to_did,omitempty"`
 	Signature    string `json:"signature,omitempty"`
 	SigningKeyID string `json:"signing_key_id,omitempty"`
 	Timestamp    string `json:"timestamp,omitempty"`
@@ -24,7 +25,7 @@ type DMResponse struct {
 
 // SendDM sends a direct message to a human by @handle.
 func (c *Client) SendDM(ctx context.Context, req *DMRequest) (*DMResponse, error) {
-	sf, err := c.signEnvelope(&MessageEnvelope{
+	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
 		To:      "@" + req.ToHandle,
 		Type:    "mail",
 		Subject: req.Subject,
@@ -34,6 +35,7 @@ func (c *Client) SendDM(ctx context.Context, req *DMRequest) (*DMResponse, error
 		return nil, err
 	}
 	req.FromDID = sf.FromDID
+	req.ToDID = sf.ToDID
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp

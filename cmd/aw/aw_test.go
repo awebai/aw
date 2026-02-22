@@ -4585,6 +4585,13 @@ func TestAwMailSendSignsWithIdentity(t *testing.T) {
 	}
 	did := aweb.ComputeDIDKey(pub)
 
+	// Generate a recipient key so the resolver can return a DID.
+	recipientPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipientDID := aweb.ComputeDIDKey(recipientPub)
+
 	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -4596,6 +4603,11 @@ func TestAwMailSendSignsWithIdentity(t *testing.T) {
 				"message_id":   "msg-1",
 				"status":       "delivered",
 				"delivered_at": "2026-02-22T00:00:00Z",
+			})
+		case "/v1/agents/resolve/monitor":
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"did":     recipientDID,
+				"address": "myco/monitor",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -4670,6 +4682,9 @@ default_account: acct
 	if gotBody["from_did"] != did {
 		t.Fatalf("from_did=%v, want %s", gotBody["from_did"], did)
 	}
+	if gotBody["to_did"] != recipientDID {
+		t.Fatalf("to_did on wire=%v, want %s", gotBody["to_did"], recipientDID)
+	}
 	sig, ok := gotBody["signature"].(string)
 	if !ok || sig == "" {
 		t.Fatal("signature missing or empty")
@@ -4679,12 +4694,13 @@ default_account: acct
 		t.Fatal("message_id missing or empty")
 	}
 
-	// Verify the signature covers the correct From address (aw-am0).
-	// If SetAddress were missing, From would be "" and this would fail.
+	// Verify the signature covers the correct From address (aw-am0)
+	// and includes resolved ToDID (aw-e0b).
 	env := &aweb.MessageEnvelope{
 		From:      "myco/agent",
 		FromDID:   did,
 		To:        "monitor",
+		ToDID:     recipientDID,
 		Type:      "mail",
 		Body:      "hello from identity",
 		Timestamp: gotBody["timestamp"].(string),
@@ -4709,6 +4725,13 @@ func TestAwMailSendSignsWithIdentityNamespace(t *testing.T) {
 	}
 	did := aweb.ComputeDIDKey(pub)
 
+	// Generate a recipient key so the resolver can return a DID.
+	recipientPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipientDID := aweb.ComputeDIDKey(recipientPub)
+
 	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -4720,6 +4743,11 @@ func TestAwMailSendSignsWithIdentityNamespace(t *testing.T) {
 				"message_id":   "msg-1",
 				"status":       "delivered",
 				"delivered_at": "2026-02-22T00:00:00Z",
+			})
+		case "/v1/agents/resolve/monitor":
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"did":     recipientDID,
+				"address": "acme/monitor",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -4795,18 +4823,21 @@ default_account: acct
 	if gotBody["from_did"] != did {
 		t.Fatalf("from_did=%v, want %s", gotBody["from_did"], did)
 	}
+	if gotBody["to_did"] != recipientDID {
+		t.Fatalf("to_did on wire=%v, want %s", gotBody["to_did"], recipientDID)
+	}
 	sig, ok := gotBody["signature"].(string)
 	if !ok || sig == "" {
 		t.Fatal("signature missing")
 	}
 
-	// Verify the signature covers "acme/bot" (namespace_slug/alias).
-	// If deriveAgentAddress used default_project instead, From would be
-	// "fallback/bot" and verification would fail.
+	// Verify the signature covers "acme/bot" (namespace_slug/alias)
+	// and includes resolved ToDID.
 	env := &aweb.MessageEnvelope{
 		From:      "acme/bot",
 		FromDID:   did,
 		To:        "monitor",
+		ToDID:     recipientDID,
 		Type:      "mail",
 		Body:      "hello from namespace",
 		Timestamp: gotBody["timestamp"].(string),

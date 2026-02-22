@@ -61,6 +61,7 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 			os.Exit(2)
 		}
 		c.SetAddress(deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias))
+		c.SetResolver(&aweb.ServerResolver{Client: c})
 	} else {
 		var err error
 		c, err = aweb.NewWithAPIKey(baseURL, sel.APIKey)

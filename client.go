@@ -17,6 +17,7 @@ import (
 // when the client has a signing key.
 type signedFields struct {
 	FromDID      string
+	ToDID        string
 	Signature    string
 	SigningKeyID string
 	Timestamp    string
@@ -27,7 +28,7 @@ type signedFields struct {
 // in the request. When the client has no signing key (legacy/custodial),
 // returns a zero signedFields. Callers stamp the returned fields onto
 // the request struct before posting.
-func (c *Client) signEnvelope(env *MessageEnvelope) (signedFields, error) {
+func (c *Client) signEnvelope(ctx context.Context, env *MessageEnvelope) (signedFields, error) {
 	if c.signingKey == nil {
 		return signedFields{}, nil
 	}
@@ -39,12 +40,21 @@ func (c *Client) signEnvelope(env *MessageEnvelope) (signedFields, error) {
 		return signedFields{}, err
 	}
 	env.MessageID = msgID
+
+	// Resolve recipient DID for to_did binding (mail only).
+	if c.resolver != nil && env.To != "" && env.ToDID == "" {
+		if identity, err := c.resolver.Resolve(ctx, env.To); err == nil && identity.DID != "" {
+			env.ToDID = identity.DID
+		}
+	}
+
 	sig, err := SignMessage(c.signingKey, env)
 	if err != nil {
 		return signedFields{}, fmt.Errorf("sign message: %w", err)
 	}
 	return signedFields{
 		FromDID:      c.did,
+		ToDID:        env.ToDID,
 		Signature:    sig,
 		SigningKeyID: c.did,
 		Timestamp:    env.Timestamp,
@@ -72,6 +82,7 @@ type Client struct {
 	signingKey ed25519.PrivateKey // nil for legacy/custodial
 	did        string            // empty for legacy/custodial
 	address    string            // namespace/alias, used in signed envelopes
+	resolver   IdentityResolver  // optional; resolves recipient DID for to_did binding
 }
 
 // New creates a new client.
@@ -129,6 +140,24 @@ func (c *Client) DID() string { return c.did }
 // SetAddress sets the client's agent address (namespace/alias) for use in
 // signed message envelopes.
 func (c *Client) SetAddress(address string) { c.address = address }
+
+// SetResolver sets the identity resolver used to resolve recipient DIDs
+// for to_did binding in signed envelopes.
+func (c *Client) SetResolver(r IdentityResolver) { c.resolver = r }
+
+// checkRecipientBinding downgrades a Verified status to IdentityMismatch
+// if the message's to_did doesn't match the client's own DID.
+// Returns the status unchanged if to_did is empty, the client has no DID,
+// or the DIDs match.
+func (c *Client) checkRecipientBinding(status VerificationStatus, toDID string) VerificationStatus {
+	if status != Verified || toDID == "" || c.did == "" {
+		return status
+	}
+	if toDID != c.did {
+		return IdentityMismatch
+	}
+	return status
+}
 
 type apiError struct {
 	StatusCode int

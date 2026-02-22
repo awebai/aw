@@ -1800,3 +1800,221 @@ func TestSendMessageNoMessageIDWithoutIdentity(t *testing.T) {
 		t.Fatalf("message_id=%q, expected empty for custodial client", gotBody["message_id"])
 	}
 }
+
+func TestSendMessageResolvesRecipientDID(t *testing.T) {
+	t.Parallel()
+
+	// Sender identity.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	// Recipient identity.
+	recipientPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipientDID := ComputeDIDKey(recipientPub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/agents/resolve/otherco/monitor":
+			_ = json.NewEncoder(w).Encode(serverResolveResponse{
+				DID:     recipientDID,
+				Address: "otherco/monitor",
+			})
+		case r.URL.Path == "/v1/messages":
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"message_id":   "msg-1",
+				"status":       "delivered",
+				"delivered_at": "2026-02-22T00:00:00Z",
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+	c.SetResolver(&ServerResolver{Client: c})
+
+	_, err = c.SendMessage(context.Background(), &SendMessageRequest{
+		ToAlias: "otherco/monitor",
+		Body:    "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify to_did is transmitted on the wire.
+	if gotBody["to_did"] != recipientDID {
+		t.Fatalf("to_did on wire=%v, want %s", gotBody["to_did"], recipientDID)
+	}
+
+	// Verify the signature covers the recipient DID.
+	env := &MessageEnvelope{
+		From:      "myco/agent",
+		FromDID:   did,
+		To:        "otherco/monitor",
+		ToDID:     recipientDID,
+		Type:      "mail",
+		Body:      "hello",
+		Timestamp: gotBody["timestamp"].(string),
+		MessageID: gotBody["message_id"].(string),
+		Signature: gotBody["signature"].(string),
+	}
+	status, verifyErr := VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestInboxRecipientBindingMismatch(t *testing.T) {
+	t.Parallel()
+
+	senderPub, senderPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderDID := ComputeDIDKey(senderPub)
+
+	// Message signed with wrong to_did (not the receiver's DID).
+	wrongRecipientPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongRecipientDID := ComputeDIDKey(wrongRecipientPub)
+
+	// The receiver's actual DID.
+	receiverPub, receiverPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiverDID := ComputeDIDKey(receiverPub)
+	_ = receiverPriv // not used for signing, only for identity
+
+	env := &MessageEnvelope{
+		From:      "sender/agent",
+		FromDID:   senderDID,
+		To:        "receiver/agent",
+		ToDID:     wrongRecipientDID,
+		Type:      "mail",
+		Subject:   "test",
+		Body:      "misrouted",
+		Timestamp: "2026-02-22T00:00:00Z",
+		MessageID: "msg-1",
+	}
+	sig, err := SignMessage(senderPriv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{
+				"message_id":     "msg-1",
+				"from_agent_id":  "agent-uuid",
+				"from_alias":     "sender/agent",
+				"to_alias":       "receiver/agent",
+				"subject":        "test",
+				"body":           "misrouted",
+				"priority":       "normal",
+				"created_at":     "2026-02-22T00:00:00Z",
+				"from_did":       senderDID,
+				"to_did":         wrongRecipientDID,
+				"signature":      sig,
+				"signing_key_id": senderDID,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	// Create receiver client with identity — to_did won't match.
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 1 {
+		t.Fatalf("len=%d", len(resp.Messages))
+	}
+	// Signature is valid but to_did doesn't match receiver → IdentityMismatch.
+	msg := resp.Messages[0]
+	if msg.VerificationStatus != IdentityMismatch {
+		t.Fatalf("VerificationStatus=%q, want identity_mismatch", msg.VerificationStatus)
+	}
+}
+
+func TestSendMessageNoResolverLeavesToDIDEmpty(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-02-22T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+	// No resolver set — to_did should remain empty.
+
+	_, err = c.SendMessage(context.Background(), &SendMessageRequest{
+		ToAlias: "otherco/monitor",
+		Body:    "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify to_did is absent on the wire.
+	if v, ok := gotBody["to_did"]; ok {
+		t.Fatalf("to_did should be absent on wire, got %v", v)
+	}
+
+	// Verify signature is valid without to_did.
+	env := &MessageEnvelope{
+		From:      "myco/agent",
+		FromDID:   did,
+		To:        "otherco/monitor",
+		Type:      "mail",
+		Body:      "hello",
+		Timestamp: gotBody["timestamp"].(string),
+		MessageID: gotBody["message_id"].(string),
+		Signature: gotBody["signature"].(string),
+	}
+	status, verifyErr := VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+}

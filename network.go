@@ -18,6 +18,7 @@ type NetworkMailRequest struct {
 	Priority     string `json:"priority,omitempty"`
 	ThreadID     string `json:"thread_id,omitempty"`
 	FromDID      string `json:"from_did,omitempty"`
+	ToDID        string `json:"to_did,omitempty"`
 	Signature    string `json:"signature,omitempty"`
 	SigningKeyID string `json:"signing_key_id,omitempty"`
 	Timestamp    string `json:"timestamp,omitempty"`
@@ -33,7 +34,7 @@ type NetworkMailResponse struct {
 }
 
 func (c *Client) NetworkSendMail(ctx context.Context, req *NetworkMailRequest) (*NetworkMailResponse, error) {
-	sf, err := c.signEnvelope(&MessageEnvelope{
+	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
 		To:      req.ToAddress,
 		Type:    "mail",
 		Subject: req.Subject,
@@ -43,6 +44,7 @@ func (c *Client) NetworkSendMail(ctx context.Context, req *NetworkMailRequest) (
 		return nil, err
 	}
 	req.FromDID = sf.FromDID
+	req.ToDID = sf.ToDID
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
@@ -62,6 +64,7 @@ type NetworkChatCreateRequest struct {
 	Message      string   `json:"message"`
 	Leaving      bool     `json:"leaving,omitempty"`
 	FromDID      string   `json:"from_did,omitempty"`
+	ToDID        string   `json:"to_did,omitempty"`
 	Signature    string   `json:"signature,omitempty"`
 	SigningKeyID string   `json:"signing_key_id,omitempty"`
 	Timestamp    string   `json:"timestamp,omitempty"`
@@ -78,7 +81,7 @@ type NetworkChatCreateResponse struct {
 }
 
 func (c *Client) NetworkCreateChat(ctx context.Context, req *NetworkChatCreateRequest) (*NetworkChatCreateResponse, error) {
-	sf, err := c.signEnvelope(&MessageEnvelope{
+	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
 		To:   strings.Join(req.ToAddresses, ","),
 		Type: "chat",
 		Body: req.Message,
@@ -87,6 +90,7 @@ func (c *Client) NetworkCreateChat(ctx context.Context, req *NetworkChatCreateRe
 		return nil, err
 	}
 	req.FromDID = sf.FromDID
+	req.ToDID = sf.ToDID
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
@@ -103,6 +107,7 @@ type NetworkChatSendMessageRequest struct {
 	Body         string `json:"body"`
 	ExtendWait   bool   `json:"hang_on,omitempty"`
 	FromDID      string `json:"from_did,omitempty"`
+	ToDID        string `json:"to_did,omitempty"`
 	Signature    string `json:"signature,omitempty"`
 	SigningKeyID string `json:"signing_key_id,omitempty"`
 	Timestamp    string `json:"timestamp,omitempty"`
@@ -120,7 +125,7 @@ func (c *Client) NetworkChatSendMessage(ctx context.Context, sessionID string, r
 		return nil, errors.New("aweb: sessionID is required")
 	}
 	// In-session messages: To is empty because the session implies recipients.
-	sf, err := c.signEnvelope(&MessageEnvelope{
+	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
 		Type: "chat",
 		Body: req.Body,
 	})
@@ -128,6 +133,7 @@ func (c *Client) NetworkChatSendMessage(ctx context.Context, sessionID string, r
 		return nil, err
 	}
 	req.FromDID = sf.FromDID
+	req.ToDID = sf.ToDID
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp

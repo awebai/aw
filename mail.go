@@ -21,6 +21,7 @@ type SendMessageRequest struct {
 	Priority     MessagePriority `json:"priority,omitempty"`
 	ThreadID     *string         `json:"thread_id,omitempty"`
 	FromDID      string          `json:"from_did,omitempty"`
+	ToDID        string          `json:"to_did,omitempty"`
 	Signature    string          `json:"signature,omitempty"`
 	SigningKeyID string          `json:"signing_key_id,omitempty"`
 	Timestamp    string          `json:"timestamp,omitempty"`
@@ -38,7 +39,7 @@ func (c *Client) SendMessage(ctx context.Context, req *SendMessageRequest) (*Sen
 	if to == "" {
 		to = req.ToAgentID
 	}
-	sf, err := c.signEnvelope(&MessageEnvelope{
+	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
 		To:      to,
 		Type:    "mail",
 		Subject: req.Subject,
@@ -48,6 +49,7 @@ func (c *Client) SendMessage(ctx context.Context, req *SendMessageRequest) (*Sen
 		return nil, err
 	}
 	req.FromDID = sf.FromDID
+	req.ToDID = sf.ToDID
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
@@ -123,6 +125,7 @@ func (c *Client) Inbox(ctx context.Context, p InboxParams) (*InboxResponse, erro
 		}
 		// Error is encoded in VerificationStatus; discard it.
 		m.VerificationStatus, _ = VerifyMessage(env)
+		m.VerificationStatus = c.checkRecipientBinding(m.VerificationStatus, m.ToDID)
 	}
 	return &out, nil
 }

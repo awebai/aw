@@ -13,6 +13,7 @@ type ChatCreateSessionRequest struct {
 	Message      string   `json:"message"`
 	Leaving      bool     `json:"leaving,omitempty"`
 	FromDID      string   `json:"from_did,omitempty"`
+	ToDID        string   `json:"to_did,omitempty"`
 	Signature    string   `json:"signature,omitempty"`
 	SigningKeyID string   `json:"signing_key_id,omitempty"`
 	Timestamp    string   `json:"timestamp,omitempty"`
@@ -34,7 +35,7 @@ type ChatParticipant struct {
 }
 
 func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRequest) (*ChatCreateSessionResponse, error) {
-	sf, err := c.signEnvelope(&MessageEnvelope{
+	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
 		To:   strings.Join(req.ToAliases, ","),
 		Type: "chat",
 		Body: req.Message,
@@ -43,6 +44,7 @@ func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRe
 		return nil, err
 	}
 	req.FromDID = sf.FromDID
+	req.ToDID = sf.ToDID
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
@@ -196,6 +198,7 @@ type ChatSendMessageRequest struct {
 	Body         string `json:"body"`
 	ExtendWait   bool   `json:"hang_on,omitempty"`
 	FromDID      string `json:"from_did,omitempty"`
+	ToDID        string `json:"to_did,omitempty"`
 	Signature    string `json:"signature,omitempty"`
 	SigningKeyID string `json:"signing_key_id,omitempty"`
 	Timestamp    string `json:"timestamp,omitempty"`
@@ -210,7 +213,7 @@ type ChatSendMessageResponse struct {
 
 func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *ChatSendMessageRequest) (*ChatSendMessageResponse, error) {
 	// In-session messages: To is empty because the session implies recipients.
-	sf, err := c.signEnvelope(&MessageEnvelope{
+	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
 		Type: "chat",
 		Body: req.Body,
 	})
@@ -218,6 +221,7 @@ func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *Cha
 		return nil, err
 	}
 	req.FromDID = sf.FromDID
+	req.ToDID = sf.ToDID
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
