@@ -118,6 +118,40 @@ func parseSSEEvent(sseEvent *aweb.SSEEvent) Event {
 	if v, ok := data["extends_wait_seconds"].(float64); ok {
 		ev.ExtendsWaitSeconds = int(v)
 	}
+	if v, ok := data["from_did"].(string); ok {
+		ev.FromDID = v
+	}
+	if v, ok := data["to_did"].(string); ok {
+		ev.ToDID = v
+	}
+	if v, ok := data["from_stable_id"].(string); ok {
+		ev.FromStableID = v
+	}
+	if v, ok := data["to_stable_id"].(string); ok {
+		ev.ToStableID = v
+	}
+	if v, ok := data["signature"].(string); ok {
+		ev.Signature = v
+	}
+	if v, ok := data["signing_key_id"].(string); ok {
+		ev.SigningKeyID = v
+	}
+
+	// Verify message signature when identity fields are present.
+	env := &aweb.MessageEnvelope{
+		From:         ev.FromAgent,
+		FromDID:      ev.FromDID,
+		ToDID:        ev.ToDID,
+		Type:         "chat",
+		Body:         ev.Body,
+		Timestamp:    ev.Timestamp,
+		FromStableID: ev.FromStableID,
+		ToStableID:   ev.ToStableID,
+		Signature:    ev.Signature,
+		SigningKeyID: ev.SigningKeyID,
+	}
+	// Error is encoded in VerificationStatus; discard it.
+	ev.VerificationStatus, _ = aweb.VerifyMessage(env)
 
 	return ev
 }

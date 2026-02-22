@@ -3,6 +3,8 @@
 
 package chat
 
+import aweb "github.com/awebai/aw"
+
 // Event represents an event received during chat (message or read receipt).
 type Event struct {
 	Type               string `json:"type"`
@@ -19,6 +21,15 @@ type Event struct {
 	ReaderAlias        string `json:"reader_alias,omitempty"`
 	ExtendWait         bool   `json:"hang_on,omitempty"`
 	ExtendsWaitSeconds int    `json:"extends_wait_seconds,omitempty"`
+
+	// Identity fields for message verification.
+	FromDID            string `json:"from_did,omitempty"`
+	ToDID              string `json:"to_did,omitempty"`
+	FromStableID       string `json:"from_stable_id,omitempty"`
+	ToStableID         string `json:"to_stable_id,omitempty"`
+	Signature          string `json:"signature,omitempty"`
+	SigningKeyID       string `json:"signing_key_id,omitempty"`
+	VerificationStatus aweb.VerificationStatus `json:"verification_status,omitempty"`
 }
 
 // SendResult is the result of sending a message and optionally waiting for a reply.

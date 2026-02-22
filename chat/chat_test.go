@@ -5,6 +5,7 @@ package chat
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -2017,5 +2018,64 @@ func TestSendSkippedEventsNotInResult(t *testing.T) {
 	}
 	if result.Events[0].MessageID != "msg-reply-1" {
 		t.Fatalf("event[0].message_id=%s, expected msg-reply-1", result.Events[0].MessageID)
+	}
+}
+
+func TestParseSSEEventIdentityFields(t *testing.T) {
+	t.Parallel()
+
+	// Generate a real keypair to produce a valid signature.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := aweb.ComputeDIDKey(pub)
+
+	env := &aweb.MessageEnvelope{
+		From:    "alice",
+		FromDID: did,
+		Type:    "chat",
+		Body:    "signed hello",
+	}
+	env.Timestamp = "2026-01-01T00:00:00Z"
+	sig, err := aweb.SignMessage(priv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := fmt.Sprintf(`{"from_agent":"alice","body":"signed hello","from_did":%q,"signature":%q,"signing_key_id":%q,"timestamp":"2026-01-01T00:00:00Z"}`, did, sig, did)
+
+	ev := parseSSEEvent(&aweb.SSEEvent{
+		Event: "message",
+		Data:  data,
+	})
+
+	if ev.FromDID != did {
+		t.Fatalf("from_did=%s", ev.FromDID)
+	}
+	if ev.Signature != sig {
+		t.Fatalf("signature=%s", ev.Signature)
+	}
+	if ev.SigningKeyID != did {
+		t.Fatalf("signing_key_id=%s", ev.SigningKeyID)
+	}
+	if ev.VerificationStatus != aweb.Verified {
+		t.Fatalf("verification_status=%s", ev.VerificationStatus)
+	}
+}
+
+func TestParseSSEEventNoIdentityUnverified(t *testing.T) {
+	t.Parallel()
+
+	ev := parseSSEEvent(&aweb.SSEEvent{
+		Event: "message",
+		Data:  `{"from_agent":"bob","body":"unsigned hello"}`,
+	})
+
+	if ev.FromDID != "" {
+		t.Fatalf("from_did=%s", ev.FromDID)
+	}
+	if ev.VerificationStatus != aweb.Unverified {
+		t.Fatalf("verification_status=%s, want %s", ev.VerificationStatus, aweb.Unverified)
 	}
 }
