@@ -1644,3 +1644,79 @@ func TestAgentLogPeer(t *testing.T) {
 		t.Fatalf("entry[0].did=%s", resp.Entries[0].DID)
 	}
 }
+
+func TestRetireAgentSendsSignedRequest(t *testing.T) {
+	t.Parallel()
+
+	_, oldPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDID := ComputeDIDKey(oldPriv.Public().(ed25519.PublicKey))
+
+	var gotBody map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Fatalf("method=%s", r.Method)
+		}
+		if r.URL.Path != "/v1/agents/me/retire" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"did":               oldDID,
+			"status":            "retired",
+			"successor_did":     gotBody["successor_did"],
+			"successor_address": gotBody["successor_address"],
+			"retired_at":        "2026-06-15T10:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", oldPriv, oldDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := c.RetireAgent(context.Background(), &RetireAgentRequest{
+		SuccessorDID:     "did:key:z6MkSuccessor",
+		SuccessorAddress: "acme/analyst",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotBody["status"] != "retired" {
+		t.Fatalf("status=%s", gotBody["status"])
+	}
+	if gotBody["successor_did"] != "did:key:z6MkSuccessor" {
+		t.Fatalf("successor_did=%s", gotBody["successor_did"])
+	}
+	if gotBody["successor_address"] != "acme/analyst" {
+		t.Fatalf("successor_address=%s", gotBody["successor_address"])
+	}
+	if resp.Status != "retired" {
+		t.Fatalf("resp.status=%s", resp.Status)
+	}
+	if resp.RetiredAt != "2026-06-15T10:00:00Z" {
+		t.Fatalf("resp.retired_at=%s", resp.RetiredAt)
+	}
+}
+
+func TestRetireAgentRequiresIdentity(t *testing.T) {
+	t.Parallel()
+
+	c, err := NewWithAPIKey("http://localhost", "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.RetireAgent(context.Background(), &RetireAgentRequest{
+		SuccessorDID:     "did:key:z6MkSuccessor",
+		SuccessorAddress: "acme/analyst",
+	})
+	if err == nil {
+		t.Fatal("expected error for client without identity")
+	}
+}
