@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -84,11 +85,23 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		os.Exit(2)
 	}
 
+	// Generate Ed25519 keypair and compute DID for self-custodial registration.
+	pub, priv, err := awconfig.GenerateKeypair()
+	if err != nil {
+		fatal(err)
+	}
+	did := aweb.ComputeDIDKey(pub)
+	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
+
 	req := &aweb.RegisterRequest{
 		Email:     email,
 		Username:  &username,
 		Alias:     &alias,
 		HumanName: strings.TrimSpace(registerHumanName),
+		DID:       did,
+		PublicKey: pubKeyB64,
+		Custody:   aweb.CustodySelf,
+		Lifetime:  aweb.LifetimePersistent,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -123,8 +136,13 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		accountName = deriveAccountName(serverName, resp.ProjectSlug, resp.Alias)
 	}
 
+	address := deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
+	cfgPath := mustDefaultGlobalPath()
+	keysDir := awconfig.KeysDir(cfgPath)
+	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
+
 	if registerSaveConfig {
-		updateErr := awconfig.UpdateGlobalAt(mustDefaultGlobalPath(), func(cfg *awconfig.GlobalConfig) error {
+		updateErr := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
 			if cfg.Servers == nil {
 				cfg.Servers = map[string]awconfig.Server{}
 			}
@@ -142,6 +160,10 @@ func runRegister(cmd *cobra.Command, args []string) error {
 				AgentAlias:     resp.Alias,
 				Email:          resp.Email,
 				NamespaceSlug:  resp.NamespaceSlug,
+				DID:            resp.DID,
+				SigningKey:     signingKeyPath,
+				Custody:        resp.Custody,
+				Lifetime:       resp.Lifetime,
 			}
 			if strings.TrimSpace(cfg.DefaultAccount) == "" || registerSetDefault {
 				cfg.DefaultAccount = accountName
@@ -151,6 +173,12 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		if updateErr != nil {
 			fatal(updateErr)
 		}
+	}
+
+	// Save keypair after config is written so a failed config update
+	// does not leave orphaned key files on disk.
+	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+		fatal(err)
 	}
 
 	if registerWriteContext {

@@ -344,6 +344,18 @@ func deriveAccountName(serverName, projectSlug, alias string) string {
 	return "acct-" + sanitizeKeyComponent(serverName) + "__" + sanitizeKeyComponent(projectSlug) + "__" + sanitizeKeyComponent(alias)
 }
 
+// deriveAgentAddress builds the agent address (namespace/alias) from
+// registration response fields. Prefers namespace_slug over project_slug.
+func deriveAgentAddress(namespaceSlug, projectSlug, alias string) string {
+	if namespaceSlug != "" {
+		return namespaceSlug + "/" + alias
+	}
+	if projectSlug != "" {
+		return projectSlug + "/" + alias
+	}
+	return alias
+}
+
 func writeOrUpdateContext(serverName, accountName string) error {
 	wd, err := os.Getwd()
 	if err != nil {

@@ -12,6 +12,10 @@ type RegisterRequest struct {
 	Password  *string `json:"password,omitempty"`
 	Alias     *string `json:"alias,omitempty"`
 	HumanName string  `json:"human_name,omitempty"`
+	DID       string  `json:"did,omitempty"`
+	PublicKey string  `json:"public_key,omitempty"`
+	Custody   string  `json:"custody,omitempty"`
+	Lifetime  string  `json:"lifetime,omitempty"`
 }
 
 // RegisterResponse is returned by POST /v1/auth/register.
@@ -26,6 +30,9 @@ type RegisterResponse struct {
 	ServerURL            string `json:"server_url"`
 	NamespaceSlug        string `json:"namespace_slug,omitempty"`
 	VerificationRequired bool   `json:"verification_required"`
+	DID                  string `json:"did,omitempty"`
+	Custody              string `json:"custody,omitempty"`
+	Lifetime             string `json:"lifetime,omitempty"`
 }
 
 // Register creates a new account on the server.

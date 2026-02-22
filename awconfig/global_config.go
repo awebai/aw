@@ -45,6 +45,12 @@ func DefaultGlobalConfigPath() (string, error) {
 	return filepath.Join(home, ".config", "aw", "config.yaml"), nil
 }
 
+// KeysDir returns the keys directory for a given config file path
+// (e.g. "~/.config/aw/config.yaml" → "~/.config/aw/keys").
+func KeysDir(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "keys")
+}
+
 func LoadGlobal() (*GlobalConfig, error) {
 	path, err := DefaultGlobalConfigPath()
 	if err != nil {

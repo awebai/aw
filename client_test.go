@@ -336,6 +336,111 @@ func TestRegisterResponseIncludesEmail(t *testing.T) {
 	}
 }
 
+func TestRegisterRequestIncludesIdentityFields(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"api_key":      "aw_sk_test",
+			"agent_id":     "agent-1",
+			"alias":        "alice",
+			"username":     "testuser",
+			"email":        "test@example.com",
+			"project_slug": "default",
+			"did":          "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+			"custody":      "self",
+			"lifetime":     "persistent",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := "alice"
+	username := "testuser"
+	resp, err := c.Register(context.Background(), &RegisterRequest{
+		Email:     "test@example.com",
+		Alias:     &alias,
+		Username:  &username,
+		DID:       "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+		PublicKey: "Lm/M42cB3HkUiODQsXRcweM6TByfzEHGO9ND274JcOY",
+		Custody:   "self",
+		Lifetime:  "persistent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify request body includes identity fields.
+	if gotBody["did"] != "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" {
+		t.Fatalf("request did=%v", gotBody["did"])
+	}
+	if gotBody["public_key"] != "Lm/M42cB3HkUiODQsXRcweM6TByfzEHGO9ND274JcOY" {
+		t.Fatalf("request public_key=%v", gotBody["public_key"])
+	}
+	if gotBody["custody"] != "self" {
+		t.Fatalf("request custody=%v", gotBody["custody"])
+	}
+	if gotBody["lifetime"] != "persistent" {
+		t.Fatalf("request lifetime=%v", gotBody["lifetime"])
+	}
+
+	// Verify response includes identity fields.
+	if resp.DID != "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" {
+		t.Fatalf("response did=%q", resp.DID)
+	}
+	if resp.Custody != "self" {
+		t.Fatalf("response custody=%q", resp.Custody)
+	}
+	if resp.Lifetime != "persistent" {
+		t.Fatalf("response lifetime=%q", resp.Lifetime)
+	}
+}
+
+func TestRegisterRequestOmitsEmptyIdentityFields(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"api_key":      "aw_sk_test",
+			"agent_id":     "agent-1",
+			"alias":        "alice",
+			"username":     "testuser",
+			"email":        "test@example.com",
+			"project_slug": "default",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := "alice"
+	username := "testuser"
+	_, err = c.Register(context.Background(), &RegisterRequest{
+		Email:    "test@example.com",
+		Alias:    &alias,
+		Username: &username,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Identity fields should be omitted when empty (backward compat).
+	for _, key := range []string{"did", "public_key", "custody", "lifetime"} {
+		if _, ok := gotBody[key]; ok {
+			t.Fatalf("expected %q to be omitted, got %v", key, gotBody[key])
+		}
+	}
+}
+
 func TestVerifyCode(t *testing.T) {
 	t.Parallel()
 

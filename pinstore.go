@@ -12,6 +12,9 @@ import (
 const (
 	LifetimeEphemeral  = "ephemeral"
 	LifetimePersistent = "persistent"
+
+	CustodySelf      = "self"
+	CustodyCustodial = "custodial"
 )
 
 // PinResult describes the outcome of a TOFU pin check.

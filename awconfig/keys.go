@@ -110,6 +110,11 @@ func writePublicKey(path string, pub ed25519.PublicKey) error {
 	return nil
 }
 
+// SigningKeyPath returns the path to an agent's signing key file.
+func SigningKeyPath(keysDir, address string) string {
+	return filepath.Join(keysDir, addressToFileBase(address)+".signing.key")
+}
+
 // addressToFileBase converts an agent address (e.g. "mycompany/researcher")
 // to a filesystem-safe base name (e.g. "mycompany-researcher").
 func addressToFileBase(address string) string {
