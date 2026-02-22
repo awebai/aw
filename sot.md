@@ -4,7 +4,7 @@
 **Architecture reference:** `../clawdid/sot.md` (V3) — rationale, trust model, phasing.
 **Existing identity doc:** `docs/identity-system.md` — pre-identity entity model, auth flows, addressing (still valid for those topics).
 
-**Endpoint URL convention:** The aw client uses `/v1/auth/register` and `/v1/init` for registration. The architecture doc uses `/api/register` as a simplified form. This SoT uses the actual client paths. New identity endpoints (resolution, rotation, retirement, log, deregistration) use `/api/agents/...` as they are server-side additions not yet implemented — final paths will be confirmed during server implementation.
+**Endpoint URL convention:** The aw client uses `/v1/auth/register` and `/v1/init` for registration. The architecture doc uses `/api/register` as a simplified form. This SoT uses the actual client paths. New identity endpoints use `/v1/agents/me/...` for self-operations (bearer token identifies the agent) and `/v1/agents/{namespace}/{alias}/...` for peer operations. No DID or UUID in API paths — DIDs belong in message envelopes (protocol layer), not in server routing paths.
 
 ---
 
@@ -51,6 +51,20 @@ The protocol is identical for both: every message carries `from_did` and `signat
 
 **Custodial:** Server generates keypair, holds private key, signs on behalf of agent. Signatures are valid but server could forge. The aw client does not hold a signing key — `NewWithAPIKey()` constructor, no crypto.
 
+### Two-layer DID model
+
+Identity uses two DID methods that serve different purposes:
+
+**`did:key` (base layer, Phase 1):** The public key encoded as a DID. What aw builds and launches with. Offline verification — extract the key from the DID string, check the signature. Changes on every key rotation (new key = new DID). Present in every signed message as `from_did` / `to_did`.
+
+**`did:claw` (stable alias, Phase 2):** An optional stable identifier derived from the agent's initial public key. Does not change on key rotation. Resolved via ClaWDID to the agent's current `did:key`. Present in message envelopes as `from_stable_id` / `to_stable_id` when the agent has registered with ClaWDID. Absent for ephemeral agents and pre-ClaWDID agents.
+
+The two layers answer different questions:
+- `did:key` → "who signed this message?" (cryptographic, offline)
+- `did:claw` → "is this the same agent I talked to last month?" (identity continuity, requires ClaWDID)
+
+`did:claw` does not block launch. The entire Phase 1 identity system — signing, verification, TOFU pinning, rotation announcements — works with `did:key` alone. `did:claw` and ClaWDID add stable identity resolution on top without changing the base protocol.
+
 ---
 
 ## 2. New files
@@ -63,7 +77,7 @@ The protocol is identical for both: every message carries `from_did` and `signat
 | `signing.go` | Message signing: `SignMessage(key ed25519.PrivateKey, envelope *MessageEnvelope) (signature string, err error)`, `VerifyMessage(envelope *MessageEnvelope) (VerificationStatus, error)`. Canonical JSON construction. `VerificationStatus` type. |
 | `identity.go` | `AgentIdentity` struct, `IdentityResolver` interface, `DIDKeyResolver`, `ChainResolver`. |
 | `pinstore.go` | TOFU pin storage: `PinStore` (load/save `known_agents.yaml`), `CheckPin(address, did string) PinResult`, `StorePin(...)`. |
-| `deregister.go` | `Deregister(ctx, did) error` — `DELETE /api/agents/{did}` for ephemeral agent cleanup. |
+| `deregister.go` | `Deregister(ctx) error` — `DELETE /v1/agents/me` for self-deregistration. `DeregisterAgent(ctx, namespace, alias) error` — `DELETE /v1/agents/{namespace}/{alias}` for peer deregistration (e.g., project admin cleaning up ephemeral agents). |
 
 ### CLI (`cmd/aw/`)
 
@@ -173,6 +187,7 @@ pins:
   "did:key:z6MkrT4Jxd...":
     address: "otherco/monitor"
     handle: "@bob"
+    stable_id: "did:claw:Qm9iJ3x..."  # optional, present when agent has ClaWDID registration
     first_seen: "2026-03-15T10:00:00Z"
     last_seen: "2026-03-20T14:30:00Z"
     server: "app.claweb.ai"
@@ -180,7 +195,7 @@ addresses:
   "otherco/monitor": "did:key:z6MkrT4Jxd..."
 ```
 
-Pins are keyed by DID. The `addresses` map is a reverse index for the TOFU identity-mismatch check. Pins apply to persistent agents only.
+Pins are keyed by `did:key` (the verification key). The `addresses` map is a reverse index for the TOFU identity-mismatch check. The `stable_id` field (Phase 2) records the agent's `did:claw` when available — on key rotation, TOFU can cross-check via ClaWDID that the `did:claw` → `did:key` mapping actually changed. Pins apply to persistent agents only.
 
 ---
 
@@ -359,6 +374,8 @@ This is a subset of RFC 8785 (JSON Canonicalization Scheme).
 | `server` | No | Originating server (metadata) |
 | `signature` | No | Base64-encoded Ed25519 signature |
 | `signing_key_id` | No | DID of the signing key |
+| `from_stable_id` | No | Sender's `did:claw` stable identity (optional, Phase 2) |
+| `to_stable_id` | No | Recipient's `did:claw` stable identity (optional, Phase 2) |
 | `rotation_announcement` | No | Present after key rotation (see §9) |
 
 ### Signing procedure
@@ -482,6 +499,8 @@ type InboxMessage struct {
     // ... existing fields ...
     FromDID            string             `json:"from_did,omitempty"`
     ToDID              string             `json:"to_did,omitempty"`
+    FromStableID       string             `json:"from_stable_id,omitempty"` // did:claw (Phase 2, optional)
+    ToStableID         string             `json:"to_stable_id,omitempty"`   // did:claw (Phase 2, optional)
     Signature          string             `json:"signature,omitempty"`
     SigningKeyID       string             `json:"signing_key_id,omitempty"`
     VerificationStatus VerificationStatus `json:"verification_status,omitempty"` // populated by client on receive
@@ -493,6 +512,8 @@ type ChatMessage struct {
     // ... existing fields ...
     FromDID            string             `json:"from_did,omitempty"`
     ToDID              string             `json:"to_did,omitempty"`
+    FromStableID       string             `json:"from_stable_id,omitempty"` // did:claw (Phase 2, optional)
+    ToStableID         string             `json:"to_stable_id,omitempty"`   // did:claw (Phase 2, optional)
     Signature          string             `json:"signature,omitempty"`
     SigningKeyID       string             `json:"signing_key_id,omitempty"`
     VerificationStatus VerificationStatus `json:"verification_status,omitempty"` // populated by client on receive
@@ -545,7 +566,7 @@ type IdentityResolver interface {
 
 **DIDKeyResolver** — Extracts public key from a `did:key` string. No network call. Always available. Returns `AgentIdentity` with DID and PublicKey filled; Address, Handle, ServerURL empty.
 
-**ServerResolver** — Calls `GET /api/agents/resolve/{namespace/alias}` on the aweb server. Returns full `AgentIdentity` including Lifetime.
+**ServerResolver** — Calls `GET /v1/agents/resolve/{namespace}/{alias}` on the aweb server. Returns full `AgentIdentity` including Lifetime.
 
 **PinResolver** — Looks up `known_agents.yaml` by DID or address.
 
@@ -558,7 +579,7 @@ The ClaWDID cross-check (Phase 2) is a nil-safe slot in ChainResolver.
 ### Server resolution endpoint (new)
 
 ```
-GET /api/agents/resolve/{namespace/alias}
+GET /v1/agents/resolve/{namespace}/{alias}
 
 Response:
 {
@@ -583,7 +604,8 @@ aw did rotate-key
 
 1. Generate new Ed25519 keypair locally.
 2. Compute new did:key.
-3. PUT /api/agents/{old-did}/rotate
+3. PUT /v1/agents/me/rotate
+   Authorization: Bearer <api_key>
    {
      "new_did": "did:key:z6MkNewKey...",
      "new_public_key": "<base64-new-pub>",
@@ -625,7 +647,8 @@ aw did rotate-key --self-custody
 
 1. Generate new Ed25519 keypair locally (client side).
 2. Compute new did:key.
-3. PUT /api/agents/{old-did}/rotate
+3. PUT /v1/agents/me/rotate
+   Authorization: Bearer <api_key>
    {
      "new_did": "did:key:z6MkNewKey...",
      "new_public_key": "<base64-new-pub>",
@@ -648,21 +671,28 @@ After graduation, the server no longer holds a signing key. Messages must be sen
 ```go
 // deregister.go
 
-func (c *Client) Deregister(ctx context.Context, did string) error {
-    // DELETE /api/agents/{did}
+// Deregister deregisters the authenticated agent (self).
+func (c *Client) Deregister(ctx context.Context) error {
+    // DELETE /v1/agents/me
+}
+
+// DeregisterAgent deregisters a peer agent by address (e.g., project admin cleaning up ephemeral agents).
+func (c *Client) DeregisterAgent(ctx context.Context, namespace, alias string) error {
+    // DELETE /v1/agents/{namespace}/{alias}
 }
 ```
 
-Called by bdh during worktree cleanup. Server destroys the keypair, marks agent as deregistered, frees the alias for reuse. If the call fails (network down), server-side staleness catches it.
+`Deregister` is called by bdh during worktree cleanup. Server destroys the keypair, marks agent as deregistered, frees the alias for reuse. If the call fails (network down), server-side staleness catches it.
 
-If DID is empty (pre-identity agent), skip the call.
+`DeregisterAgent` is for peer operations — any agent in the same project can deregister an ephemeral agent.
 
 ### Retirement with succession (persistent agents only)
 
 ```
 aw agent retire --successor mycompany/analyst
 
-1. PUT /api/agents/{old-did}/retire
+1. PUT /v1/agents/me/retire
+   Authorization: Bearer <api_key>
    {
      "status": "retired",
      "successor_did": "did:key:z6MkNewAgent...",
@@ -737,7 +767,7 @@ agent_id:    <uuid>
 
 Endpoints the aweb server must support for the identity system.
 
-**DID encoding in URL paths:** The `{did}` path segment uses the full `did:key:z6Mk...` string, percent-encoded per RFC 3986. In practice, `did:key:z6Mk...` only contains `[a-zA-Z0-9:.]` so the colons are the only characters that need encoding (`%3A`). Example: `PUT /api/agents/did%3Akey%3Az6MkhaXgBZD.../rotate`. The `aw` client handles this encoding via `url.PathEscape()`.
+**Path convention:** Self-operations use `/v1/agents/me/...` — the bearer token identifies the agent. Peer operations use `/v1/agents/{namespace}/{alias}/...` — the bearer token authenticates the caller, the path identifies the target. No DID or UUID in API paths. DIDs belong in message envelopes (protocol layer), not in server routing paths. The server's internal database uses whatever primary key it likes (UUID, bigint, etc.); the mapping between internal IDs and addresses is the server's concern.
 
 ### Agent registration (modified)
 
@@ -761,7 +791,7 @@ Both return `did`, `custody`, and `lifetime` in the response.
 ### Agent resolution (new)
 
 ```
-GET /api/agents/resolve/{namespace/alias}
+GET /v1/agents/resolve/{namespace}/{alias}
 
 → 200
 {
@@ -775,10 +805,10 @@ GET /api/agents/resolve/{namespace/alias}
 }
 ```
 
-### Key rotation (new)
+### Key rotation (new, self-operation)
 
 ```
-PUT /api/agents/{did}/rotate
+PUT /v1/agents/me/rotate
 Authorization: Bearer <api_key>
 
 {
@@ -798,10 +828,10 @@ Authorization: Bearer <api_key>
 
 Server verifies `rotation_signature` against old public key. For custodial agents, the server signs on behalf.
 
-### Agent retirement (new)
+### Agent retirement (new, self-operation)
 
 ```
-PUT /api/agents/{did}/retire
+PUT /v1/agents/me/retire
 Authorization: Bearer <api_key>
 
 {
@@ -822,11 +852,20 @@ Authorization: Bearer <api_key>
 
 Signed by old agent's key.
 
-### Agent deregistration (new, ephemeral)
+### Agent deregistration (new)
 
+Self-deregistration:
 ```
-DELETE /api/agents/{did}
+DELETE /v1/agents/me
 Authorization: Bearer <api_key>
+
+→ 204
+```
+
+Peer deregistration (e.g., project admin cleaning up ephemeral agents):
+```
+DELETE /v1/agents/{namespace}/{alias}
+Authorization: Bearer <caller_api_key>
 
 → 204
 ```
@@ -835,8 +874,17 @@ Server destroys keypair, marks agent deregistered, frees alias for reuse.
 
 ### Agent log (new)
 
+Self:
 ```
-GET /api/agents/{did}/log
+GET /v1/agents/me/log
+Authorization: Bearer <api_key>
+
+→ 200
+```
+
+Peer:
+```
+GET /v1/agents/{namespace}/{alias}/log
 
 → 200
 {
@@ -862,7 +910,7 @@ Each entry is signed by the key that authorized the change. Ephemeral agents: mi
 
 ### Message relay (modified)
 
-Messages with `from_did`, `to_did`, `signature`, `signing_key_id`, and `rotation_announcement` fields are relayed verbatim. The server never modifies, strips, or re-signs these fields.
+Messages with `from_did`, `to_did`, `from_stable_id`, `to_stable_id`, `signature`, `signing_key_id`, and `rotation_announcement` fields are relayed verbatim. The server never modifies, strips, or re-signs these fields.
 
 ---
 
@@ -898,7 +946,7 @@ The identity system is designed so that bdh (which uses aw as a library) require
 | `InitResponse` | Returns `DID`. |
 | `awconfig.Account` | New `DID`, `Custody`, `Lifetime` fields. |
 | `InboxMessage` / `ChatMessage` | New `VerificationStatus` field, populated on receive. |
-| `Deregister(ctx, did) error` | New method. DELETE /api/agents/{did}. |
+| `Deregister(ctx) error` | New method. DELETE /v1/agents/me. |
 | Automatic verification | aw verifies all incoming messages and populates `VerificationStatus`. |
 
 ### What bdh does
@@ -906,7 +954,7 @@ The identity system is designed so that bdh (which uses aw as a library) require
 1. Pass `Custody="custodial"`, `Lifetime="ephemeral"` in Init().
 2. Store returned `DID` in awconfig via `UpdateGlobal()`.
 3. Read `VerificationStatus` on incoming messages, log non-verified.
-4. Call `Deregister(did)` on worktree cleanup (graceful degradation if it fails).
+4. Call `Deregister()` on worktree cleanup (graceful degradation if it fails).
 5. Zero crypto code.
 
 ### What bdh does NOT do
@@ -929,7 +977,7 @@ The identity system is designed so that bdh (which uses aw as a library) require
 6. **`awconfig/global_config.go`** — Add `DID`, `SigningKey`, `Custody`, `Lifetime` to `Account`. Tests for serialization roundtrip.
 7. **`register.go` + `cmd/aw/register.go`** — Keypair generation at registration, send DID/public_key/custody/lifetime. Integration test.
 8. **`init.go` + `cmd/aw/init.go`** — Same for init path. Store DID from response. Integration test.
-9. **`deregister.go`** — `Deregister(ctx, did)` client method. Integration test.
+9. **`deregister.go`** — `Deregister(ctx)` and `DeregisterAgent(ctx, namespace, alias)` client methods. Integration test.
 10. **`client.go`** — Add `signingKey`/`did` to Client. `NewWithIdentity` constructor. `put` helper method.
 11. **Message sending** — Sign outgoing messages in `SendMessage`, `NetworkSendMail`, `SendDM`, `ChatCreateSession`, `ChatSendMessage`. Integration tests.
 12. **Message receiving** — Verify incoming signatures in `Inbox`, `ChatStream`, `ChatHistory`. Populate `VerificationStatus`. Integration tests.
