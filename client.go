@@ -81,8 +81,10 @@ type Client struct {
 	apiKey     string
 	signingKey ed25519.PrivateKey // nil for legacy/custodial
 	did        string            // empty for legacy/custodial
-	address    string            // namespace/alias, used in signed envelopes
-	resolver   IdentityResolver  // optional; resolves recipient DID for to_did binding
+	address      string            // namespace/alias, used in signed envelopes
+	resolver     IdentityResolver  // optional; resolves recipient DID for to_did binding
+	pinStore     *PinStore         // optional; TOFU pin store for sender identity verification
+	pinStorePath string            // disk path for persisting pin store
 }
 
 // New creates a new client.
@@ -144,6 +146,49 @@ func (c *Client) SetAddress(address string) { c.address = address }
 // SetResolver sets the identity resolver used to resolve recipient DIDs
 // for to_did binding in signed envelopes.
 func (c *Client) SetResolver(r IdentityResolver) { c.resolver = r }
+
+// SetPinStore sets the TOFU pin store for sender identity verification.
+// If path is non-empty, the store is persisted to disk after updates.
+func (c *Client) SetPinStore(ps *PinStore, path string) {
+	c.pinStore = ps
+	c.pinStorePath = path
+}
+
+// CheckTOFUPin checks a verified message against the TOFU pin store.
+// On first contact, creates a pin. On subsequent contact with matching DID,
+// updates last_seen. On DID mismatch, returns IdentityMismatch.
+// Returns the status unchanged if no pin store is set, the message is not
+// verified, or from_did/from_alias is empty.
+func (c *Client) CheckTOFUPin(status VerificationStatus, fromAlias, fromDID string) VerificationStatus {
+	if c.pinStore == nil || (status != Verified && status != VerifiedCustodial) || fromDID == "" || fromAlias == "" {
+		return status
+	}
+	c.pinStore.mu.Lock()
+	defer c.pinStore.mu.Unlock()
+
+	result := c.pinStore.CheckPin(fromAlias, fromDID, LifetimePersistent)
+	switch result {
+	case PinNew:
+		c.pinStore.StorePin(fromDID, fromAlias, "", "")
+		c.savePinStore()
+	case PinOK:
+		c.pinStore.StorePin(fromDID, fromAlias, "", "")
+		c.savePinStore()
+	case PinMismatch:
+		return IdentityMismatch
+	case PinSkipped:
+		// Ephemeral agent — no pin check.
+	}
+	return status
+}
+
+func (c *Client) savePinStore() {
+	if c.pinStorePath != "" {
+		// Best effort: atomic write via temp+rename. A failed save means
+		// the next process loads a stale store and may re-pin.
+		_ = c.pinStore.Save(c.pinStorePath)
+	}
+}
 
 // checkRecipientBinding downgrades a Verified status to IdentityMismatch
 // if the message's to_did doesn't match the client's own DID.

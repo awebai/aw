@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -41,7 +42,8 @@ type Pin struct {
 // Pins are keyed by did:key. The Addresses map is a reverse index from
 // address to did:key for the identity-mismatch check.
 type PinStore struct {
-	Pins      map[string]*Pin `yaml:"pins"`
+	mu        sync.Mutex        `yaml:"-"`
+	Pins      map[string]*Pin   `yaml:"pins"`
 	Addresses map[string]string `yaml:"addresses"`
 }
 

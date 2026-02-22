@@ -182,6 +182,7 @@ func (c *Client) NetworkChatHistory(ctx context.Context, p ChatHistoryParams) (*
 		}
 		// Error is encoded in VerificationStatus; discard it.
 		m.VerificationStatus, _ = VerifyMessage(env)
+		m.VerificationStatus = c.CheckTOFUPin(m.VerificationStatus, m.FromAgent, m.FromDID)
 	}
 	return &out, nil
 }

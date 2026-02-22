@@ -244,12 +244,19 @@ func buildMessages(messages []aweb.ChatMessage) []Event {
 	events := make([]Event, len(messages))
 	for i, m := range messages {
 		events[i] = Event{
-			Type:          "message",
-			MessageID:     m.MessageID,
-			FromAgent:     m.FromAgent,
-			Body:          m.Body,
-			Timestamp:     m.Timestamp,
-			SenderLeaving: m.SenderLeaving,
+			Type:               "message",
+			MessageID:          m.MessageID,
+			FromAgent:          m.FromAgent,
+			Body:               m.Body,
+			Timestamp:          m.Timestamp,
+			SenderLeaving:      m.SenderLeaving,
+			FromDID:            m.FromDID,
+			ToDID:              m.ToDID,
+			FromStableID:       m.FromStableID,
+			ToStableID:         m.ToStableID,
+			Signature:          m.Signature,
+			SigningKeyID:       m.SigningKeyID,
+			VerificationStatus: m.VerificationStatus,
 		}
 	}
 	return events
@@ -269,7 +276,7 @@ type messageAcceptor func(ev Event) (accept, skip bool)
 // waitForMessage opens an SSE stream and waits for a message matching the acceptor.
 // Handles read receipts, extend-wait messages, and wait extensions.
 // after controls SSE replay: non-nil replays messages after that timestamp; nil skips replay.
-func waitForMessage(ctx context.Context, openStream streamOpener, sessionID string, waitSeconds int, after *time.Time, callback StatusCallback, accept messageAcceptor) (*SendResult, error) {
+func waitForMessage(ctx context.Context, client *aweb.Client, openStream streamOpener, sessionID string, waitSeconds int, after *time.Time, callback StatusCallback, accept messageAcceptor) (*SendResult, error) {
 	result := &SendResult{
 		SessionID: sessionID,
 		Status:    "timeout",
@@ -340,6 +347,7 @@ func waitForMessage(ctx context.Context, openStream streamOpener, sessionID stri
 			}
 
 			chatEvent := parseSSEEvent(sr.event)
+			chatEvent.VerificationStatus = client.CheckTOFUPin(chatEvent.VerificationStatus, chatEvent.FromAgent, chatEvent.FromDID)
 
 			if chatEvent.Type == "read_receipt" {
 				result.Events = append(result.Events, chatEvent)
@@ -416,7 +424,7 @@ func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []st
 		return nil, fmt.Errorf("sending message: %w", err)
 	}
 
-	return sendCommon(ctx, client.ChatStream, sendResponse{
+	return sendCommon(ctx, client, client.ChatStream, sendResponse{
 		SessionID:        createResp.SessionID,
 		MessageID:        createResp.MessageID,
 		TargetsConnected: createResp.TargetsConnected,
@@ -437,7 +445,7 @@ func SendNetwork(ctx context.Context, client *aweb.Client, myAlias string, targe
 		return nil, fmt.Errorf("sending network message: %w", err)
 	}
 
-	return sendCommon(ctx, client.NetworkChatStream, sendResponse{
+	return sendCommon(ctx, client, client.NetworkChatStream, sendResponse{
 		SessionID:        createResp.SessionID,
 		MessageID:        createResp.MessageID,
 		TargetsConnected: createResp.TargetsConnected,
@@ -446,7 +454,7 @@ func SendNetwork(ctx context.Context, client *aweb.Client, myAlias string, targe
 }
 
 // sendCommon handles the post-send wait logic shared by Send and SendNetwork.
-func sendCommon(ctx context.Context, openStream streamOpener, resp sendResponse, myAlias string, targets []string, message string, opts SendOptions, after *time.Time, callback StatusCallback) (*SendResult, error) {
+func sendCommon(ctx context.Context, client *aweb.Client, openStream streamOpener, resp sendResponse, myAlias string, targets []string, message string, opts SendOptions, after *time.Time, callback StatusCallback) (*SendResult, error) {
 	result := &SendResult{
 		SessionID:   resp.SessionID,
 		Status:      "sent",
@@ -525,7 +533,7 @@ func sendCommon(ctx context.Context, openStream streamOpener, resp sendResponse,
 		return false, false
 	}
 
-	waitResult, err := waitForMessage(ctx, openStream, resp.SessionID, waitSeconds, after, callback, acceptor)
+	waitResult, err := waitForMessage(ctx, client, openStream, resp.SessionID, waitSeconds, after, callback, acceptor)
 	if err != nil {
 		return nil, err
 	}
@@ -552,7 +560,7 @@ func Listen(ctx context.Context, client *aweb.Client, targetAlias string, waitSe
 
 	acceptAll := func(ev Event) (bool, bool) { return true, false }
 
-	result, err := waitForMessage(ctx, client.ChatStream, sessionID, waitSeconds, nil, callback, acceptAll)
+	result, err := waitForMessage(ctx, client, client.ChatStream, sessionID, waitSeconds, nil, callback, acceptAll)
 	if err != nil {
 		return nil, err
 	}
@@ -747,7 +755,7 @@ func ListenNetwork(ctx context.Context, client *aweb.Client, targetAddress strin
 
 	acceptAll := func(ev Event) (bool, bool) { return true, false }
 
-	result, err := waitForMessage(ctx, client.NetworkChatStream, sessionID, waitSeconds, nil, callback, acceptAll)
+	result, err := waitForMessage(ctx, client, client.NetworkChatStream, sessionID, waitSeconds, nil, callback, acceptAll)
 	if err != nil {
 		return nil, err
 	}

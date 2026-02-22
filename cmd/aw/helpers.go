@@ -62,6 +62,15 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 		}
 		c.SetAddress(deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias))
 		c.SetResolver(&aweb.ServerResolver{Client: c})
+
+		// Load TOFU pin store for sender identity verification.
+		pinPath := filepath.Join(filepath.Dir(mustDefaultGlobalPath()), "pins.yaml")
+		ps, err := aweb.LoadPinStore(pinPath)
+		if err != nil {
+			debugLog("load pin store: %v", err)
+			ps = aweb.NewPinStore()
+		}
+		c.SetPinStore(ps, pinPath)
 	} else {
 		var err error
 		c, err = aweb.NewWithAPIKey(baseURL, sel.APIKey)

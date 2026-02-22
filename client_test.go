@@ -2018,3 +2018,164 @@ func TestSendMessageNoResolverLeavesToDIDEmpty(t *testing.T) {
 		t.Fatalf("status=%s, want verified", status)
 	}
 }
+
+func TestInboxTOFUPinFirstContact(t *testing.T) {
+	t.Parallel()
+
+	// Generate sender identity and sign a message.
+	senderPub, senderPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderDID := ComputeDIDKey(senderPub)
+
+	env := &MessageEnvelope{
+		From:      "otherco/sender",
+		FromDID:   senderDID,
+		To:        "myco/agent",
+		Type:      "mail",
+		Subject:   "hello",
+		Body:      "first contact",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		MessageID: "msg-tofu-1",
+	}
+	sig, err := SignMessage(senderPriv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(InboxResponse{
+			Messages: []InboxMessage{{
+				MessageID:   "msg-tofu-1",
+				FromAgentID: "agent-1",
+				FromAlias:   "otherco/sender",
+				ToAlias:     "myco/agent",
+				Subject:     "hello",
+				Body:        "first contact",
+				CreatedAt:   env.Timestamp,
+				FromDID:     senderDID,
+				Signature:   sig,
+				SigningKeyID: senderDID,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	receiverPub, receiverPriv, _ := ed25519.GenerateKey(nil)
+	receiverDID := ComputeDIDKey(receiverPub)
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := NewPinStore()
+	c.SetPinStore(ps, "")
+
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(resp.Messages))
+	}
+	if resp.Messages[0].VerificationStatus != Verified {
+		t.Fatalf("status=%s, want verified", resp.Messages[0].VerificationStatus)
+	}
+
+	// Pin should have been created.
+	if _, ok := ps.Pins[senderDID]; !ok {
+		t.Fatal("pin should have been created for sender DID")
+	}
+	if ps.Addresses["otherco/sender"] != senderDID {
+		t.Fatalf("address reverse index should map to sender DID, got %q", ps.Addresses["otherco/sender"])
+	}
+	firstSeen := ps.Pins[senderDID].FirstSeen
+
+	// Second contact — same sender, same DID → should stay Verified and update last_seen.
+	resp, err = c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Messages[0].VerificationStatus != Verified {
+		t.Fatalf("returning contact: status=%s, want verified", resp.Messages[0].VerificationStatus)
+	}
+	if ps.Pins[senderDID].FirstSeen != firstSeen {
+		t.Fatal("first_seen should not change on returning contact")
+	}
+}
+
+func TestInboxTOFUPinMismatch(t *testing.T) {
+	t.Parallel()
+
+	// Original sender.
+	senderPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalDID := ComputeDIDKey(senderPub)
+
+	// Impostor with different key claiming same address.
+	impostorPub, impostorPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impostorDID := ComputeDIDKey(impostorPub)
+
+	env := &MessageEnvelope{
+		From:      "otherco/sender",
+		FromDID:   impostorDID,
+		To:        "myco/agent",
+		Type:      "mail",
+		Subject:   "hello",
+		Body:      "impostor message",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		MessageID: "msg-impostor-1",
+	}
+	sig, err := SignMessage(impostorPriv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(InboxResponse{
+			Messages: []InboxMessage{{
+				MessageID:   "msg-impostor-1",
+				FromAgentID: "agent-1",
+				FromAlias:   "otherco/sender",
+				ToAlias:     "myco/agent",
+				Subject:     "hello",
+				Body:        "impostor message",
+				CreatedAt:   env.Timestamp,
+				FromDID:     impostorDID,
+				Signature:   sig,
+				SigningKeyID: impostorDID,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	receiverPub, receiverPriv, _ := ed25519.GenerateKey(nil)
+	receiverDID := ComputeDIDKey(receiverPub)
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-pin the original DID for this address.
+	ps := NewPinStore()
+	ps.StorePin(originalDID, "otherco/sender", "", "")
+
+	c.SetPinStore(ps, "")
+
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(resp.Messages))
+	}
+	// Signature is valid for impostorDID, but TOFU pin expects originalDID → mismatch.
+	if resp.Messages[0].VerificationStatus != IdentityMismatch {
+		t.Fatalf("status=%s, want identity_mismatch", resp.Messages[0].VerificationStatus)
+	}
+}
