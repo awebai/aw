@@ -71,6 +71,11 @@ func VerifyMessage(env *MessageEnvelope) (VerificationStatus, error) {
 		return Failed, fmt.Errorf("signing_key_id %q does not match from_did %q", env.SigningKeyID, env.FromDID)
 	}
 
+	// SOT §7 step 2: invalid did:key format → Unverified (not a did:key identity).
+	// SOT §7 step 3: valid prefix but decode failure → Failed (malformed identity).
+	if !strings.HasPrefix(env.FromDID, "did:key:z") {
+		return Unverified, nil
+	}
 	pub, err := ExtractPublicKey(env.FromDID)
 	if err != nil {
 		return Failed, fmt.Errorf("extract public key from from_did: %w", err)

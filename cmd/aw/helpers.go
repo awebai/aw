@@ -64,7 +64,7 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 		c.SetResolver(&aweb.ServerResolver{Client: c})
 
 		// Load TOFU pin store for sender identity verification.
-		pinPath := filepath.Join(filepath.Dir(mustDefaultGlobalPath()), "pins.yaml")
+		pinPath := filepath.Join(filepath.Dir(mustDefaultGlobalPath()), "known_agents.yaml")
 		ps, err := aweb.LoadPinStore(pinPath)
 		if err != nil {
 			debugLog("load pin store: %v", err)

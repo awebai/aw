@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	aweb "github.com/awebai/aw"
@@ -11,9 +12,10 @@ import (
 // introspectOutput combines the server's introspect response with local identity fields.
 type introspectOutput struct {
 	aweb.IntrospectResponse
-	DID      string `json:"did,omitempty"`
-	Custody  string `json:"custody,omitempty"`
-	Lifetime string `json:"lifetime,omitempty"`
+	DID       string `json:"did,omitempty"`
+	PublicKey string `json:"public_key,omitempty"`
+	Custody   string `json:"custody,omitempty"`
+	Lifetime  string `json:"lifetime,omitempty"`
 }
 
 var introspectCmd = &cobra.Command{
@@ -31,9 +33,16 @@ var introspectCmd = &cobra.Command{
 			fatal(err)
 		}
 
+		// Extract base58btc-encoded public key from DID (the suffix after "did:key:").
+		var pubKey string
+		if sel.DID != "" {
+			pubKey = strings.TrimPrefix(sel.DID, "did:key:")
+		}
+
 		out := introspectOutput{
 			IntrospectResponse: *resp,
 			DID:                sel.DID,
+			PublicKey:           pubKey,
 			Custody:            sel.Custody,
 			Lifetime:           sel.Lifetime,
 		}

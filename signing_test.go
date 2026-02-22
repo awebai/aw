@@ -176,12 +176,11 @@ func TestVerifyBadDIDFormat(t *testing.T) {
 		Signature: "AAAA",
 	}
 
-	status, err := VerifyMessage(env)
-	if status != Failed {
-		t.Fatalf("status=%q, want %q", status, Failed)
-	}
-	if err == nil {
-		t.Fatal("expected error for bad DID format")
+	status, _ := VerifyMessage(env)
+	// SOT §7 step 2: invalid DID format → Unverified (not Failed).
+	// A DID that isn't did:key is treated like a missing identity, not a security failure.
+	if status != Unverified {
+		t.Fatalf("status=%q, want %q", status, Unverified)
 	}
 }
 
