@@ -19,6 +19,10 @@ type Selection struct {
 	AgentAlias     string
 	Email          string
 	NamespaceSlug  string
+	DID            string
+	SigningKey     string
+	Custody        string
+	Lifetime       string
 }
 
 type ResolveOptions struct {
@@ -206,6 +210,10 @@ func finalizeSelection(accountName, serverName, baseURL, apiKey string, acct Acc
 		AgentAlias:     strings.TrimSpace(acct.AgentAlias),
 		Email:          strings.TrimSpace(acct.Email),
 		NamespaceSlug:  strings.TrimSpace(acct.NamespaceSlug),
+		DID:            strings.TrimSpace(acct.DID),
+		SigningKey:     strings.TrimSpace(acct.SigningKey),
+		Custody:        strings.TrimSpace(acct.Custody),
+		Lifetime:       strings.TrimSpace(acct.Lifetime),
 	}
 }
 

@@ -115,6 +115,118 @@ func TestAccountEmailFieldRoundTrips(t *testing.T) {
 	}
 }
 
+func TestAccountIdentityFieldsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.yaml")
+
+	if err := UpdateGlobalAt(path, func(cfg *GlobalConfig) error {
+		cfg.Accounts["alice"] = Account{
+			Server:     "localhost:8000",
+			APIKey:     "aw_sk_test",
+			AgentAlias: "alice",
+			DID:        "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+			SigningKey: "~/.config/aw/keys/mycompany-alice.signing.key",
+			Custody:    "self",
+			Lifetime:   "persistent",
+		}
+		cfg.DefaultAccount = "alice"
+		return nil
+	}); err != nil {
+		t.Fatalf("UpdateGlobalAt: %v", err)
+	}
+
+	cfg, err := LoadGlobalFrom(path)
+	if err != nil {
+		t.Fatalf("LoadGlobalFrom: %v", err)
+	}
+	acct, ok := cfg.Accounts["alice"]
+	if !ok {
+		t.Fatal("missing account alice")
+	}
+	if acct.DID != "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" {
+		t.Fatalf("DID=%q", acct.DID)
+	}
+	if acct.SigningKey != "~/.config/aw/keys/mycompany-alice.signing.key" {
+		t.Fatalf("SigningKey=%q", acct.SigningKey)
+	}
+	if acct.Custody != "self" {
+		t.Fatalf("Custody=%q", acct.Custody)
+	}
+	if acct.Lifetime != "persistent" {
+		t.Fatalf("Lifetime=%q", acct.Lifetime)
+	}
+}
+
+func TestAccountIdentityFieldsOmittedWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.yaml")
+
+	// Save without identity fields — they should be omitted from YAML.
+	cfg := &GlobalConfig{
+		Accounts: map[string]Account{
+			"alice": {Server: "localhost:8000", APIKey: "aw_sk_test"},
+		},
+		DefaultAccount: "alice",
+	}
+	if err := cfg.SaveGlobalTo(path); err != nil {
+		t.Fatalf("SaveGlobalTo: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	yaml := string(data)
+	for _, field := range []string{"did:", "signing_key:", "custody:", "lifetime:"} {
+		if strings.Contains(yaml, field) {
+			t.Fatalf("YAML should not contain %q when empty, got:\n%s", field, yaml)
+		}
+	}
+}
+
+func TestIdentityFieldsPropagateToSelection(t *testing.T) {
+	t.Parallel()
+
+	global := &GlobalConfig{
+		Servers: map[string]Server{
+			"prod": {URL: "https://app.aweb.ai"},
+		},
+		Accounts: map[string]Account{
+			"alice": {
+				Server:     "prod",
+				APIKey:     "aw_sk_test",
+				AgentAlias: "alice",
+				DID:        "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+				SigningKey: "/path/to/key",
+				Custody:    "self",
+				Lifetime:   "persistent",
+			},
+		},
+		DefaultAccount: "alice",
+	}
+
+	sel, err := Resolve(global, ResolveOptions{AccountName: "alice"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if sel.DID != "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" {
+		t.Fatalf("DID=%q", sel.DID)
+	}
+	if sel.SigningKey != "/path/to/key" {
+		t.Fatalf("SigningKey=%q", sel.SigningKey)
+	}
+	if sel.Custody != "self" {
+		t.Fatalf("Custody=%q", sel.Custody)
+	}
+	if sel.Lifetime != "persistent" {
+		t.Fatalf("Lifetime=%q", sel.Lifetime)
+	}
+}
+
 func TestUpdateGlobalAtMergesAccounts(t *testing.T) {
 	t.Parallel()
 

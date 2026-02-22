@@ -28,6 +28,10 @@ type Account struct {
 	AgentAlias     string `yaml:"agent_alias,omitempty"`
 	Email          string `yaml:"email,omitempty"`
 	NamespaceSlug  string `yaml:"namespace_slug,omitempty"`
+	DID            string `yaml:"did,omitempty"`
+	SigningKey     string `yaml:"signing_key,omitempty"`
+	Custody        string `yaml:"custody,omitempty"`
+	Lifetime       string `yaml:"lifetime,omitempty"`
 }
 
 func DefaultGlobalConfigPath() (string, error) {
