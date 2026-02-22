@@ -14,12 +14,16 @@ const (
 )
 
 type SendMessageRequest struct {
-	ToAgentID string          `json:"to_agent_id,omitempty"`
-	ToAlias   string          `json:"to_alias,omitempty"`
-	Subject   string          `json:"subject,omitempty"`
-	Body      string          `json:"body"`
-	Priority  MessagePriority `json:"priority,omitempty"`
-	ThreadID  *string         `json:"thread_id,omitempty"`
+	ToAgentID    string          `json:"to_agent_id,omitempty"`
+	ToAlias      string          `json:"to_alias,omitempty"`
+	Subject      string          `json:"subject,omitempty"`
+	Body         string          `json:"body"`
+	Priority     MessagePriority `json:"priority,omitempty"`
+	ThreadID     *string         `json:"thread_id,omitempty"`
+	FromDID      string          `json:"from_did,omitempty"`
+	Signature    string          `json:"signature,omitempty"`
+	SigningKeyID string          `json:"signing_key_id,omitempty"`
+	Timestamp    string          `json:"timestamp,omitempty"`
 }
 
 type SendMessageResponse struct {
@@ -29,6 +33,24 @@ type SendMessageResponse struct {
 }
 
 func (c *Client) SendMessage(ctx context.Context, req *SendMessageRequest) (*SendMessageResponse, error) {
+	to := req.ToAlias
+	if to == "" {
+		to = req.ToAgentID
+	}
+	sf, err := c.signEnvelope(&MessageEnvelope{
+		To:      to,
+		Type:    "mail",
+		Subject: req.Subject,
+		Body:    req.Body,
+	})
+	if err != nil {
+		return nil, err
+	}
+	req.FromDID = sf.FromDID
+	req.Signature = sf.Signature
+	req.SigningKeyID = sf.SigningKeyID
+	req.Timestamp = sf.Timestamp
+
 	var out SendMessageResponse
 	if err := c.post(ctx, "/v1/messages", req, &out); err != nil {
 		return nil, err

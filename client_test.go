@@ -836,3 +836,420 @@ func TestPatchAgentAccessMode(t *testing.T) {
 		t.Fatalf("access_mode=%s", resp.AccessMode)
 	}
 }
+
+func TestSendMessageSignsWhenIdentitySet(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-02-22T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.SendMessage(context.Background(), &SendMessageRequest{
+		ToAlias: "otherco/monitor",
+		Subject: "task complete",
+		Body:    "results attached",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.MessageID != "msg-1" {
+		t.Fatalf("MessageID=%q", resp.MessageID)
+	}
+
+	// Verify identity fields are present.
+	if gotBody["from_did"] != did {
+		t.Fatalf("from_did=%v, want %s", gotBody["from_did"], did)
+	}
+	if gotBody["signing_key_id"] != did {
+		t.Fatalf("signing_key_id=%v, want %s", gotBody["signing_key_id"], did)
+	}
+	sig, ok := gotBody["signature"].(string)
+	if !ok || sig == "" {
+		t.Fatal("signature missing or empty")
+	}
+
+	// Verify the signature is valid by reconstructing the envelope.
+	env := &MessageEnvelope{
+		From:      "", // sender address not known to library
+		FromDID:   did,
+		To:        "otherco/monitor",
+		ToDID:     "",
+		Type:      "mail",
+		Subject:   "task complete",
+		Body:      "results attached",
+		Timestamp: gotBody["timestamp"].(string),
+		Signature: sig,
+	}
+	status, err := VerifyMessage(env)
+	if err != nil {
+		t.Fatalf("VerifyMessage: %v", err)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestSendMessageNoSignatureWithoutIdentity(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-02-22T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.SendMessage(context.Background(), &SendMessageRequest{
+		ToAlias: "otherco/monitor",
+		Body:    "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Identity fields should not be present.
+	if _, exists := gotBody["from_did"]; exists {
+		t.Fatal("from_did should not be set for legacy client")
+	}
+	if _, exists := gotBody["signature"]; exists {
+		t.Fatal("signature should not be set for legacy client")
+	}
+	if _, exists := gotBody["signing_key_id"]; exists {
+		t.Fatal("signing_key_id should not be set for legacy client")
+	}
+}
+
+func TestSendMessageSignsWithToAgentID(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-02-22T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.SendMessage(context.Background(), &SendMessageRequest{
+		ToAgentID: "agent-uuid-123",
+		Subject:   "task complete",
+		Body:      "results attached",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Signature should bind to the ToAgentID when ToAlias is empty.
+	env := &MessageEnvelope{
+		FromDID:   did,
+		To:        "agent-uuid-123",
+		Type:      "mail",
+		Subject:   "task complete",
+		Body:      "results attached",
+		Timestamp: gotBody["timestamp"].(string),
+		Signature: gotBody["signature"].(string),
+	}
+	status, err := VerifyMessage(env)
+	if err != nil {
+		t.Fatalf("VerifyMessage: %v", err)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestNetworkSendMailSignsWhenIdentitySet(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-02-22T00:00:00Z",
+			"from_address": "myco/agent",
+			"to_address":   "otherco/monitor",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.NetworkSendMail(context.Background(), &NetworkMailRequest{
+		ToAddress: "otherco/monitor",
+		Subject:   "update",
+		Body:      "status ok",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotBody["from_did"] != did {
+		t.Fatalf("from_did=%v", gotBody["from_did"])
+	}
+	if gotBody["signature"] == nil || gotBody["signature"] == "" {
+		t.Fatal("signature missing")
+	}
+	if gotBody["signing_key_id"] != did {
+		t.Fatalf("signing_key_id=%v", gotBody["signing_key_id"])
+	}
+}
+
+func TestSendDMSignsWhenIdentitySet(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-02-22T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.SendDM(context.Background(), &DMRequest{
+		ToHandle: "juanre",
+		Body:     "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotBody["from_did"] != did {
+		t.Fatalf("from_did=%v", gotBody["from_did"])
+	}
+	if gotBody["signature"] == nil || gotBody["signature"] == "" {
+		t.Fatal("signature missing")
+	}
+}
+
+func TestChatCreateSessionSignsWhenIdentitySet(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id": "sess-1",
+			"message_id": "msg-1",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.ChatCreateSession(context.Background(), &ChatCreateSessionRequest{
+		ToAliases: []string{"otherco/monitor"},
+		Message:   "hey",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotBody["from_did"] != did {
+		t.Fatalf("from_did=%v", gotBody["from_did"])
+	}
+	sig, ok := gotBody["signature"].(string)
+	if !ok || sig == "" {
+		t.Fatal("signature missing")
+	}
+
+	// Verify the signature covers the chat envelope.
+	env := &MessageEnvelope{
+		FromDID:   did,
+		To:        "otherco/monitor",
+		Type:      "chat",
+		Body:      "hey",
+		Timestamp: gotBody["timestamp"].(string),
+		Signature: sig,
+	}
+	status, err := VerifyMessage(env)
+	if err != nil {
+		t.Fatalf("VerifyMessage: %v", err)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestChatSendMessageSignsWhenIdentitySet(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message_id": "msg-1",
+			"delivered":  true,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{
+		Body: "message in chat",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotBody["from_did"] != did {
+		t.Fatalf("from_did=%v", gotBody["from_did"])
+	}
+	if gotBody["signature"] == nil || gotBody["signature"] == "" {
+		t.Fatal("signature missing")
+	}
+}
+
+func TestNetworkCreateChatSignsWhenIdentitySet(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id": "sess-1",
+			"message_id": "msg-1",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.NetworkCreateChat(context.Background(), &NetworkChatCreateRequest{
+		ToAddresses: []string{"otherco/monitor"},
+		Message:     "hey there",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotBody["from_did"] != did {
+		t.Fatalf("from_did=%v", gotBody["from_did"])
+	}
+	if gotBody["signature"] == nil || gotBody["signature"] == "" {
+		t.Fatal("signature missing")
+	}
+}
+
+func TestNetworkChatSendMessageSignsWhenIdentitySet(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message_id": "msg-1",
+			"delivered":  true,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.NetworkChatSendMessage(context.Background(), "sess-1", &NetworkChatSendMessageRequest{
+		Body: "network chat msg",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotBody["from_did"] != did {
+		t.Fatalf("from_did=%v", gotBody["from_did"])
+	}
+	if gotBody["signature"] == nil || gotBody["signature"] == "" {
+		t.Fatal("signature missing")
+	}
+}

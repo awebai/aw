@@ -5,17 +5,22 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
 // --- Mail ---
 
 type NetworkMailRequest struct {
-	ToAddress string `json:"to_address"`
-	Subject   string `json:"subject,omitempty"`
-	Body      string `json:"body"`
-	Priority  string `json:"priority,omitempty"`
-	ThreadID  string `json:"thread_id,omitempty"`
+	ToAddress    string `json:"to_address"`
+	Subject      string `json:"subject,omitempty"`
+	Body         string `json:"body"`
+	Priority     string `json:"priority,omitempty"`
+	ThreadID     string `json:"thread_id,omitempty"`
+	FromDID      string `json:"from_did,omitempty"`
+	Signature    string `json:"signature,omitempty"`
+	SigningKeyID string `json:"signing_key_id,omitempty"`
+	Timestamp    string `json:"timestamp,omitempty"`
 }
 
 type NetworkMailResponse struct {
@@ -27,6 +32,20 @@ type NetworkMailResponse struct {
 }
 
 func (c *Client) NetworkSendMail(ctx context.Context, req *NetworkMailRequest) (*NetworkMailResponse, error) {
+	sf, err := c.signEnvelope(&MessageEnvelope{
+		To:      req.ToAddress,
+		Type:    "mail",
+		Subject: req.Subject,
+		Body:    req.Body,
+	})
+	if err != nil {
+		return nil, err
+	}
+	req.FromDID = sf.FromDID
+	req.Signature = sf.Signature
+	req.SigningKeyID = sf.SigningKeyID
+	req.Timestamp = sf.Timestamp
+
 	var out NetworkMailResponse
 	if err := c.post(ctx, "/v1/network/mail", req, &out); err != nil {
 		return nil, err
@@ -37,9 +56,13 @@ func (c *Client) NetworkSendMail(ctx context.Context, req *NetworkMailRequest) (
 // --- Chat ---
 
 type NetworkChatCreateRequest struct {
-	ToAddresses []string `json:"to_addresses"`
-	Message     string   `json:"message"`
-	Leaving     bool     `json:"leaving,omitempty"`
+	ToAddresses  []string `json:"to_addresses"`
+	Message      string   `json:"message"`
+	Leaving      bool     `json:"leaving,omitempty"`
+	FromDID      string   `json:"from_did,omitempty"`
+	Signature    string   `json:"signature,omitempty"`
+	SigningKeyID string   `json:"signing_key_id,omitempty"`
+	Timestamp    string   `json:"timestamp,omitempty"`
 }
 
 type NetworkChatCreateResponse struct {
@@ -52,6 +75,19 @@ type NetworkChatCreateResponse struct {
 }
 
 func (c *Client) NetworkCreateChat(ctx context.Context, req *NetworkChatCreateRequest) (*NetworkChatCreateResponse, error) {
+	sf, err := c.signEnvelope(&MessageEnvelope{
+		To:   strings.Join(req.ToAddresses, ","),
+		Type: "chat",
+		Body: req.Message,
+	})
+	if err != nil {
+		return nil, err
+	}
+	req.FromDID = sf.FromDID
+	req.Signature = sf.Signature
+	req.SigningKeyID = sf.SigningKeyID
+	req.Timestamp = sf.Timestamp
+
 	var out NetworkChatCreateResponse
 	if err := c.post(ctx, "/v1/network/chat", req, &out); err != nil {
 		return nil, err
@@ -60,8 +96,12 @@ func (c *Client) NetworkCreateChat(ctx context.Context, req *NetworkChatCreateRe
 }
 
 type NetworkChatSendMessageRequest struct {
-	Body       string `json:"body"`
-	ExtendWait bool   `json:"hang_on,omitempty"`
+	Body         string `json:"body"`
+	ExtendWait   bool   `json:"hang_on,omitempty"`
+	FromDID      string `json:"from_did,omitempty"`
+	Signature    string `json:"signature,omitempty"`
+	SigningKeyID string `json:"signing_key_id,omitempty"`
+	Timestamp    string `json:"timestamp,omitempty"`
 }
 
 type NetworkChatSendMessageResponse struct {
@@ -74,6 +114,19 @@ func (c *Client) NetworkChatSendMessage(ctx context.Context, sessionID string, r
 	if sessionID == "" {
 		return nil, errors.New("aweb: sessionID is required")
 	}
+	// In-session messages: To is empty because the session implies recipients.
+	sf, err := c.signEnvelope(&MessageEnvelope{
+		Type: "chat",
+		Body: req.Body,
+	})
+	if err != nil {
+		return nil, err
+	}
+	req.FromDID = sf.FromDID
+	req.Signature = sf.Signature
+	req.SigningKeyID = sf.SigningKeyID
+	req.Timestamp = sf.Timestamp
+
 	var out NetworkChatSendMessageResponse
 	if err := c.post(ctx, "/v1/network/chat/"+urlPathEscape(sessionID)+"/messages", req, &out); err != nil {
 		return nil, err

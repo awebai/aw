@@ -13,6 +13,37 @@ import (
 	"time"
 )
 
+// signedFields holds the identity fields attached to outgoing messages
+// when the client has a signing key.
+type signedFields struct {
+	FromDID      string
+	Signature    string
+	SigningKeyID string
+	Timestamp    string
+}
+
+// signEnvelope signs a MessageEnvelope and returns the fields to embed
+// in the request. When the client has no signing key (legacy/custodial),
+// returns a zero signedFields. Callers stamp the returned fields onto
+// the request struct before posting.
+func (c *Client) signEnvelope(env *MessageEnvelope) (signedFields, error) {
+	if c.signingKey == nil {
+		return signedFields{}, nil
+	}
+	env.FromDID = c.did
+	env.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	sig, err := SignMessage(c.signingKey, env)
+	if err != nil {
+		return signedFields{}, fmt.Errorf("sign message: %w", err)
+	}
+	return signedFields{
+		FromDID:      c.did,
+		Signature:    sig,
+		SigningKeyID: c.did,
+		Timestamp:    env.Timestamp,
+	}, nil
+}
+
 const (
 	// DefaultTimeout is the default HTTP timeout used by the client.
 	DefaultTimeout = 10 * time.Second

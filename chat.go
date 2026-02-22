@@ -4,13 +4,18 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
 type ChatCreateSessionRequest struct {
-	ToAliases []string `json:"to_aliases"`
-	Message   string   `json:"message"`
-	Leaving   bool     `json:"leaving,omitempty"`
+	ToAliases    []string `json:"to_aliases"`
+	Message      string   `json:"message"`
+	Leaving      bool     `json:"leaving,omitempty"`
+	FromDID      string   `json:"from_did,omitempty"`
+	Signature    string   `json:"signature,omitempty"`
+	SigningKeyID string   `json:"signing_key_id,omitempty"`
+	Timestamp    string   `json:"timestamp,omitempty"`
 }
 
 type ChatCreateSessionResponse struct {
@@ -28,6 +33,19 @@ type ChatParticipant struct {
 }
 
 func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRequest) (*ChatCreateSessionResponse, error) {
+	sf, err := c.signEnvelope(&MessageEnvelope{
+		To:   strings.Join(req.ToAliases, ","),
+		Type: "chat",
+		Body: req.Message,
+	})
+	if err != nil {
+		return nil, err
+	}
+	req.FromDID = sf.FromDID
+	req.Signature = sf.Signature
+	req.SigningKeyID = sf.SigningKeyID
+	req.Timestamp = sf.Timestamp
+
 	var out ChatCreateSessionResponse
 	if err := c.post(ctx, "/v1/chat/sessions", req, &out); err != nil {
 		return nil, err
@@ -148,8 +166,12 @@ func (c *Client) ChatStream(ctx context.Context, sessionID string, deadline time
 
 // ChatSendMessage sends a message in an existing chat session.
 type ChatSendMessageRequest struct {
-	Body   string `json:"body"`
-	ExtendWait bool   `json:"hang_on,omitempty"`
+	Body         string `json:"body"`
+	ExtendWait   bool   `json:"hang_on,omitempty"`
+	FromDID      string `json:"from_did,omitempty"`
+	Signature    string `json:"signature,omitempty"`
+	SigningKeyID string `json:"signing_key_id,omitempty"`
+	Timestamp    string `json:"timestamp,omitempty"`
 }
 
 type ChatSendMessageResponse struct {
@@ -159,6 +181,19 @@ type ChatSendMessageResponse struct {
 }
 
 func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *ChatSendMessageRequest) (*ChatSendMessageResponse, error) {
+	// In-session messages: To is empty because the session implies recipients.
+	sf, err := c.signEnvelope(&MessageEnvelope{
+		Type: "chat",
+		Body: req.Body,
+	})
+	if err != nil {
+		return nil, err
+	}
+	req.FromDID = sf.FromDID
+	req.Signature = sf.Signature
+	req.SigningKeyID = sf.SigningKeyID
+	req.Timestamp = sf.Timestamp
+
 	var out ChatSendMessageResponse
 	if err := c.post(ctx, "/v1/chat/sessions/"+urlPathEscape(sessionID)+"/messages", req, &out); err != nil {
 		return nil, err
