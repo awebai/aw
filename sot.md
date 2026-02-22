@@ -348,6 +348,8 @@ The signed payload includes routing and content fields, serialized as canonical 
 {"body":"results attached","from":"mycompany/researcher","from_did":"did:key:z6MkhaXgBZD...","subject":"task complete","timestamp":"2026-02-21T15:30:00Z","to":"otherco/monitor","to_did":"did:key:z6MkrT4Jxd...","type":"mail"}
 ```
 
+When `from_stable_id` and/or `to_stable_id` are present, they are included in the signed payload (sorted lexicographically with the other fields). Absent optional fields are simply not serialized — existing signatures remain valid. The canonical payload expands from 8 to up to 10 fields.
+
 Canonicalization rules:
 - Keys sorted lexicographically (UTF-8 byte order)
 - No whitespace between tokens
@@ -374,8 +376,8 @@ This is a subset of RFC 8785 (JSON Canonicalization Scheme).
 | `server` | No | Originating server (metadata) |
 | `signature` | No | Base64-encoded Ed25519 signature |
 | `signing_key_id` | No | DID of the signing key |
-| `from_stable_id` | No | Sender's `did:claw` stable identity (optional, Phase 2) |
-| `to_stable_id` | No | Recipient's `did:claw` stable identity (optional, Phase 2) |
+| `from_stable_id` | Yes (when present) | Sender's `did:claw` stable identity (optional, Phase 2) |
+| `to_stable_id` | Yes (when present) | Recipient's `did:claw` stable identity (optional, Phase 2) |
 | `rotation_announcement` | No | Present after key rotation (see §9) |
 
 ### Signing procedure
