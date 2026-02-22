@@ -255,7 +255,7 @@ aw register --server-url https://app.claweb.ai \
      "username": "alice",
      "alias": "researcher",
      "did": "did:key:z6MkhaXgBZD...",
-     "public_key": "<base64-ed25519-pub>",
+     "public_key": "<base64url-ed25519-pub>",
      "custody": "self",
      "lifetime": "persistent"
    }
@@ -587,11 +587,13 @@ Response:
 {
   "did": "did:key:z6MkhaXgBZD...",
   "address": "mycompany/researcher",
-  "handle": "@alice",
-  "public_key": "<base64-ed25519-pub>",
+  "agent_id": "<uuid>",
+  "human_name": "Alice",
+  "public_key": "<base64url-ed25519-pub>",
   "server": "app.claweb.ai",
   "custody": "self",
-  "lifetime": "persistent"
+  "lifetime": "persistent",
+  "status": "active"
 }
 ```
 
@@ -609,9 +611,10 @@ aw did rotate-key
 3. PUT /v1/agents/me/rotate
    Authorization: Bearer <api_key>
    {
-     "new_did": "did:key:z6MkNewKey...",
-     "new_public_key": "<base64-new-pub>",
      "custody": "self",
+     "timestamp": "2026-06-01T12:00:00Z",
+     "new_did": "did:key:z6MkNewKey...",
+     "new_public_key": "<base64url-new-pub>",
      "rotation_signature": "<base64-sig-by-old-key>"
    }
 4. Server verifies rotation_signature against old public key.
@@ -652,9 +655,10 @@ aw did rotate-key --self-custody
 3. PUT /v1/agents/me/rotate
    Authorization: Bearer <api_key>
    {
+     "custody": "self",
+     "timestamp": "2026-06-01T12:00:00Z",
      "new_did": "did:key:z6MkNewKey...",
-     "new_public_key": "<base64-new-pub>",
-     "custody": "self"
+     "new_public_key": "<base64url-new-pub>"
    }
    Server signs the rotation on behalf of the custodial agent (it holds the old key).
 4. Server destroys old private key.
@@ -696,9 +700,9 @@ aw agent retire --successor mycompany/analyst
 1. PUT /v1/agents/me/retire
    Authorization: Bearer <api_key>
    {
-     "status": "retired",
-     "successor_did": "did:key:z6MkNewAgent...",
-     "successor_address": "mycompany/analyst"
+     "successor_agent_id": "<uuid>",
+     "timestamp": "2026-06-15T10:00:00Z",
+     "retirement_proof": "<base64-sig-by-old-key>"
    }
    Signed by old agent's key.
 2. Server records retirement and successor link.
@@ -741,7 +745,7 @@ aw register --server-url https://new-server.example.com \
 |---|---|
 | `aw register` | Generates keypair, sends DID/public_key/custody/lifetime to server. Writes identity fields to account in config. |
 | `aw init` | Same keypair generation. Sends identity fields in InitRequest and CloudBootstrapAgentRequest. |
-| `aw introspect` | Shows DID, custody, lifetime, public_key in addition to existing fields. |
+| `aw introspect` | Shows DID, custody, lifetime in addition to existing fields. |
 | `aw mail send` | Signs message before sending (self-custodial). Attaches `from_did`, `signature`, `signing_key_id`. |
 | `aw mail inbox` | Verifies signatures. Populates `VerificationStatus` on each message. |
 | `aw chat send-and-wait` | Signs messages. Verifies incoming messages on SSE stream. |
@@ -758,7 +762,6 @@ alias:       researcher
 address:     mycompany/researcher
 custody:     self
 lifetime:    persistent
-public_key:  z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK
 project:     project-a
 agent_id:    <uuid>
 ```
@@ -778,7 +781,7 @@ Endpoints the aweb server must support for the identity system.
 ```json
 {
   "did": "did:key:z6MkhaXgBZD...",
-  "public_key": "<base64-ed25519-pub>",
+  "public_key": "<base64url-ed25519-pub>",
   "custody": "self",
   "lifetime": "persistent"
 }
@@ -799,11 +802,13 @@ GET /v1/agents/resolve/{namespace}/{alias}
 {
   "did": "did:key:z6MkhaXgBZD...",
   "address": "mycompany/researcher",
-  "handle": "@alice",
-  "public_key": "<base64-ed25519-pub>",
+  "agent_id": "<uuid>",
+  "human_name": "Alice",
+  "public_key": "<base64url-ed25519-pub>",
   "server": "app.claweb.ai",
   "custody": "self",
-  "lifetime": "persistent"
+  "lifetime": "persistent",
+  "status": "active"
 }
 ```
 
@@ -814,21 +819,36 @@ PUT /v1/agents/me/rotate
 Authorization: Bearer <api_key>
 
 {
-  "new_did": "did:key:z6MkNewKey...",
-  "new_public_key": "<base64-new-pub>",
   "custody": "self",
+  "timestamp": "2026-06-01T12:00:00Z",
+  "new_did": "did:key:z6MkNewKey...",
+  "new_public_key": "<base64url-new-pub>",
   "rotation_signature": "<base64-sig-by-old-key>"
 }
 
 → 200
 {
+  "status": "rotated",
   "old_did": "did:key:z6MkOldKey...",
   "new_did": "did:key:z6MkNewKey...",
-  "rotated_at": "2026-06-01T12:00:00Z"
+  "new_public_key": "<base64url-new-pub>",
+  "custody": "self"
 }
 ```
 
-Server verifies `rotation_signature` against old public key. For custodial agents, the server signs on behalf.
+Server verifies `rotation_signature` against the old public key for self-custodial agents. For custodial agents, the server signs on behalf.
+
+Custodial-to-custodial rotation is supported by omitting key material:
+
+```
+PUT /v1/agents/me/rotate
+Authorization: Bearer <api_key>
+
+{
+  "custody": "custodial",
+  "timestamp": "2026-06-01T12:00:00Z"
+}
+```
 
 ### Agent retirement (new, self-operation)
 
@@ -837,22 +857,26 @@ PUT /v1/agents/me/retire
 Authorization: Bearer <api_key>
 
 {
-  "status": "retired",
-  "successor_did": "did:key:z6MkNewAgent...",
-  "successor_address": "mycompany/analyst"
+  "successor_agent_id": "<uuid>",
+  "timestamp": "2026-06-15T10:00:00Z",
+  "retirement_proof": "<base64-sig-by-old-key>"
 }
 
 → 200
 {
-  "did": "did:key:z6MkOldAgent...",
   "status": "retired",
-  "successor_did": "did:key:z6MkNewAgent...",
-  "successor_address": "mycompany/analyst",
-  "retired_at": "2026-06-15T10:00:00Z"
+  "agent_id": "<uuid>",
+  "successor_agent_id": "<uuid>"
 }
 ```
 
-Signed by old agent's key.
+For self-custodial agents, retirement_proof is required and is the Ed25519 signature (base64, no padding) over the canonical retirement JSON payload:
+
+```json
+{"operation":"retire","successor_address":"mycompany/analyst","successor_did":"did:key:z6MkNewAgent...","timestamp":"2026-06-15T10:00:00Z"}
+```
+
+For custodial agents, the server signs on behalf.
 
 ### Agent deregistration (new)
 
