@@ -98,9 +98,15 @@ func (c *GlobalConfig) SaveGlobalTo(path string) error {
 	return atomicWriteFile(path, data)
 }
 
-// atomicWriteFile writes data to path using temp-file-and-rename.
-// The temp file is chmod'd to 0600 before any data is written.
+// atomicWriteFile writes data to path using temp-file-and-rename
+// with 0600 permissions (suitable for secrets).
 func atomicWriteFile(path string, data []byte) error {
+	return atomicWriteFileMode(path, data, 0o600)
+}
+
+// atomicWriteFileMode writes data to path using temp-file-and-rename.
+// The temp file is chmod'd to mode before any data is written.
+func atomicWriteFileMode(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -113,8 +119,7 @@ func atomicWriteFile(path string, data []byte) error {
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
 
-	// Set restrictive permissions before writing any data.
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return err
 	}
