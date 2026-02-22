@@ -735,6 +735,62 @@ func TestPutHelper(t *testing.T) {
 	}
 }
 
+func TestDeregister(t *testing.T) {
+	t.Parallel()
+
+	var gotMethod, gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Deregister(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Fatalf("method=%s, want DELETE", gotMethod)
+	}
+	if gotPath != "/v1/agents/me" {
+		t.Fatalf("path=%s, want /v1/agents/me", gotPath)
+	}
+}
+
+func TestDeregisterAgent(t *testing.T) {
+	t.Parallel()
+
+	var gotMethod, gotPath, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeregisterAgent(context.Background(), "mycompany", "researcher"); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Fatalf("method=%s, want DELETE", gotMethod)
+	}
+	if gotPath != "/v1/agents/mycompany/researcher" {
+		t.Fatalf("path=%s, want /v1/agents/mycompany/researcher", gotPath)
+	}
+	if gotAuth != "Bearer aw_sk_test" {
+		t.Fatalf("auth=%q", gotAuth)
+	}
+}
+
 func TestPatchAgentAccessMode(t *testing.T) {
 	t.Parallel()
 
