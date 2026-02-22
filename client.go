@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 )
 
@@ -69,6 +70,12 @@ const (
 	maxResponseSize = 10 * 1024 * 1024
 )
 
+// agentMeta holds cached metadata about a resolved agent.
+type agentMeta struct {
+	Lifetime string // "persistent" or "ephemeral"
+	Custody  string // "self" or "custodial"
+}
+
 // Client is an aweb HTTP client.
 //
 // It is designed to be easy to extract into a standalone repo and to be used by:
@@ -85,6 +92,7 @@ type Client struct {
 	resolver     IdentityResolver  // optional; resolves recipient DID for to_did binding
 	pinStore     *PinStore         // optional; TOFU pin store for sender identity verification
 	pinStorePath string            // disk path for persisting pin store
+	metaCache    sync.Map          // address → *agentMeta; cached resolver results
 }
 
 // New creates a new client.
@@ -154,20 +162,57 @@ func (c *Client) SetPinStore(ps *PinStore, path string) {
 	c.pinStorePath = path
 }
 
+// resolveAgentMeta returns cached lifetime/custody metadata for a sender address.
+// On first contact, resolves via the client's IdentityResolver and caches the result.
+// Returns defaults (persistent, self) if no resolver is set or resolution fails.
+func (c *Client) resolveAgentMeta(ctx context.Context, address string) *agentMeta {
+	if address == "" {
+		return &agentMeta{Lifetime: LifetimePersistent, Custody: CustodySelf}
+	}
+	if v, ok := c.metaCache.Load(address); ok {
+		return v.(*agentMeta)
+	}
+	if c.resolver != nil {
+		if identity, err := c.resolver.Resolve(ctx, address); err == nil {
+			meta := &agentMeta{Lifetime: LifetimePersistent, Custody: CustodySelf}
+			if identity.Lifetime != "" {
+				meta.Lifetime = identity.Lifetime
+			}
+			if identity.Custody != "" {
+				meta.Custody = identity.Custody
+			}
+			c.metaCache.Store(address, meta)
+			return meta
+		}
+	}
+	// Resolver absent or failed: return defaults but don't cache,
+	// so a transient failure retries on the next message.
+	return &agentMeta{Lifetime: LifetimePersistent, Custody: CustodySelf}
+}
+
 // CheckTOFUPin checks a verified message against the TOFU pin store.
 // On first contact, creates a pin. On subsequent contact with matching DID,
 // updates last_seen. On DID mismatch, checks for a valid rotation announcement
 // before returning IdentityMismatch.
 // Returns the status unchanged if no pin store is set, the message is not
 // verified, or from_did/from_alias is empty.
-func (c *Client) CheckTOFUPin(status VerificationStatus, fromAlias, fromDID string, ra *RotationAnnouncement) VerificationStatus {
+// Uses the resolver to determine the sender's lifetime (ephemeral agents
+// skip pinning) and custody (custodial agents return VerifiedCustodial).
+func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fromAlias, fromDID string, ra *RotationAnnouncement) VerificationStatus {
 	if c.pinStore == nil || (status != Verified && status != VerifiedCustodial) || fromDID == "" || fromAlias == "" {
 		return status
 	}
+
+	meta := c.resolveAgentMeta(ctx, fromAlias)
+
+	if meta.Custody == CustodyCustodial && status == Verified {
+		status = VerifiedCustodial
+	}
+
 	c.pinStore.mu.Lock()
 	defer c.pinStore.mu.Unlock()
 
-	result := c.pinStore.CheckPin(fromAlias, fromDID, LifetimePersistent)
+	result := c.pinStore.CheckPin(fromAlias, fromDID, meta.Lifetime)
 	switch result {
 	case PinNew, PinOK:
 		c.pinStore.StorePin(fromDID, fromAlias, "", "")

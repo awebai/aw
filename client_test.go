@@ -2940,3 +2940,339 @@ func TestNetworkChatHistoryUsesFromAddressForVerification(t *testing.T) {
 		t.Fatalf("VerificationStatus=%q, want verified (from_address should be used)", msg.VerificationStatus)
 	}
 }
+
+func TestCheckTOFUPinEphemeralSkipsPinning(t *testing.T) {
+	t.Parallel()
+
+	senderPub, senderPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderDID := ComputeDIDKey(senderPub)
+
+	env := &MessageEnvelope{
+		From:      "myco/ephemeral-bot",
+		FromDID:   senderDID,
+		To:        "myco/monitor",
+		Type:      "mail",
+		Subject:   "hello",
+		Body:      "ephemeral message",
+		Timestamp: "2026-02-22T00:00:00Z",
+		MessageID: "msg-eph-1",
+	}
+	sig, err := SignMessage(senderPriv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mock server returns inbox message and resolve response with lifetime=ephemeral.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did":      senderDID,
+				"agent_id": "agent-uuid-1",
+				"address":  "myco/ephemeral-bot",
+				"lifetime": "ephemeral",
+				"custody":  "self",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{
+				"message_id":     "msg-eph-1",
+				"from_agent_id":  "agent-uuid-1",
+				"from_alias":     "myco/ephemeral-bot",
+				"from_address":   "myco/ephemeral-bot",
+				"to_alias":       "myco/monitor",
+				"to_address":     "myco/monitor",
+				"subject":        "hello",
+				"body":           "ephemeral message",
+				"priority":       "normal",
+				"created_at":     "2026-02-22T00:00:00Z",
+				"from_did":       senderDID,
+				"signature":      sig,
+				"signing_key_id": senderDID,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := NewPinStore()
+	c.SetPinStore(ps, "")
+	c.SetResolver(&ServerResolver{Client: c})
+
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inboxMsg := resp.Messages[0]
+	if inboxMsg.VerificationStatus != Verified {
+		t.Fatalf("VerificationStatus=%q, want verified", inboxMsg.VerificationStatus)
+	}
+	// Pin should NOT have been created for ephemeral agent.
+	if _, ok := ps.Pins[senderDID]; ok {
+		t.Fatal("ephemeral agent should not be pinned")
+	}
+	if _, ok := ps.Addresses["myco/ephemeral-bot"]; ok {
+		t.Fatal("ephemeral agent should not be in address index")
+	}
+}
+
+func TestCheckTOFUPinCustodialReturnsVerifiedCustodial(t *testing.T) {
+	t.Parallel()
+
+	senderPub, senderPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderDID := ComputeDIDKey(senderPub)
+
+	env := &MessageEnvelope{
+		From:      "myco/custodial-bot",
+		FromDID:   senderDID,
+		To:        "myco/monitor",
+		Type:      "mail",
+		Subject:   "hello",
+		Body:      "custodial message",
+		Timestamp: "2026-02-22T00:00:00Z",
+		MessageID: "msg-cust-1",
+	}
+	sig, err := SignMessage(senderPriv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did":      senderDID,
+				"agent_id": "agent-uuid-2",
+				"address":  "myco/custodial-bot",
+				"lifetime": "persistent",
+				"custody":  "custodial",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{
+				"message_id":     "msg-cust-1",
+				"from_agent_id":  "agent-uuid-2",
+				"from_alias":     "myco/custodial-bot",
+				"from_address":   "myco/custodial-bot",
+				"to_alias":       "myco/monitor",
+				"to_address":     "myco/monitor",
+				"subject":        "hello",
+				"body":           "custodial message",
+				"priority":       "normal",
+				"created_at":     "2026-02-22T00:00:00Z",
+				"from_did":       senderDID,
+				"signature":      sig,
+				"signing_key_id": senderDID,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := NewPinStore()
+	c.SetPinStore(ps, "")
+	c.SetResolver(&ServerResolver{Client: c})
+
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	custMsg := resp.Messages[0]
+	if custMsg.VerificationStatus != VerifiedCustodial {
+		t.Fatalf("VerificationStatus=%q, want verified_custodial", custMsg.VerificationStatus)
+	}
+}
+
+func TestCheckTOFUPinResolverCachesResults(t *testing.T) {
+	t.Parallel()
+
+	senderPub, senderPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderDID := ComputeDIDKey(senderPub)
+
+	env := &MessageEnvelope{
+		From:      "myco/cached-bot",
+		FromDID:   senderDID,
+		To:        "myco/monitor",
+		Type:      "mail",
+		Subject:   "hello",
+		Body:      "cached test",
+		Timestamp: "2026-02-22T00:00:00Z",
+		MessageID: "msg-cache-1",
+	}
+	sig, err := SignMessage(senderPriv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolveCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
+			resolveCount++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did":      senderDID,
+				"agent_id": "agent-uuid-3",
+				"address":  "myco/cached-bot",
+				"lifetime": "persistent",
+				"custody":  "self",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{
+				"message_id":     "msg-cache-1",
+				"from_agent_id":  "agent-uuid-3",
+				"from_alias":     "myco/cached-bot",
+				"from_address":   "myco/cached-bot",
+				"to_alias":       "myco/monitor",
+				"to_address":     "myco/monitor",
+				"subject":        "hello",
+				"body":           "cached test",
+				"priority":       "normal",
+				"created_at":     "2026-02-22T00:00:00Z",
+				"from_did":       senderDID,
+				"signature":      sig,
+				"signing_key_id": senderDID,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := NewPinStore()
+	c.SetPinStore(ps, "")
+	c.SetResolver(&ServerResolver{Client: c})
+
+	// First call: should resolve.
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Messages[0].VerificationStatus != Verified {
+		t.Fatalf("first call: status=%q", resp.Messages[0].VerificationStatus)
+	}
+
+	// Second call: should use cache (no additional resolve).
+	_, err = c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resolveCount != 1 {
+		t.Fatalf("resolveCount=%d, want 1 (second call should use cache)", resolveCount)
+	}
+}
+
+func TestCheckTOFUPinResolverFailureNotCached(t *testing.T) {
+	t.Parallel()
+
+	senderPub, senderPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderDID := ComputeDIDKey(senderPub)
+
+	env := &MessageEnvelope{
+		From:      "myco/flaky-bot",
+		FromDID:   senderDID,
+		To:        "myco/monitor",
+		Type:      "mail",
+		Subject:   "hello",
+		Body:      "flaky test",
+		Timestamp: "2026-02-22T00:00:00Z",
+		MessageID: "msg-flaky-1",
+	}
+	sig, err := SignMessage(senderPriv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolveCount := 0
+	resolverFail := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
+			resolveCount++
+			if resolverFail {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did":      senderDID,
+				"agent_id": "agent-uuid-flaky",
+				"address":  "myco/flaky-bot",
+				"lifetime": "persistent",
+				"custody":  "custodial",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{
+				"message_id":     "msg-flaky-1",
+				"from_agent_id":  "agent-uuid-flaky",
+				"from_alias":     "myco/flaky-bot",
+				"from_address":   "myco/flaky-bot",
+				"to_alias":       "myco/monitor",
+				"to_address":     "myco/monitor",
+				"subject":        "hello",
+				"body":           "flaky test",
+				"priority":       "normal",
+				"created_at":     "2026-02-22T00:00:00Z",
+				"from_did":       senderDID,
+				"signature":      sig,
+				"signing_key_id": senderDID,
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := NewPinStore()
+	c.SetPinStore(ps, "")
+	c.SetResolver(&ServerResolver{Client: c})
+
+	// First call: resolver fails → defaults to persistent/self, not cached.
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Messages[0].VerificationStatus != Verified {
+		t.Fatalf("first call: status=%q, want verified (defaults)", resp.Messages[0].VerificationStatus)
+	}
+	if resolveCount != 1 {
+		t.Fatalf("resolveCount=%d after first call", resolveCount)
+	}
+
+	// Second call: resolver now succeeds → should retry (failure not cached).
+	resolverFail = false
+	resp, err = c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolveCount != 2 {
+		t.Fatalf("resolveCount=%d, want 2 (failure should not be cached)", resolveCount)
+	}
+	// Now that resolver succeeds, custodial custody should be detected.
+	if resp.Messages[0].VerificationStatus != VerifiedCustodial {
+		t.Fatalf("second call: status=%q, want verified_custodial", resp.Messages[0].VerificationStatus)
+	}
+}

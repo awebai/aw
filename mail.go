@@ -137,7 +137,7 @@ func (c *Client) Inbox(ctx context.Context, p InboxParams) (*InboxResponse, erro
 		// Error is encoded in VerificationStatus; discard it.
 		m.VerificationStatus, _ = VerifyMessage(env)
 		m.VerificationStatus = c.checkRecipientBinding(m.VerificationStatus, m.ToDID)
-		m.VerificationStatus = c.CheckTOFUPin(m.VerificationStatus, from, m.FromDID, m.RotationAnnouncement)
+		m.VerificationStatus = c.CheckTOFUPin(ctx, m.VerificationStatus, from, m.FromDID, m.RotationAnnouncement)
 	}
 	return &out, nil
 }
