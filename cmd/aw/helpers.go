@@ -48,10 +48,26 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 	}
 	sel.BaseURL = baseURL
 
-	c, err := aweb.NewWithAPIKey(baseURL, sel.APIKey)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Invalid base URL:", err)
-		os.Exit(2)
+	var c *aweb.Client
+	if sel.SigningKey != "" && sel.DID != "" {
+		priv, err := awconfig.LoadSigningKey(sel.SigningKey)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to load signing key:", err)
+			os.Exit(2)
+		}
+		c, err = aweb.NewWithIdentity(baseURL, sel.APIKey, priv, sel.DID)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Invalid identity configuration:", err)
+			os.Exit(2)
+		}
+		c.SetAddress(deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias))
+	} else {
+		var err error
+		c, err = aweb.NewWithAPIKey(baseURL, sel.APIKey)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Invalid base URL:", err)
+			os.Exit(2)
+		}
 	}
 	return c, sel
 }

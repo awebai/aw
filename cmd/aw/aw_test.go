@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awconfig"
 	"gopkg.in/yaml.v3"
 )
 
@@ -4570,5 +4573,251 @@ func TestAwInitNamespaceStoresInConfig(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no account with api_key=aw_sk_new in config:\n%s", string(data))
+	}
+}
+
+func TestAwMailSendSignsWithIdentity(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := aweb.ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/messages":
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatalf("decode request body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"message_id":   "msg-1",
+				"status":       "delivered",
+				"delivered_at": "2026-02-22T00:00:00Z",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	keysDir := filepath.Join(tmp, "keys")
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// Save the signing key to disk.
+	address := "myco/agent"
+	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := awconfig.SigningKeyPath(keysDir, address)
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+    did: "`+did+`"
+    signing_key: "`+keyPath+`"
+    custody: "self"
+    default_project: "myco"
+    agent_alias: "agent"
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "mail", "send",
+		"--to-alias", "monitor",
+		"--body", "hello from identity",
+	)
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	// Verify the request carries identity fields.
+	if gotBody["from_did"] != did {
+		t.Fatalf("from_did=%v, want %s", gotBody["from_did"], did)
+	}
+	sig, ok := gotBody["signature"].(string)
+	if !ok || sig == "" {
+		t.Fatal("signature missing or empty")
+	}
+	msgID, ok := gotBody["message_id"].(string)
+	if !ok || msgID == "" {
+		t.Fatal("message_id missing or empty")
+	}
+
+	// Verify the signature covers the correct From address (aw-am0).
+	// If SetAddress were missing, From would be "" and this would fail.
+	env := &aweb.MessageEnvelope{
+		From:      "myco/agent",
+		FromDID:   did,
+		To:        "monitor",
+		Type:      "mail",
+		Body:      "hello from identity",
+		Timestamp: gotBody["timestamp"].(string),
+		MessageID: msgID,
+		Signature: sig,
+	}
+	status, verifyErr := aweb.VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != aweb.Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestAwMailSendSignsWithIdentityNamespace(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := aweb.ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/messages":
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatalf("decode request body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"message_id":   "msg-1",
+				"status":       "delivered",
+				"delivered_at": "2026-02-22T00:00:00Z",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	keysDir := filepath.Join(tmp, "keys")
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// namespace_slug takes priority over default_project in deriveAgentAddress.
+	address := "acme/bot"
+	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := awconfig.SigningKeyPath(keysDir, address)
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+    did: "`+did+`"
+    signing_key: "`+keyPath+`"
+    custody: "self"
+    namespace_slug: "acme"
+    default_project: "fallback"
+    agent_alias: "bot"
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "mail", "send",
+		"--to-alias", "monitor",
+		"--body", "hello from namespace",
+	)
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	// Verify From address uses namespace_slug (not default_project).
+	if gotBody["from_did"] != did {
+		t.Fatalf("from_did=%v, want %s", gotBody["from_did"], did)
+	}
+	sig, ok := gotBody["signature"].(string)
+	if !ok || sig == "" {
+		t.Fatal("signature missing")
+	}
+
+	// Verify the signature covers "acme/bot" (namespace_slug/alias).
+	// If deriveAgentAddress used default_project instead, From would be
+	// "fallback/bot" and verification would fail.
+	env := &aweb.MessageEnvelope{
+		From:      "acme/bot",
+		FromDID:   did,
+		To:        "monitor",
+		Type:      "mail",
+		Body:      "hello from namespace",
+		Timestamp: gotBody["timestamp"].(string),
+		MessageID: gotBody["message_id"].(string),
+		Signature: sig,
+	}
+	status, verifyErr := aweb.VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != aweb.Verified {
+		t.Fatalf("status=%s, want verified (namespace_slug should be used for From address)", status)
 	}
 }
