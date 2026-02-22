@@ -195,6 +195,9 @@ default_account: acct
 	if got["lifetime"] != "persistent" {
 		t.Fatalf("lifetime=%v", got["lifetime"])
 	}
+	if _, ok := got["public_key"]; ok {
+		t.Fatal("public_key should not be present in introspect output")
+	}
 }
 
 func TestAwIntrospectServerFlagSelectsConfiguredServer(t *testing.T) {

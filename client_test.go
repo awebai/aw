@@ -1476,9 +1476,11 @@ func TestRotateKeySendsSignedRequest(t *testing.T) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"old_did":    oldDID,
-			"new_did":    newDID,
-			"rotated_at": "2026-02-22T00:00:00Z",
+			"status":         "rotated",
+			"old_did":        oldDID,
+			"new_did":        newDID,
+			"new_public_key": gotBody["new_public_key"].(string),
+			"custody":        CustodySelf,
 		})
 	}))
 	t.Cleanup(server.Close)
@@ -1501,6 +1503,15 @@ func TestRotateKeySendsSignedRequest(t *testing.T) {
 	if resp.NewDID != newDID {
 		t.Fatalf("NewDID=%q", resp.NewDID)
 	}
+	if resp.Status != "rotated" {
+		t.Fatalf("Status=%q", resp.Status)
+	}
+	if resp.Custody != CustodySelf {
+		t.Fatalf("Custody=%q", resp.Custody)
+	}
+	if resp.NewPublicKey == "" {
+		t.Fatal("NewPublicKey empty")
+	}
 
 	// Verify request fields.
 	if gotBody["new_did"] != newDID {
@@ -1517,6 +1528,11 @@ func TestRotateKeySendsSignedRequest(t *testing.T) {
 	if gotBody["new_public_key"] == nil || gotBody["new_public_key"] == "" {
 		t.Fatal("new_public_key missing")
 	}
+	// Verify new_public_key is base64url encoded.
+	npk := gotBody["new_public_key"].(string)
+	if _, err := base64.RawURLEncoding.DecodeString(npk); err != nil {
+		t.Fatalf("new_public_key not base64url: %v", err)
+	}
 
 	// Verify the rotation signature using the old public key.
 	status, err := VerifyRotationSignature(pub, oldDID, newDID, gotBody["timestamp"].(string), rotSig)
@@ -1525,6 +1541,57 @@ func TestRotateKeySendsSignedRequest(t *testing.T) {
 	}
 	if !status {
 		t.Fatal("rotation signature invalid")
+	}
+}
+
+func TestRotateKeyCustodialOmitsKeyMaterial(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":  "rotated",
+			"new_did": "did:key:z6MkServerGenerated",
+			"custody": CustodyCustodial,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	// Custodial client: no signing key.
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.RotateKeyCustodial(context.Background(), &RotateKeyCustodialRequest{
+		Custody: CustodyCustodial,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify key material is absent.
+	if _, ok := gotBody["new_did"]; ok {
+		t.Fatal("custodial rotation should not include new_did")
+	}
+	if _, ok := gotBody["new_public_key"]; ok {
+		t.Fatal("custodial rotation should not include new_public_key")
+	}
+	if _, ok := gotBody["rotation_signature"]; ok {
+		t.Fatal("custodial rotation should not include rotation_signature")
+	}
+	if gotBody["custody"] != CustodyCustodial {
+		t.Fatalf("custody=%v", gotBody["custody"])
+	}
+	if gotBody["timestamp"] == nil || gotBody["timestamp"] == "" {
+		t.Fatal("timestamp missing")
+	}
+
+	if resp.Status != "rotated" {
+		t.Fatalf("Status=%q", resp.Status)
+	}
+	if resp.Custody != CustodyCustodial {
+		t.Fatalf("Custody=%q", resp.Custody)
 	}
 }
 
@@ -1655,29 +1722,24 @@ func TestAgentLogPeer(t *testing.T) {
 func TestRetireAgentSendsSignedRequest(t *testing.T) {
 	t.Parallel()
 
-	_, oldPriv, err := ed25519.GenerateKey(nil)
+	oldPub, oldPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldDID := ComputeDIDKey(oldPriv.Public().(ed25519.PublicKey))
+	oldDID := ComputeDIDKey(oldPub)
 
-	var gotBody map[string]string
+	var gotBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Fatalf("method=%s", r.Method)
-		}
-		if r.URL.Path != "/v1/agents/me/retire" {
-			t.Fatalf("path=%s", r.URL.Path)
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/agents/me/retire" {
+			t.Fatalf("method=%s path=%s", r.Method, r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatal(err)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"did":               oldDID,
-			"status":            "retired",
-			"successor_did":     gotBody["successor_did"],
-			"successor_address": gotBody["successor_address"],
-			"retired_at":        "2026-06-15T10:00:00Z",
+			"status":             "retired",
+			"agent_id":           "my-agent-uuid",
+			"successor_agent_id": gotBody["successor_agent_id"].(string),
 		})
 	}))
 	t.Cleanup(server.Close)
@@ -1688,6 +1750,7 @@ func TestRetireAgentSendsSignedRequest(t *testing.T) {
 	}
 
 	resp, err := c.RetireAgent(context.Background(), &RetireAgentRequest{
+		SuccessorAgentID: "successor-uuid-123",
 		SuccessorDID:     "did:key:z6MkSuccessor",
 		SuccessorAddress: "acme/analyst",
 	})
@@ -1695,20 +1758,49 @@ func TestRetireAgentSendsSignedRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if gotBody["status"] != "retired" {
-		t.Fatalf("status=%s", gotBody["status"])
+	// Verify request wire format.
+	if gotBody["successor_agent_id"] != "successor-uuid-123" {
+		t.Fatalf("successor_agent_id=%v", gotBody["successor_agent_id"])
 	}
-	if gotBody["successor_did"] != "did:key:z6MkSuccessor" {
-		t.Fatalf("successor_did=%s", gotBody["successor_did"])
+	// retirement_proof must be present for self-custody.
+	proof, ok := gotBody["retirement_proof"].(string)
+	if !ok || proof == "" {
+		t.Fatal("retirement_proof missing")
 	}
-	if gotBody["successor_address"] != "acme/analyst" {
-		t.Fatalf("successor_address=%s", gotBody["successor_address"])
+	if gotBody["timestamp"] == nil || gotBody["timestamp"] == "" {
+		t.Fatal("timestamp missing")
 	}
+	// Old wire fields must NOT be present.
+	if _, ok := gotBody["status"]; ok {
+		t.Fatal("old 'status' field should not be in wire request")
+	}
+	if _, ok := gotBody["successor_did"]; ok {
+		t.Fatal("old 'successor_did' field should not be in wire request")
+	}
+	if _, ok := gotBody["successor_address"]; ok {
+		t.Fatal("old 'successor_address' field should not be in wire request")
+	}
+
+	// Verify retirement_proof: signature over canonical retirement JSON.
+	proofBytes, err := base64.RawStdEncoding.DecodeString(proof)
+	if err != nil {
+		t.Fatalf("decode retirement_proof: %v", err)
+	}
+	ts := gotBody["timestamp"].(string)
+	payload := canonicalRetirementJSON("acme/analyst", "did:key:z6MkSuccessor", ts)
+	if !ed25519.Verify(oldPub, []byte(payload), proofBytes) {
+		t.Fatal("retirement_proof signature invalid")
+	}
+
+	// Verify response.
 	if resp.Status != "retired" {
-		t.Fatalf("resp.status=%s", resp.Status)
+		t.Fatalf("resp.Status=%s", resp.Status)
 	}
-	if resp.RetiredAt != "2026-06-15T10:00:00Z" {
-		t.Fatalf("resp.retired_at=%s", resp.RetiredAt)
+	if resp.AgentID != "my-agent-uuid" {
+		t.Fatalf("resp.AgentID=%s", resp.AgentID)
+	}
+	if resp.SuccessorAgentID != "successor-uuid-123" {
+		t.Fatalf("resp.SuccessorAgentID=%s", resp.SuccessorAgentID)
 	}
 }
 
@@ -1720,11 +1812,22 @@ func TestRetireAgentRequiresIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = c.RetireAgent(context.Background(), &RetireAgentRequest{
+		SuccessorAgentID: "uuid",
 		SuccessorDID:     "did:key:z6MkSuccessor",
 		SuccessorAddress: "acme/analyst",
 	})
 	if err == nil {
 		t.Fatal("expected error for client without identity")
+	}
+}
+
+func TestCanonicalRetirementJSON(t *testing.T) {
+	t.Parallel()
+
+	got := canonicalRetirementJSON("mycompany/analyst", "did:key:z6MkNewAgent", "2026-06-15T10:00:00Z")
+	want := `{"operation":"retire","successor_address":"mycompany/analyst","successor_did":"did:key:z6MkNewAgent","timestamp":"2026-06-15T10:00:00Z"}`
+	if got != want {
+		t.Fatalf("canonicalRetirementJSON:\ngot:  %s\nwant: %s", got, want)
 	}
 }
 

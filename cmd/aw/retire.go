@@ -44,14 +44,21 @@ func runAgentRetire(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Resolve successor's DID from their address.
+	// Resolve successor to get their DID, address, and agent_id.
 	resolver := &aweb.ServerResolver{Client: c}
 	successorIdentity, err := resolver.Resolve(ctx, retireSuccessor)
 	if err != nil {
 		fatal(fmt.Errorf("resolve successor %q: %w", retireSuccessor, err))
 	}
+	if successorIdentity.AgentID == "" {
+		fatal(fmt.Errorf("successor %q has no agent_id (server may not support resolution)", retireSuccessor))
+	}
+	if successorIdentity.DID == "" {
+		fatal(fmt.Errorf("successor %q has no DID", retireSuccessor))
+	}
 
 	resp, err := c.RetireAgent(ctx, &aweb.RetireAgentRequest{
+		SuccessorAgentID: successorIdentity.AgentID,
 		SuccessorDID:     successorIdentity.DID,
 		SuccessorAddress: successorIdentity.Address,
 	})
@@ -60,9 +67,8 @@ func runAgentRetire(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Agent retired.\n")
-	fmt.Printf("  did: %s\n", resp.DID)
-	fmt.Printf("  successor: %s (%s)\n", resp.SuccessorAddress, resp.SuccessorDID)
-	fmt.Printf("  retired_at: %s\n", resp.RetiredAt)
+	fmt.Printf("  status: %s\n", resp.Status)
+	fmt.Printf("  successor: %s (agent_id: %s)\n", retireSuccessor, resp.SuccessorAgentID)
 
 	return nil
 }

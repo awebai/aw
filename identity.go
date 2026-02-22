@@ -11,6 +11,7 @@ import (
 // AgentIdentity holds resolved identity information for an agent.
 type AgentIdentity struct {
 	DID         string
+	AgentID     string // server-assigned UUID
 	Address     string // namespace/alias
 	Handle      string // @alice
 	PublicKey   ed25519.PublicKey
@@ -46,12 +47,15 @@ func (r *DIDKeyResolver) Resolve(_ context.Context, identifier string) (*AgentId
 // serverResolveResponse is the wire format returned by
 // GET /v1/agents/resolve/{namespace}/{alias}.
 type serverResolveResponse struct {
-	DID      string `json:"did"`
-	Address  string `json:"address"`
-	Handle   string `json:"handle"`
-	Server   string `json:"server"`
-	Custody  string `json:"custody"`
-	Lifetime string `json:"lifetime"`
+	DID       string `json:"did"`
+	AgentID   string `json:"agent_id"`
+	Address   string `json:"address"`
+	HumanName string `json:"human_name"`
+	Handle    string `json:"handle"`
+	Server    string `json:"server"`
+	Custody   string `json:"custody"`
+	Lifetime  string `json:"lifetime"`
+	Status    string `json:"status"`
 }
 
 // ServerResolver resolves an agent address via the aweb server.
@@ -67,6 +71,7 @@ func (r *ServerResolver) Resolve(ctx context.Context, identifier string) (*Agent
 	}
 	return &AgentIdentity{
 		DID:         resp.DID,
+		AgentID:     resp.AgentID,
 		Address:     resp.Address,
 		Handle:      resp.Handle,
 		ServerURL:   resp.Server,

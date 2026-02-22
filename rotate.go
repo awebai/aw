@@ -18,19 +18,23 @@ type RotateKeyRequest struct {
 }
 
 // rotateKeyWireRequest is the wire format sent to PUT /v1/agents/me/rotate.
+// For self-custody: includes new_did, new_public_key, rotation_signature.
+// For custodial: key material fields are omitted (omitempty).
 type rotateKeyWireRequest struct {
-	NewDID            string `json:"new_did"`
-	NewPublicKey      string `json:"new_public_key"`
 	Custody           string `json:"custody"`
-	RotationSignature string `json:"rotation_signature"`
 	Timestamp         string `json:"timestamp"`
+	NewDID            string `json:"new_did,omitempty"`
+	NewPublicKey      string `json:"new_public_key,omitempty"`
+	RotationSignature string `json:"rotation_signature,omitempty"`
 }
 
 // RotateKeyResponse is returned by PUT /v1/agents/me/rotate.
 type RotateKeyResponse struct {
-	OldDID    string `json:"old_did"`
-	NewDID    string `json:"new_did"`
-	RotatedAt string `json:"rotated_at"`
+	Status       string `json:"status"`
+	OldDID       string `json:"old_did"`
+	NewDID       string `json:"new_did"`
+	NewPublicKey string `json:"new_public_key,omitempty"`
+	Custody      string `json:"custody"`
 }
 
 // RotateKey sends a key rotation request to the server.
@@ -49,11 +53,11 @@ func (c *Client) RotateKey(ctx context.Context, req *RotateKeyRequest) (*RotateK
 	sig := ed25519.Sign(c.signingKey, []byte(payload))
 
 	wire := &rotateKeyWireRequest{
-		NewDID:            req.NewDID,
-		NewPublicKey:      base64.RawStdEncoding.EncodeToString(req.NewPublicKey),
 		Custody:           req.Custody,
-		RotationSignature: base64.RawStdEncoding.EncodeToString(sig),
 		Timestamp:         ts,
+		NewDID:            req.NewDID,
+		NewPublicKey:      base64.RawURLEncoding.EncodeToString(req.NewPublicKey),
+		RotationSignature: base64.RawStdEncoding.EncodeToString(sig),
 	}
 
 	var resp RotateKeyResponse
@@ -94,28 +98,26 @@ func canonicalRotationJSON(oldDID, newDID, timestamp string) string {
 }
 
 // RotateKeyCustodialRequest is the input to Client.RotateKeyCustodial.
-// Used for custodial-to-self graduation where the server holds the old key.
+// For custodial→self graduation: set Custody="self" and provide NewDID/NewPublicKey.
+// For custodial→custodial rotation: set Custody="custodial" and leave NewDID/NewPublicKey empty.
 type RotateKeyCustodialRequest struct {
-	NewDID       string           // did:key of the new key
-	NewPublicKey ed25519.PublicKey // raw new public key
-	Custody      string           // "self"
+	NewDID       string           // did:key of the new key (empty for custodial→custodial)
+	NewPublicKey ed25519.PublicKey // raw new public key (nil for custodial→custodial)
+	Custody      string           // "self" or "custodial"
 }
 
-// rotateKeyCustodialWireRequest is the wire format for custodial graduation.
-// No rotation_signature — the server signs on behalf.
-type rotateKeyCustodialWireRequest struct {
-	NewDID       string `json:"new_did"`
-	NewPublicKey string `json:"new_public_key"`
-	Custody      string `json:"custody"`
-}
-
-// RotateKeyCustodial sends a custodial-to-self rotation request.
-// The server holds the old key and signs the rotation on behalf.
+// RotateKeyCustodial sends a rotation request where the server holds the old key.
+// For custodial→self: server signs the rotation on behalf, client provides new key material.
+// For custodial→custodial: server generates new keypair; key material fields are omitted.
 func (c *Client) RotateKeyCustodial(ctx context.Context, req *RotateKeyCustodialRequest) (*RotateKeyResponse, error) {
-	wire := &rotateKeyCustodialWireRequest{
-		NewDID:       req.NewDID,
-		NewPublicKey: base64.RawStdEncoding.EncodeToString(req.NewPublicKey),
-		Custody:      req.Custody,
+	ts := time.Now().UTC().Format(time.RFC3339)
+	wire := &rotateKeyWireRequest{
+		Custody:   req.Custody,
+		Timestamp: ts,
+	}
+	if len(req.NewPublicKey) > 0 {
+		wire.NewDID = req.NewDID
+		wire.NewPublicKey = base64.RawURLEncoding.EncodeToString(req.NewPublicKey)
 	}
 	var resp RotateKeyResponse
 	if err := c.put(ctx, "/v1/agents/me/rotate", wire, &resp); err != nil {
