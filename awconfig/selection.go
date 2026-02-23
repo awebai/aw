@@ -162,6 +162,9 @@ func Resolve(global *GlobalConfig, opts ResolveOptions) (*Selection, error) {
 			}
 		}
 		if chosenAccountName == "" {
+			if baseURL != "" && apiKey != "" {
+				return &Selection{ServerName: serverName, BaseURL: baseURL, APIKey: apiKey}, nil
+			}
 			return nil, fmt.Errorf("no account configured for server %q (set .aw/context server_accounts[%q], or pass --account)", serverName, serverName)
 		}
 	} else {
@@ -172,6 +175,9 @@ func Resolve(global *GlobalConfig, opts ResolveOptions) (*Selection, error) {
 			chosenAccountName = strings.TrimSpace(global.DefaultAccount)
 		}
 		if chosenAccountName == "" {
+			if baseURL != "" && apiKey != "" {
+				return &Selection{BaseURL: baseURL, APIKey: apiKey}, nil
+			}
 			return nil, errors.New("no default account configured (set .aw/context default_account or set default_account in your aw config)")
 		}
 	}

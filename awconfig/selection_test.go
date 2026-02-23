@@ -148,6 +148,25 @@ func TestResolveMissingDefaults(t *testing.T) {
 	}
 }
 
+func TestResolveEnvOnlyNoAccount(t *testing.T) {
+	t.Setenv("AWEB_URL", "http://example.com")
+	t.Setenv("AWEB_API_KEY", "aw_sk_env")
+	t.Setenv("AWEB_ACCOUNT", "")
+	t.Setenv("AWEB_SERVER", "")
+
+	// No accounts configured at all — env vars alone should suffice.
+	sel, err := Resolve(&GlobalConfig{}, ResolveOptions{AllowEnvOverrides: true})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if sel.BaseURL != "http://example.com" {
+		t.Fatalf("baseURL=%q", sel.BaseURL)
+	}
+	if sel.APIKey != "aw_sk_env" {
+		t.Fatalf("apiKey=%q", sel.APIKey)
+	}
+}
+
 func TestResolveAccountByAgentAlias(t *testing.T) {
 	t.Parallel()
 
