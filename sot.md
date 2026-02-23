@@ -345,10 +345,10 @@ type RegisterResponse struct {
 The signed payload includes routing and content fields, serialized as canonical JSON. Transport-only fields (`signature`, `signing_key_id`, `server`, `rotation_announcement`) are excluded. The signature covers sender and recipient addresses, preventing the server from silently misrouting messages.
 
 ```json
-{"body":"results attached","from":"mycompany/researcher","from_did":"did:key:z6MkhaXgBZD...","subject":"task complete","timestamp":"2026-02-21T15:30:00Z","to":"otherco/monitor","to_did":"did:key:z6MkrT4Jxd...","type":"mail"}
+{"body":"results attached","from":"mycompany/researcher","from_did":"did:key:z6MkhaXgBZD...","message_id":"1c5de7e4-3b0a-4e3a-9f32-9b72a9c2d7fd","subject":"task complete","timestamp":"2026-02-21T15:30:00Z","to":"otherco/monitor","to_did":"did:key:z6MkrT4Jxd...","type":"mail"}
 ```
 
-When `from_stable_id` and/or `to_stable_id` are present, they are included in the signed payload (sorted lexicographically with the other fields). Absent optional fields are simply not serialized — existing signatures remain valid. The canonical payload expands from 8 to up to 10 fields.
+Optional fields (`message_id`, `from_stable_id`, `to_stable_id`) are included in the signed payload when present (sorted lexicographically with the other fields). Absent optional fields are simply not serialized — existing signatures remain valid.
 
 Canonicalization rules:
 - Keys sorted lexicographically (UTF-8 byte order)
@@ -373,6 +373,7 @@ This is a subset of RFC 8785 (JSON Canonicalization Scheme).
 | `subject` | Yes | Mail subject (empty string for chat) |
 | `body` | Yes | Message content |
 | `timestamp` | Yes | ISO 8601, UTC, second precision |
+| `message_id` | Yes (when present) | Replay protection + deduplication (UUID) |
 | `server` | No | Originating server (metadata) |
 | `signature` | No | Base64-encoded Ed25519 signature |
 | `signing_key_id` | No | DID of the signing key |
