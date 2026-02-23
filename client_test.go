@@ -3411,3 +3411,273 @@ func TestCheckTOFUPinResolverFailureNotCached(t *testing.T) {
 		t.Fatalf("second call: status=%q, want verified_custodial", resp.Messages[0].VerificationStatus)
 	}
 }
+
+// --- ClawDID cross-check tests ---
+
+// clawDIDTestSetup creates a sender key, computes its DID and stable ID,
+// builds a valid ClawDID /key response, and returns everything needed for tests.
+func clawDIDTestSetup(t *testing.T) (senderDID, stableID string, clawDIDResp ClawDIDKeyResponse) {
+	t.Helper()
+	resp, _ := buildLogHead(t)
+	return resp.CurrentDIDKey, resp.DIDClaw, resp
+}
+
+func TestCheckTOFUPinClawDIDMatch(t *testing.T) {
+	t.Parallel()
+
+	senderDID, stableID, clawDIDResp := clawDIDTestSetup(t)
+	clawDIDJSON, _ := json.Marshal(clawDIDResp)
+
+	// Mock ClawDID registry.
+	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(clawDIDJSON)
+	}))
+	t.Cleanup(registry.Close)
+
+	// Mock aweb server for resolve.
+	aweb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"did":      senderDID,
+			"agent_id": "agent-uuid-claw",
+			"address":  "myco/sender",
+			"lifetime": "persistent",
+			"custody":  "self",
+		})
+	}))
+	t.Cleanup(aweb.Close)
+
+	c, err := NewWithAPIKey(aweb.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := NewPinStore()
+	c.SetPinStore(ps, "")
+	c.SetResolver(&ServerResolver{Client: c})
+	c.SetClawDIDClient(&ClawDIDClient{RegistryURL: registry.URL})
+
+	status := c.CheckTOFUPin(context.Background(), Verified, "myco/sender", senderDID, stableID, nil)
+	if status != Verified {
+		t.Fatalf("status=%q, want %q", status, Verified)
+	}
+
+	// Pin should be keyed by stable_id, not did:key.
+	if _, ok := ps.Pins[stableID]; !ok {
+		t.Fatal("pin should be keyed by stable_id")
+	}
+	if _, ok := ps.Pins[senderDID]; ok {
+		t.Fatal("pin should NOT be keyed by did:key when stable_id present")
+	}
+	if ps.Addresses["myco/sender"] != stableID {
+		t.Fatalf("address index: got %q, want %q", ps.Addresses["myco/sender"], stableID)
+	}
+}
+
+func TestCheckTOFUPinClawDIDKeyMismatch(t *testing.T) {
+	t.Parallel()
+
+	_, stableID, clawDIDResp := clawDIDTestSetup(t)
+	clawDIDJSON, _ := json.Marshal(clawDIDResp)
+
+	// Mock ClawDID registry returns a valid response (for its own DID).
+	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(clawDIDJSON)
+	}))
+	t.Cleanup(registry.Close)
+
+	// The message's from_did is DIFFERENT from what ClawDID says.
+	differentDID := "did:key:z6MkhFwXNFWosLeugvSf4wcL9t3uuRXueGSFTRgSvHhWj5G2"
+
+	c, err := NewWithAPIKey("http://localhost", "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := NewPinStore()
+	c.SetPinStore(ps, "")
+	c.SetClawDIDClient(&ClawDIDClient{RegistryURL: registry.URL})
+
+	status := c.CheckTOFUPin(context.Background(), Verified, "myco/sender", differentDID, stableID, nil)
+	if status != IdentityMismatch {
+		t.Fatalf("status=%q, want %q (ClawDID key mismatch should be hard error)", status, IdentityMismatch)
+	}
+
+	// No pin should be created.
+	if len(ps.Pins) != 0 {
+		t.Fatal("no pin should be created on ClawDID key mismatch")
+	}
+}
+
+func TestCheckTOFUPinClawDIDUnreachable(t *testing.T) {
+	t.Parallel()
+
+	senderDID, stableID, _ := clawDIDTestSetup(t)
+
+	// ClawDID registry that's truly unreachable (connection refused).
+	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	registry.Close() // Close immediately so connections are refused.
+
+	// Mock aweb server for resolve.
+	awebSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"did":      senderDID,
+			"agent_id": "agent-uuid-claw2",
+			"address":  "myco/sender",
+			"lifetime": "persistent",
+			"custody":  "self",
+		})
+	}))
+	t.Cleanup(awebSrv.Close)
+
+	c, err := NewWithAPIKey(awebSrv.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := NewPinStore()
+	c.SetPinStore(ps, "")
+	c.SetResolver(&ServerResolver{Client: c})
+	c.SetClawDIDClient(&ClawDIDClient{RegistryURL: registry.URL})
+
+	// ClawDID unreachable → should degrade gracefully, Phase-1 proceeds.
+	status := c.CheckTOFUPin(context.Background(), Verified, "myco/sender", senderDID, stableID, nil)
+	if status != Verified {
+		t.Fatalf("status=%q, want %q (ClawDID down should degrade, not fail)", status, Verified)
+	}
+
+	// Pin should still be created (Phase-1 fallback), keyed by stable_id.
+	if _, ok := ps.Pins[stableID]; !ok {
+		t.Fatal("pin should be created even when ClawDID is unreachable")
+	}
+}
+
+func TestCheckTOFUPinUpgradeOnFirstSight(t *testing.T) {
+	t.Parallel()
+
+	senderDID, stableID, clawDIDResp := clawDIDTestSetup(t)
+	clawDIDJSON, _ := json.Marshal(clawDIDResp)
+
+	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(clawDIDJSON)
+	}))
+	t.Cleanup(registry.Close)
+
+	awebSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"did":      senderDID,
+			"agent_id": "agent-uuid-upgrade",
+			"address":  "myco/sender",
+			"lifetime": "persistent",
+			"custody":  "self",
+		})
+	}))
+	t.Cleanup(awebSrv.Close)
+
+	c, err := NewWithAPIKey(awebSrv.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := NewPinStore()
+	c.SetPinStore(ps, "")
+	c.SetResolver(&ServerResolver{Client: c})
+	c.SetClawDIDClient(&ClawDIDClient{RegistryURL: registry.URL})
+
+	// Step 1: First message without stable_id → pin by did:key (Phase-1).
+	status := c.CheckTOFUPin(context.Background(), Verified, "myco/sender", senderDID, "", nil)
+	if status != Verified {
+		t.Fatalf("step 1: status=%q, want %q", status, Verified)
+	}
+	if ps.Addresses["myco/sender"] != senderDID {
+		t.Fatalf("step 1: address should map to did:key, got %q", ps.Addresses["myco/sender"])
+	}
+
+	// Step 2: Next message WITH stable_id and matching did:key → upgrade pin.
+	status = c.CheckTOFUPin(context.Background(), Verified, "myco/sender", senderDID, stableID, nil)
+	if status != Verified {
+		t.Fatalf("step 2: status=%q, want %q", status, Verified)
+	}
+
+	// Pin should now be keyed by stable_id.
+	if _, ok := ps.Pins[stableID]; !ok {
+		t.Fatal("step 2: pin should be upgraded to stable_id key")
+	}
+	if _, ok := ps.Pins[senderDID]; ok {
+		t.Fatal("step 2: old did:key pin should be removed after upgrade")
+	}
+	if ps.Addresses["myco/sender"] != stableID {
+		t.Fatalf("step 2: address should map to stable_id, got %q", ps.Addresses["myco/sender"])
+	}
+}
+
+func TestCheckTOFUPinClawDIDHeadCachePersists(t *testing.T) {
+	t.Parallel()
+
+	senderDID, stableID, clawDIDResp := clawDIDTestSetup(t)
+	clawDIDJSON, _ := json.Marshal(clawDIDResp)
+
+	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(clawDIDJSON)
+	}))
+	t.Cleanup(registry.Close)
+
+	awebSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"did":      senderDID,
+			"agent_id": "agent-uuid-cache",
+			"address":  "myco/sender",
+			"lifetime": "persistent",
+			"custody":  "self",
+		})
+	}))
+	t.Cleanup(awebSrv.Close)
+
+	c, err := NewWithAPIKey(awebSrv.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := NewPinStore()
+	c.SetPinStore(ps, "")
+	c.SetResolver(&ServerResolver{Client: c})
+	c.SetClawDIDClient(&ClawDIDClient{RegistryURL: registry.URL})
+
+	status := c.CheckTOFUPin(context.Background(), Verified, "myco/sender", senderDID, stableID, nil)
+	if status != Verified {
+		t.Fatalf("status=%q, want %q", status, Verified)
+	}
+
+	// Head cache should be stored in pin store.
+	cache := ps.GetHeadCache(stableID)
+	if cache == nil {
+		t.Fatal("head cache should be stored after ClawDID verification")
+	}
+	if cache.Seq != 1 {
+		t.Fatalf("head cache seq: got %d, want 1", cache.Seq)
+	}
+	if cache.EntryHash != clawDIDResp.LogHead.EntryHash {
+		t.Fatalf("head cache entry_hash mismatch")
+	}
+
+	// Second call with same response → same seq, same hash → should pass.
+	status = c.CheckTOFUPin(context.Background(), Verified, "myco/sender", senderDID, stableID, nil)
+	if status != Verified {
+		t.Fatalf("second call: status=%q, want %q", status, Verified)
+	}
+
+	// Now simulate a seq-regression attack: registry returns seq=0.
+	regressedResp := clawDIDResp
+	regressedResp.LogHead = &ClawDIDLogHead{Seq: 0}
+	regressedJSON, _ := json.Marshal(regressedResp)
+	registry.Close()
+	regressedRegistry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(regressedJSON)
+	}))
+	t.Cleanup(regressedRegistry.Close)
+	c.SetClawDIDClient(&ClawDIDClient{RegistryURL: regressedRegistry.URL})
+
+	status = c.CheckTOFUPin(context.Background(), Verified, "myco/sender", senderDID, stableID, nil)
+	if status != IdentityMismatch {
+		t.Fatalf("regressed call: status=%q, want %q (seq regression should be caught)", status, IdentityMismatch)
+	}
+}

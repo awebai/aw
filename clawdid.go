@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // LogEntry represents a ClawDID audit log entry.
@@ -266,7 +267,7 @@ func (c *ClawDIDClient) FetchKey(ctx context.Context, didClaw string) (*ClawDIDK
 
 	httpClient := c.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{}
+		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
 
 	url := c.RegistryURL + "/v1/did/" + didClaw + "/key"

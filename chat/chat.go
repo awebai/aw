@@ -380,7 +380,7 @@ func waitForMessage(ctx context.Context, client *aweb.Client, openStream streamO
 			if chatEvent.FromAddress != "" {
 				tofuFrom = chatEvent.FromAddress
 			}
-			chatEvent.VerificationStatus = client.CheckTOFUPin(ctx, chatEvent.VerificationStatus, tofuFrom, chatEvent.FromDID, chatEvent.RotationAnnouncement)
+			chatEvent.VerificationStatus = client.CheckTOFUPin(ctx, chatEvent.VerificationStatus, tofuFrom, chatEvent.FromDID, chatEvent.FromStableID, chatEvent.RotationAnnouncement)
 
 			if chatEvent.Type == "read_receipt" {
 				result.Events = append(result.Events, chatEvent)

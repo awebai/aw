@@ -230,7 +230,7 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 		}
 		// Error is encoded in VerificationStatus; discard it.
 		m.VerificationStatus, _ = VerifyMessage(env)
-		m.VerificationStatus = c.CheckTOFUPin(ctx, m.VerificationStatus, from, m.FromDID, m.RotationAnnouncement)
+		m.VerificationStatus = c.CheckTOFUPin(ctx, m.VerificationStatus, from, m.FromDID, m.FromStableID, m.RotationAnnouncement)
 	}
 	return &out, nil
 }
