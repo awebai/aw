@@ -158,8 +158,8 @@ func (ps *PinStore) GetHeadCache(stableID string) *ClawDIDCache {
 		return nil
 	}
 	// Return a copy so callers can mutate without affecting the store.
-	copy := *c
-	return &copy
+	snapshot := *c
+	return &snapshot
 }
 
 // SetHeadCache stores the ClawDID log head state for a stable_id.
@@ -167,6 +167,6 @@ func (ps *PinStore) SetHeadCache(stableID string, cache *ClawDIDCache) {
 	if ps.HeadCaches == nil {
 		ps.HeadCaches = make(map[string]*ClawDIDCache)
 	}
-	copy := *cache
-	ps.HeadCaches[stableID] = &copy
+	snapshot := *cache
+	ps.HeadCaches[stableID] = &snapshot
 }

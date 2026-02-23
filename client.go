@@ -227,25 +227,32 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 	}
 
 	// ClawDID cross-check: when stable_id and client are available.
+	// Only pin by stable_id and advance the head cache on ClawDIDVerified.
+	// Unreachable/degraded → fall back to Phase-1 (pin by did:key).
+	clawDIDVerified := false
 	if fromStableID != "" && c.clawDIDClient != nil {
 		keyResp, err := c.clawDIDClient.FetchKey(ctx, fromStableID)
 		// FetchKey error (unreachable, 5xx, etc.) → degrade gracefully, continue Phase-1.
 		if err == nil {
-			cache := c.pinStore.GetHeadCache(fromStableID)
-			if cache == nil {
-				cache = &ClawDIDCache{}
+			c.pinStore.mu.Lock()
+			headCache := c.pinStore.GetHeadCache(fromStableID)
+			c.pinStore.mu.Unlock()
+			if headCache == nil {
+				headCache = &ClawDIDCache{}
 			}
-			result := VerifyClawDIDKeyResponse(fromStableID, keyResp, cache)
+			result := VerifyClawDIDKeyResponse(fromStableID, keyResp, headCache)
 			switch result.Status {
 			case ClawDIDVerified:
 				if keyResp.CurrentDIDKey != fromDID {
 					return IdentityMismatch
 				}
-				c.pinStore.SetHeadCache(fromStableID, cache)
+				clawDIDVerified = true
+				c.pinStore.mu.Lock()
+				c.pinStore.SetHeadCache(fromStableID, headCache)
+				c.pinStore.mu.Unlock()
 			case ClawDIDDegraded:
-				c.pinStore.SetHeadCache(fromStableID, cache)
+				// Don't advance head cache or use stable_id for pinning.
 			case ClawDIDHardError:
-				// Don't advance the head cache on hard errors.
 				return IdentityMismatch
 			}
 		}
@@ -260,9 +267,9 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 	c.pinStore.mu.Lock()
 	defer c.pinStore.mu.Unlock()
 
-	// Determine the pin key: stable_id when available, else did:key.
+	// Pin key: use stable_id only when ClawDID verified the binding, else did:key.
 	pinKey := fromDID
-	if fromStableID != "" {
+	if fromStableID != "" && clawDIDVerified {
 		pinKey = fromStableID
 
 		// Upgrade-on-first-sight: if we have a did:key pin for this address
@@ -277,11 +284,11 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 		}
 	}
 
-	result := c.pinStore.CheckPin(fromAlias, pinKey, meta.Lifetime)
-	switch result {
+	pinResult := c.pinStore.CheckPin(fromAlias, pinKey, meta.Lifetime)
+	switch pinResult {
 	case PinNew, PinOK:
 		c.pinStore.StorePin(pinKey, fromAlias, "", "")
-		if fromStableID != "" {
+		if clawDIDVerified && fromStableID != "" {
 			c.pinStore.Pins[pinKey].StableID = fromStableID
 		}
 		c.savePinStore()
@@ -290,7 +297,7 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 		if ra != nil && c.verifyRotationAnnouncement(ra, fromDID, pinnedKey) {
 			delete(c.pinStore.Pins, pinnedKey)
 			c.pinStore.StorePin(pinKey, fromAlias, "", "")
-			if fromStableID != "" {
+			if clawDIDVerified && fromStableID != "" {
 				c.pinStore.Pins[pinKey].StableID = fromStableID
 			}
 			c.savePinStore()

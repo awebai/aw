@@ -3544,9 +3544,12 @@ func TestCheckTOFUPinClawDIDUnreachable(t *testing.T) {
 		t.Fatalf("status=%q, want %q (ClawDID down should degrade, not fail)", status, Verified)
 	}
 
-	// Pin should still be created (Phase-1 fallback), keyed by stable_id.
-	if _, ok := ps.Pins[stableID]; !ok {
-		t.Fatal("pin should be created even when ClawDID is unreachable")
+	// Pin should be created via Phase-1 fallback, keyed by did:key (not stable_id).
+	if _, ok := ps.Pins[senderDID]; !ok {
+		t.Fatal("pin should be created via Phase-1 fallback (keyed by did:key)")
+	}
+	if _, ok := ps.Pins[stableID]; ok {
+		t.Fatal("pin should NOT be keyed by stable_id when ClawDID is unreachable")
 	}
 }
 
@@ -3664,17 +3667,12 @@ func TestCheckTOFUPinClawDIDHeadCachePersists(t *testing.T) {
 		t.Fatalf("second call: status=%q, want %q", status, Verified)
 	}
 
-	// Now simulate a seq-regression attack: registry returns seq=0.
-	regressedResp := clawDIDResp
-	regressedResp.LogHead = &ClawDIDLogHead{Seq: 0}
-	regressedJSON, _ := json.Marshal(regressedResp)
-	registry.Close()
-	regressedRegistry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(regressedJSON)
-	}))
-	t.Cleanup(regressedRegistry.Close)
-	c.SetClawDIDClient(&ClawDIDClient{RegistryURL: regressedRegistry.URL})
+	// Simulate a seq-regression attack: manually advance cache to seq=5,
+	// then replay the original response (seq=1). The verifier should catch
+	// seq=1 < cached_seq=5 as a regression.
+	ps.mu.Lock()
+	ps.SetHeadCache(stableID, &ClawDIDCache{Seq: 5, EntryHash: "advanced_hash"})
+	ps.mu.Unlock()
 
 	status = c.CheckTOFUPin(context.Background(), Verified, "myco/sender", senderDID, stableID, nil)
 	if status != IdentityMismatch {
