@@ -113,11 +113,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		fatal(err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Connected as %s", alias)
-	if alias != "" {
-		fmt.Fprintf(os.Stderr, " (%s)", agentID)
-	}
-	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(os.Stderr, "Connected as %s (%s)\n", alias, agentID)
 	fmt.Fprintf(os.Stderr, "Config written to %s\n", cfgPath)
 
 	// Print introspect output as JSON for scriptability.

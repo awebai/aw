@@ -14,6 +14,7 @@ var namespaceCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		// Server endpoint is still /v1/projects/current; user-facing term is "namespace".
 		resp, err := mustClient().GetCurrentProject(ctx)
 		if err != nil {
 			fatal(err)

@@ -2,8 +2,8 @@ package aweb
 
 import "strings"
 
-// NetworkAddress represents either a cross-namespace network address (namespace/alias)
-// or a plain intra-namespace alias.
+// NetworkAddress represents either a network address (org-slug/alias)
+// or a plain local alias.
 type NetworkAddress struct {
 	OrgSlug   string
 	Alias     string
@@ -12,7 +12,7 @@ type NetworkAddress struct {
 
 // ParseNetworkAddress parses a target string into a NetworkAddress.
 // If the string contains a '/', it is treated as a network address (org-slug/alias).
-// Otherwise it is a plain intra-project alias.
+// Otherwise it is a plain local alias.
 func ParseNetworkAddress(target string) NetworkAddress {
 	target = strings.TrimSpace(target)
 	if target == "" {

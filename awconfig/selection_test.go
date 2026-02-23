@@ -149,6 +149,7 @@ func TestResolveMissingDefaults(t *testing.T) {
 }
 
 func TestResolveEnvOnlyNoAccount(t *testing.T) {
+	// Not parallel: t.Setenv mutates process env, would race with TestResolveMissingDefaults.
 	t.Setenv("AWEB_URL", "http://example.com")
 	t.Setenv("AWEB_API_KEY", "aw_sk_env")
 	t.Setenv("AWEB_ACCOUNT", "")
