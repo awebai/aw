@@ -81,6 +81,141 @@ func TestChatStreamRequestsEventStream(t *testing.T) {
 	}
 }
 
+func TestChatCreateSessionSignsDeterministicTo(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody ChatCreateSessionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method=%s", r.Method)
+		}
+		if r.URL.Path != "/v1/chat/sessions" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(ChatCreateSessionResponse{
+			SessionID:        "sess-1",
+			MessageID:        "msg-1",
+			Participants:     []ChatParticipant{{AgentID: "a", Alias: "agent"}, {AgentID: "b", Alias: "bob"}},
+			SSEURL:           "/v1/chat/sessions/sess-1/stream",
+			TargetsConnected: []string{"bob"},
+			TargetsLeft:      []string{},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+
+	_, err = c.ChatCreateSession(context.Background(), &ChatCreateSessionRequest{
+		ToAliases: []string{"bob", "ann"},
+		Message:   "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotBody.Signature == "" || gotBody.Timestamp == "" || gotBody.MessageID == "" || gotBody.SigningKeyID == "" {
+		t.Fatalf("missing identity fields in request: %+v", gotBody)
+	}
+
+	env := &MessageEnvelope{
+		From:      "myco/agent",
+		FromDID:   did,
+		To:        "myco/ann,myco/bob",
+		Type:      "chat",
+		Body:      "hello",
+		Timestamp: gotBody.Timestamp,
+		MessageID: gotBody.MessageID,
+		Signature: gotBody.Signature,
+	}
+	status, verifyErr := VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestChatSendMessageSignsDeterministicTo(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotSend ChatSendMessageRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/sessions":
+			_ = json.NewEncoder(w).Encode(ChatListSessionsResponse{
+				Sessions: []ChatSessionItem{
+					{SessionID: "sess-1", Participants: []string{"agent", "ann", "bob"}, CreatedAt: "2026-02-01T00:00:00Z"},
+				},
+			})
+		case "/v1/chat/sessions/sess-1/messages":
+			if err := json.NewDecoder(r.Body).Decode(&gotSend); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(ChatSendMessageResponse{
+				MessageID:          "msg-2",
+				Delivered:          true,
+				ExtendsWaitSeconds: 0,
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+
+	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{Body: "ping"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotSend.Signature == "" || gotSend.Timestamp == "" || gotSend.MessageID == "" || gotSend.SigningKeyID == "" {
+		t.Fatalf("missing identity fields in request: %+v", gotSend)
+	}
+
+	env := &MessageEnvelope{
+		From:      "myco/agent",
+		FromDID:   did,
+		To:        "myco/ann,myco/bob",
+		Type:      "chat",
+		Body:      "ping",
+		Timestamp: gotSend.Timestamp,
+		MessageID: gotSend.MessageID,
+		Signature: gotSend.Signature,
+	}
+	status, verifyErr := VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
 func TestChatSendMessage(t *testing.T) {
 	t.Parallel()
 

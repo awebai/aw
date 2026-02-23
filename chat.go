@@ -4,9 +4,83 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
+
+func (c *Client) namespaceSlug() string {
+	parts := strings.SplitN(c.address, "/", 2)
+	if len(parts) == 2 && parts[0] != "" {
+		return parts[0]
+	}
+	return ""
+}
+
+func (c *Client) alias() string {
+	parts := strings.SplitN(c.address, "/", 2)
+	if len(parts) == 2 && parts[1] != "" {
+		return parts[1]
+	}
+	return ""
+}
+
+func (c *Client) toAddressForAliases(aliases []string) string {
+	ns := c.namespaceSlug()
+	if ns == "" || len(aliases) == 0 {
+		return ""
+	}
+	clean := make([]string, 0, len(aliases))
+	for _, a := range aliases {
+		a = strings.TrimSpace(a)
+		if a != "" {
+			clean = append(clean, a)
+		}
+	}
+	if len(clean) == 0 {
+		return ""
+	}
+	sort.Strings(clean)
+	var b strings.Builder
+	for i, a := range clean {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(ns)
+		b.WriteByte('/')
+		b.WriteString(a)
+	}
+	return b.String()
+}
+
+func (c *Client) toAddressForSession(ctx context.Context, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", nil
+	}
+	ns := c.namespaceSlug()
+	selfAlias := c.alias()
+	if ns == "" || selfAlias == "" {
+		return "", nil
+	}
+	resp, err := c.ChatListSessions(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, s := range resp.Sessions {
+		if s.SessionID != sessionID {
+			continue
+		}
+		others := make([]string, 0, len(s.Participants))
+		for _, a := range s.Participants {
+			if a != "" && a != selfAlias {
+				others = append(others, a)
+			}
+		}
+		sort.Strings(others)
+		return c.toAddressForAliases(others), nil
+	}
+	return "", nil
+}
 
 type ChatCreateSessionRequest struct {
 	ToAliases    []string `json:"to_aliases"`
@@ -35,8 +109,14 @@ type ChatParticipant struct {
 }
 
 func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRequest) (*ChatCreateSessionResponse, error) {
+	to := strings.Join(req.ToAliases, ",")
+	if c.signingKey != nil {
+		if toAddr := c.toAddressForAliases(req.ToAliases); toAddr != "" {
+			to = toAddr
+		}
+	}
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
-		To:   strings.Join(req.ToAliases, ","),
+		To:   to,
 		Type: "chat",
 		Body: req.Message,
 	})
@@ -225,8 +305,16 @@ type ChatSendMessageResponse struct {
 }
 
 func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *ChatSendMessageRequest) (*ChatSendMessageResponse, error) {
-	// In-session messages: To is empty because the session implies recipients.
+	// In-session messages: include deterministic To for signature verification.
+	// (aweb returns to_address for reconstruction; we sign the same value.)
+	to := ""
+	if c.signingKey != nil {
+		if toAddr, err := c.toAddressForSession(ctx, sessionID); err == nil {
+			to = toAddr
+		}
+	}
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
+		To:   to,
 		Type: "chat",
 		Body: req.Body,
 	})

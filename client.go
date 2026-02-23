@@ -43,7 +43,7 @@ func (c *Client) signEnvelope(ctx context.Context, env *MessageEnvelope) (signed
 	env.MessageID = msgID
 
 	// Resolve recipient DID for to_did binding (mail only).
-	if c.resolver != nil && env.To != "" && env.ToDID == "" {
+	if env.Type == "mail" && c.resolver != nil && env.To != "" && env.ToDID == "" {
 		if identity, err := c.resolver.Resolve(ctx, env.To); err == nil && identity.DID != "" {
 			env.ToDID = identity.DID
 		}
