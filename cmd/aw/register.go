@@ -91,6 +91,7 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		fatal(err)
 	}
 	did := aweb.ComputeDIDKey(pub)
+	stableID := aweb.ComputeStableID(pub, "claw")
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
 	req := &aweb.RegisterRequest{
@@ -165,6 +166,7 @@ func runRegister(cmd *cobra.Command, args []string) error {
 				Email:         resp.Email,
 				NamespaceSlug: namespaceSlug,
 				DID:           resp.DID,
+				StableID:      stableID,
 				SigningKey:     signingKeyPath,
 				Custody:       resp.Custody,
 				Lifetime:      resp.Lifetime,

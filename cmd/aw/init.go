@@ -192,11 +192,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Generate Ed25519 keypair for self-custodial identity.
+	// Keypair generated once; reused on alias-retry so stableID stays
+	// consistent with the registered key.
 	pub, priv, err := awconfig.GenerateKeypair()
 	if err != nil {
 		fatal(err)
 	}
 	did := aweb.ComputeDIDKey(pub)
+	stableID := aweb.ComputeStableID(pub, "claw")
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
 	req := &aweb.InitRequest{
@@ -272,6 +275,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 				AgentAlias:    resp.Alias,
 				NamespaceSlug: namespaceSlug,
 				DID:           resp.DID,
+				StableID:      stableID,
 				SigningKey:     signingKeyPath,
 				Custody:       resp.Custody,
 				Lifetime:      resp.Lifetime,

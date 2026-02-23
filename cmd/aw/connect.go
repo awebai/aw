@@ -99,12 +99,20 @@ func runConnect(cmd *cobra.Command, args []string) error {
 
 		cfg.Servers[serverName] = awconfig.Server{URL: baseURL}
 
+		// Preserve existing identity fields (DID, StableID, SigningKey, etc.)
+		// so re-connecting a self-custody agent doesn't discard them.
+		existing := cfg.Accounts[accountName]
 		cfg.Accounts[accountName] = awconfig.Account{
 			Server:        serverName,
 			APIKey:        apiKey,
 			AgentID:       agentID,
 			AgentAlias:    alias,
 			NamespaceSlug: namespaceSlug,
+			DID:           existing.DID,
+			StableID:      existing.StableID,
+			SigningKey:     existing.SigningKey,
+			Custody:       existing.Custody,
+			Lifetime:      existing.Lifetime,
 		}
 
 		if strings.TrimSpace(cfg.DefaultAccount) == "" || connectSetDefault {

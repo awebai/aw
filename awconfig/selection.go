@@ -23,6 +23,7 @@ type Selection struct {
 	Email              string
 	NamespaceSlug      string
 	DID                string
+	StableID           string
 	SigningKey          string
 	Custody            string
 	Lifetime           string
@@ -248,6 +249,7 @@ func finalizeSelection(accountName, serverName, baseURL, apiKey string, acct Acc
 		Email:          strings.TrimSpace(acct.Email),
 		NamespaceSlug:  ns,
 		DID:            strings.TrimSpace(acct.DID),
+		StableID:       strings.TrimSpace(acct.StableID),
 		SigningKey:     strings.TrimSpace(acct.SigningKey),
 		Custody:        strings.TrimSpace(acct.Custody),
 		Lifetime:       strings.TrimSpace(acct.Lifetime),

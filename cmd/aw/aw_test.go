@@ -1163,6 +1163,10 @@ func TestAwInitWritesConfig(t *testing.T) {
 	if acct["agent_alias"] != "alice" {
 		t.Fatalf("accounts.acct.agent_alias=%v", acct["agent_alias"])
 	}
+	stableID, _ := acct["stable_id"].(string)
+	if !strings.HasPrefix(stableID, "did:claw:") {
+		t.Fatalf("accounts.acct.stable_id=%v, want did:claw: prefix", acct["stable_id"])
+	}
 }
 
 func TestAwInitCloudModeRequiresCloudToken(t *testing.T) {
@@ -2873,6 +2877,10 @@ func TestAwRegisterWritesConfig(t *testing.T) {
 			}
 			if acct["email"] != "test@example.com" {
 				t.Fatalf("accounts.%s.email=%v", name, acct["email"])
+			}
+			stableID, _ := acct["stable_id"].(string)
+			if !strings.HasPrefix(stableID, "did:claw:") {
+				t.Fatalf("accounts.%s.stable_id=%v, want did:claw: prefix", name, acct["stable_id"])
 			}
 			break
 		}

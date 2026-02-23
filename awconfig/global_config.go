@@ -30,6 +30,7 @@ type Account struct {
 	Email          string `yaml:"email,omitempty"`
 	NamespaceSlug  string `yaml:"namespace_slug,omitempty"`
 	DID            string `yaml:"did,omitempty"`
+	StableID       string `yaml:"stable_id,omitempty"`
 	SigningKey     string `yaml:"signing_key,omitempty"`
 	Custody        string `yaml:"custody,omitempty"`
 	Lifetime       string `yaml:"lifetime,omitempty"`

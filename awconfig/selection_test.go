@@ -195,6 +195,28 @@ func TestResolveAccountByAgentAlias(t *testing.T) {
 	}
 }
 
+func TestResolveStableID(t *testing.T) {
+	t.Parallel()
+
+	global := &GlobalConfig{
+		Servers: map[string]Server{
+			"beadhub": {URL: "http://localhost:8000"},
+		},
+		Accounts: map[string]Account{
+			"a": {Server: "beadhub", APIKey: "aw_sk_a", StableID: "did:claw:abc123"},
+		},
+		DefaultAccount: "a",
+	}
+
+	sel, err := Resolve(global, ResolveOptions{AccountName: "a"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if sel.StableID != "did:claw:abc123" {
+		t.Fatalf("StableID=%q, want %q", sel.StableID, "did:claw:abc123")
+	}
+}
+
 func TestResolveClawDIDRegistryURL(t *testing.T) {
 	t.Parallel()
 
