@@ -66,6 +66,14 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		os.Exit(2)
 	}
 
+	// Fetch namespace slug for canonical address derivation (needed for
+	// self-custody signing and key file naming).
+	var namespaceSlug string
+	proj, projErr := client.GetCurrentProject(ctx)
+	if projErr == nil {
+		namespaceSlug = strings.TrimSpace(proj.Slug)
+	}
+
 	alias := strings.TrimSpace(resp.Alias)
 	agentID := strings.TrimSpace(resp.AgentID)
 
@@ -89,15 +97,14 @@ func runConnect(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		if _, ok := cfg.Servers[serverName]; !ok || strings.TrimSpace(cfg.Servers[serverName].URL) == "" {
-			cfg.Servers[serverName] = awconfig.Server{URL: baseURL}
-		}
+		cfg.Servers[serverName] = awconfig.Server{URL: baseURL}
 
 		cfg.Accounts[accountName] = awconfig.Account{
-			Server:     serverName,
-			APIKey:     apiKey,
-			AgentID:    agentID,
-			AgentAlias: alias,
+			Server:        serverName,
+			APIKey:        apiKey,
+			AgentID:       agentID,
+			AgentAlias:    alias,
+			NamespaceSlug: namespaceSlug,
 		}
 
 		if strings.TrimSpace(cfg.DefaultAccount) == "" || connectSetDefault {

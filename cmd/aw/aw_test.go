@@ -4872,6 +4872,12 @@ func TestAwConnect(t *testing.T) {
 				"human_name": "Alice",
 				"agent_type": "agent",
 			})
+		case "/v1/projects/current":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"slug":       "myco",
+				"name":       "My Company",
+			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -4940,6 +4946,9 @@ func TestAwConnect(t *testing.T) {
 			}
 			if acct["agent_alias"] != "alice" {
 				t.Fatalf("agent_alias=%v", acct["agent_alias"])
+			}
+			if acct["namespace_slug"] != "myco" {
+				t.Fatalf("namespace_slug=%v, want myco", acct["namespace_slug"])
 			}
 			break
 		}
