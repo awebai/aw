@@ -4855,3 +4855,204 @@ default_account: acct
 		t.Fatalf("status=%s, want verified (namespace_slug should be used for From address)", status)
 	}
 }
+
+func TestAwConnect(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/introspect":
+			if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
+				t.Fatalf("auth=%q", r.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
+				"human_name": "Alice",
+				"agent_type": "agent",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// Write empty config — no accounts configured.
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "connect")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL="+server.URL,
+		"AWEB_API_KEY=aw_sk_test",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	// Verify config was written.
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg struct {
+		Servers        map[string]map[string]any `yaml:"servers"`
+		Accounts       map[string]map[string]any `yaml:"accounts"`
+		DefaultAccount string                    `yaml:"default_account"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(data))
+	}
+	if cfg.DefaultAccount == "" {
+		t.Fatal("default_account not set")
+	}
+	// Find the account with our API key.
+	var found bool
+	for _, acct := range cfg.Accounts {
+		if acct["api_key"] == "aw_sk_test" {
+			found = true
+			if acct["agent_id"] != "agent-1" {
+				t.Fatalf("agent_id=%v", acct["agent_id"])
+			}
+			if acct["agent_alias"] != "alice" {
+				t.Fatalf("agent_alias=%v", acct["agent_alias"])
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no account with api_key=aw_sk_test in config:\n%s", string(data))
+	}
+	// Verify server entry exists.
+	if len(cfg.Servers) == 0 {
+		t.Fatal("no servers in config")
+	}
+
+	// Verify .aw/context was written.
+	ctxPath := filepath.Join(tmp, ".aw", "context")
+	if _, err := os.Stat(ctxPath); os.IsNotExist(err) {
+		t.Fatal(".aw/context not written")
+	}
+}
+
+func TestAwConnectMissingEnvVars(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// No AWEB_URL or AWEB_API_KEY — should fail.
+	run := exec.CommandContext(ctx, bin, "connect")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected error, got success: %s", string(out))
+	}
+	if !strings.Contains(string(out), "AWEB_URL") {
+		t.Fatalf("expected error mentioning AWEB_URL, got: %s", string(out))
+	}
+}
+
+func TestAwConnectNoAgentID(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/introspect":
+			// User-scoped key: no agent_id.
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"user_id":    "user-1",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "connect")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL="+server.URL,
+		"AWEB_API_KEY=aw_sk_test",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected error for user-scoped key, got success: %s", string(out))
+	}
+	if !strings.Contains(string(out), "agent-scoped") {
+		t.Fatalf("expected error about agent-scoped key, got: %s", string(out))
+	}
+}
