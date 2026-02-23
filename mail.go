@@ -2,6 +2,7 @@ package aweb
 
 import (
 	"context"
+	"strings"
 )
 
 type MessagePriority string
@@ -38,6 +39,14 @@ func (c *Client) SendMessage(ctx context.Context, req *SendMessageRequest) (*Sen
 	to := req.ToAlias
 	if to == "" {
 		to = req.ToAgentID
+	}
+	// When self-custody signing, use canonical address (namespace/alias)
+	// so the signature matches what aweb returns in to_address on the inbox side.
+	// Only canonicalize plain aliases, not raw agent IDs (ToAgentID path).
+	if c.signingKey != nil && req.ToAlias != "" && !strings.Contains(req.ToAlias, "/") {
+		if ns := c.namespaceSlug(); ns != "" {
+			to = ns + "/" + req.ToAlias
+		}
 	}
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
 		To:      to,

@@ -1045,6 +1045,66 @@ func TestSendMessageSignsWhenIdentitySet(t *testing.T) {
 	}
 }
 
+// TestSendMessageSignsCanonicalToForPlainAlias verifies that when ToAlias is
+// a plain alias (no slash), the signed "to" field uses the canonical address
+// (namespace/alias), matching what aweb returns in to_address on the inbox side.
+func TestSendMessageSignsCanonicalToForPlainAlias(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-02-22T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+
+	_, err = c.SendMessage(context.Background(), &SendMessageRequest{
+		ToAlias: "monitor",
+		Subject: "task complete",
+		Body:    "results attached",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate inbox-side verification: aweb returns to_address as "myco/monitor",
+	// so the verifier reconstructs "to" as the canonical address.
+	env := &MessageEnvelope{
+		From:      "myco/agent",
+		FromDID:   did,
+		To:        "myco/monitor",
+		Type:      "mail",
+		Subject:   "task complete",
+		Body:      "results attached",
+		Timestamp: gotBody["timestamp"].(string),
+		MessageID: gotBody["message_id"].(string),
+		Signature: gotBody["signature"].(string),
+	}
+	status, verifyErr := VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified (plain alias 'monitor' should be signed as 'myco/monitor')", status)
+	}
+}
+
 func TestSendMessageNoSignatureWithoutIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -1107,6 +1167,7 @@ func TestSendMessageSignsWithToAgentID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.SetAddress("myco/agent")
 	_, err = c.SendMessage(context.Background(), &SendMessageRequest{
 		ToAgentID: "agent-uuid-123",
 		Subject:   "task complete",
@@ -1116,8 +1177,10 @@ func TestSendMessageSignsWithToAgentID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Signature should bind to the ToAgentID when ToAlias is empty.
+	// Signature should bind to the raw ToAgentID (no namespace prefix),
+	// even though the client has an address set.
 	env := &MessageEnvelope{
+		From:      "myco/agent",
 		FromDID:   did,
 		To:        "agent-uuid-123",
 		Type:      "mail",

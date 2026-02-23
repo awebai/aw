@@ -4607,7 +4607,7 @@ func TestAwMailSendSignsWithIdentity(t *testing.T) {
 				"status":       "delivered",
 				"delivered_at": "2026-02-22T00:00:00Z",
 			})
-		case "/v1/agents/resolve/monitor":
+		case "/v1/agents/resolve/monitor", "/v1/agents/resolve/myco/monitor":
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"did":     recipientDID,
 				"address": "myco/monitor",
@@ -4697,12 +4697,12 @@ default_account: acct
 		t.Fatal("message_id missing or empty")
 	}
 
-	// Verify the signature covers the correct From address (aw-am0)
-	// and includes resolved ToDID (aw-e0b).
+	// Verify the signature covers canonical to address (myco/monitor),
+	// matching what aweb returns in to_address on the inbox side.
 	env := &aweb.MessageEnvelope{
 		From:      "myco/agent",
 		FromDID:   did,
-		To:        "monitor",
+		To:        "myco/monitor",
 		ToDID:     recipientDID,
 		Type:      "mail",
 		Body:      "hello from identity",
@@ -4747,7 +4747,7 @@ func TestAwMailSendSignsWithIdentityNamespace(t *testing.T) {
 				"status":       "delivered",
 				"delivered_at": "2026-02-22T00:00:00Z",
 			})
-		case "/v1/agents/resolve/monitor":
+		case "/v1/agents/resolve/monitor", "/v1/agents/resolve/acme/monitor":
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"did":     recipientDID,
 				"address": "acme/monitor",
@@ -4834,12 +4834,12 @@ default_account: acct
 		t.Fatal("signature missing")
 	}
 
-	// Verify the signature covers "acme/bot" (namespace_slug/alias)
-	// and includes resolved ToDID.
+	// Verify the signature covers canonical to address (acme/monitor),
+	// matching what aweb returns in to_address on the inbox side.
 	env := &aweb.MessageEnvelope{
 		From:      "acme/bot",
 		FromDID:   did,
-		To:        "monitor",
+		To:        "acme/monitor",
 		ToDID:     recipientDID,
 		Type:      "mail",
 		Body:      "hello from namespace",
