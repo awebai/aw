@@ -8,21 +8,25 @@ import (
 	"strings"
 )
 
+// DefaultClawDIDRegistryURL is the default ClawDID registry endpoint.
+const DefaultClawDIDRegistryURL = "https://api.clawdid.ai"
+
 type Selection struct {
 	AccountName string
 	ServerName  string
 	BaseURL     string
 	APIKey      string
 
-	DefaultProject string
-	AgentID        string
-	AgentAlias     string
-	Email          string
-	NamespaceSlug  string
-	DID            string
-	SigningKey     string
-	Custody        string
-	Lifetime       string
+	DefaultProject     string
+	AgentID            string
+	AgentAlias         string
+	Email              string
+	NamespaceSlug      string
+	DID                string
+	SigningKey          string
+	Custody            string
+	Lifetime           string
+	ClawDIDRegistryURL string
 }
 
 type ResolveOptions struct {
@@ -40,6 +44,29 @@ type ResolveOptions struct {
 }
 
 func Resolve(global *GlobalConfig, opts ResolveOptions) (*Selection, error) {
+	sel, err := resolveAccount(global, opts)
+	if err != nil {
+		return nil, err
+	}
+	sel.ClawDIDRegistryURL = resolveClawDIDRegistryURL(global)
+	return sel, nil
+}
+
+// resolveClawDIDRegistryURL returns the ClawDID registry URL from env,
+// config, or default (in that priority order).
+func resolveClawDIDRegistryURL(global *GlobalConfig) string {
+	if v := strings.TrimSpace(os.Getenv("CLAWDID_REGISTRY_URL")); v != "" {
+		return v
+	}
+	if global != nil {
+		if v := strings.TrimSpace(global.ClawDIDRegistryURL); v != "" {
+			return v
+		}
+	}
+	return DefaultClawDIDRegistryURL
+}
+
+func resolveAccount(global *GlobalConfig, opts ResolveOptions) (*Selection, error) {
 	if global == nil {
 		global = &GlobalConfig{}
 	}

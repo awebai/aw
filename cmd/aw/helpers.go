@@ -79,6 +79,12 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 			os.Exit(2)
 		}
 	}
+
+	// Enable ClawDID split-trust verification when a registry URL is configured.
+	if sel.ClawDIDRegistryURL != "" {
+		c.SetClawDIDClient(&aweb.ClawDIDClient{RegistryURL: sel.ClawDIDRegistryURL})
+	}
+
 	return c, sel
 }
 

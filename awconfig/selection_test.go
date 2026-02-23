@@ -195,6 +195,83 @@ func TestResolveAccountByAgentAlias(t *testing.T) {
 	}
 }
 
+func TestResolveClawDIDRegistryURL(t *testing.T) {
+	t.Parallel()
+
+	global := &GlobalConfig{
+		Servers: map[string]Server{
+			"beadhub": {URL: "http://localhost:8000"},
+		},
+		Accounts: map[string]Account{
+			"a": {Server: "beadhub", APIKey: "aw_sk_a"},
+		},
+		DefaultAccount:     "a",
+		ClawDIDRegistryURL: "https://my-registry.example",
+	}
+
+	sel, err := Resolve(global, ResolveOptions{AccountName: "a"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if sel.ClawDIDRegistryURL != "https://my-registry.example" {
+		t.Fatalf("ClawDIDRegistryURL=%q, want %q", sel.ClawDIDRegistryURL, "https://my-registry.example")
+	}
+}
+
+func TestResolveClawDIDRegistryURLFromEnv(t *testing.T) {
+	// Not parallel: t.Setenv mutates process env, would race with parallel tests
+	// that rely on CLAWDID_REGISTRY_URL being unset.
+	t.Setenv("CLAWDID_REGISTRY_URL", "https://custom.registry.example")
+	t.Setenv("AWEB_URL", "")
+	t.Setenv("AWEB_API_KEY", "")
+	t.Setenv("AWEB_ACCOUNT", "")
+
+	global := &GlobalConfig{
+		Servers: map[string]Server{
+			"beadhub": {URL: "http://localhost:8000"},
+		},
+		Accounts: map[string]Account{
+			"a": {Server: "beadhub", APIKey: "aw_sk_a"},
+		},
+		DefaultAccount: "a",
+	}
+
+	sel, err := Resolve(global, ResolveOptions{AccountName: "a"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if sel.ClawDIDRegistryURL != "https://custom.registry.example" {
+		t.Fatalf("ClawDIDRegistryURL=%q, want %q", sel.ClawDIDRegistryURL, "https://custom.registry.example")
+	}
+}
+
+func TestResolveClawDIDRegistryURLDefault(t *testing.T) {
+	t.Parallel()
+
+	if os.Getenv("CLAWDID_REGISTRY_URL") != "" {
+		t.Skip("test requires CLAWDID_REGISTRY_URL to be unset")
+	}
+
+	// No ClawDIDRegistryURL in config → should get default.
+	global := &GlobalConfig{
+		Servers: map[string]Server{
+			"beadhub": {URL: "http://localhost:8000"},
+		},
+		Accounts: map[string]Account{
+			"a": {Server: "beadhub", APIKey: "aw_sk_a"},
+		},
+		DefaultAccount: "a",
+	}
+
+	sel, err := Resolve(global, ResolveOptions{AccountName: "a"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if sel.ClawDIDRegistryURL != "https://api.clawdid.ai" {
+		t.Fatalf("ClawDIDRegistryURL=%q, want default", sel.ClawDIDRegistryURL)
+	}
+}
+
 func TestResolveAccountByAgentAliasAmbiguous(t *testing.T) {
 	t.Parallel()
 

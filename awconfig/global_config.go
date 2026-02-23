@@ -11,9 +11,10 @@ import (
 )
 
 type GlobalConfig struct {
-	Servers        map[string]Server  `yaml:"servers,omitempty"`
-	Accounts       map[string]Account `yaml:"accounts,omitempty"`
-	DefaultAccount string             `yaml:"default_account,omitempty"`
+	Servers            map[string]Server  `yaml:"servers,omitempty"`
+	Accounts           map[string]Account `yaml:"accounts,omitempty"`
+	DefaultAccount     string             `yaml:"default_account,omitempty"`
+	ClawDIDRegistryURL string             `yaml:"clawdid_registry_url,omitempty"`
 }
 
 type Server struct {
