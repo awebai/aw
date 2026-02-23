@@ -2,6 +2,7 @@ package aweb
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 
@@ -40,4 +41,15 @@ func ExtractPublicKey(did string) (ed25519.PublicKey, error) {
 	}
 
 	return ed25519.PublicKey(decoded[2:]), nil
+}
+
+// ComputeStableID derives a stable identifier from an Ed25519 public key.
+// method must be "claw" or "aw", producing "did:claw:..." or "did:aw:..." respectively.
+// Algorithm: SHA-256 the 32-byte public key, take the first 20 bytes, base58btc encode.
+func ComputeStableID(pub ed25519.PublicKey, method string) string {
+	if method != "claw" && method != "aw" {
+		panic(fmt.Sprintf("ComputeStableID: method must be \"claw\" or \"aw\", got %q", method))
+	}
+	h := sha256.Sum256(pub)
+	return "did:" + method + ":" + base58.Encode(h[:20])
 }

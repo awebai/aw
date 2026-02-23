@@ -50,7 +50,7 @@ type MessageEnvelope struct {
 // SignMessage signs the canonical JSON payload of an envelope.
 // Returns the signature as base64 (RFC 4648, no padding).
 func SignMessage(key ed25519.PrivateKey, env *MessageEnvelope) (string, error) {
-	payload := canonicalJSON(env)
+	payload := CanonicalJSON(env)
 	sig := ed25519.Sign(key, []byte(payload))
 	return base64.RawStdEncoding.EncodeToString(sig), nil
 }
@@ -86,7 +86,7 @@ func VerifyMessage(env *MessageEnvelope) (VerificationStatus, error) {
 		return Failed, fmt.Errorf("decode signature: %w", err)
 	}
 
-	payload := canonicalJSON(env)
+	payload := CanonicalJSON(env)
 	if !ed25519.Verify(pub, []byte(payload), sig) {
 		return Failed, nil
 	}
@@ -94,10 +94,11 @@ func VerifyMessage(env *MessageEnvelope) (VerificationStatus, error) {
 	return Verified, nil
 }
 
-// canonicalJSON builds the canonical JSON payload for signing.
+// CanonicalJSON builds the canonical JSON payload for message signing.
 // Fields are sorted lexicographically, no whitespace, minimal escaping.
-// This is a subset of RFC 8785 (JSON Canonicalization Scheme).
-func canonicalJSON(env *MessageEnvelope) string {
+// Optional fields (from_stable_id, message_id, to_stable_id) are omitted when empty.
+// See also LogEntry.CanonicalJSON which always includes all fields with null for absent values.
+func CanonicalJSON(env *MessageEnvelope) string {
 	type field struct {
 		key   string
 		value string

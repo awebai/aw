@@ -234,7 +234,7 @@ func TestCanonicalJSONFieldOrder(t *testing.T) {
 		Timestamp: "2026-02-21T15:30:00Z",
 	}
 
-	got := canonicalJSON(env)
+	got := CanonicalJSON(env)
 	want := `{"body":"results attached","from":"mycompany/researcher","from_did":"did:key:z6MkhaXgBZD...","subject":"task complete","timestamp":"2026-02-21T15:30:00Z","to":"otherco/monitor","to_did":"did:key:z6MkrT4Jxd...","type":"mail"}`
 
 	if got != want {
@@ -258,7 +258,7 @@ func TestCanonicalJSONWithStableIDs(t *testing.T) {
 		ToStableID:   "did:claw:def",
 	}
 
-	got := canonicalJSON(env)
+	got := CanonicalJSON(env)
 	want := `{"body":"hi","from":"a/b","from_did":"did:key:z6Mk...","from_stable_id":"did:claw:abc","subject":"","timestamp":"2026-01-01T00:00:00Z","to":"c/d","to_did":"did:key:z6Mr...","to_stable_id":"did:claw:def","type":"chat"}`
 
 	if got != want {
@@ -326,7 +326,7 @@ func TestCanonicalJSONWithMessageID(t *testing.T) {
 		MessageID: "test-uuid-1234",
 	}
 
-	got := canonicalJSON(env)
+	got := CanonicalJSON(env)
 	want := `{"body":"hi","from":"a/b","from_did":"did:key:z6Mk...","message_id":"test-uuid-1234","subject":"","timestamp":"2026-01-01T00:00:00Z","to":"c/d","to_did":"did:key:z6Mr...","type":"mail"}`
 
 	if got != want {
@@ -349,7 +349,7 @@ func TestCanonicalJSONWithoutMessageID(t *testing.T) {
 		Timestamp: "2026-01-01T00:00:00Z",
 	}
 
-	got := canonicalJSON(env)
+	got := CanonicalJSON(env)
 	want := `{"body":"hi","from":"a/b","from_did":"did:key:z6Mk...","subject":"","timestamp":"2026-01-01T00:00:00Z","to":"c/d","to_did":"did:key:z6Mr...","type":"mail"}`
 
 	if got != want {
@@ -371,7 +371,7 @@ func TestCanonicalJSONEscaping(t *testing.T) {
 		Timestamp: "2026-01-01T00:00:00Z",
 	}
 
-	got := canonicalJSON(env)
+	got := CanonicalJSON(env)
 	want := `{"body":"hello \"world\"\nline2","from":"a/b","from_did":"did:key:z","subject":"","timestamp":"2026-01-01T00:00:00Z","to":"c/d","to_did":"did:key:y","type":"mail"}`
 
 	if got != want {

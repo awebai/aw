@@ -49,7 +49,7 @@ func (c *Client) RotateKey(ctx context.Context, req *RotateKeyRequest) (*RotateK
 	ts := time.Now().UTC().Format(time.RFC3339)
 
 	// Sign the rotation payload with the old (current) key.
-	payload := canonicalRotationJSON(c.did, req.NewDID, ts)
+	payload := CanonicalRotationJSON(c.did, req.NewDID, ts)
 	sig := ed25519.Sign(c.signingKey, []byte(payload))
 
 	wire := &rotateKeyWireRequest{
@@ -67,9 +67,9 @@ func (c *Client) RotateKey(ctx context.Context, req *RotateKeyRequest) (*RotateK
 	return &resp, nil
 }
 
-// canonicalRotationJSON builds the canonical JSON for rotation signing.
+// CanonicalRotationJSON builds the canonical JSON for rotation signing.
 // Fields: new_did, old_did, timestamp — sorted lexicographically.
-func canonicalRotationJSON(oldDID, newDID, timestamp string) string {
+func CanonicalRotationJSON(oldDID, newDID, timestamp string) string {
 	type field struct {
 		key   string
 		value string
@@ -90,7 +90,7 @@ func canonicalRotationJSON(oldDID, newDID, timestamp string) string {
 		b.WriteByte('"')
 		b.WriteString(f.key)
 		b.WriteString(`":"`)
-		b.WriteString(f.value) // DIDs and timestamps need no escaping
+		writeEscapedString(&b, f.value)
 		b.WriteByte('"')
 	}
 	b.WriteByte('}')
@@ -126,12 +126,20 @@ func (c *Client) RotateKeyCustodial(ctx context.Context, req *RotateKeyCustodial
 	return &resp, nil
 }
 
+// SignRotation signs a rotation announcement with the old key.
+// Returns the signature as base64 (RFC 4648, no padding).
+func SignRotation(oldKey ed25519.PrivateKey, oldDID, newDID, timestamp string) (string, error) {
+	payload := CanonicalRotationJSON(oldDID, newDID, timestamp)
+	sig := ed25519.Sign(oldKey, []byte(payload))
+	return base64.RawStdEncoding.EncodeToString(sig), nil
+}
+
 // VerifyRotationSignature verifies a rotation_signature using the old public key.
 func VerifyRotationSignature(oldPub ed25519.PublicKey, oldDID, newDID, timestamp, signature string) (bool, error) {
 	sig, err := base64.RawStdEncoding.DecodeString(signature)
 	if err != nil {
 		return false, fmt.Errorf("decode rotation signature: %w", err)
 	}
-	payload := canonicalRotationJSON(oldDID, newDID, timestamp)
+	payload := CanonicalRotationJSON(oldDID, newDID, timestamp)
 	return ed25519.Verify(oldPub, []byte(payload), sig), nil
 }

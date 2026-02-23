@@ -2438,7 +2438,7 @@ func TestInboxRotationAnnouncementAccepted(t *testing.T) {
 
 	// Create the rotation announcement: old key signs {new_did, old_did, timestamp}.
 	rotationTS := time.Now().UTC().Format(time.RFC3339)
-	rotationPayload := canonicalRotationJSON(oldDID, newDID, rotationTS)
+	rotationPayload := CanonicalRotationJSON(oldDID, newDID, rotationTS)
 	rotationSig := ed25519.Sign(oldPriv, []byte(rotationPayload))
 	rotationSigStr := base64.RawStdEncoding.EncodeToString(rotationSig)
 
@@ -2539,7 +2539,7 @@ func TestInboxRotationAnnouncementInvalid(t *testing.T) {
 
 	// Forged rotation announcement: new key signs (not old key).
 	rotationTS := time.Now().UTC().Format(time.RFC3339)
-	rotationPayload := canonicalRotationJSON(oldDID, newDID, rotationTS)
+	rotationPayload := CanonicalRotationJSON(oldDID, newDID, rotationTS)
 	forgedSig := ed25519.Sign(newPriv, []byte(rotationPayload)) // Wrong key!
 	forgedSigStr := base64.RawStdEncoding.EncodeToString(forgedSig)
 
@@ -2641,7 +2641,7 @@ func TestInboxRotationAnnouncementUnrelatedOldDID(t *testing.T) {
 	// Attacker crafts a rotation announcement from their own key (not the pinned one).
 	// The signature is valid (attacker signs with their own key), but old_did != pinned DID.
 	rotationTS := time.Now().UTC().Format(time.RFC3339)
-	rotationPayload := canonicalRotationJSON(attackerDID, newDID, rotationTS)
+	rotationPayload := CanonicalRotationJSON(attackerDID, newDID, rotationTS)
 	rotationSig := ed25519.Sign(attackerPriv, []byte(rotationPayload))
 	rotationSigStr := base64.RawStdEncoding.EncodeToString(rotationSig)
 
@@ -2742,7 +2742,7 @@ func TestInboxRotationAnnouncementNewDIDMismatch(t *testing.T) {
 
 	// Rotation announcement: old key signs old→declared (not old→sender).
 	rotationTS := time.Now().UTC().Format(time.RFC3339)
-	rotationPayload := canonicalRotationJSON(oldDID, declaredDID, rotationTS)
+	rotationPayload := CanonicalRotationJSON(oldDID, declaredDID, rotationTS)
 	rotationSig := ed25519.Sign(oldPriv, []byte(rotationPayload))
 	rotationSigStr := base64.RawStdEncoding.EncodeToString(rotationSig)
 
