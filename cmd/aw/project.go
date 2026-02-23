@@ -7,9 +7,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var projectCmd = &cobra.Command{
-	Use:   "project",
-	Short: "Show current project",
+var namespaceCmd = &cobra.Command{
+	Use:   "namespace",
+	Short: "Show current namespace",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -24,5 +24,5 @@ var projectCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.AddCommand(projectCmd)
+	rootCmd.AddCommand(namespaceCmd)
 }

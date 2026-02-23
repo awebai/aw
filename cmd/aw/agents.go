@@ -28,7 +28,7 @@ func mustAgentID(ctx context.Context, client *aweb.Client, sel *awconfig.Selecti
 
 var agentsCmd = &cobra.Command{
 	Use:   "agents",
-	Short: "List agents in project",
+	Short: "List agents in namespace",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

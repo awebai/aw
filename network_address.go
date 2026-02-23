@@ -2,8 +2,8 @@ package aweb
 
 import "strings"
 
-// NetworkAddress represents either a cross-org network address (org-slug/alias)
-// or a plain intra-project alias.
+// NetworkAddress represents either a cross-namespace network address (namespace/alias)
+// or a plain intra-namespace alias.
 type NetworkAddress struct {
 	OrgSlug   string
 	Alias     string

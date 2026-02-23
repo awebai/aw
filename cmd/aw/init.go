@@ -27,25 +27,25 @@ var initCmd = &cobra.Command{
 }
 
 var (
-	initServerURL    string
-	initProjectSlug  string
-	initProjectName  string
-	initAlias        string
-	initHumanName    string
-	initAgentType    string
-	initSaveConfig   bool
-	initSetDefault   bool
-	initWriteContext bool
-	initPrintExports bool
-	initCloudToken   string
-	initCloudMode    bool
-	initNamespace    string
+	initServerURL      string
+	initNamespaceSlug  string
+	initNamespaceName  string
+	initAlias          string
+	initHumanName      string
+	initAgentType      string
+	initSaveConfig     bool
+	initSetDefault     bool
+	initWriteContext   bool
+	initPrintExports   bool
+	initCloudToken     string
+	initCloudMode      bool
+	initTargetNamespace string
 )
 
 func init() {
 	initCmd.Flags().StringVar(&initServerURL, "server-url", "", "Base URL for the aweb server (or AWEB_URL). Any URL is accepted; aw probes common mounts (including /api).")
-	initCmd.Flags().StringVar(&initProjectSlug, "project-slug", "", "Project slug (default: AWEB_PROJECT or prompt in TTY)")
-	initCmd.Flags().StringVar(&initProjectName, "project-name", "", "Project name (default: AWEB_PROJECT_NAME or project-slug)")
+	initCmd.Flags().StringVar(&initNamespaceSlug, "namespace", "", "Namespace slug (default: AWEB_NAMESPACE or prompt in TTY)")
+	initCmd.Flags().StringVar(&initNamespaceName, "namespace-name", "", "Namespace display name (default: AWEB_NAMESPACE_NAME or namespace slug)")
 	initCmd.Flags().StringVar(&initAlias, "alias", "", "Agent alias (optional; default: server-suggested)")
 	initCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
 	initCmd.Flags().StringVar(&initAgentType, "agent-type", "", "Agent type (default: AWEB_AGENT_TYPE or agent)")
@@ -55,15 +55,15 @@ func init() {
 	initCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
 	initCmd.Flags().StringVar(&initCloudToken, "cloud-token", "", "Cloud auth bearer token for hosted aweb-cloud bootstrap (default: AWEB_CLOUD_TOKEN, then AWEB_API_KEY if non-aw_sk_, then existing aw_sk_ keys from config)")
 	initCmd.Flags().BoolVar(&initCloudMode, "cloud", false, "Force hosted aweb-cloud bootstrap mode (skip probing /v1/init)")
-	initCmd.Flags().StringVar(&initNamespace, "namespace", "", "Namespace slug (forces cloud mode; requires --alias)")
+	initCmd.Flags().StringVar(&initTargetNamespace, "target-namespace", "", "Create agent in a specific namespace (forces cloud mode; requires --alias)")
 
 	rootCmd.AddCommand(initCmd)
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
-	if strings.TrimSpace(initNamespace) != "" {
+	if strings.TrimSpace(initTargetNamespace) != "" {
 		if strings.TrimSpace(initAlias) == "" && strings.TrimSpace(os.Getenv("AWEB_ALIAS")) == "" {
-			fmt.Fprintln(os.Stderr, "--namespace requires --alias (server cannot auto-assign in a specific namespace)")
+			fmt.Fprintln(os.Stderr, "--target-namespace requires --alias (server cannot auto-assign in a specific namespace)")
 			os.Exit(2)
 		}
 		initCloudMode = true
@@ -74,35 +74,43 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fatal(err)
 	}
 
-	projectSlug := initProjectSlug
-	if strings.TrimSpace(projectSlug) == "" {
-		projectSlug = strings.TrimSpace(os.Getenv("AWEB_PROJECT_SLUG"))
+	nsSlug := initNamespaceSlug
+	if strings.TrimSpace(nsSlug) == "" {
+		nsSlug = strings.TrimSpace(os.Getenv("AWEB_NAMESPACE"))
 	}
-	if strings.TrimSpace(projectSlug) == "" {
-		projectSlug = strings.TrimSpace(os.Getenv("AWEB_PROJECT"))
+	// Backward compat: fall back to old env vars.
+	if strings.TrimSpace(nsSlug) == "" {
+		nsSlug = strings.TrimSpace(os.Getenv("AWEB_PROJECT_SLUG"))
+	}
+	if strings.TrimSpace(nsSlug) == "" {
+		nsSlug = strings.TrimSpace(os.Getenv("AWEB_PROJECT"))
 	}
 
-	if strings.TrimSpace(projectSlug) == "" {
+	if strings.TrimSpace(nsSlug) == "" {
 		if isTTY() {
 			wd, _ := os.Getwd()
 			suggested := sanitizeSlug(filepath.Base(wd))
-			v, err := promptString("Project slug", suggested)
+			v, err := promptString("Namespace", suggested)
 			if err != nil {
 				fatal(err)
 			}
-			projectSlug = v
+			nsSlug = v
 		} else {
-			fmt.Fprintln(os.Stderr, "Missing project slug (use --project-slug or AWEB_PROJECT)")
+			fmt.Fprintln(os.Stderr, "Missing namespace (use --namespace or AWEB_NAMESPACE)")
 			os.Exit(2)
 		}
 	}
 
-	projectName := initProjectName
-	if strings.TrimSpace(projectName) == "" {
-		projectName = strings.TrimSpace(os.Getenv("AWEB_PROJECT_NAME"))
+	nsName := initNamespaceName
+	if strings.TrimSpace(nsName) == "" {
+		nsName = strings.TrimSpace(os.Getenv("AWEB_NAMESPACE_NAME"))
 	}
-	if strings.TrimSpace(projectName) == "" {
-		projectName = projectSlug
+	// Backward compat: fall back to old env var.
+	if strings.TrimSpace(nsName) == "" {
+		nsName = strings.TrimSpace(os.Getenv("AWEB_PROJECT_NAME"))
+	}
+	if strings.TrimSpace(nsName) == "" {
+		nsName = nsSlug
 	}
 
 	humanName := initHumanName
@@ -153,7 +161,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		suggestion, err := bootstrapClient.SuggestAliasPrefix(ctx, projectSlug)
+		suggestion, err := bootstrapClient.SuggestAliasPrefix(ctx, nsSlug)
 		if err != nil || strings.TrimSpace(suggestion.NamePrefix) == "" {
 			alias = "alice"
 		} else {
@@ -192,8 +200,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
 	req := &aweb.InitRequest{
-		ProjectSlug: projectSlug,
-		ProjectName: projectName,
+		ProjectSlug: nsSlug,
+		ProjectName: nsName,
 		HumanName:   humanName,
 		AgentType:   agentType,
 		DID:         did,
@@ -207,7 +215,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	var resp *aweb.InitResponse
 	if initCloudMode {
-		resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req, strings.TrimSpace(initNamespace))
+		resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req, strings.TrimSpace(initTargetNamespace))
 	} else {
 		resp, err = bootstrapClient.Init(ctx, req)
 	}
@@ -219,7 +227,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if !aliasExplicit && aliasWasDefaultSuggestion && !resp.Created {
 		req.Alias = nil
 		if initCloudMode {
-			resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req, strings.TrimSpace(initNamespace))
+			resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req, strings.TrimSpace(initTargetNamespace))
 		} else {
 			resp, err = bootstrapClient.Init(ctx, req)
 		}
@@ -230,12 +238,15 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	accountName := strings.TrimSpace(accountFlag)
 	if accountName == "" {
-		accountName = deriveAccountName(serverName, projectSlug, resp.Alias)
+		accountName = deriveAccountName(serverName, nsSlug, resp.Alias)
 	}
 
-	defaultProject := strings.TrimSpace(resp.ProjectSlug)
-	if defaultProject == "" {
-		defaultProject = projectSlug
+	namespaceSlug := strings.TrimSpace(resp.NamespaceSlug)
+	if namespaceSlug == "" {
+		namespaceSlug = strings.TrimSpace(resp.ProjectSlug)
+	}
+	if namespaceSlug == "" {
+		namespaceSlug = nsSlug
 	}
 
 	address := deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
@@ -255,16 +266,15 @@ func runInit(cmd *cobra.Command, args []string) error {
 				cfg.Servers[serverName] = awconfig.Server{URL: baseURL}
 			}
 			cfg.Accounts[accountName] = awconfig.Account{
-				Server:         serverName,
-				APIKey:         resp.APIKey,
-				DefaultProject: defaultProject,
-				AgentID:        resp.AgentID,
-				AgentAlias:     resp.Alias,
-				NamespaceSlug:  resp.NamespaceSlug,
+				Server:        serverName,
+				APIKey:        resp.APIKey,
+				AgentID:       resp.AgentID,
+				AgentAlias:    resp.Alias,
+				NamespaceSlug: namespaceSlug,
 				DID:           resp.DID,
 				SigningKey:     signingKeyPath,
-				Custody:        resp.Custody,
-				Lifetime:       resp.Lifetime,
+				Custody:       resp.Custody,
+				Lifetime:      resp.Lifetime,
 			}
 			if strings.TrimSpace(cfg.DefaultAccount) == "" || initSetDefault {
 				cfg.DefaultAccount = accountName
@@ -294,7 +304,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Println("# Copy/paste to configure your shell:")
 		fmt.Println("export AWEB_URL=" + baseURL)
 		fmt.Println("export AWEB_API_KEY=" + resp.APIKey)
-		fmt.Println("export AWEB_PROJECT_ID=" + resp.ProjectID)
+		fmt.Println("export AWEB_NAMESPACE=" + namespaceSlug)
 		fmt.Println("export AWEB_AGENT_ID=" + resp.AgentID)
 		fmt.Println("export AWEB_AGENT_ALIAS=" + resp.Alias)
 	}
@@ -425,7 +435,7 @@ func resolveCloudToken(baseURL, serverName string, global *awconfig.GlobalConfig
 	}
 
 	// Fall back to aw_sk_ keys — the server-side bootstrap endpoint accepts
-	// them to add a new agent to the same project as the existing key.
+	// them to add a new agent to the same namespace as the existing key.
 	seenSK := map[string]struct{}{}
 	for _, accountName := range candidates {
 		if _, dup := seenSK[accountName]; dup {

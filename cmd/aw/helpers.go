@@ -366,8 +366,8 @@ func sanitizeKeyComponent(s string) string {
 	return out
 }
 
-func deriveAccountName(serverName, projectSlug, alias string) string {
-	return "acct-" + sanitizeKeyComponent(serverName) + "__" + sanitizeKeyComponent(projectSlug) + "__" + sanitizeKeyComponent(alias)
+func deriveAccountName(serverName, namespaceSlug, alias string) string {
+	return "acct-" + sanitizeKeyComponent(serverName) + "__" + sanitizeKeyComponent(namespaceSlug) + "__" + sanitizeKeyComponent(alias)
 }
 
 // deriveAgentAddress builds the agent address (namespace/alias) from

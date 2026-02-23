@@ -200,6 +200,10 @@ func Resolve(global *GlobalConfig, opts ResolveOptions) (*Selection, error) {
 }
 
 func finalizeSelection(accountName, serverName, baseURL, apiKey string, acct Account) *Selection {
+	ns := strings.TrimSpace(acct.NamespaceSlug)
+	if ns == "" {
+		ns = strings.TrimSpace(acct.DefaultProject)
+	}
 	return &Selection{
 		AccountName:    accountName,
 		ServerName:     serverName,
@@ -209,7 +213,7 @@ func finalizeSelection(accountName, serverName, baseURL, apiKey string, acct Acc
 		AgentID:        strings.TrimSpace(acct.AgentID),
 		AgentAlias:     strings.TrimSpace(acct.AgentAlias),
 		Email:          strings.TrimSpace(acct.Email),
-		NamespaceSlug:  strings.TrimSpace(acct.NamespaceSlug),
+		NamespaceSlug:  ns,
 		DID:            strings.TrimSpace(acct.DID),
 		SigningKey:     strings.TrimSpace(acct.SigningKey),
 		Custody:        strings.TrimSpace(acct.Custody),

@@ -131,9 +131,14 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	namespaceSlug := strings.TrimSpace(resp.NamespaceSlug)
+	if namespaceSlug == "" {
+		namespaceSlug = strings.TrimSpace(resp.ProjectSlug)
+	}
+
 	accountName := strings.TrimSpace(accountFlag)
 	if accountName == "" {
-		accountName = deriveAccountName(serverName, resp.ProjectSlug, resp.Alias)
+		accountName = deriveAccountName(serverName, namespaceSlug, resp.Alias)
 	}
 
 	address := deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
@@ -153,17 +158,16 @@ func runRegister(cmd *cobra.Command, args []string) error {
 				cfg.Servers[serverName] = awconfig.Server{URL: baseURL}
 			}
 			cfg.Accounts[accountName] = awconfig.Account{
-				Server:         serverName,
-				APIKey:         resp.APIKey,
-				DefaultProject: resp.ProjectSlug,
-				AgentID:        resp.AgentID,
-				AgentAlias:     resp.Alias,
-				Email:          resp.Email,
-				NamespaceSlug:  resp.NamespaceSlug,
-				DID:            resp.DID,
+				Server:        serverName,
+				APIKey:        resp.APIKey,
+				AgentID:       resp.AgentID,
+				AgentAlias:    resp.Alias,
+				Email:         resp.Email,
+				NamespaceSlug: namespaceSlug,
+				DID:           resp.DID,
 				SigningKey:     signingKeyPath,
-				Custody:        resp.Custody,
-				Lifetime:       resp.Lifetime,
+				Custody:       resp.Custody,
+				Lifetime:      resp.Lifetime,
 			}
 			if strings.TrimSpace(cfg.DefaultAccount) == "" || registerSetDefault {
 				cfg.DefaultAccount = accountName

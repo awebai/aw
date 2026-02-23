@@ -449,7 +449,7 @@ func TestAwInitRetriesWhenSuggestedAliasAlreadyExists(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--print-exports=false", "--write-context=false")
+	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--print-exports=false", "--write-context=false")
 	// Ensure non-TTY mode so aw init doesn't prompt during tests.
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
@@ -737,7 +737,7 @@ default_account: acct
 	}
 }
 
-func TestAwProject(t *testing.T) {
+func TestAwNamespace(t *testing.T) {
 	t.Parallel()
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -792,7 +792,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "project")
+	run := exec.CommandContext(ctx, bin, "namespace")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -1103,7 +1103,7 @@ func TestAwInitWritesConfig(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--server-name", "local", "--server-url", server.URL, "--account", "acct", "--print-exports=false", "--write-context=false")
+	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--server-name", "local", "--server-url", server.URL, "--account", "acct", "--print-exports=false", "--write-context=false")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1154,8 +1154,8 @@ func TestAwInitWritesConfig(t *testing.T) {
 	if acct["api_key"] != "aw_sk_alice" {
 		t.Fatalf("accounts.acct.api_key=%v", acct["api_key"])
 	}
-	if acct["default_project"] != "demo" {
-		t.Fatalf("accounts.acct.default_project=%v", acct["default_project"])
+	if acct["namespace_slug"] != "demo" {
+		t.Fatalf("accounts.acct.namespace_slug=%v", acct["namespace_slug"])
 	}
 	if acct["agent_id"] != "agent-alice" {
 		t.Fatalf("accounts.acct.agent_id=%v", acct["agent_id"])
@@ -1195,7 +1195,7 @@ func TestAwInitCloudModeRequiresCloudToken(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--project-slug", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false")
+	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--namespace", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AWEB_URL="+server.URL,
@@ -1265,7 +1265,7 @@ func TestAwInitCloudModeSkipsInitProbe(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--project-slug", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--server-url", server.URL)
+	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--namespace", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--server-url", server.URL)
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1344,7 +1344,7 @@ func TestAwInitAcceptsAPIV1BaseURL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/api/v1")
+	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/api/v1")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1418,7 +1418,7 @@ func TestAwInitAllowsCustomMountRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--project-slug", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/custom")
+	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/custom")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1506,7 +1506,7 @@ default_account: cloud-acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--project-slug", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--server-url", server.URL)
+	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--namespace", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--server-url", server.URL)
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1592,7 +1592,7 @@ default_account: existing-acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--project-slug", "demo",
+	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--namespace", "demo",
 		"--alias", "bob", "--print-exports=false", "--write-context=false", "--server-url", server.URL)
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
@@ -1661,7 +1661,7 @@ default_account: existing-acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--project-slug", "demo",
+	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--namespace", "demo",
 		"--print-exports=false", "--write-context=false", "--server-url", server.URL)
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
@@ -2868,8 +2868,8 @@ func TestAwRegisterWritesConfig(t *testing.T) {
 			if acct["agent_alias"] != "alice" {
 				t.Fatalf("accounts.%s.agent_alias=%v", name, acct["agent_alias"])
 			}
-			if acct["default_project"] != "myproject" {
-				t.Fatalf("accounts.%s.default_project=%v", name, acct["default_project"])
+			if acct["namespace_slug"] != "myproject" {
+				t.Fatalf("accounts.%s.namespace_slug=%v", name, acct["namespace_slug"])
 			}
 			if acct["email"] != "test@example.com" {
 				t.Fatalf("accounts.%s.email=%v", name, acct["email"])
@@ -4382,8 +4382,8 @@ default_account: acct
 
 	run := exec.CommandContext(ctx, bin, "init",
 		"--server-url", "http://localhost:9999",
-		"--namespace", "mycomp",
-		"--project-slug", "demo",
+		"--target-namespace", "mycomp",
+		"--namespace", "demo",
 	)
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -4459,9 +4459,9 @@ func TestAwInitNamespaceForcesCloudMode(t *testing.T) {
 
 	run := exec.CommandContext(ctx, bin, "init",
 		"--server-url", server.URL,
-		"--namespace", "mycomp",
+		"--target-namespace", "mycomp",
 		"--alias", "billing",
-		"--project-slug", "demo",
+		"--namespace", "demo",
 		"--cloud-token", "jwt_token_123",
 		"--write-context=false",
 	)
@@ -4537,9 +4537,9 @@ func TestAwInitNamespaceStoresInConfig(t *testing.T) {
 
 	run := exec.CommandContext(ctx, bin, "init",
 		"--server-url", server.URL,
-		"--namespace", "mycomp",
+		"--target-namespace", "mycomp",
 		"--alias", "billing",
-		"--project-slug", "demo",
+		"--namespace", "demo",
 		"--cloud-token", "jwt_token_123",
 		"--write-context=false",
 	)
