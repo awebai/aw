@@ -19,6 +19,7 @@ type NetworkMailRequest struct {
 	ThreadID     string `json:"thread_id,omitempty"`
 	FromDID      string `json:"from_did,omitempty"`
 	ToDID        string `json:"to_did,omitempty"`
+	FromStableID string `json:"from_stable_id,omitempty"`
 	Signature    string `json:"signature,omitempty"`
 	SigningKeyID string `json:"signing_key_id,omitempty"`
 	Timestamp    string `json:"timestamp,omitempty"`
@@ -45,6 +46,7 @@ func (c *Client) NetworkSendMail(ctx context.Context, req *NetworkMailRequest) (
 	}
 	req.FromDID = sf.FromDID
 	req.ToDID = sf.ToDID
+	req.FromStableID = sf.FromStableID
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
@@ -65,6 +67,7 @@ type NetworkChatCreateRequest struct {
 	Leaving      bool     `json:"leaving,omitempty"`
 	FromDID      string   `json:"from_did,omitempty"`
 	ToDID        string   `json:"to_did,omitempty"`
+	FromStableID string   `json:"from_stable_id,omitempty"`
 	Signature    string   `json:"signature,omitempty"`
 	SigningKeyID string   `json:"signing_key_id,omitempty"`
 	Timestamp    string   `json:"timestamp,omitempty"`
@@ -91,6 +94,7 @@ func (c *Client) NetworkCreateChat(ctx context.Context, req *NetworkChatCreateRe
 	}
 	req.FromDID = sf.FromDID
 	req.ToDID = sf.ToDID
+	req.FromStableID = sf.FromStableID
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
@@ -108,6 +112,7 @@ type NetworkChatSendMessageRequest struct {
 	ExtendWait   bool   `json:"hang_on,omitempty"`
 	FromDID      string `json:"from_did,omitempty"`
 	ToDID        string `json:"to_did,omitempty"`
+	FromStableID string `json:"from_stable_id,omitempty"`
 	Signature    string `json:"signature,omitempty"`
 	SigningKeyID string `json:"signing_key_id,omitempty"`
 	Timestamp    string `json:"timestamp,omitempty"`
@@ -134,6 +139,7 @@ func (c *Client) NetworkChatSendMessage(ctx context.Context, sessionID string, r
 	}
 	req.FromDID = sf.FromDID
 	req.ToDID = sf.ToDID
+	req.FromStableID = sf.FromStableID
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp

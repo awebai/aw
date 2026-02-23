@@ -61,6 +61,9 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 			os.Exit(2)
 		}
 		c.SetAddress(deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias))
+		if sel.StableID != "" {
+			c.SetStableID(sel.StableID)
+		}
 		c.SetResolver(&aweb.ServerResolver{Client: c})
 
 		// Load TOFU pin store for sender identity verification.

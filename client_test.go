@@ -3742,3 +3742,82 @@ func TestCheckTOFUPinClawDIDHeadCachePersists(t *testing.T) {
 		t.Fatalf("regressed call: status=%q, want %q (seq regression should be caught)", status, IdentityMismatch)
 	}
 }
+
+func TestSignEnvelopePopulatesFromStableID(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	stableID := ComputeStableID(pub, "claw")
+
+	c, err := NewWithIdentity("http://localhost", "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/alice")
+	c.SetStableID(stableID)
+
+	env := &MessageEnvelope{
+		To:   "otherco/bob",
+		Type: "mail",
+		Body: "hello",
+	}
+	sf, err := c.signEnvelope(context.Background(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify from_stable_id was set on the envelope (included in signature).
+	if env.FromStableID != stableID {
+		t.Fatalf("env.FromStableID=%q, want %q", env.FromStableID, stableID)
+	}
+	// Verify sf.FromStableID carries the value for stamp-back sites.
+	if sf.FromStableID != stableID {
+		t.Fatalf("sf.FromStableID=%q, want %q", sf.FromStableID, stableID)
+	}
+
+	// Verify signature is valid with from_stable_id included.
+	env.Signature = sf.Signature
+	env.SigningKeyID = sf.SigningKeyID
+	status, verErr := VerifyMessage(env)
+	if verErr != nil {
+		t.Fatalf("VerifyMessage: %v", verErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%q, want %q", status, Verified)
+	}
+}
+
+func TestSignEnvelopeOmitsStableIDWhenNotSet(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	c, err := NewWithIdentity("http://localhost", "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/alice")
+	// No SetStableID call — stableID stays empty.
+
+	env := &MessageEnvelope{
+		To:   "otherco/bob",
+		Type: "mail",
+		Body: "hello",
+	}
+	_, err = c.signEnvelope(context.Background(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if env.FromStableID != "" {
+		t.Fatalf("env.FromStableID=%q, want empty (backward compat)", env.FromStableID)
+	}
+}

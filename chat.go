@@ -88,6 +88,7 @@ type ChatCreateSessionRequest struct {
 	Leaving      bool     `json:"leaving,omitempty"`
 	FromDID      string   `json:"from_did,omitempty"`
 	ToDID        string   `json:"to_did,omitempty"`
+	FromStableID string   `json:"from_stable_id,omitempty"`
 	Signature    string   `json:"signature,omitempty"`
 	SigningKeyID string   `json:"signing_key_id,omitempty"`
 	Timestamp    string   `json:"timestamp,omitempty"`
@@ -125,6 +126,7 @@ func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRe
 	}
 	req.FromDID = sf.FromDID
 	req.ToDID = sf.ToDID
+	req.FromStableID = sf.FromStableID
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp
@@ -292,6 +294,7 @@ type ChatSendMessageRequest struct {
 	ExtendWait   bool   `json:"hang_on,omitempty"`
 	FromDID      string `json:"from_did,omitempty"`
 	ToDID        string `json:"to_did,omitempty"`
+	FromStableID string `json:"from_stable_id,omitempty"`
 	Signature    string `json:"signature,omitempty"`
 	SigningKeyID string `json:"signing_key_id,omitempty"`
 	Timestamp    string `json:"timestamp,omitempty"`
@@ -323,6 +326,7 @@ func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *Cha
 	}
 	req.FromDID = sf.FromDID
 	req.ToDID = sf.ToDID
+	req.FromStableID = sf.FromStableID
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp

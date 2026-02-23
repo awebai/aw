@@ -23,6 +23,7 @@ type SendMessageRequest struct {
 	ThreadID     *string         `json:"thread_id,omitempty"`
 	FromDID      string          `json:"from_did,omitempty"`
 	ToDID        string          `json:"to_did,omitempty"`
+	FromStableID string          `json:"from_stable_id,omitempty"`
 	Signature    string          `json:"signature,omitempty"`
 	SigningKeyID string          `json:"signing_key_id,omitempty"`
 	Timestamp    string          `json:"timestamp,omitempty"`
@@ -59,6 +60,7 @@ func (c *Client) SendMessage(ctx context.Context, req *SendMessageRequest) (*Sen
 	}
 	req.FromDID = sf.FromDID
 	req.ToDID = sf.ToDID
+	req.FromStableID = sf.FromStableID
 	req.Signature = sf.Signature
 	req.SigningKeyID = sf.SigningKeyID
 	req.Timestamp = sf.Timestamp

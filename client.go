@@ -20,6 +20,7 @@ import (
 type signedFields struct {
 	FromDID      string
 	ToDID        string
+	FromStableID string
 	Signature    string
 	SigningKeyID string
 	Timestamp    string
@@ -36,6 +37,7 @@ func (c *Client) signEnvelope(ctx context.Context, env *MessageEnvelope) (signed
 	}
 	env.From = c.address
 	env.FromDID = c.did
+	env.FromStableID = c.stableID
 	env.Timestamp = time.Now().UTC().Format(time.RFC3339)
 	msgID, err := generateUUID4()
 	if err != nil {
@@ -57,6 +59,7 @@ func (c *Client) signEnvelope(ctx context.Context, env *MessageEnvelope) (signed
 	return signedFields{
 		FromDID:      c.did,
 		ToDID:        env.ToDID,
+		FromStableID: c.stableID,
 		Signature:    sig,
 		SigningKeyID: c.did,
 		Timestamp:    env.Timestamp,
@@ -90,6 +93,7 @@ type Client struct {
 	signingKey ed25519.PrivateKey // nil for legacy/custodial
 	did        string            // empty for legacy/custodial
 	address      string            // namespace/alias, used in signed envelopes
+	stableID     string            // did:claw:..., set on outgoing signed envelopes as from_stable_id
 	resolver     IdentityResolver  // optional; resolves recipient DID for to_did binding
 	pinStore       *PinStore         // optional; TOFU pin store for sender identity verification
 	pinStorePath   string            // disk path for persisting pin store
@@ -152,6 +156,10 @@ func (c *Client) DID() string { return c.did }
 // SetAddress sets the client's agent address (namespace/alias) for use in
 // signed message envelopes.
 func (c *Client) SetAddress(address string) { c.address = address }
+
+// SetStableID sets the client's stable identifier (did:claw:...) for use
+// as from_stable_id in outgoing signed envelopes.
+func (c *Client) SetStableID(id string) { c.stableID = id }
 
 // SetResolver sets the identity resolver used to resolve recipient DIDs
 // for to_did binding in signed envelopes.
