@@ -91,7 +91,6 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		fatal(err)
 	}
 	did := aweb.ComputeDIDKey(pub)
-	stableID := aweb.ComputeStableID(pub, "claw")
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
 	req := &aweb.RegisterRequest{
@@ -105,7 +104,7 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		Lifetime:  aweb.LifetimePersistent,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	client, err := aweb.New(baseURL)
@@ -146,6 +145,10 @@ func runRegister(cmd *cobra.Command, args []string) error {
 	cfgPath := mustDefaultGlobalPath()
 	keysDir := awconfig.KeysDir(cfgPath)
 	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
+
+	// Best-effort ClawDID registration. Only persist StableID on success.
+	handle := "@" + username
+	stableID := registerClawDIDWithHandle(ctx, resolveClawDIDRegistryURL(cfgPath), pub, priv, did, canonicalOrigin(baseURL), address, &handle)
 
 	if registerSaveConfig {
 		updateErr := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {

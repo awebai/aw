@@ -183,7 +183,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	bootstrapClient, err := aweb.New(baseURL)
@@ -192,14 +192,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Generate Ed25519 keypair for self-custodial identity.
-	// Keypair generated once; reused on alias-retry so stableID stays
+	// Keypair generated once; reused on alias-retry so the DID stays
 	// consistent with the registered key.
 	pub, priv, err := awconfig.GenerateKeypair()
 	if err != nil {
 		fatal(err)
 	}
 	did := aweb.ComputeDIDKey(pub)
-	stableID := aweb.ComputeStableID(pub, "claw")
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
 	req := &aweb.InitRequest{
@@ -256,6 +255,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	cfgPath := mustDefaultGlobalPath()
 	keysDir := awconfig.KeysDir(cfgPath)
 	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
+
+	// Best-effort ClawDID registration. Only persist StableID on success.
+	stableID := registerClawDIDWithHandle(ctx, resolveClawDIDRegistryURL(cfgPath), pub, priv, did, canonicalOrigin(baseURL), address, nil)
 
 	if initSaveConfig {
 		updateErr := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {

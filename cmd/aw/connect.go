@@ -215,38 +215,28 @@ func provisionIdentity(
 	custody = "self"
 	lifetime = "persistent"
 
-	// Resolve ClawDID registry URL.
-	registryURL := strings.TrimSpace(os.Getenv("CLAWDID_REGISTRY_URL"))
-	if registryURL == "" {
-		existCfg, loadErr := awconfig.LoadGlobalFrom(cfgPath)
-		if loadErr == nil && strings.TrimSpace(existCfg.ClawDIDRegistryURL) != "" {
-			registryURL = strings.TrimSpace(existCfg.ClawDIDRegistryURL)
-		}
-	}
-	if registryURL == "" {
-		registryURL = awconfig.DefaultClawDIDRegistryURL
-	}
-
 	// ClawDID expects canonical server origin (scheme+host), not the API
 	// base URL which may include a path like /api.
 	serverOrigin := canonicalOrigin(baseURL)
 
 	// Best-effort ClawDID registration.
-	stableID = registerClawDID(ctx, registryURL, pub, priv, did, serverOrigin, address)
+	stableID = registerClawDIDWithHandle(ctx, resolveClawDIDRegistryURL(cfgPath), pub, priv, did, serverOrigin, address, nil)
 
 	return did, signingKeyPath, stableID, custody, lifetime
 }
 
-// registerClawDID attempts to register the agent's stable_id with ClawDID.
+// registerClawDIDWithHandle attempts to register the agent's stable_id with ClawDID.
 // Returns the stable_id on success, or empty string on failure.
-func registerClawDID(
+// handle is included in the state_hash and registration request when non-nil.
+func registerClawDIDWithHandle(
 	ctx context.Context,
 	registryURL string,
 	pub ed25519.PublicKey, priv ed25519.PrivateKey,
 	did, serverURL, address string,
+	handle *string,
 ) string {
 	didClaw := aweb.ComputeStableID(pub, "claw")
-	stateHash := aweb.ComputeStateHash(didClaw, did, serverURL, address, nil)
+	stateHash := aweb.ComputeStateHash(didClaw, did, serverURL, address, handle)
 	timestamp := time.Now().UTC().Format(time.RFC3339)
 
 	entry := aweb.LogEntry{
@@ -270,6 +260,7 @@ func registerClawDID(
 		DIDKey:       did,
 		Server:       serverURL,
 		Address:      address,
+		Handle:       handle,
 		Seq:          1,
 		StateHash:    stateHash,
 		AuthorizedBy: did,

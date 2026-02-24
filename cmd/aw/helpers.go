@@ -106,6 +106,18 @@ func canonicalOrigin(rawURL string) string {
 	return u.Scheme + "://" + u.Host
 }
 
+// resolveClawDIDRegistryURL returns the ClawDID registry URL from env, config, or default.
+func resolveClawDIDRegistryURL(cfgPath string) string {
+	if v := strings.TrimSpace(os.Getenv("CLAWDID_REGISTRY_URL")); v != "" {
+		return v
+	}
+	cfg, err := awconfig.LoadGlobalFrom(cfgPath)
+	if err == nil && strings.TrimSpace(cfg.ClawDIDRegistryURL) != "" {
+		return strings.TrimSpace(cfg.ClawDIDRegistryURL)
+	}
+	return awconfig.DefaultClawDIDRegistryURL
+}
+
 func cleanBaseURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

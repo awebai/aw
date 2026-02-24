@@ -47,6 +47,17 @@ func newLocalHTTPServer(t *testing.T, handler http.Handler) *httptest.Server {
 	return srv
 }
 
+// extractJSON finds the first JSON object in mixed output (e.g. from
+// CombinedOutput where stderr warnings precede stdout JSON).
+func extractJSON(t *testing.T, out []byte) []byte {
+	t.Helper()
+	idx := bytes.IndexByte(out, '{')
+	if idx < 0 {
+		t.Fatalf("no JSON object in output:\n%s", string(out))
+	}
+	return out[idx:]
+}
+
 func TestAwIntrospect(t *testing.T) {
 	t.Parallel()
 
@@ -108,7 +119,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["project_id"] != "proj-123" {
@@ -180,7 +191,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["project_id"] != "proj-123" {
@@ -291,7 +302,7 @@ server_accounts:
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["project_id"] != "proj-b" {
@@ -360,7 +371,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["project_id"] != "proj-123" {
@@ -455,6 +466,7 @@ func TestAwInitRetriesWhenSuggestedAliasAlreadyExists(t *testing.T) {
 	run.Env = append(os.Environ(),
 		"AWEB_URL="+server.URL,
 		"AW_CONFIG_PATH="+cfgPath,
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -463,7 +475,7 @@ func TestAwInitRetriesWhenSuggestedAliasAlreadyExists(t *testing.T) {
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["alias"] != "bob" {
@@ -557,7 +569,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["project_id"] != "proj-123" {
@@ -643,7 +655,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["message_id"] != "msg-42" {
@@ -726,7 +738,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["resource_key"] != "my-lock" {
@@ -805,7 +817,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["project_id"] != "proj-abc" {
@@ -890,7 +902,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["revoked_count"] != float64(2) {
@@ -971,7 +983,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["session_id"] != "sess-1" {
@@ -1085,6 +1097,12 @@ func TestAwInitWritesConfig(t *testing.T) {
 		}
 	}))
 
+	// Mock ClawDID registry to verify stable_id registration.
+	clawDIDServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"did_claw": "did:claw:test", "status": "created"})
+	}))
+	t.Cleanup(clawDIDServer.Close)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -1107,6 +1125,7 @@ func TestAwInitWritesConfig(t *testing.T) {
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
+		"CLAWDID_REGISTRY_URL="+clawDIDServer.URL,
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1115,7 +1134,7 @@ func TestAwInitWritesConfig(t *testing.T) {
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["api_key"] != "aw_sk_alice" {
@@ -1206,6 +1225,7 @@ func TestAwInitCloudModeRequiresCloudToken(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1274,6 +1294,7 @@ func TestAwInitCloudModeSkipsInitProbe(t *testing.T) {
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_CLOUD_TOKEN=cloud_jwt_token",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1282,7 +1303,7 @@ func TestAwInitCloudModeSkipsInitProbe(t *testing.T) {
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["api_key"] != "aw_sk_cloud" {
@@ -1354,6 +1375,7 @@ func TestAwInitAcceptsAPIV1BaseURL(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1361,7 +1383,7 @@ func TestAwInitAcceptsAPIV1BaseURL(t *testing.T) {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["api_key"] != "aw_sk_alice" {
@@ -1428,6 +1450,7 @@ func TestAwInitAllowsCustomMountRoot(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1436,7 +1459,7 @@ func TestAwInitAllowsCustomMountRoot(t *testing.T) {
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["api_key"] != "aw_sk_alice" {
@@ -1516,6 +1539,7 @@ default_account: cloud-acct
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1524,7 +1548,7 @@ default_account: cloud-acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["api_key"] != "aw_sk_cloud" {
@@ -1603,6 +1627,7 @@ default_account: existing-acct
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1611,7 +1636,7 @@ default_account: existing-acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["api_key"] != "aw_sk_newagent" {
@@ -1673,6 +1698,7 @@ default_account: existing-acct
 		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
 		"AWEB_ALIAS=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1758,7 +1784,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["session_id"] != "sess-1" {
@@ -1882,7 +1908,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	contacts, ok := got["contacts"].([]any)
@@ -1965,7 +1991,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["contact_id"] != "ct-1" {
@@ -2049,7 +2075,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["deleted"] != true {
@@ -2197,7 +2223,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["agent_id"] != "agent-1" {
@@ -2281,7 +2307,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["agent_id"] != "agent-1" {
@@ -2335,6 +2361,7 @@ func TestAwRegisterMissingEmail(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -2382,6 +2409,7 @@ func TestAwRegisterInvalidEmail(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -2472,6 +2500,7 @@ func TestAwRegisterSuccess(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	if err := run.Run(); err != nil {
@@ -2551,6 +2580,7 @@ func TestAwRegisterServerNotSupported(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -2612,6 +2642,7 @@ func TestAwRegisterEmailTaken(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -2680,6 +2711,7 @@ func TestAwRegisterUsernameTaken(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -2755,6 +2787,7 @@ func TestAwRegisterAliasTaken(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -2796,6 +2829,12 @@ func TestAwRegisterWritesConfig(t *testing.T) {
 		}
 	}))
 
+	// Mock ClawDID registry to verify stable_id registration.
+	clawDIDServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"did_claw": "did:claw:test", "status": "created"})
+	}))
+	t.Cleanup(clawDIDServer.Close)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -2830,6 +2869,7 @@ func TestAwRegisterWritesConfig(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL="+clawDIDServer.URL,
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -2838,7 +2878,7 @@ func TestAwRegisterWritesConfig(t *testing.T) {
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["api_key"] != "aw_sk_reg" {
@@ -2940,6 +2980,7 @@ func TestAwRegisterMissingUsername(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -2990,6 +3031,7 @@ func TestAwRegisterMissingAlias(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -3562,6 +3604,7 @@ func TestAwRegisterNamespaceSlugStoredInConfig(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -3655,6 +3698,7 @@ func TestAwRegisterSendsIdentityFields(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -3798,7 +3842,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["agent_id"] != "agent-1" {
@@ -3882,7 +3926,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["agent_id"] != "agent-1" {
@@ -3975,7 +4019,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["message_id"] != "msg-dm-1" {
@@ -4122,7 +4166,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["address"] != "spammerco" {
@@ -4195,7 +4239,7 @@ default_account: acct
 		t.Fatalf("delete path=%s", deletePath)
 	}
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["address"] != "spammerco" {
@@ -4269,7 +4313,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	blocked, ok := got["blocked"].([]any)
@@ -4343,7 +4387,7 @@ default_account: acct
 	}
 
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
 	if got["address"] != "spammerco/marketer" {
@@ -4397,6 +4441,7 @@ default_account: acct
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -4477,6 +4522,7 @@ func TestAwInitNamespaceForcesCloudMode(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -4555,6 +4601,7 @@ func TestAwInitNamespaceStoresInConfig(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
