@@ -3027,6 +3027,161 @@ func TestAwRegisterAliasTaken(t *testing.T) {
 	}
 }
 
+func TestAwRegisterExistingAccountNamespaceNotOwned(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/register":
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"existing_account":      true,
+				"verification_required": true,
+				"email":                 "ns@example.com",
+				"handle":                "nsuser",
+				"namespaces": []map[string]any{
+					{"slug": "nsuser", "tier": "free"},
+					{"slug": "ownedco", "tier": "paid"},
+				},
+			})
+		case "/v1/auth/verify-code":
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "not authorized"})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server-url", server.URL,
+		"--email", "ns@example.com",
+		"--username", "nsuser",
+		"--alias", "bot",
+		"--namespace", "notmine",
+		"--save-config=false",
+		"--write-context=false",
+	)
+	run.Stdin = strings.NewReader("123456\n")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+		"HOME="+tmp,
+		"XDG_CONFIG_HOME="+filepath.Join(tmp, ".config"),
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure, got success:\n%s", string(out))
+	}
+	outStr := string(out)
+	if !strings.Contains(outStr, "don't have access") {
+		t.Fatalf("expected 'don't have access' error, got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "nsuser") || !strings.Contains(outStr, "ownedco") {
+		t.Fatalf("expected namespace list in error, got:\n%s", outStr)
+	}
+}
+
+func TestAwRegisterExistingAccountMultipleNamespacesNonTTY(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/register":
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"existing_account":      true,
+				"verification_required": true,
+				"email":                 "multi@example.com",
+				"handle":                "multiuser",
+				"namespaces": []map[string]any{
+					{"slug": "multiuser", "tier": "free"},
+					{"slug": "bigcorp", "tier": "paid"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// No --namespace, multiple namespaces, non-TTY → should fail.
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server-url", server.URL,
+		"--email", "multi@example.com",
+		"--username", "multiuser",
+		"--alias", "bot",
+		"--save-config=false",
+		"--write-context=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+		"HOME="+tmp,
+		"XDG_CONFIG_HOME="+filepath.Join(tmp, ".config"),
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure, got success:\n%s", string(out))
+	}
+	outStr := string(out)
+	if !strings.Contains(outStr, "--namespace") {
+		t.Fatalf("expected '--namespace' hint, got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "multiuser") || !strings.Contains(outStr, "bigcorp") {
+		t.Fatalf("expected namespace list, got:\n%s", outStr)
+	}
+}
+
 func TestAwRegisterWritesConfig(t *testing.T) {
 	t.Parallel()
 
