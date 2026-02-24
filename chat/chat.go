@@ -547,23 +547,53 @@ func sendCommon(ctx context.Context, client *aweb.Client, openStream streamOpene
 		waitSeconds = 300 // 5 minutes
 	}
 
-	// Build message acceptor: skip replays, accept only from targets.
+	// Build message acceptor: skip replay noise, accept fresh replies.
+	//
+	// The SSE stream replays messages since sentAt. Normally our sent message
+	// appears in the replay and we use it as a marker: skip everything before
+	// it, accept target messages after. But the sent message may be missing
+	// from the replay due to timestamp precision mismatch (sentAt has
+	// nanosecond precision, server created_at has second precision). When
+	// that happens, fall back to timestamp comparison: accept target messages
+	// that are at or after sentAt (fresh replies), skip those before (stale).
 	sentMessageID := resp.MessageID
 	seenSentMessage := sentMessageID == ""
+	sentAtTrunc := after // *time.Time, may be nil
 	acceptor := func(ev Event) (accept, skip bool) {
-		if !seenSentMessage {
-			if (ev.MessageID != "" && ev.MessageID == sentMessageID) ||
-				(ev.MessageID == "" && ev.FromAgent == myAlias && ev.Body == message) {
+		// Skip our own messages. Mark sent message as seen.
+		if ev.FromAgent == myAlias || (sentMessageID != "" && ev.MessageID == sentMessageID) {
+			if sentMessageID != "" && ev.MessageID == sentMessageID {
 				seenSentMessage = true
 			}
 			return false, true
 		}
+
+		isTarget := false
 		for _, target := range targets {
 			if ev.FromAgent == target {
-				return true, false
+				isTarget = true
+				break
 			}
 		}
-		return false, false
+		if !isTarget {
+			return false, true
+		}
+
+		// Happy path: sent message was in the replay, so this is post-send.
+		if seenSentMessage {
+			return true, false
+		}
+
+		// Sent message missing from replay. Use timestamp to distinguish
+		// stale replay from fresh reply.
+		if sentAtTrunc != nil && ev.Timestamp != "" {
+			if evTime, err := time.Parse(time.RFC3339, ev.Timestamp); err == nil {
+				if !evTime.Before(sentAtTrunc.Truncate(time.Second)) {
+					return true, false
+				}
+			}
+		}
+		return false, true
 	}
 
 	waitResult, err := waitForMessage(ctx, client, openStream, resp.SessionID, waitSeconds, after, callback, acceptor)

@@ -2021,6 +2021,91 @@ func TestSendSkippedEventsNotInResult(t *testing.T) {
 	}
 }
 
+func TestSendReplyDeliveredWhenSentMessageNotReplayed(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			// Sent message is NOT replayed (simulates timestamp precision mismatch).
+			// Only the reply from the target arrives, with a current timestamp.
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply-1", "from_agent": "bob", "body": "hi back!",
+				"timestamp": time.Now().UTC().Format(time.RFC3339),
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 2}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s, want replied", result.Status)
+	}
+	if result.Reply != "hi back!" {
+		t.Fatalf("reply=%q, want %q", result.Reply, "hi back!")
+	}
+}
+
+func TestSendStaleReplayNotAcceptedAsReply(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			// Sent message is NOT in the replay.
+			// A stale message from 40 minutes ago IS in the replay.
+			staleData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "old-msg", "from_agent": "bob", "body": "old message",
+				"timestamp": time.Now().Add(-40 * time.Minute).UTC().Format(time.RFC3339),
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", staleData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 2}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Must NOT accept the stale message as a reply.
+	if result.Status == "replied" {
+		t.Fatalf("status=replied with stale message, want timeout (sent)")
+	}
+	if result.Reply != "" {
+		t.Fatalf("reply=%q, want empty (stale should be skipped)", result.Reply)
+	}
+}
+
 func TestParseSSEEventIdentityFields(t *testing.T) {
 	t.Parallel()
 
