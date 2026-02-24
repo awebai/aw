@@ -48,7 +48,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&accountFlag, "account", "", "Account name from config.yaml")
 	rootCmd.PersistentFlags().BoolVar(&debugFlag, "debug", false, "Log background errors to stderr")
 	rootCmd.AddCommand(versionCmd)
-	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(upgradeCmd)
 }
 
 func Execute() {

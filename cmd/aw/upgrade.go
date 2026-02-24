@@ -35,11 +35,11 @@ type releaseInfo struct {
 	Assets  []releaseAsset `json:"assets"`
 }
 
-var updateCmd = &cobra.Command{
-	Use:   "update",
-	Short: "Update aw to the latest version",
+var upgradeCmd = &cobra.Command{
+	Use:   "upgrade",
+	Short: "Upgrade aw to the latest version",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		// No heartbeat for update.
+		// No heartbeat for upgrade.
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return selfUpdate(cmd.OutOrStdout(), "")
@@ -268,7 +268,7 @@ func selfUpdate(w io.Writer, apiBase string) error {
 	currentVersion := strings.TrimPrefix(version, "v")
 
 	if currentVersion == "dev" || currentVersion == "" {
-		fmt.Fprintln(w, "Skipping update: running a dev build. Install a release build to use update.")
+		fmt.Fprintln(w, "Skipping upgrade: running a dev build. Install a release build to use upgrade.")
 		return nil
 	}
 
@@ -437,6 +437,6 @@ func checkLatestVersion(w io.Writer, apiBase string) {
 
 	latestVersion := strings.TrimPrefix(info.TagName, "v")
 	if compareVersions(currentVersion, latestVersion) < 0 {
-		fmt.Fprintf(w, "Update available: v%s → v%s (run `aw update`)\n", currentVersion, latestVersion)
+		fmt.Fprintf(w, "Upgrade available: v%s → v%s (run `aw upgrade`)\n", currentVersion, latestVersion)
 	}
 }

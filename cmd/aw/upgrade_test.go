@@ -345,8 +345,8 @@ func TestCheckLatestVersion(t *testing.T) {
 	checkLatestVersion(&buf, server.URL)
 
 	output := buf.String()
-	if !strings.Contains(output, "Update available") {
-		t.Errorf("expected update hint, got: %s", output)
+	if !strings.Contains(output, "Upgrade available") {
+		t.Errorf("expected upgrade hint, got: %s", output)
 	}
 	if !strings.Contains(output, "0.6.0") || !strings.Contains(output, "0.7.0") {
 		t.Errorf("expected both versions in output, got: %s", output)
