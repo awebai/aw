@@ -51,33 +51,33 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	var apiKey string
 	var sel *awconfig.Selection
 
-	// Resolve email, server, and API key from config if not fully provided.
-	if email == "" || serverURL == "" {
-		cfg, loadErr := awconfig.LoadGlobal()
-		if loadErr != nil && email == "" {
-			fatal(fmt.Errorf("failed to load config: %w (use --email to specify directly)", loadErr))
+	// Always attempt to load config — even when email and server-url are
+	// provided via flags, the API key and agent alias are needed for
+	// identity provisioning after verification.
+	cfg, loadErr := awconfig.LoadGlobal()
+	if loadErr != nil && email == "" {
+		fatal(fmt.Errorf("failed to load config: %w (use --email to specify directly)", loadErr))
+	}
+	if loadErr == nil {
+		wd, _ := os.Getwd()
+		resolved, selErr := awconfig.Resolve(cfg, awconfig.ResolveOptions{
+			ServerName:        serverFlag,
+			AccountName:       accountFlag,
+			WorkingDir:        wd,
+			AllowEnvOverrides: true,
+		})
+		if selErr != nil && (email == "" || serverURL == "") {
+			fatal(fmt.Errorf("failed to resolve account: %w (use --email and --server-url to specify directly)", selErr))
 		}
-		if loadErr == nil {
-			wd, _ := os.Getwd()
-			resolved, selErr := awconfig.Resolve(cfg, awconfig.ResolveOptions{
-				ServerName:        serverFlag,
-				AccountName:       accountFlag,
-				WorkingDir:        wd,
-				AllowEnvOverrides: true,
-			})
-			if selErr != nil && (email == "" || serverURL == "") {
-				fatal(fmt.Errorf("failed to resolve account: %w (use --email and --server-url to specify directly)", selErr))
+		if selErr == nil {
+			sel = resolved
+			if email == "" {
+				email = sel.Email
 			}
-			if selErr == nil {
-				sel = resolved
-				if email == "" {
-					email = sel.Email
-				}
-				if serverURL == "" {
-					serverURL = sel.BaseURL
-				}
-				apiKey = sel.APIKey
+			if serverURL == "" {
+				serverURL = sel.BaseURL
 			}
+			apiKey = sel.APIKey
 		}
 	}
 
@@ -278,7 +278,6 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 		}
 	}
 
-	// Persist identity to config.
 	// Persist identity to config. ClawDID registration is deferred to
 	// aw connect or aw register (which have richer context for the handle).
 	if needConfigUpdate {
