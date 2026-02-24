@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -80,11 +81,50 @@ func runResetRemote() error {
 		os.Exit(2)
 	}
 
-	client, sel := mustResolveAPIKeyOnly()
-
 	cfgPath := mustDefaultGlobalPath()
+	cfg, cfgErr := awconfig.LoadGlobalFrom(cfgPath)
+	if cfgErr != nil {
+		fatal(cfgErr)
+	}
 	keysDir := awconfig.KeysDir(cfgPath)
-	address := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
+
+	wd, _ := os.Getwd()
+	sel, selErr := awconfig.Resolve(cfg, awconfig.ResolveOptions{
+		ServerName:        serverFlag,
+		AccountName:       accountFlag,
+		WorkingDir:        wd,
+		AllowEnvOverrides: true,
+	})
+	if selErr != nil {
+		fatal(selErr)
+	}
+
+	baseURL := strings.TrimSpace(sel.BaseURL)
+	apiKey := strings.TrimSpace(sel.APIKey)
+	if baseURL == "" {
+		fmt.Fprintln(os.Stderr, "Missing server URL. Set AWEB_URL (or configure a server in aw config).")
+		os.Exit(2)
+	}
+	if apiKey == "" {
+		fmt.Fprintln(os.Stderr, "Missing API key. Set AWEB_API_KEY (or configure an account in aw config).")
+		os.Exit(2)
+	}
+
+	baseURL, err := resolveWorkingBaseURL(baseURL)
+	if err != nil {
+		fatal(err)
+	}
+	sel.BaseURL = baseURL
+
+	client, err := aweb.NewWithAPIKey(baseURL, apiKey)
+	if err != nil {
+		fatal(err)
+	}
+
+	serverName, err := awconfig.DeriveServerNameFromURL(baseURL)
+	if err != nil {
+		fatal(err)
+	}
 
 	// Generate and persist the new keypair BEFORE touching the server.
 	// If the server reset succeeds but disk write failed, the agent would
@@ -93,16 +133,56 @@ func runResetRemote() error {
 	if err != nil {
 		fatal(err)
 	}
-	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
-		fatal(err)
-	}
-	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
 
 	did := aweb.ComputeDIDKey(pub)
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	intro, err := client.Introspect(ctx)
+	if err != nil {
+		fatal(err)
+	}
+	agentID := strings.TrimSpace(intro.AgentID)
+	alias := strings.TrimSpace(intro.Alias)
+	if agentID == "" || alias == "" {
+		fatal(fmt.Errorf("server did not return agent identity for this API key (agent_id=%q alias=%q)", agentID, alias))
+	}
+
+	accountName := strings.TrimSpace(sel.AccountName)
+	var existingSigningKey string
+	if accountName == "" {
+		for name, acct := range cfg.Accounts {
+			if strings.TrimSpace(acct.AgentID) == agentID && strings.TrimSpace(acct.Server) == serverName {
+				accountName = name
+				existingSigningKey = strings.TrimSpace(acct.SigningKey)
+				break
+			}
+		}
+	}
+	if accountName == "" {
+		accountName = "acct-" + sanitizeKeyComponent(serverName) + "__" + sanitizeKeyComponent(agentID)
+	}
+
+	// Namespace slug is required for stable key file naming.
+	namespaceSlug := strings.TrimSpace(sel.NamespaceSlug)
+	if namespaceSlug == "" {
+		proj, err := client.GetCurrentProject(ctx)
+		if err != nil {
+			fatal(fmt.Errorf("failed to resolve namespace slug (GET /v1/projects/current): %w", err))
+		}
+		namespaceSlug = strings.TrimSpace(proj.Slug)
+	}
+	if namespaceSlug == "" {
+		fatal(errors.New("could not derive namespace slug for identity reset (empty project slug)"))
+	}
+
+	address := deriveAgentAddress(namespaceSlug, sel.DefaultProject, alias)
+	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+		fatal(err)
+	}
+	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
 
 	// Clear the server identity.
 	_, err = client.ResetIdentity(ctx, &aweb.ResetIdentityRequest{Confirm: true})
@@ -124,16 +204,20 @@ func runResetRemote() error {
 	fmt.Fprintf(os.Stderr, "Identity claimed: %s\n", did)
 
 	// Optionally wipe old key files (after successful claim).
-	if resetWipeKeys && sel.SigningKey != "" && sel.SigningKey != signingKeyPath {
-		if err := os.Remove(sel.SigningKey); err != nil && !os.IsNotExist(err) {
+	oldSigningKey := strings.TrimSpace(sel.SigningKey)
+	if oldSigningKey == "" {
+		oldSigningKey = existingSigningKey
+	}
+	if resetWipeKeys && oldSigningKey != "" && oldSigningKey != signingKeyPath {
+		if err := os.Remove(oldSigningKey); err != nil && !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "Warning: failed to remove old key: %v\n", err)
 		}
-		pubPath := strings.TrimSuffix(sel.SigningKey, ".key") + ".pub"
+		pubPath := strings.TrimSuffix(oldSigningKey, ".key") + ".pub"
 		os.Remove(pubPath)
 	}
 
 	// Best-effort ClawDID registration.
-	serverOrigin := canonicalOrigin(sel.BaseURL)
+	serverOrigin := canonicalOrigin(baseURL)
 	stableID := registerClawDIDWithHandle(
 		ctx, resolveClawDIDRegistryURL(cfgPath),
 		pub, priv, did, serverOrigin, address, nil,
@@ -142,16 +226,29 @@ func runResetRemote() error {
 	// Update config. Always clear old stable ID since the old identity
 	// is gone; only set the new one if ClawDID registration succeeded.
 	updateErr := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
-		acct, ok := cfg.Accounts[sel.AccountName]
-		if !ok {
-			return fmt.Errorf("account %q not found in config", sel.AccountName)
+		if cfg.Servers == nil {
+			cfg.Servers = map[string]awconfig.Server{}
 		}
+		if cfg.Accounts == nil {
+			cfg.Accounts = map[string]awconfig.Account{}
+		}
+		cfg.Servers[serverName] = awconfig.Server{URL: baseURL}
+
+		acct := cfg.Accounts[accountName]
+		acct.Server = serverName
+		acct.APIKey = apiKey
+		acct.AgentID = agentID
+		acct.AgentAlias = alias
+		acct.NamespaceSlug = namespaceSlug
 		acct.DID = did
 		acct.SigningKey = signingKeyPath
 		acct.Custody = "self"
 		acct.Lifetime = "persistent"
 		acct.StableID = stableID
-		cfg.Accounts[sel.AccountName] = acct
+		cfg.Accounts[accountName] = acct
+		if strings.TrimSpace(cfg.DefaultAccount) == "" {
+			cfg.DefaultAccount = accountName
+		}
 		return nil
 	})
 	if updateErr != nil {
@@ -161,6 +258,10 @@ func runResetRemote() error {
 	fmt.Fprintf(os.Stderr, "Config updated: %s\n", cfgPath)
 	if stableID != "" {
 		fmt.Fprintf(os.Stderr, "Stable ID: %s\n", stableID)
+	}
+	if err := writeOrUpdateContext(serverName, accountName); err != nil {
+		// Non-fatal: context file is a convenience.
+		fmt.Fprintf(os.Stderr, "Warning: failed to write .aw/context: %v\n", err)
 	}
 	return nil
 }

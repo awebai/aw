@@ -6581,3 +6581,128 @@ default_account: test-acct
 		t.Fatalf("DID not updated: %q", did)
 	}
 }
+
+func TestAwResetRemoteFromEnvOnly(t *testing.T) {
+	t.Parallel()
+
+	var (
+		introspectCalled atomic.Bool
+		projectCalled    atomic.Bool
+		resetCalled      atomic.Bool
+		claimCalled      atomic.Bool
+	)
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/auth/introspect":
+			introspectCalled.Store(true)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
+				"agent_type": "agent",
+			})
+		case r.URL.Path == "/v1/projects/current":
+			projectCalled.Store(true)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"slug":       "myco",
+			})
+		case r.URL.Path == "/v1/agents/me/identity/reset" && r.Method == http.MethodPost:
+			resetCalled.Store(true)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case r.URL.Path == "/v1/agents/me/identity" && r.Method == http.MethodPut:
+			claimCalled.Store(true)
+			var req map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":  "ok",
+				"did":     req["did"],
+				"custody": "self",
+			})
+		case r.URL.Path == "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(500)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// No pre-existing config file; env-only onboarding.
+	run := exec.CommandContext(ctx, bin, "reset", "--remote", "--confirm")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL="+server.URL,
+		"AWEB_API_KEY=aw_sk_test",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1", // unreachable — best-effort
+	)
+	run.Dir = tmp
+	out, runErr := run.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("aw reset --remote --confirm failed: %v\n%s", runErr, string(out))
+	}
+
+	if !introspectCalled.Load() {
+		t.Fatal("expected GET /v1/auth/introspect")
+	}
+	if !projectCalled.Load() {
+		t.Fatal("expected GET /v1/projects/current")
+	}
+	if !resetCalled.Load() {
+		t.Fatal("expected POST /v1/agents/me/identity/reset")
+	}
+	if !claimCalled.Load() {
+		t.Fatal("expected PUT /v1/agents/me/identity")
+	}
+
+	// Config should now exist and include DID + signing_key.
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Accounts map[string]map[string]any `yaml:"accounts"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(data))
+	}
+	if len(cfg.Accounts) != 1 {
+		t.Fatalf("expected 1 account in config, got %d:\n%s", len(cfg.Accounts), string(data))
+	}
+	for _, acct := range cfg.Accounts {
+		did, _ := acct["did"].(string)
+		if !strings.HasPrefix(did, "did:key:z") {
+			t.Fatalf("did=%q", did)
+		}
+		signingKey, _ := acct["signing_key"].(string)
+		if signingKey == "" {
+			t.Fatalf("signing_key missing:\n%s", string(data))
+		}
+		if _, err := os.Stat(signingKey); err != nil {
+			t.Fatalf("signing key not found at %s: %v", signingKey, err)
+		}
+	}
+
+	// Worktree context should exist for follow-on commands.
+	if _, err := os.Stat(filepath.Join(tmp, ".aw", "context")); err != nil {
+		t.Fatalf("expected .aw/context to exist: %v", err)
+	}
+}
