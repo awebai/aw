@@ -3947,6 +3947,140 @@ default_account: acct
 	}
 }
 
+func TestAwVerifyClaimsIdentity(t *testing.T) {
+	t.Parallel()
+
+	var identityClaimed bool
+	var claimBody map[string]any
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/auth/verify-code" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verified":            true,
+				"username":            "testuser",
+				"registration_source": "cli",
+			})
+		case r.URL.Path == "/v1/agents/heartbeat" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"agent_id": "ag_verify",
+				"alias":    "researcher",
+			})
+		case r.URL.Path == "/v1/agents/me/identity" && r.Method == http.MethodPut:
+			identityClaimed = true
+			_ = json.NewDecoder(r.Body).Decode(&claimBody)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":  "ok",
+				"did":     claimBody["did"],
+				"custody": "self",
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// Config with API key and alias but no DID — verify should provision identity.
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_verify_test
+    email: test@example.com
+    agent_alias: researcher
+    namespace_slug: myco
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "verify",
+		"--code", "123456",
+	)
+	run.Stdin = strings.NewReader("")
+	var stdout, stderr bytes.Buffer
+	run.Stdout = &stdout
+	run.Stderr = &stderr
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+	)
+	run.Dir = tmp
+	if err := run.Run(); err != nil {
+		t.Fatalf("run failed: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	// ClaimIdentity must have been called.
+	if !identityClaimed {
+		t.Fatal("ClaimIdentity was not called after verify")
+	}
+	did, _ := claimBody["did"].(string)
+	if !strings.HasPrefix(did, "did:key:z6Mk") {
+		t.Fatalf("ClaimIdentity did=%q, want did:key:z6Mk... prefix", did)
+	}
+	if claimBody["public_key"] == nil || claimBody["public_key"] == "" {
+		t.Fatal("ClaimIdentity public_key is empty")
+	}
+	if claimBody["custody"] != "self" {
+		t.Fatalf("ClaimIdentity custody=%v", claimBody["custody"])
+	}
+
+	// Config should now have DID and signing_key.
+	cfgData, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Accounts map[string]map[string]any `yaml:"accounts"`
+	}
+	if err := yaml.Unmarshal(cfgData, &cfg); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(cfgData))
+	}
+	acct := cfg.Accounts["acct"]
+	if acct["did"] == nil || acct["did"] == "" {
+		t.Fatalf("config did is empty after verify:\n%s", string(cfgData))
+	}
+	if acct["signing_key"] == nil || acct["signing_key"] == "" {
+		t.Fatalf("config signing_key is empty after verify:\n%s", string(cfgData))
+	}
+	if acct["custody"] != "self" {
+		t.Fatalf("config custody=%v, want self", acct["custody"])
+	}
+
+	// Signing key file should exist on disk.
+	keyPath, _ := acct["signing_key"].(string)
+	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		t.Fatalf("signing key file not found at %s", keyPath)
+	}
+
+	// Stderr should mention the identity.
+	stderrStr := stderr.String()
+	if !strings.Contains(stderrStr, "Identity:") {
+		t.Fatalf("expected 'Identity:' in stderr, got: %s", stderrStr)
+	}
+}
+
 func TestAwVerifyResolvesServerFromName(t *testing.T) {
 	t.Parallel()
 

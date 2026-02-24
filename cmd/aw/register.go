@@ -337,27 +337,6 @@ func handleExistingAccount(
 		fatal(fmt.Errorf("verification succeeded but no API key returned. The server may not support inline bootstrap — try 'aw init --cloud' instead"))
 	}
 
-	// Claim self-custody identity using the new API key.
-	authClient, authErr := aweb.NewWithAPIKey(baseURL, vresp.APIKey)
-	if authErr != nil {
-		fatal(authErr)
-	}
-	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
-	_, claimErr := authClient.ClaimIdentity(ctx, &aweb.ClaimIdentityRequest{
-		DID:       did,
-		PublicKey: pubKeyB64,
-		Custody:   aweb.CustodySelf,
-		Lifetime:  aweb.LifetimePersistent,
-	})
-	if claimErr != nil {
-		code, ok := aweb.HTTPStatusCode(claimErr)
-		if ok && code == 409 {
-			fmt.Fprintln(os.Stderr, "Identity already set on server (409). The agent may already be provisioned.")
-		} else {
-			fatal(fmt.Errorf("identity claim failed: %w", claimErr))
-		}
-	}
-
 	namespaceSlug := strings.TrimSpace(vresp.NamespaceSlug)
 	if namespaceSlug == "" {
 		namespaceSlug = nsSlug
@@ -375,7 +354,32 @@ func handleExistingAccount(
 	address := deriveAgentAddress(namespaceSlug, "", respAlias)
 	cfgPath := mustDefaultGlobalPath()
 	keysDir := awconfig.KeysDir(cfgPath)
+
+	// Claim self-custody identity using the new API key.
+	authClient, authErr := aweb.NewWithAPIKey(baseURL, vresp.APIKey)
+	if authErr != nil {
+		fatal(authErr)
+	}
+	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
+	claimCtx, claimCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer claimCancel()
+	_, claimErr := authClient.ClaimIdentity(claimCtx, &aweb.ClaimIdentityRequest{
+		DID:       did,
+		PublicKey: pubKeyB64,
+		Custody:   aweb.CustodySelf,
+		Lifetime:  aweb.LifetimePersistent,
+	})
 	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
+	if claimErr != nil {
+		claimCode, ok := aweb.HTTPStatusCode(claimErr)
+		if ok && claimCode == 409 {
+			recoveredDID, recoveredKeyPath, _, _ := recoverIdentity409(claimCtx, authClient, keysDir, address)
+			did = recoveredDID
+			signingKeyPath = recoveredKeyPath
+		} else {
+			fatal(fmt.Errorf("identity claim failed: %w", claimErr))
+		}
+	}
 
 	// Best-effort ClawDID registration.
 	var handlePtr *string
