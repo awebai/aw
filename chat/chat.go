@@ -547,23 +547,21 @@ func sendCommon(ctx context.Context, client *aweb.Client, openStream streamOpene
 		waitSeconds = 300 // 5 minutes
 	}
 
-	// Build message acceptor: skip replays, accept only from targets.
+	// Build message acceptor: skip our own messages, accept from targets.
 	sentMessageID := resp.MessageID
-	seenSentMessage := sentMessageID == ""
 	acceptor := func(ev Event) (accept, skip bool) {
-		if !seenSentMessage {
-			if (ev.MessageID != "" && ev.MessageID == sentMessageID) ||
-				(ev.MessageID == "" && ev.FromAgent == myAlias && ev.Body == message) {
-				seenSentMessage = true
-			}
+		// Skip our own messages (sent message replay + any older ones).
+		if ev.FromAgent == myAlias || (sentMessageID != "" && ev.MessageID == sentMessageID) {
 			return false, true
 		}
+		// Accept messages from targets.
 		for _, target := range targets {
 			if ev.FromAgent == target {
 				return true, false
 			}
 		}
-		return false, false
+		// Skip messages from third parties (e.g. replayed group chat noise).
+		return false, true
 	}
 
 	waitResult, err := waitForMessage(ctx, client, openStream, resp.SessionID, waitSeconds, after, callback, acceptor)

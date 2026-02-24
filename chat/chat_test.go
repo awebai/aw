@@ -2021,6 +2021,47 @@ func TestSendSkippedEventsNotInResult(t *testing.T) {
 	}
 }
 
+func TestSendReplyDeliveredWhenSentMessageNotReplayed(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, aweb.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			// Sent message is NOT replayed (simulates timestamp precision mismatch).
+			// Only the reply from the target arrives.
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply-1", "from_agent": "bob", "body": "hi back!",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 2}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s, want replied", result.Status)
+	}
+	if result.Reply != "hi back!" {
+		t.Fatalf("reply=%q, want %q", result.Reply, "hi back!")
+	}
+}
+
 func TestParseSSEEventIdentityFields(t *testing.T) {
 	t.Parallel()
 
