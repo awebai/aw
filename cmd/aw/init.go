@@ -256,6 +256,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 	keysDir := awconfig.KeysDir(cfgPath)
 	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
 
+	// Save keypair to disk BEFORE writing config. If config is written but
+	// the key save fails, the agent would be bricked (config pointing to a
+	// nonexistent key). An orphaned key file on disk is harmless.
+	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+		fatal(err)
+	}
+
 	// Best-effort ClawDID registration. Only persist StableID on success.
 	stableID := registerClawDIDWithHandle(ctx, resolveClawDIDRegistryURL(cfgPath), pub, priv, did, canonicalOrigin(baseURL), address, nil)
 
@@ -290,12 +297,6 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if updateErr != nil {
 			fatal(updateErr)
 		}
-	}
-
-	// Save keypair after config is written so a failed config update
-	// does not leave orphaned key files on disk.
-	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
-		fatal(err)
 	}
 
 	if initWriteContext {

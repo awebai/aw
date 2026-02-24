@@ -182,6 +182,13 @@ func saveNewRegistration(
 	keysDir := awconfig.KeysDir(cfgPath)
 	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
 
+	// Save keypair to disk BEFORE writing config. If config is written but
+	// the key save fails, the agent would be bricked (config pointing to a
+	// nonexistent key). An orphaned key file on disk is harmless.
+	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+		fatal(err)
+	}
+
 	// Best-effort ClawDID registration. Only persist StableID on success.
 	handle := "@" + username
 	stableID := registerClawDIDWithHandle(ctx, resolveClawDIDRegistryURL(cfgPath), pub, priv, did, canonicalOrigin(baseURL), address, &handle)
@@ -218,12 +225,6 @@ func saveNewRegistration(
 		if updateErr != nil {
 			fatal(updateErr)
 		}
-	}
-
-	// Save keypair after config is written so a failed config update
-	// does not leave orphaned key files on disk.
-	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
-		fatal(err)
 	}
 
 	if registerWriteContext {
@@ -432,15 +433,29 @@ func verifyAndBootstrap(
 		Lifetime:  aweb.LifetimePersistent,
 	})
 	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
+	custody := aweb.CustodySelf
+	lifetime := aweb.LifetimePersistent
 	if claimErr != nil {
 		claimCode, ok := aweb.HTTPStatusCode(claimErr)
 		if ok && claimCode == 409 {
-			recoveredDID, recoveredKeyPath, _, _ := recoverIdentity409(claimCtx, authClient, keysDir, address)
-			did = recoveredDID
-			signingKeyPath = recoveredKeyPath
+			var recoveredCustody, recoveredLifetime string
+			did, signingKeyPath, recoveredCustody, recoveredLifetime = recoverIdentity409(claimCtx, authClient, keysDir, address)
+			if recoveredCustody != "" {
+				custody = recoveredCustody
+			}
+			if recoveredLifetime != "" {
+				lifetime = recoveredLifetime
+			}
 		} else {
 			fatal(fmt.Errorf("identity claim failed: %w", claimErr))
 		}
+	}
+
+	// Save keypair to disk BEFORE writing config. If config is written but
+	// the key save fails, the agent would be bricked (config pointing to a
+	// nonexistent key). An orphaned key file on disk is harmless.
+	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+		fatal(err)
 	}
 
 	// Best-effort ClawDID registration.
@@ -467,8 +482,8 @@ func verifyAndBootstrap(
 				DID:           did,
 				StableID:      stableID,
 				SigningKey:     signingKeyPath,
-				Custody:       aweb.CustodySelf,
-				Lifetime:      aweb.LifetimePersistent,
+				Custody:       custody,
+				Lifetime:      lifetime,
 			}
 			if strings.TrimSpace(cfg.DefaultAccount) == "" || registerSetDefault {
 				cfg.DefaultAccount = accountName
@@ -478,10 +493,6 @@ func verifyAndBootstrap(
 		if updateErr != nil {
 			fatal(updateErr)
 		}
-	}
-
-	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
-		fatal(err)
 	}
 
 	if registerWriteContext {
