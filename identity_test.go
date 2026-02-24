@@ -297,6 +297,42 @@ func TestClaimIdentityHappyPath(t *testing.T) {
 	}
 }
 
+func TestResetIdentityHappyPath(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/agents/me/identity/reset" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method=%s, want POST", r.Method)
+		}
+		var req ResetIdentityRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if !req.Confirm {
+			w.WriteHeader(400)
+			w.Write([]byte(`{"error":"confirm required"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(ResetIdentityResponse{Status: "ok"})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.ResetIdentity(context.Background(), &ResetIdentityRequest{Confirm: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("status=%q", resp.Status)
+	}
+}
+
 func TestClaimIdentityAlreadySet(t *testing.T) {
 	t.Parallel()
 

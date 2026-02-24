@@ -111,6 +111,11 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		identityDID, signingKeyPath, stableID, custody, lifetime = provisionIdentity(
 			ctx, client, cfgPath, keysDir, baseURL, namespaceSlug, alias,
 		)
+		// Preserve existing stable_id if provisioning didn't produce one
+		// (e.g. 409 recovery or ClawDID failure).
+		if stableID == "" && existingStableID != "" {
+			stableID = existingStableID
+		}
 	}
 
 	updateErr := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
@@ -187,6 +192,7 @@ func provisionIdentity(
 	// accepts our claim.
 	var pub ed25519.PublicKey
 	var priv ed25519.PrivateKey
+	generatedNewKey := false
 	existingPriv, loadErr := awconfig.LoadSigningKey(signingKeyPath)
 	if loadErr == nil {
 		priv = existingPriv
@@ -203,6 +209,7 @@ func provisionIdentity(
 		if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
 			fatal(err)
 		}
+		generatedNewKey = true
 	}
 
 	did = aweb.ComputeDIDKey(pub)
@@ -218,6 +225,13 @@ func provisionIdentity(
 	if err != nil {
 		code, ok := aweb.HTTPStatusCode(err)
 		if ok && code == 409 {
+			// Remove orphan key if we just generated it — it doesn't match
+			// the server's identity and would be confusing on disk.
+			if generatedNewKey {
+				os.Remove(signingKeyPath)
+				pubPath := strings.TrimSuffix(signingKeyPath, ".key") + ".pub"
+				os.Remove(pubPath)
+			}
 			recoveredDID, recoveredKeyPath, recoveredCustody, recoveredLifetime := recoverIdentity409(ctx, client, keysDir, address)
 			return recoveredDID, recoveredKeyPath, stableID, recoveredCustody, recoveredLifetime
 		}
@@ -286,7 +300,7 @@ func recoverIdentity409(
 	}
 
 	fmt.Fprintf(os.Stderr, "Identity already set on server (%s) but no matching signing key found locally.\n", identity.DID)
-	fmt.Fprintf(os.Stderr, "To recover, place the signing key at %s, or use 'aw reset' to clear the server identity.\n", expectedPath)
+	fmt.Fprintf(os.Stderr, "To recover, place the signing key at %s, or run 'aw reset --remote --confirm' to clear the server identity and re-provision.\n", expectedPath)
 	os.Exit(1)
 	return // unreachable
 }

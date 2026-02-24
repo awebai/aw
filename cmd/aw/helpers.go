@@ -96,6 +96,42 @@ func mustClient() *aweb.Client {
 	return c
 }
 
+// mustResolveAPIKeyOnly resolves config and creates a client using only
+// the API key (no signing key). Used by commands like reset that need
+// to work even when the local signing key is missing or invalid.
+func mustResolveAPIKeyOnly() (*aweb.Client, *awconfig.Selection) {
+	cfg, err := awconfig.LoadGlobal()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to read config:", err)
+		os.Exit(2)
+	}
+	wd, _ := os.Getwd()
+	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
+		ServerName:        serverFlag,
+		AccountName:       accountFlag,
+		WorkingDir:        wd,
+		AllowEnvOverrides: true,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+
+	baseURL, err := resolveWorkingBaseURL(sel.BaseURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	sel.BaseURL = baseURL
+
+	c, err := aweb.NewWithAPIKey(baseURL, sel.APIKey)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Invalid base URL:", err)
+		os.Exit(2)
+	}
+	return c, sel
+}
+
 // canonicalOrigin extracts scheme+host from a URL, stripping any path.
 // For example, "https://app.claweb.ai/api" → "https://app.claweb.ai".
 func canonicalOrigin(rawURL string) string {

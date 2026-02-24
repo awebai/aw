@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -5638,6 +5639,9 @@ func TestAwConnectIdentityAlreadySetNoLocalKey(t *testing.T) {
 	if !strings.Contains(string(out), "no matching signing key found locally") {
 		t.Fatalf("expected 'no matching signing key found locally', got: %s", string(out))
 	}
+	if !strings.Contains(string(out), "aw reset --remote --confirm") {
+		t.Fatalf("expected recovery suggestion with 'aw reset --remote --confirm', got: %s", string(out))
+	}
 }
 
 func TestAwConnectRecoverWith409AndLocalKey(t *testing.T) {
@@ -5952,5 +5956,364 @@ func TestAwConnectNoAgentID(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "agent-scoped") {
 		t.Fatalf("expected error about agent-scoped key, got: %s", string(out))
+	}
+}
+
+func TestAwResetLocal(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// Create .aw/context.
+	awDir := filepath.Join(tmp, ".aw")
+	if err := os.MkdirAll(awDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctxPath := filepath.Join(awDir, "context")
+	if err := os.WriteFile(ctxPath, []byte("default_account: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "reset")
+	run.Dir = tmp
+	run.Env = os.Environ()
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("aw reset failed: %v\n%s", err, string(out))
+	}
+	if !strings.Contains(string(out), "Removed") {
+		t.Fatalf("expected 'Removed' message, got: %s", string(out))
+	}
+	if _, err := os.Stat(ctxPath); !os.IsNotExist(err) {
+		t.Fatal(".aw/context still exists after reset")
+	}
+	if _, err := os.Stat(awDir); !os.IsNotExist(err) {
+		t.Fatal(".aw directory still exists after reset (should be cleaned up when empty)")
+	}
+}
+
+func TestAwResetRemoteNoConfirm(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	run := exec.CommandContext(ctx, bin, "reset", "--remote")
+	run.Dir = tmp
+	run.Env = os.Environ()
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected error without --confirm, got success: %s", string(out))
+	}
+	if !strings.Contains(string(out), "--confirm") {
+		t.Fatalf("expected --confirm guidance, got: %s", string(out))
+	}
+}
+
+func TestAwResetRemote(t *testing.T) {
+	t.Parallel()
+
+	var (
+		resetCalled atomic.Bool
+		claimCalled atomic.Bool
+	)
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/agents/me/identity/reset" && r.Method == http.MethodPost:
+			resetCalled.Store(true)
+			var req map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req["confirm"] != true {
+				w.WriteHeader(400)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+
+		case r.URL.Path == "/v1/agents/me/identity" && r.Method == http.MethodPut:
+			claimCalled.Store(true)
+			var req map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":  "ok",
+				"did":     req["did"],
+				"custody": "self",
+			})
+
+		case r.URL.Path == "/v1/auth/introspect":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
+				"agent_type": "agent",
+			})
+
+		case r.URL.Path == "/v1/projects/current":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"slug":       "myco",
+			})
+
+		case r.URL.Path == "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(500)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// Create a pre-existing config with an old identity.
+	serverName := strings.TrimPrefix(server.URL, "http://")
+	cfgContent := fmt.Sprintf(`servers:
+  %s:
+    url: %s
+accounts:
+  test-acct:
+    server: %s
+    api_key: aw_sk_test
+    agent_id: agent-1
+    agent_alias: alice
+    namespace_slug: myco
+    did: did:key:z6Mkold
+    signing_key: /nonexistent/old.signing.key
+    custody: self
+    lifetime: persistent
+default_account: test-acct
+`, serverName, server.URL, serverName)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "reset", "--remote", "--confirm")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1", // unreachable — best-effort
+	)
+	run.Dir = tmp
+	out, runErr := run.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("aw reset --remote --confirm failed: %v\n%s", runErr, string(out))
+	}
+
+	if !resetCalled.Load() {
+		t.Fatal("expected POST /v1/agents/me/identity/reset to be called")
+	}
+	if !claimCalled.Load() {
+		t.Fatal("expected PUT /v1/agents/me/identity to be called")
+	}
+
+	// Verify config was updated with new identity.
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Accounts map[string]map[string]any `yaml:"accounts"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(data))
+	}
+	acct, ok := cfg.Accounts["test-acct"]
+	if !ok {
+		t.Fatalf("test-acct not found in config:\n%s", string(data))
+	}
+	did, _ := acct["did"].(string)
+	if did == "" || did == "did:key:z6Mkold" {
+		t.Fatalf("DID not updated: %q", did)
+	}
+	if !strings.HasPrefix(did, "did:key:z") {
+		t.Fatalf("DID format wrong: %q", did)
+	}
+	signingKey, _ := acct["signing_key"].(string)
+	if signingKey == "" || signingKey == "/nonexistent/old.signing.key" {
+		t.Fatalf("signing_key not updated: %q", signingKey)
+	}
+	if acct["custody"] != "self" {
+		t.Fatalf("custody=%v", acct["custody"])
+	}
+	if acct["lifetime"] != "persistent" {
+		t.Fatalf("lifetime=%v", acct["lifetime"])
+	}
+}
+
+func TestAwResetRemoteWipeKeys(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/agents/me/identity/reset" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case r.URL.Path == "/v1/agents/me/identity" && r.Method == http.MethodPut:
+			var req map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "ok", "did": req["did"], "custody": "self",
+			})
+		case r.URL.Path == "/v1/auth/introspect":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123", "agent_id": "agent-1",
+				"alias": "alice", "agent_type": "agent",
+			})
+		case r.URL.Path == "/v1/projects/current":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123", "slug": "myco",
+			})
+		case r.URL.Path == "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(500)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	keysDir := filepath.Join(tmp, "keys")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// Create an old keypair to be wiped.
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldPub, oldPriv, err := awconfig.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := awconfig.SaveKeypair(keysDir, "myco/alice", oldPub, oldPriv); err != nil {
+		t.Fatal(err)
+	}
+	oldKeyPath := awconfig.SigningKeyPath(keysDir, "myco/alice")
+
+	// Verify old files exist.
+	if _, err := os.Stat(oldKeyPath); err != nil {
+		t.Fatalf("old key not created: %v", err)
+	}
+
+	serverName := strings.TrimPrefix(server.URL, "http://")
+	cfgContent := fmt.Sprintf(`servers:
+  %s:
+    url: %s
+accounts:
+  test-acct:
+    server: %s
+    api_key: aw_sk_test
+    agent_id: agent-1
+    agent_alias: alice
+    namespace_slug: myco
+    did: did:key:z6Mkold
+    signing_key: %s
+    custody: self
+    lifetime: persistent
+default_account: test-acct
+`, serverName, server.URL, serverName, oldKeyPath)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "reset", "--remote", "--confirm", "--wipe-keys")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+	)
+	run.Dir = tmp
+	out, runErr := run.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("aw reset --remote --confirm --wipe-keys failed: %v\n%s", runErr, string(out))
+	}
+
+	// With the same address, SaveKeypair overwrites the old key in-place.
+	// --wipe-keys is a no-op here since sel.SigningKey == signingKeyPath.
+	// Verify the key file exists with new content.
+	newKeyPath := awconfig.SigningKeyPath(keysDir, "myco/alice")
+	if _, err := os.Stat(newKeyPath); err != nil {
+		t.Fatalf("new key not created: %v", err)
+	}
+	// Verify the key on disk differs from the old one.
+	newPriv, err := awconfig.LoadSigningKey(newKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPub := newPriv.Public().(ed25519.PublicKey)
+	if newPub.Equal(oldPub) {
+		t.Fatal("key was not regenerated")
+	}
+
+	// Verify config updated.
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Accounts map[string]map[string]any `yaml:"accounts"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(data))
+	}
+	acct := cfg.Accounts["test-acct"]
+	did, _ := acct["did"].(string)
+	if did == "did:key:z6Mkold" || did == "" {
+		t.Fatalf("DID not updated: %q", did)
 	}
 }

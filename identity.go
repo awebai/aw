@@ -143,6 +143,28 @@ func (c *Client) ClaimIdentity(ctx context.Context, req *ClaimIdentityRequest) (
 	return &out, nil
 }
 
+// ResetIdentityRequest is sent to POST /v1/agents/me/identity/reset.
+// This endpoint clears the agent's identity (DID, public key, stable ID,
+// custody, signing key) so it can be re-claimed via ClaimIdentity.
+type ResetIdentityRequest struct {
+	Confirm bool `json:"confirm"`
+}
+
+// ResetIdentityResponse is returned by POST /v1/agents/me/identity/reset.
+type ResetIdentityResponse struct {
+	Status string `json:"status"`
+}
+
+// ResetIdentity clears the agent's bound identity on the server.
+// Requires confirm=true; the server returns 400 otherwise.
+func (c *Client) ResetIdentity(ctx context.Context, req *ResetIdentityRequest) (*ResetIdentityResponse, error) {
+	var out ResetIdentityResponse
+	if err := c.post(ctx, "/v1/agents/me/identity/reset", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ChainResolver dispatches resolution by identifier format.
 // did:key identifiers use DIDKeyResolver; addresses use ServerResolver.
 // After server resolution, the public key is cross-checked by extracting
