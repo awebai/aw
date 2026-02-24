@@ -1,6 +1,10 @@
 package aweb
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -53,5 +57,44 @@ func TestParseExistingAccountOldFormat(t *testing.T) {
 	err := &apiError{StatusCode: 409, Body: `{"error":{"code":"USERNAME_TAKEN","message":"username taken"}}`}
 	if info := ParseExistingAccount(err); info != nil {
 		t.Fatalf("expected nil for old-style 409, got %+v", info)
+	}
+}
+
+func TestRegisterRequestSendsHandle(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(RegisterResponse{
+			APIKey:  "aw_sk_test",
+			AgentID: "agent-1",
+			Alias:   "alice",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	username := "testuser"
+	handle := "testuser"
+	_, err = c.Register(context.Background(), &RegisterRequest{
+		Email:    "test@example.com",
+		Username: &username,
+		Handle:   &handle,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both username and handle must be present on the wire.
+	if gotBody["username"] != "testuser" {
+		t.Fatalf("username=%v, want testuser", gotBody["username"])
+	}
+	if gotBody["handle"] != "testuser" {
+		t.Fatalf("handle=%v, want testuser", gotBody["handle"])
 	}
 }

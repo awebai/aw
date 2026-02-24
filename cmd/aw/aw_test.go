@@ -4097,6 +4097,10 @@ func TestAwRegisterSendsIdentityFields(t *testing.T) {
 	if gotBody["lifetime"] != "persistent" {
 		t.Fatalf("request lifetime=%v", gotBody["lifetime"])
 	}
+	// ClaWeb expects handle alongside username.
+	if gotBody["handle"] != "testuser" {
+		t.Fatalf("request handle=%v, want testuser", gotBody["handle"])
+	}
 
 	// Verify config stores identity fields.
 	data, err := os.ReadFile(cfgPath)

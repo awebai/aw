@@ -12,6 +12,7 @@ import (
 type RegisterRequest struct {
 	Email     string  `json:"email"`
 	Username  *string `json:"username,omitempty"`
+	Handle    *string `json:"handle,omitempty"`
 	Password  *string `json:"password,omitempty"`
 	Alias     *string `json:"alias,omitempty"`
 	HumanName string  `json:"human_name,omitempty"`

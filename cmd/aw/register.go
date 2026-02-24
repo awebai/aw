@@ -98,6 +98,7 @@ func runRegister(cmd *cobra.Command, args []string) error {
 	req := &aweb.RegisterRequest{
 		Email:     email,
 		Username:  &username,
+		Handle:    &username,
 		Alias:     &alias,
 		HumanName: strings.TrimSpace(registerHumanName),
 		DID:       did,
