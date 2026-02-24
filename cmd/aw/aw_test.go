@@ -2654,6 +2654,226 @@ func TestAwRegisterEmailTaken(t *testing.T) {
 	}
 }
 
+func TestAwRegisterExistingAccountFlow(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/register":
+			// Return structured 409 with existing_account.
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"existing_account":      true,
+				"verification_required": true,
+				"email":                 "existing@example.com",
+				"handle":                "existinguser",
+				"namespaces": []map[string]any{
+					{"slug": "existinguser", "tier": "free"},
+				},
+			})
+		case "/v1/auth/verify-code":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["code"] != "123456" {
+				w.WriteHeader(400)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid code"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verified":            true,
+				"username":            "existinguser",
+				"registration_source": "cli",
+				"api_key":             "aw_sk_new_agent",
+				"agent_id":            "agent-existing-42",
+				"alias":               "researcher",
+				"namespace_slug":      "existinguser",
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	clawDIDServer := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server-url", server.URL,
+		"--email", "existing@example.com",
+		"--username", "existinguser",
+		"--alias", "researcher",
+		"--namespace", "existinguser",
+	)
+	// Provide verification code via stdin.
+	run.Stdin = strings.NewReader("123456\n")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+		"HOME="+tmp,
+		"XDG_CONFIG_HOME="+filepath.Join(tmp, ".config"),
+		"CLAWDID_REGISTRY_URL="+clawDIDServer.URL,
+	)
+	run.Dir = tmp
+	var stdout, stderr bytes.Buffer
+	run.Stdout = &stdout
+	run.Stderr = &stderr
+	if err := run.Run(); err != nil {
+		t.Fatalf("register failed: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	// Verify JSON output contains bootstrap credentials.
+	var resp map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		t.Fatalf("parsing JSON: %v\nstdout: %s", err, stdout.String())
+	}
+	if resp["api_key"] != "aw_sk_new_agent" {
+		t.Fatalf("api_key=%v", resp["api_key"])
+	}
+	if resp["agent_id"] != "agent-existing-42" {
+		t.Fatalf("agent_id=%v", resp["agent_id"])
+	}
+
+	// Verify stderr has expected messages.
+	stderrStr := stderr.String()
+	if !strings.Contains(stderrStr, "Account already exists") {
+		t.Fatalf("missing 'Account already exists' in stderr:\n%s", stderrStr)
+	}
+	if !strings.Contains(stderrStr, "Verified!") {
+		t.Fatalf("missing 'Verified!' in stderr:\n%s", stderrStr)
+	}
+
+	// Verify config was written.
+	cfgData, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgStr := string(cfgData)
+	if !strings.Contains(cfgStr, "aw_sk_new_agent") {
+		t.Fatalf("config missing api_key:\n%s", cfgStr)
+	}
+	if !strings.Contains(cfgStr, "researcher") {
+		t.Fatalf("config missing alias:\n%s", cfgStr)
+	}
+}
+
+func TestAwRegisterExistingAccountAutoSelectNamespace(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/register":
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"existing_account":      true,
+				"verification_required": true,
+				"email":                 "auto@example.com",
+				"handle":                "autouser",
+				"namespaces": []map[string]any{
+					{"slug": "autouser", "tier": "free"},
+				},
+			})
+		case "/v1/auth/verify-code":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verified":            true,
+				"username":            "autouser",
+				"registration_source": "cli",
+				"api_key":             "aw_sk_auto",
+				"agent_id":            "agent-auto",
+				"alias":               "bot",
+				"namespace_slug":      "autouser",
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	clawDIDServer := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// No --namespace flag; single namespace should be auto-selected.
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server-url", server.URL,
+		"--email", "auto@example.com",
+		"--username", "autouser",
+		"--alias", "bot",
+	)
+	run.Stdin = strings.NewReader("999999\n")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+		"HOME="+tmp,
+		"XDG_CONFIG_HOME="+filepath.Join(tmp, ".config"),
+		"CLAWDID_REGISTRY_URL="+clawDIDServer.URL,
+	)
+	run.Dir = tmp
+	var stdout, stderr bytes.Buffer
+	run.Stdout = &stdout
+	run.Stderr = &stderr
+	if err := run.Run(); err != nil {
+		t.Fatalf("register failed: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	// Should auto-select the single namespace.
+	if !strings.Contains(stderr.String(), "Using namespace: autouser") {
+		t.Fatalf("expected auto-selection message, stderr:\n%s", stderr.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		t.Fatalf("parsing JSON: %v\nstdout: %s", err, stdout.String())
+	}
+	if resp["api_key"] != "aw_sk_auto" {
+		t.Fatalf("api_key=%v", resp["api_key"])
+	}
+}
+
 func TestAwRegisterUsernameTaken(t *testing.T) {
 	t.Parallel()
 

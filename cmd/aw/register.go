@@ -16,13 +16,14 @@ import (
 )
 
 var (
-	registerServer      string
-	registerEmail       string
-	registerUsername    string
-	registerAlias       string
-	registerHumanName  string
-	registerSaveConfig  bool
-	registerSetDefault  bool
+	registerServer       string
+	registerEmail        string
+	registerUsername     string
+	registerAlias        string
+	registerHumanName    string
+	registerNamespace    string
+	registerSaveConfig   bool
+	registerSetDefault   bool
 	registerWriteContext bool
 )
 
@@ -42,6 +43,7 @@ func init() {
 	registerCmd.Flags().StringVar(&registerUsername, "username", "", "Username for the new account (required)")
 	registerCmd.Flags().StringVar(&registerAlias, "alias", "", "Agent alias (required)")
 	registerCmd.Flags().StringVar(&registerHumanName, "human-name", "", "Human name (optional)")
+	registerCmd.Flags().StringVar(&registerNamespace, "namespace", "", "Target namespace for existing accounts (requires verification)")
 	registerCmd.Flags().BoolVar(&registerSaveConfig, "save-config", true, "Write/update ~/.config/aw/config.yaml with the new credentials")
 	registerCmd.Flags().BoolVar(&registerSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
 	registerCmd.Flags().BoolVar(&registerWriteContext, "write-context", true, "Write/update .aw/context in the current worktree (non-secret pointer)")
@@ -114,6 +116,11 @@ func runRegister(cmd *cobra.Command, args []string) error {
 
 	resp, err := client.Register(ctx, req)
 	if err != nil {
+		// Check for existing-account 409 before other error handling.
+		if existing := aweb.ParseExistingAccount(err); existing != nil {
+			return handleExistingAccount(ctx, client, existing, baseURL, serverName, email, alias, pub, priv, did)
+		}
+
 		code, isHTTP := aweb.HTTPStatusCode(err)
 		if !isHTTP {
 			fatal(err)
@@ -131,6 +138,24 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if strings.TrimSpace(registerNamespace) != "" {
+		fmt.Fprintln(os.Stderr, "Note: --namespace is ignored for new accounts. Your first namespace is your handle.")
+	}
+
+	saveNewRegistration(ctx, resp, baseURL, serverName, email, username, alias, pub, priv, did, client)
+
+	return nil
+}
+
+// saveNewRegistration persists credentials from a successful new-user registration.
+func saveNewRegistration(
+	ctx context.Context,
+	resp *aweb.RegisterResponse,
+	baseURL, serverName, email, username, alias string,
+	pub, priv []byte,
+	did string,
+	client *aweb.Client,
+) {
 	namespaceSlug := strings.TrimSpace(resp.NamespaceSlug)
 	if namespaceSlug == "" {
 		namespaceSlug = strings.TrimSpace(resp.ProjectSlug)
@@ -224,8 +249,189 @@ func runRegister(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(os.Stderr, "Run 'aw verify --code CODE' to activate your agent.")
 		}
 	}
+}
+
+// handleExistingAccount handles the 409 existing_account flow: prompt for
+// verification code, then call verify-code with alias + namespace_slug to
+// bootstrap the agent inline.
+func handleExistingAccount(
+	ctx context.Context,
+	client *aweb.Client,
+	existing *aweb.ExistingAccountInfo,
+	baseURL, serverName, email, alias string,
+	pub, priv []byte,
+	did string,
+) error {
+	fmt.Fprintf(os.Stderr, "Account already exists for %s.\n", email)
+	fmt.Fprintf(os.Stderr, "A verification code has been sent to confirm your identity.\n")
+
+	// Resolve target namespace.
+	nsSlug := strings.TrimSpace(registerNamespace)
+	if nsSlug == "" {
+		if len(existing.Namespaces) == 1 {
+			nsSlug = existing.Namespaces[0].Slug
+			fmt.Fprintf(os.Stderr, "Using namespace: %s\n", nsSlug)
+		} else if len(existing.Namespaces) > 1 && isTTY() {
+			nsSlug = promptNamespaceChoice(existing.Namespaces)
+		} else if len(existing.Namespaces) > 1 {
+			fmt.Fprintln(os.Stderr, "Multiple namespaces available. Use --namespace to select one:")
+			for _, ns := range existing.Namespaces {
+				fmt.Fprintf(os.Stderr, "  %s (%s)\n", ns.Slug, ns.Tier)
+			}
+			os.Exit(2)
+		} else {
+			fmt.Fprintln(os.Stderr, "No namespaces available for this account.")
+			os.Exit(2)
+		}
+	}
+
+	// Read verification code from stdin.
+	if isTTY() {
+		fmt.Fprint(os.Stderr, "Enter the 6-digit code: ")
+	}
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	code := strings.TrimSpace(line)
+	if code == "" {
+		fmt.Fprintln(os.Stderr, "No code entered.")
+		os.Exit(2)
+	}
+
+	// Verify + bootstrap inline (Option B from spec).
+	vctx, vcancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer vcancel()
+
+	vresp, verr := client.VerifyCode(vctx, &aweb.VerifyCodeRequest{
+		Email:         email,
+		Code:          code,
+		Alias:         alias,
+		NamespaceSlug: nsSlug,
+	})
+	if verr != nil {
+		vcode, ok := aweb.HTTPStatusCode(verr)
+		if ok && vcode == 403 {
+			msg := fmt.Sprintf("You don't have access to namespace %q.\n", nsSlug)
+			if len(existing.Namespaces) > 0 {
+				slugs := make([]string, len(existing.Namespaces))
+				for i, ns := range existing.Namespaces {
+					slugs[i] = ns.Slug
+				}
+				msg += fmt.Sprintf("Your namespaces: %s\n", strings.Join(slugs, ", "))
+			}
+			fmt.Fprint(os.Stderr, msg)
+			os.Exit(1)
+		}
+		if ok && vcode == 400 {
+			body, _ := aweb.HTTPErrorBody(verr)
+			fatal(formatVerifyError(body))
+		}
+		fatal(verr)
+	}
+	if !vresp.Verified {
+		fatal(fmt.Errorf("verification failed"))
+	}
+
+	// The verify-code response includes bootstrap credentials.
+	if vresp.APIKey == "" {
+		fatal(fmt.Errorf("verification succeeded but no API key returned. The server may not support inline bootstrap — try 'aw init --cloud' instead"))
+	}
+
+	namespaceSlug := strings.TrimSpace(vresp.NamespaceSlug)
+	if namespaceSlug == "" {
+		namespaceSlug = nsSlug
+	}
+	respAlias := strings.TrimSpace(vresp.Alias)
+	if respAlias == "" {
+		respAlias = alias
+	}
+
+	accountName := strings.TrimSpace(accountFlag)
+	if accountName == "" {
+		accountName = deriveAccountName(serverName, namespaceSlug, respAlias)
+	}
+
+	address := deriveAgentAddress(namespaceSlug, "", respAlias)
+	cfgPath := mustDefaultGlobalPath()
+	keysDir := awconfig.KeysDir(cfgPath)
+	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
+
+	// Best-effort ClawDID registration.
+	var handlePtr *string
+	if existing.Handle != "" {
+		h := "@" + existing.Handle
+		handlePtr = &h
+	}
+	stableID := registerClawDIDWithHandle(ctx, resolveClawDIDRegistryURL(cfgPath), pub, priv, did, canonicalOrigin(baseURL), address, handlePtr)
+
+	if registerSaveConfig {
+		updateErr := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
+			if cfg.Servers == nil {
+				cfg.Servers = map[string]awconfig.Server{}
+			}
+			if cfg.Accounts == nil {
+				cfg.Accounts = map[string]awconfig.Account{}
+			}
+			if _, ok := cfg.Servers[serverName]; !ok || strings.TrimSpace(cfg.Servers[serverName].URL) == "" {
+				cfg.Servers[serverName] = awconfig.Server{URL: baseURL}
+			}
+			cfg.Accounts[accountName] = awconfig.Account{
+				Server:        serverName,
+				APIKey:        vresp.APIKey,
+				AgentID:       vresp.AgentID,
+				AgentAlias:    respAlias,
+				Email:         email,
+				NamespaceSlug: namespaceSlug,
+				DID:           did,
+				StableID:      stableID,
+				SigningKey:     signingKeyPath,
+				Custody:       aweb.CustodySelf,
+				Lifetime:      aweb.LifetimePersistent,
+			}
+			if strings.TrimSpace(cfg.DefaultAccount) == "" || registerSetDefault {
+				cfg.DefaultAccount = accountName
+			}
+			return nil
+		})
+		if updateErr != nil {
+			fatal(updateErr)
+		}
+	}
+
+	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+		fatal(err)
+	}
+
+	if registerWriteContext {
+		if err := writeOrUpdateContext(serverName, accountName); err != nil {
+			fatal(err)
+		}
+	}
+
+	printJSON(vresp)
+	fmt.Fprintf(os.Stderr, "Verified! Agent %s/%s is now active.\n", namespaceSlug, respAlias)
 
 	return nil
+}
+
+// promptNamespaceChoice displays a numbered list and prompts for selection.
+func promptNamespaceChoice(namespaces []aweb.Namespace) string {
+	fmt.Fprintln(os.Stderr, "Available namespaces:")
+	for i, ns := range namespaces {
+		fmt.Fprintf(os.Stderr, "  [%d] %s (%s)\n", i+1, ns.Slug, ns.Tier)
+	}
+	fmt.Fprint(os.Stderr, "Select namespace [1]: ")
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return namespaces[0].Slug
+	}
+	idx := 0
+	if _, err := fmt.Sscanf(line, "%d", &idx); err != nil || idx < 1 || idx > len(namespaces) {
+		fmt.Fprintf(os.Stderr, "Invalid selection. Use --namespace to specify, or try again.\n")
+		os.Exit(2)
+	}
+	return namespaces[idx-1].Slug
 }
 
 // formatConflictError parses structured 409 error bodies from the server.
