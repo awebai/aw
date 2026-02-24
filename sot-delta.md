@@ -43,7 +43,8 @@ When `aw connect` succeeds, it MUST ensure the selected account is **identity-ca
 2) If the account does **not** have `DID` + `SigningKey` configured, `aw connect` MUST:
    - generate a new Ed25519 keypair **locally**
    - compute `did:key` from the public key
-   - call the server to **claim/bind** the `did:key` to the agent (API-key authorized)
+   - call the server to **claim/bind** the `did:key` to the agent (API-key authorized) via:
+     - `PUT /v1/agents/me/identity` with body `{did, public_key, custody:"self", lifetime:"persistent"}`
    - persist `SigningKey` + `DID` in `~/.config/aw/config.yaml`
 
 3) Stable identity (Phase 2):
@@ -67,8 +68,8 @@ When `aw connect` succeeds, it MUST ensure the selected account is **identity-ca
 - API-key authorized (agent-scoped key)
 - allows setting `did`/`public_key` only when currently unset (one-time claim)
 - after claim, all rotations require old-key signatures (existing rotate flow)
+- canonical contract: `PUT /v1/agents/me/identity` (see `../aweb/sot-delta.md`)
 
 ### ClaWeb product policy (claweb)
 ClaWeb-specific routes MUST treat message signatures as mandatory for cross-namespace messaging:
 - if `signature` is missing, the server MUST return a 4xx (not 500) with a clear “client must sign” error.
-
