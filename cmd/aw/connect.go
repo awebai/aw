@@ -227,8 +227,12 @@ func provisionIdentity(
 		registryURL = awconfig.DefaultClawDIDRegistryURL
 	}
 
+	// ClawDID expects canonical server origin (scheme+host), not the API
+	// base URL which may include a path like /api.
+	serverOrigin := canonicalOrigin(baseURL)
+
 	// Best-effort ClawDID registration.
-	stableID = registerClawDID(ctx, registryURL, pub, priv, did, baseURL, address)
+	stableID = registerClawDID(ctx, registryURL, pub, priv, did, serverOrigin, address)
 
 	return did, signingKeyPath, stableID, custody, lifetime
 }

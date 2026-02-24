@@ -247,3 +247,80 @@ func TestChainResolverNoServer(t *testing.T) {
 		t.Fatal("expected error when no server resolver for address")
 	}
 }
+
+func TestClaimIdentityHappyPath(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/agents/me/identity" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if r.Method != http.MethodPut {
+			t.Fatalf("method=%s, want PUT", r.Method)
+		}
+		var req ClaimIdentityRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if req.DID == "" {
+			t.Fatal("DID empty")
+		}
+		if req.Custody != "self" {
+			t.Fatalf("custody=%q", req.Custody)
+		}
+		_ = json.NewEncoder(w).Encode(ClaimIdentityResponse{
+			Status:  "ok",
+			DID:     req.DID,
+			Custody: "self",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.ClaimIdentity(context.Background(), &ClaimIdentityRequest{
+		DID:       "did:key:z6Mktest",
+		PublicKey: "dGVzdA",
+		Custody:   "self",
+		Lifetime:  "persistent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("status=%q", resp.Status)
+	}
+	if resp.DID != "did:key:z6Mktest" {
+		t.Fatalf("did=%q", resp.DID)
+	}
+}
+
+func TestClaimIdentityAlreadySet(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(409)
+		w.Write([]byte(`{"error":"IDENTITY_ALREADY_SET"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.ClaimIdentity(context.Background(), &ClaimIdentityRequest{
+		DID:       "did:key:z6Mktest",
+		PublicKey: "dGVzdA",
+		Custody:   "self",
+		Lifetime:  "persistent",
+	})
+	if err == nil {
+		t.Fatal("expected error for 409")
+	}
+	code, ok := HTTPStatusCode(err)
+	if !ok || code != 409 {
+		t.Fatalf("expected 409, got %d (ok=%v): %v", code, ok, err)
+	}
+}

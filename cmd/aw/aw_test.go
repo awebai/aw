@@ -4898,6 +4898,9 @@ func TestAwConnect(t *testing.T) {
 				"name":       "My Company",
 			})
 		case "/v1/agents/me/identity":
+			if r.Method != http.MethodPut {
+				t.Fatalf("identity endpoint: method=%s, want PUT", r.Method)
+			}
 			identityClaimed.Store(true)
 			var req map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&req)

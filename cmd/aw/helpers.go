@@ -83,16 +83,6 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 		}
 	}
 
-	// Backfill StableID in-memory when DID exists but StableID is empty.
-	// Enables existing self-custody agents to emit from_stable_id without
-	// re-running connect or modifying config on disk.
-	if sel.StableID == "" && sel.DID != "" {
-		pub, err := aweb.ExtractPublicKey(sel.DID)
-		if err == nil {
-			c.SetStableID(aweb.ComputeStableID(pub, "claw"))
-		}
-	}
-
 	// Enable ClawDID split-trust verification when a registry URL is configured.
 	if sel.ClawDIDRegistryURL != "" {
 		c.SetClawDIDClient(&aweb.ClawDIDClient{RegistryURL: sel.ClawDIDRegistryURL})
@@ -104,6 +94,16 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 func mustClient() *aweb.Client {
 	c, _ := mustResolve()
 	return c
+}
+
+// canonicalOrigin extracts scheme+host from a URL, stripping any path.
+// For example, "https://app.claweb.ai/api" → "https://app.claweb.ai".
+func canonicalOrigin(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return rawURL
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 func cleanBaseURL(raw string) (string, error) {

@@ -117,7 +117,7 @@ func (r *PinResolver) Resolve(_ context.Context, identifier string) (*AgentIdent
 	return nil, fmt.Errorf("PinResolver: no pin for %q", identifier)
 }
 
-// ClaimIdentityRequest is sent to POST /v1/agents/me/identity.
+// ClaimIdentityRequest is sent to PUT /v1/agents/me/identity.
 // This endpoint lets an agent bind a did:key to itself (one-time claim).
 type ClaimIdentityRequest struct {
 	DID       string `json:"did"`
@@ -126,7 +126,7 @@ type ClaimIdentityRequest struct {
 	Lifetime  string `json:"lifetime"`
 }
 
-// ClaimIdentityResponse is returned by POST /v1/agents/me/identity.
+// ClaimIdentityResponse is returned by PUT /v1/agents/me/identity.
 type ClaimIdentityResponse struct {
 	Status  string `json:"status"`
 	DID     string `json:"did"`
@@ -137,7 +137,7 @@ type ClaimIdentityResponse struct {
 // client's API key. The server returns 409 if the agent already has an identity.
 func (c *Client) ClaimIdentity(ctx context.Context, req *ClaimIdentityRequest) (*ClaimIdentityResponse, error) {
 	var out ClaimIdentityResponse
-	if err := c.post(ctx, "/v1/agents/me/identity", req, &out); err != nil {
+	if err := c.put(ctx, "/v1/agents/me/identity", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
