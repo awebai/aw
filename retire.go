@@ -82,7 +82,7 @@ func canonicalRetirementJSON(successorAddress, successorDID, timestamp string) s
 		b.WriteByte('"')
 		b.WriteString(f.key)
 		b.WriteString(`":"`)
-		b.WriteString(f.value) // addresses, DIDs, and timestamps need no escaping
+		writeEscapedString(&b, f.value)
 		b.WriteByte('"')
 	}
 	b.WriteByte('}')

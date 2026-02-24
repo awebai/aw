@@ -4329,6 +4329,9 @@ default_account: acct
 	if acct["did"] == nil || acct["did"] == "" {
 		t.Fatalf("config did is empty after verify with explicit flags:\n%s", string(cfgData))
 	}
+	if acct["signing_key"] == nil || acct["signing_key"] == "" {
+		t.Fatalf("config signing_key is empty after verify with explicit flags:\n%s", string(cfgData))
+	}
 }
 
 func TestAwVerifyResolvesServerFromName(t *testing.T) {

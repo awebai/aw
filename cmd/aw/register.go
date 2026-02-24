@@ -435,6 +435,7 @@ func verifyAndBootstrap(
 	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
 	custody := aweb.CustodySelf
 	lifetime := aweb.LifetimePersistent
+	recovered := false
 	if claimErr != nil {
 		claimCode, ok := aweb.HTTPStatusCode(claimErr)
 		if ok && claimCode == 409 {
@@ -446,16 +447,19 @@ func verifyAndBootstrap(
 			if recoveredLifetime != "" {
 				lifetime = recoveredLifetime
 			}
+			recovered = true
 		} else {
 			fatal(fmt.Errorf("identity claim failed: %w", claimErr))
 		}
 	}
 
-	// Save keypair to disk BEFORE writing config. If config is written but
-	// the key save fails, the agent would be bricked (config pointing to a
-	// nonexistent key). An orphaned key file on disk is harmless.
-	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
-		fatal(err)
+	// Save keypair to disk BEFORE writing config. Skip when recovery ran —
+	// the recovered key is already on disk, and writing our freshly-generated
+	// (never-registered) key would overwrite it.
+	if !recovered {
+		if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+			fatal(err)
+		}
 	}
 
 	// Best-effort ClawDID registration.
