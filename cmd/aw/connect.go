@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -81,6 +84,36 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	accountName := "acct-" + sanitizeKeyComponent(serverName) + "__" + sanitizeKeyComponent(agentID)
 
 	cfgPath := mustDefaultGlobalPath()
+	keysDir := awconfig.KeysDir(cfgPath)
+
+	// Check existing config for identity fields before provisioning.
+	existingCfg, _ := awconfig.LoadGlobalFrom(cfgPath)
+	var existingDID, existingSigningKey, existingStableID, existingCustody, existingLifetime string
+	if existingCfg != nil {
+		for _, acct := range existingCfg.Accounts {
+			if strings.TrimSpace(acct.AgentID) == agentID && strings.TrimSpace(acct.Server) == serverName {
+				existingDID = strings.TrimSpace(acct.DID)
+				existingSigningKey = strings.TrimSpace(acct.SigningKey)
+				existingStableID = strings.TrimSpace(acct.StableID)
+				existingCustody = strings.TrimSpace(acct.Custody)
+				existingLifetime = strings.TrimSpace(acct.Lifetime)
+				break
+			}
+		}
+	}
+
+	// Provision identity if not already present.
+	identityDID := existingDID
+	signingKeyPath := existingSigningKey
+	stableID := existingStableID
+	custody := existingCustody
+	lifetime := existingLifetime
+	if existingDID == "" || existingSigningKey == "" {
+		identityDID, signingKeyPath, stableID, custody, lifetime = provisionIdentity(
+			ctx, client, cfgPath, keysDir, baseURL, namespaceSlug, alias,
+		)
+	}
+
 	updateErr := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
 		if cfg.Servers == nil {
 			cfg.Servers = map[string]awconfig.Server{}
@@ -99,20 +132,17 @@ func runConnect(cmd *cobra.Command, args []string) error {
 
 		cfg.Servers[serverName] = awconfig.Server{URL: baseURL}
 
-		// Preserve existing identity fields (DID, StableID, SigningKey, etc.)
-		// so re-connecting a self-custody agent doesn't discard them.
-		existing := cfg.Accounts[accountName]
 		cfg.Accounts[accountName] = awconfig.Account{
 			Server:        serverName,
 			APIKey:        apiKey,
 			AgentID:       agentID,
 			AgentAlias:    alias,
 			NamespaceSlug: namespaceSlug,
-			DID:           existing.DID,
-			StableID:      existing.StableID,
-			SigningKey:     existing.SigningKey,
-			Custody:       existing.Custody,
-			Lifetime:      existing.Lifetime,
+			DID:           identityDID,
+			StableID:      stableID,
+			SigningKey:    signingKeyPath,
+			Custody:       custody,
+			Lifetime:      lifetime,
 		}
 
 		if strings.TrimSpace(cfg.DefaultAccount) == "" || connectSetDefault {
@@ -129,10 +159,122 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "Connected as %s (%s)\n", alias, agentID)
+	if identityDID != "" {
+		fmt.Fprintf(os.Stderr, "Identity: %s (self-custody)\n", identityDID)
+	}
+	if stableID != "" {
+		fmt.Fprintf(os.Stderr, "Stable ID: %s\n", stableID)
+	}
 	fmt.Fprintf(os.Stderr, "Config written to %s\n", cfgPath)
 
 	// Print introspect output as JSON for scriptability.
 	printJSON(resp)
 
 	return nil
+}
+
+// provisionIdentity generates a keypair, claims identity on the server, and
+// optionally registers with ClawDID. Returns the identity fields to persist.
+func provisionIdentity(
+	ctx context.Context,
+	client *aweb.Client,
+	cfgPath, keysDir, baseURL, namespaceSlug, alias string,
+) (did, signingKeyPath, stableID, custody, lifetime string) {
+	pub, priv, err := awconfig.GenerateKeypair()
+	if err != nil {
+		fatal(err)
+	}
+
+	did = aweb.ComputeDIDKey(pub)
+	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
+
+	// Claim identity on the aweb server.
+	_, err = client.ClaimIdentity(ctx, &aweb.ClaimIdentityRequest{
+		DID:       did,
+		PublicKey: pubKeyB64,
+		Custody:   "self",
+		Lifetime:  "persistent",
+	})
+	if err != nil {
+		code, ok := aweb.HTTPStatusCode(err)
+		if ok && code == 409 {
+			fmt.Fprintln(os.Stderr, "Identity already set on server. If you have the signing key, copy it to config; otherwise rotate keys.")
+			os.Exit(1)
+		}
+		fatal(err)
+	}
+
+	custody = "self"
+	lifetime = "persistent"
+
+	// Persist the keypair to disk.
+	address := deriveAgentAddress(namespaceSlug, "", alias)
+	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+		fatal(err)
+	}
+	signingKeyPath = filepath.Join(keysDir, strings.ReplaceAll(address, "/", "-")+".signing.key")
+
+	// Best-effort ClawDID registration.
+	stableID = registerClawDID(ctx, cfgPath, pub, priv, did, baseURL, address)
+
+	return did, signingKeyPath, stableID, custody, lifetime
+}
+
+// registerClawDID attempts to register the agent's stable_id with ClawDID.
+// Returns the stable_id on success, or empty string on failure.
+func registerClawDID(
+	ctx context.Context,
+	cfgPath string,
+	pub ed25519.PublicKey, priv ed25519.PrivateKey,
+	did, serverURL, address string,
+) string {
+	// Resolve ClawDID registry URL.
+	registryURL := strings.TrimSpace(os.Getenv("CLAWDID_REGISTRY_URL"))
+	if registryURL == "" {
+		cfg, err := awconfig.LoadGlobalFrom(cfgPath)
+		if err == nil && strings.TrimSpace(cfg.ClawDIDRegistryURL) != "" {
+			registryURL = strings.TrimSpace(cfg.ClawDIDRegistryURL)
+		}
+	}
+	if registryURL == "" {
+		registryURL = awconfig.DefaultClawDIDRegistryURL
+	}
+
+	didClaw := aweb.ComputeStableID(pub, "claw")
+	stateHash := aweb.ComputeStateHash(didClaw, did, serverURL, address, "")
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+
+	entry := aweb.LogEntry{
+		AuthorizedBy:   did,
+		DIDClaw:        didClaw,
+		NewDIDKey:      did,
+		Operation:      "create",
+		PrevEntryHash:  nil,
+		PreviousDIDKey: nil,
+		Seq:            1,
+		StateHash:      stateHash,
+		Timestamp:      timestamp,
+	}
+	canonical := entry.CanonicalJSON()
+	sig := ed25519.Sign(priv, []byte(canonical))
+	proof := base64.RawStdEncoding.EncodeToString(sig)
+
+	clawDIDClient := &aweb.ClawDIDClient{RegistryURL: registryURL}
+	_, err := clawDIDClient.Register(ctx, &aweb.ClawDIDRegisterRequest{
+		DIDClaw:      didClaw,
+		DIDKey:       did,
+		Server:       serverURL,
+		Address:      address,
+		Seq:          1,
+		StateHash:    stateHash,
+		AuthorizedBy: did,
+		Timestamp:    timestamp,
+		Proof:        proof,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: ClawDID registration failed (non-fatal): %v\n", err)
+		return ""
+	}
+
+	return didClaw
 }

@@ -4707,16 +4707,21 @@ default_account: acct
 
 	// Verify the signature covers canonical to address (myco/monitor),
 	// matching what aweb returns in to_address on the inbox side.
+	var fromStableID string
+	if v, ok := gotBody["from_stable_id"].(string); ok {
+		fromStableID = v
+	}
 	env := &aweb.MessageEnvelope{
-		From:      "myco/agent",
-		FromDID:   did,
-		To:        "myco/monitor",
-		ToDID:     recipientDID,
-		Type:      "mail",
-		Body:      "hello from identity",
-		Timestamp: gotBody["timestamp"].(string),
-		MessageID: msgID,
-		Signature: sig,
+		From:         "myco/agent",
+		FromDID:      did,
+		To:           "myco/monitor",
+		ToDID:        recipientDID,
+		Type:         "mail",
+		Body:         "hello from identity",
+		Timestamp:    gotBody["timestamp"].(string),
+		MessageID:    msgID,
+		FromStableID: fromStableID,
+		Signature:    sig,
 	}
 	status, verifyErr := aweb.VerifyMessage(env)
 	if verifyErr != nil {
@@ -4844,16 +4849,21 @@ default_account: acct
 
 	// Verify the signature covers canonical to address (acme/monitor),
 	// matching what aweb returns in to_address on the inbox side.
+	var fromStableID2 string
+	if v, ok := gotBody["from_stable_id"].(string); ok {
+		fromStableID2 = v
+	}
 	env := &aweb.MessageEnvelope{
-		From:      "acme/bot",
-		FromDID:   did,
-		To:        "acme/monitor",
-		ToDID:     recipientDID,
-		Type:      "mail",
-		Body:      "hello from namespace",
-		Timestamp: gotBody["timestamp"].(string),
-		MessageID: gotBody["message_id"].(string),
-		Signature: sig,
+		From:         "acme/bot",
+		FromDID:      did,
+		To:           "acme/monitor",
+		ToDID:        recipientDID,
+		Type:         "mail",
+		Body:         "hello from namespace",
+		Timestamp:    gotBody["timestamp"].(string),
+		MessageID:    gotBody["message_id"].(string),
+		FromStableID: fromStableID2,
+		Signature:    sig,
 	}
 	status, verifyErr := aweb.VerifyMessage(env)
 	if verifyErr != nil {
@@ -4867,6 +4877,7 @@ default_account: acct
 func TestAwConnect(t *testing.T) {
 	t.Parallel()
 
+	var identityClaimed atomic.Bool
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/auth/introspect":
@@ -4885,6 +4896,15 @@ func TestAwConnect(t *testing.T) {
 				"project_id": "proj-123",
 				"slug":       "myco",
 				"name":       "My Company",
+			})
+		case "/v1/agents/me/identity":
+			identityClaimed.Store(true)
+			var req map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":  "ok",
+				"did":     req["did"],
+				"custody": "self",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -4921,6 +4941,7 @@ func TestAwConnect(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL="+server.URL,
 		"AWEB_API_KEY=aw_sk_test",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1", // unreachable — forces best-effort failure
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -4928,7 +4949,11 @@ func TestAwConnect(t *testing.T) {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 
-	// Verify config was written.
+	if !identityClaimed.Load() {
+		t.Fatal("expected /v1/agents/me/identity to be called")
+	}
+
+	// Verify config was written with identity fields.
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatalf("read config: %v", err)
@@ -4958,6 +4983,21 @@ func TestAwConnect(t *testing.T) {
 			if acct["namespace_slug"] != "myco" {
 				t.Fatalf("namespace_slug=%v, want myco", acct["namespace_slug"])
 			}
+			// Verify identity fields are populated.
+			did, _ := acct["did"].(string)
+			if did == "" || !strings.HasPrefix(did, "did:key:z") {
+				t.Fatalf("did=%v, want did:key:z...", acct["did"])
+			}
+			signingKey, _ := acct["signing_key"].(string)
+			if signingKey == "" {
+				t.Fatal("signing_key not set")
+			}
+			if acct["custody"] != "self" {
+				t.Fatalf("custody=%v, want self", acct["custody"])
+			}
+			if acct["lifetime"] != "persistent" {
+				t.Fatalf("lifetime=%v, want persistent", acct["lifetime"])
+			}
 			break
 		}
 	}
@@ -4973,6 +5013,280 @@ func TestAwConnect(t *testing.T) {
 	ctxPath := filepath.Join(tmp, ".aw", "context")
 	if _, err := os.Stat(ctxPath); os.IsNotExist(err) {
 		t.Fatal(".aw/context not written")
+	}
+}
+
+func TestAwConnectPreservesExistingIdentity(t *testing.T) {
+	t.Parallel()
+
+	var identityCalled atomic.Bool
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/introspect":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
+				"agent_type": "agent",
+			})
+		case "/v1/projects/current":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"slug":       "myco",
+			})
+		case "/v1/agents/me/identity":
+			identityCalled.Store(true)
+			w.WriteHeader(200)
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// Pre-populate config with existing identity.
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	did := aweb.ComputeDIDKey(pub)
+	keysDir := filepath.Join(tmp, "keys")
+	_ = os.MkdirAll(keysDir, 0o700)
+	_ = awconfig.SaveKeypair(keysDir, "myco/alice", pub, priv)
+	keyPath := awconfig.SigningKeyPath(keysDir, "myco/alice")
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  `+server.Listener.Addr().String()+`:
+    url: `+server.URL+`
+accounts:
+  acct-`+server.Listener.Addr().String()+`__agent-1:
+    server: `+server.Listener.Addr().String()+`
+    api_key: aw_sk_test
+    agent_id: agent-1
+    agent_alias: alice
+    namespace_slug: myco
+    did: "`+did+`"
+    signing_key: "`+keyPath+`"
+    custody: self
+    lifetime: persistent
+    stable_id: "did:claw:existing"
+default_account: acct-`+server.Listener.Addr().String()+`__agent-1
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "connect")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL="+server.URL,
+		"AWEB_API_KEY=aw_sk_test",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	// Should NOT call /v1/agents/me/identity when identity exists.
+	if identityCalled.Load() {
+		t.Fatal("/v1/agents/me/identity should not be called when identity already exists")
+	}
+
+	// Verify existing identity is preserved.
+	data, _ := os.ReadFile(cfgPath)
+	var cfg struct {
+		Accounts map[string]map[string]any `yaml:"accounts"`
+	}
+	_ = yaml.Unmarshal(data, &cfg)
+	for _, acct := range cfg.Accounts {
+		if acct["api_key"] == "aw_sk_test" {
+			if acct["did"] != did {
+				t.Fatalf("did=%v, want %s (preserved)", acct["did"], did)
+			}
+			if acct["stable_id"] != "did:claw:existing" {
+				t.Fatalf("stable_id=%v, want did:claw:existing (preserved)", acct["stable_id"])
+			}
+			break
+		}
+	}
+}
+
+func TestAwConnectIdentityAlreadySet(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/introspect":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
+				"agent_type": "agent",
+			})
+		case "/v1/projects/current":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"slug":       "myco",
+			})
+		case "/v1/agents/me/identity":
+			w.WriteHeader(409)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":    "IDENTITY_ALREADY_SET",
+					"message": "identity already bound",
+				},
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "connect")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL="+server.URL,
+		"AWEB_API_KEY=aw_sk_test",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected error for 409, got success: %s", string(out))
+	}
+	if !strings.Contains(string(out), "Identity already set") {
+		t.Fatalf("expected clear error about identity, got: %s", string(out))
+	}
+}
+
+func TestAwConnectClawDIDBestEffort(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/introspect":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
+				"agent_type": "agent",
+			})
+		case "/v1/projects/current":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"slug":       "myco",
+			})
+		case "/v1/agents/me/identity":
+			var req map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":  "ok",
+				"did":     req["did"],
+				"custody": "self",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "connect")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL="+server.URL,
+		"AWEB_API_KEY=aw_sk_test",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1", // unreachable
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed (should succeed despite ClawDID failure): %v\n%s", err, string(out))
+	}
+
+	// Connect should succeed with identity but no stable_id.
+	data, _ := os.ReadFile(cfgPath)
+	var cfg struct {
+		Accounts map[string]map[string]any `yaml:"accounts"`
+	}
+	_ = yaml.Unmarshal(data, &cfg)
+	for _, acct := range cfg.Accounts {
+		if acct["api_key"] == "aw_sk_test" {
+			did, _ := acct["did"].(string)
+			if did == "" || !strings.HasPrefix(did, "did:key:z") {
+				t.Fatalf("did=%v, want did:key:z...", acct["did"])
+			}
+			// StableID should be empty when ClawDID is unreachable.
+			if acct["stable_id"] != nil && acct["stable_id"] != "" {
+				t.Fatalf("stable_id=%v, want empty (ClawDID unreachable)", acct["stable_id"])
+			}
+			break
+		}
+	}
+
+	// Verify stderr warns about ClawDID failure.
+	if !strings.Contains(string(out), "ClawDID registration failed") {
+		t.Fatalf("expected warning about ClawDID failure in output: %s", string(out))
 	}
 }
 

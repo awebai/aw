@@ -297,3 +297,101 @@ func (c *ClawDIDClient) FetchKey(ctx context.Context, didClaw string) (*ClawDIDK
 	}
 	return &result, nil
 }
+
+// --- ClawDID registration ---
+
+// ClawDIDRegisterRequest is sent to POST /v1/did on the ClawDID registry.
+type ClawDIDRegisterRequest struct {
+	DIDClaw       string  `json:"did_claw"`
+	DIDKey        string  `json:"did_key"`
+	Server        string  `json:"server"`
+	Address       string  `json:"address"`
+	Handle        *string `json:"handle"`
+	Seq           int     `json:"seq"`
+	PrevEntryHash *string `json:"prev_entry_hash"`
+	StateHash     string  `json:"state_hash"`
+	AuthorizedBy  string  `json:"authorized_by"`
+	Timestamp     string  `json:"timestamp"`
+	Proof         string  `json:"proof"`
+}
+
+// ClawDIDRegisterResponse is returned by POST /v1/did.
+type ClawDIDRegisterResponse struct {
+	DIDClaw string `json:"did_claw"`
+	Status  string `json:"status"`
+}
+
+// ComputeStateHash computes the state_hash for a ClawDID registration.
+// It builds a canonical JSON of the state fields (sorted alphabetically)
+// and returns the hex-encoded SHA-256 hash.
+func ComputeStateHash(didClaw, didKey, server, address, handle string) string {
+	type field struct {
+		key string
+		val string
+	}
+	fields := []field{
+		{"address", address},
+		{"current_did_key", didKey},
+		{"did_claw", didClaw},
+		{"handle", handle},
+		{"server", server},
+	}
+
+	var b strings.Builder
+	b.WriteByte('{')
+	for i, f := range fields {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte('"')
+		b.WriteString(f.key)
+		b.WriteString(`":"`)
+		writeEscapedString(&b, f.val)
+		b.WriteByte('"')
+	}
+	b.WriteByte('}')
+
+	h := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(h[:])
+}
+
+// Register calls POST /v1/did on the ClawDID registry to register a new DID.
+func (c *ClawDIDClient) Register(ctx context.Context, req *ClawDIDRegisterRequest) (*ClawDIDRegisterResponse, error) {
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 10 * time.Second}
+	}
+
+	reqBody, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("clawdid: marshal request: %w", err)
+	}
+
+	u := c.RegistryURL + "/v1/did"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(string(reqBody)))
+	if err != nil {
+		return nil, fmt.Errorf("clawdid: build request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("clawdid: register: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("clawdid: read response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("clawdid: http %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result ClawDIDRegisterResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("clawdid: decode response: %w", err)
+	}
+	return &result, nil
+}

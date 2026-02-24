@@ -276,3 +276,141 @@ func TestClawDIDClientNotFound(t *testing.T) {
 		t.Fatal("expected error for 404")
 	}
 }
+
+func TestClawDIDRegisterHappyPath(t *testing.T) {
+	t.Parallel()
+
+	seed, _ := hex.DecodeString("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+	key := ed25519.NewKeyFromSeed(seed)
+	pub := key.Public().(ed25519.PublicKey)
+	didKey := ComputeDIDKey(pub)
+	didClaw := ComputeStableID(pub, "claw")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/did" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(404)
+			return
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("unexpected method: %s", r.Method)
+			w.WriteHeader(405)
+			return
+		}
+
+		var req ClawDIDRegisterRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if req.DIDClaw != didClaw {
+			t.Errorf("did_claw=%q, want %q", req.DIDClaw, didClaw)
+		}
+		if req.DIDKey != didKey {
+			t.Errorf("did_key=%q, want %q", req.DIDKey, didKey)
+		}
+		if req.Seq != 1 {
+			t.Errorf("seq=%d, want 1", req.Seq)
+		}
+		if req.PrevEntryHash != nil {
+			t.Errorf("prev_entry_hash should be nil for seq=1")
+		}
+		if req.Proof == "" {
+			t.Error("proof is empty")
+		}
+		if req.StateHash == "" {
+			t.Error("state_hash is empty")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ClawDIDRegisterResponse{
+			DIDClaw: req.DIDClaw,
+			Status:  "created",
+		})
+	}))
+	t.Cleanup(ts.Close)
+
+	client := &ClawDIDClient{RegistryURL: ts.URL}
+	resp, err := client.Register(context.Background(), &ClawDIDRegisterRequest{
+		DIDClaw:      didClaw,
+		DIDKey:       didKey,
+		Server:       "https://app.claweb.ai/api",
+		Address:      "myco/alice",
+		Seq:          1,
+		StateHash:    "abc123",
+		AuthorizedBy: didKey,
+		Timestamp:    "2026-02-24T10:00:00Z",
+		Proof:        "dGVzdA",
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if resp.Status != "created" {
+		t.Errorf("status=%q, want created", resp.Status)
+	}
+	if resp.DIDClaw != didClaw {
+		t.Errorf("did_claw=%q, want %q", resp.DIDClaw, didClaw)
+	}
+}
+
+func TestClawDIDRegisterConflict(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(409)
+		w.Write([]byte(`{"error":"already registered"}`))
+	}))
+	t.Cleanup(ts.Close)
+
+	client := &ClawDIDClient{RegistryURL: ts.URL}
+	_, err := client.Register(context.Background(), &ClawDIDRegisterRequest{
+		DIDClaw: "did:claw:test",
+		DIDKey:  "did:key:z6Mktest",
+	})
+	if err == nil {
+		t.Fatal("expected error for 409")
+	}
+	if !strings.Contains(err.Error(), "409") {
+		t.Errorf("error should mention 409: %v", err)
+	}
+}
+
+func TestClawDIDRegisterUnavailable(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+		w.Write([]byte(`{"error":"service unavailable"}`))
+	}))
+	t.Cleanup(ts.Close)
+
+	client := &ClawDIDClient{RegistryURL: ts.URL}
+	_, err := client.Register(context.Background(), &ClawDIDRegisterRequest{
+		DIDClaw: "did:claw:test",
+		DIDKey:  "did:key:z6Mktest",
+	})
+	if err == nil {
+		t.Fatal("expected error for 503")
+	}
+	if !strings.Contains(err.Error(), "503") {
+		t.Errorf("error should mention 503: %v", err)
+	}
+}
+
+func TestComputeStateHash(t *testing.T) {
+	t.Parallel()
+
+	hash := ComputeStateHash("did:claw:abc", "did:key:z6Mk...", "https://app.claweb.ai/api", "myco/alice", "")
+	if hash == "" {
+		t.Fatal("state hash should not be empty")
+	}
+	// Same inputs must produce the same hash.
+	hash2 := ComputeStateHash("did:claw:abc", "did:key:z6Mk...", "https://app.claweb.ai/api", "myco/alice", "")
+	if hash != hash2 {
+		t.Fatalf("hash mismatch: %s != %s", hash, hash2)
+	}
+	// Different inputs must produce different hashes.
+	hash3 := ComputeStateHash("did:claw:xyz", "did:key:z6Mk...", "https://app.claweb.ai/api", "myco/alice", "")
+	if hash == hash3 {
+		t.Fatal("different inputs should produce different hashes")
+	}
+}
