@@ -7,9 +7,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
-	"strings"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -281,10 +282,31 @@ func TestClawDIDRegisterHappyPath(t *testing.T) {
 	t.Parallel()
 
 	seed, _ := hex.DecodeString("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
-	key := ed25519.NewKeyFromSeed(seed)
-	pub := key.Public().(ed25519.PublicKey)
+	priv := ed25519.NewKeyFromSeed(seed)
+	pub := priv.Public().(ed25519.PublicKey)
 	didKey := ComputeDIDKey(pub)
 	didClaw := ComputeStableID(pub, "claw")
+
+	serverURL := "https://app.claweb.ai/api"
+	address := "myco/alice"
+	timestamp := "2026-02-24T10:00:00Z"
+	stateHash := ComputeStateHash(didClaw, didKey, serverURL, address, nil)
+
+	// Build a real proof over the canonical log entry.
+	entry := LogEntry{
+		AuthorizedBy:   didKey,
+		DIDClaw:        didClaw,
+		NewDIDKey:      didKey,
+		Operation:      "create",
+		PrevEntryHash:  nil,
+		PreviousDIDKey: nil,
+		Seq:            1,
+		StateHash:      stateHash,
+		Timestamp:      timestamp,
+	}
+	canonical := entry.CanonicalJSON()
+	sig := ed25519.Sign(priv, []byte(canonical))
+	proof := base64.RawStdEncoding.EncodeToString(sig)
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/did" {
@@ -314,11 +336,21 @@ func TestClawDIDRegisterHappyPath(t *testing.T) {
 		if req.PrevEntryHash != nil {
 			t.Errorf("prev_entry_hash should be nil for seq=1")
 		}
-		if req.Proof == "" {
-			t.Error("proof is empty")
-		}
 		if req.StateHash == "" {
 			t.Error("state_hash is empty")
+		}
+
+		// Verify the proof signature on the server side.
+		reqPub, err := ExtractPublicKey(req.AuthorizedBy)
+		if err != nil {
+			t.Fatalf("extract pub from authorized_by: %v", err)
+		}
+		ok, err := VerifyLogEntrySignature(reqPub, req.Proof, canonical)
+		if err != nil {
+			t.Fatalf("verify proof: %v", err)
+		}
+		if !ok {
+			t.Error("proof signature verification failed")
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -333,13 +365,13 @@ func TestClawDIDRegisterHappyPath(t *testing.T) {
 	resp, err := client.Register(context.Background(), &ClawDIDRegisterRequest{
 		DIDClaw:      didClaw,
 		DIDKey:       didKey,
-		Server:       "https://app.claweb.ai/api",
-		Address:      "myco/alice",
+		Server:       serverURL,
+		Address:      address,
 		Seq:          1,
-		StateHash:    "abc123",
+		StateHash:    stateHash,
 		AuthorizedBy: didKey,
-		Timestamp:    "2026-02-24T10:00:00Z",
-		Proof:        "dGVzdA",
+		Timestamp:    timestamp,
+		Proof:        proof,
 	})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
@@ -399,18 +431,39 @@ func TestClawDIDRegisterUnavailable(t *testing.T) {
 func TestComputeStateHash(t *testing.T) {
 	t.Parallel()
 
-	hash := ComputeStateHash("did:claw:abc", "did:key:z6Mk...", "https://app.claweb.ai/api", "myco/alice", "")
+	hash := ComputeStateHash("did:claw:abc", "did:key:z6Mk...", "https://app.claweb.ai/api", "myco/alice", nil)
 	if hash == "" {
 		t.Fatal("state hash should not be empty")
 	}
 	// Same inputs must produce the same hash.
-	hash2 := ComputeStateHash("did:claw:abc", "did:key:z6Mk...", "https://app.claweb.ai/api", "myco/alice", "")
+	hash2 := ComputeStateHash("did:claw:abc", "did:key:z6Mk...", "https://app.claweb.ai/api", "myco/alice", nil)
 	if hash != hash2 {
 		t.Fatalf("hash mismatch: %s != %s", hash, hash2)
 	}
 	// Different inputs must produce different hashes.
-	hash3 := ComputeStateHash("did:claw:xyz", "did:key:z6Mk...", "https://app.claweb.ai/api", "myco/alice", "")
+	hash3 := ComputeStateHash("did:claw:xyz", "did:key:z6Mk...", "https://app.claweb.ai/api", "myco/alice", nil)
 	if hash == hash3 {
 		t.Fatal("different inputs should produce different hashes")
+	}
+	// nil handle vs non-nil empty handle must differ (null vs "").
+	emptyHandle := ""
+	hash4 := ComputeStateHash("did:claw:abc", "did:key:z6Mk...", "https://app.claweb.ai/api", "myco/alice", &emptyHandle)
+	if hash == hash4 {
+		t.Fatal("nil handle and empty-string handle should produce different hashes")
+	}
+}
+
+func TestComputeStateHashGolden(t *testing.T) {
+	t.Parallel()
+
+	// Golden value: SHA-256 of canonical JSON with null handle.
+	// {"address":"myco/alice","current_did_key":"did:key:z6Mk...","did_claw":"did:claw:abc","handle":null,"server":"https://app.claweb.ai/api"}
+	hash := ComputeStateHash("did:claw:abc", "did:key:z6Mk...", "https://app.claweb.ai/api", "myco/alice", nil)
+
+	// Compute expected hash manually.
+	canonical := `{"address":"myco/alice","current_did_key":"did:key:z6Mk...","did_claw":"did:claw:abc","handle":null,"server":"https://app.claweb.ai/api"}`
+	expected := fmt.Sprintf("%x", sha256.Sum256([]byte(canonical)))
+	if hash != expected {
+		t.Fatalf("golden hash mismatch:\n  got:  %s\n  want: %s\n  canonical: %s", hash, expected, canonical)
 	}
 }

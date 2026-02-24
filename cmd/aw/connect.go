@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -56,7 +55,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		fatal(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	resp, err := client.Introspect(ctx)
@@ -160,7 +159,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "Connected as %s (%s)\n", alias, agentID)
 	if identityDID != "" {
-		fmt.Fprintf(os.Stderr, "Identity: %s (self-custody)\n", identityDID)
+		fmt.Fprintf(os.Stderr, "Identity: %s (%s)\n", identityDID, custody)
 	}
 	if stableID != "" {
 		fmt.Fprintf(os.Stderr, "Stable ID: %s\n", stableID)
@@ -188,6 +187,15 @@ func provisionIdentity(
 	did = aweb.ComputeDIDKey(pub)
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
+	// Persist the keypair to disk BEFORE claiming on the server.
+	// If claim succeeds but disk write fails later, the key would be
+	// unrecoverable. An unused key file on disk is harmless.
+	address := deriveAgentAddress(namespaceSlug, "", alias)
+	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+		fatal(err)
+	}
+	signingKeyPath = awconfig.SigningKeyPath(keysDir, address)
+
 	// Claim identity on the aweb server.
 	_, err = client.ClaimIdentity(ctx, &aweb.ClaimIdentityRequest{
 		DID:       did,
@@ -198,7 +206,7 @@ func provisionIdentity(
 	if err != nil {
 		code, ok := aweb.HTTPStatusCode(err)
 		if ok && code == 409 {
-			fmt.Fprintln(os.Stderr, "Identity already set on server. If you have the signing key, copy it to config; otherwise rotate keys.")
+			fmt.Fprintln(os.Stderr, "Identity already set on server. If you have the signing key, add signing_key to your account config manually.")
 			os.Exit(1)
 		}
 		fatal(err)
@@ -207,15 +215,20 @@ func provisionIdentity(
 	custody = "self"
 	lifetime = "persistent"
 
-	// Persist the keypair to disk.
-	address := deriveAgentAddress(namespaceSlug, "", alias)
-	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
-		fatal(err)
+	// Resolve ClawDID registry URL.
+	registryURL := strings.TrimSpace(os.Getenv("CLAWDID_REGISTRY_URL"))
+	if registryURL == "" {
+		existCfg, loadErr := awconfig.LoadGlobalFrom(cfgPath)
+		if loadErr == nil && strings.TrimSpace(existCfg.ClawDIDRegistryURL) != "" {
+			registryURL = strings.TrimSpace(existCfg.ClawDIDRegistryURL)
+		}
 	}
-	signingKeyPath = filepath.Join(keysDir, strings.ReplaceAll(address, "/", "-")+".signing.key")
+	if registryURL == "" {
+		registryURL = awconfig.DefaultClawDIDRegistryURL
+	}
 
 	// Best-effort ClawDID registration.
-	stableID = registerClawDID(ctx, cfgPath, pub, priv, did, baseURL, address)
+	stableID = registerClawDID(ctx, registryURL, pub, priv, did, baseURL, address)
 
 	return did, signingKeyPath, stableID, custody, lifetime
 }
@@ -224,24 +237,12 @@ func provisionIdentity(
 // Returns the stable_id on success, or empty string on failure.
 func registerClawDID(
 	ctx context.Context,
-	cfgPath string,
+	registryURL string,
 	pub ed25519.PublicKey, priv ed25519.PrivateKey,
 	did, serverURL, address string,
 ) string {
-	// Resolve ClawDID registry URL.
-	registryURL := strings.TrimSpace(os.Getenv("CLAWDID_REGISTRY_URL"))
-	if registryURL == "" {
-		cfg, err := awconfig.LoadGlobalFrom(cfgPath)
-		if err == nil && strings.TrimSpace(cfg.ClawDIDRegistryURL) != "" {
-			registryURL = strings.TrimSpace(cfg.ClawDIDRegistryURL)
-		}
-	}
-	if registryURL == "" {
-		registryURL = awconfig.DefaultClawDIDRegistryURL
-	}
-
 	didClaw := aweb.ComputeStableID(pub, "claw")
-	stateHash := aweb.ComputeStateHash(didClaw, did, serverURL, address, "")
+	stateHash := aweb.ComputeStateHash(didClaw, did, serverURL, address, nil)
 	timestamp := time.Now().UTC().Format(time.RFC3339)
 
 	entry := aweb.LogEntry{

@@ -4849,9 +4849,9 @@ default_account: acct
 
 	// Verify the signature covers canonical to address (acme/monitor),
 	// matching what aweb returns in to_address on the inbox side.
-	var fromStableID2 string
+	var fromStableID string
 	if v, ok := gotBody["from_stable_id"].(string); ok {
-		fromStableID2 = v
+		fromStableID = v
 	}
 	env := &aweb.MessageEnvelope{
 		From:         "acme/bot",
@@ -4862,7 +4862,7 @@ default_account: acct
 		Body:         "hello from namespace",
 		Timestamp:    gotBody["timestamp"].(string),
 		MessageID:    gotBody["message_id"].(string),
-		FromStableID: fromStableID2,
+		FromStableID: fromStableID,
 		Signature:    sig,
 	}
 	status, verifyErr := aweb.VerifyMessage(env)

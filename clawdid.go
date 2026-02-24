@@ -323,18 +323,31 @@ type ClawDIDRegisterResponse struct {
 
 // ComputeStateHash computes the state_hash for a ClawDID registration.
 // It builds a canonical JSON of the state fields (sorted alphabetically)
-// and returns the hex-encoded SHA-256 hash.
-func ComputeStateHash(didClaw, didKey, server, address, handle string) string {
+// and returns the hex-encoded SHA-256 hash. A nil handle emits JSON null
+// to match the wire format of ClawDIDRegisterRequest.
+func ComputeStateHash(didClaw, didKey, server, address string, handle *string) string {
+	jsonStr := func(s string) string {
+		var sb strings.Builder
+		sb.WriteByte('"')
+		writeEscapedString(&sb, s)
+		sb.WriteByte('"')
+		return sb.String()
+	}
+
 	type field struct {
 		key string
-		val string
+		val string // pre-formatted JSON value
+	}
+	handleVal := "null"
+	if handle != nil {
+		handleVal = jsonStr(*handle)
 	}
 	fields := []field{
-		{"address", address},
-		{"current_did_key", didKey},
-		{"did_claw", didClaw},
-		{"handle", handle},
-		{"server", server},
+		{"address", jsonStr(address)},
+		{"current_did_key", jsonStr(didKey)},
+		{"did_claw", jsonStr(didClaw)},
+		{"handle", handleVal},
+		{"server", jsonStr(server)},
 	}
 
 	var b strings.Builder
@@ -345,9 +358,8 @@ func ComputeStateHash(didClaw, didKey, server, address, handle string) string {
 		}
 		b.WriteByte('"')
 		b.WriteString(f.key)
-		b.WriteString(`":"`)
-		writeEscapedString(&b, f.val)
-		b.WriteByte('"')
+		b.WriteString(`":`)
+		b.WriteString(f.val)
 	}
 	b.WriteByte('}')
 
