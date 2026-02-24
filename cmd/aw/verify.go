@@ -164,9 +164,11 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 	keysDir := awconfig.KeysDir(cfgPath)
 
 	var pub ed25519.PublicKey
-	var priv ed25519.PrivateKey
 	var did, signingKeyPath string
 	var needConfigUpdate bool
+	custody := aweb.CustodySelf
+	lifetime := aweb.LifetimePersistent
+	generatedNewKey := false
 
 	if sel != nil && sel.DID != "" && sel.SigningKey != "" {
 		// Config already has identity fields; load the existing key.
@@ -175,8 +177,7 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 			fmt.Fprintf(os.Stderr, "Warning: could not load signing key %s: %v\n", sel.SigningKey, loadErr)
 			return
 		}
-		priv = loadedPriv
-		pub = priv.Public().(ed25519.PublicKey)
+		pub = loadedPriv.Public().(ed25519.PublicKey)
 		did = sel.DID
 		signingKeyPath = sel.SigningKey
 	} else {
@@ -200,19 +201,19 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 		// Reuse existing key on disk if present.
 		existingPriv, loadErr := awconfig.LoadSigningKey(signingKeyPath)
 		if loadErr == nil {
-			priv = existingPriv
-			pub = priv.Public().(ed25519.PublicKey)
+			pub = existingPriv.Public().(ed25519.PublicKey)
 		} else {
-			var genErr error
-			pub, priv, genErr = awconfig.GenerateKeypair()
+			genPub, genPriv, genErr := awconfig.GenerateKeypair()
 			if genErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: keypair generation failed: %v\n", genErr)
 				return
 			}
-			if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+			if err := awconfig.SaveKeypair(keysDir, address, genPub, genPriv); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not save keypair: %v\n", err)
 				return
 			}
+			pub = genPub
+			generatedNewKey = true
 		}
 		did = aweb.ComputeDIDKey(pub)
 		needConfigUpdate = true
@@ -237,8 +238,6 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 	if claimErr != nil {
 		claimCode, ok := aweb.HTTPStatusCode(claimErr)
 		if ok && claimCode == 409 {
-			// Identity already set — run recovery logic.
-			resolver := &aweb.ServerResolver{Client: authClient}
 			var address string
 			if sel != nil {
 				address = deriveAgentAddress(sel.NamespaceSlug, "", sel.AgentAlias)
@@ -246,28 +245,20 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 			if address == "" {
 				fatal(fmt.Errorf("identity already set on server (409) but cannot derive address for recovery; run 'aw reset --remote --confirm'"))
 			}
-			identity, resolveErr := resolver.Resolve(claimCtx, address)
-			if resolveErr != nil {
-				fatal(fmt.Errorf("identity already set on server; could not resolve %s: %v\nRun 'aw reset --remote --confirm' to clear and re-provision", address, resolveErr))
+			// Remove orphan key if we just generated it — it doesn't match
+			// the server's identity.
+			if generatedNewKey {
+				os.Remove(signingKeyPath)
+				pubPath := strings.TrimSuffix(signingKeyPath, ".key") + ".pub"
+				os.Remove(pubPath)
 			}
-			serverPub, extractErr := aweb.ExtractPublicKey(identity.DID)
-			if extractErr != nil {
-				fatal(fmt.Errorf("identity already set with invalid DID %q: %v", identity.DID, extractErr))
+			var recoveredCustody, recoveredLifetime string
+			did, signingKeyPath, recoveredCustody, recoveredLifetime = recoverIdentity409(claimCtx, authClient, keysDir, address)
+			if recoveredCustody != "" {
+				custody = recoveredCustody
 			}
-			if pub.Equal(serverPub) {
-				fmt.Fprintln(os.Stderr, "Identity already set on server (matching local key).")
-				did = identity.DID
-			} else {
-				// Local key doesn't match server — try scanning all keys.
-				foundPath, scanErr := awconfig.ScanKeysForPublicKey(keysDir, serverPub)
-				if scanErr == nil && foundPath != "" {
-					fmt.Fprintf(os.Stderr, "Identity already set on server; recovered key at %s\n", foundPath)
-					did = identity.DID
-					signingKeyPath = foundPath
-				} else {
-					expectedPath := awconfig.SigningKeyPath(keysDir, address)
-					fatal(fmt.Errorf("identity already set on server (%s) but no matching key found locally.\nPlace the signing key at %s, or run 'aw reset --remote --confirm'", identity.DID, expectedPath))
-				}
+			if recoveredLifetime != "" {
+				lifetime = recoveredLifetime
 			}
 			needConfigUpdate = true
 		} else if ok && claimCode == 404 {
@@ -288,8 +279,8 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 				acct := cfg.Accounts[sel.AccountName]
 				acct.DID = did
 				acct.SigningKey = signingKeyPath
-				acct.Custody = aweb.CustodySelf
-				acct.Lifetime = aweb.LifetimePersistent
+				acct.Custody = custody
+				acct.Lifetime = lifetime
 				cfg.Accounts[sel.AccountName] = acct
 				return nil
 			})

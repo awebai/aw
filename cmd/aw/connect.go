@@ -264,6 +264,7 @@ func recoverIdentity409(
 	identity, err := resolver.Resolve(ctx, address)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Identity already set on server, and could not resolve %s to recover: %v\n", address, err)
+		fmt.Fprintln(os.Stderr, "Run 'aw reset --remote --confirm' to clear the server identity and re-provision.")
 		os.Exit(1)
 	}
 

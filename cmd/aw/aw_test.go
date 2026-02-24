@@ -4334,6 +4334,261 @@ default_account: acct
 	}
 }
 
+func TestAwVerifyRecoversIdentityOn409(t *testing.T) {
+	t.Parallel()
+
+	// Pre-create a keypair that the server will report as the agent's identity.
+	pub, priv, err := awconfig.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverDID := aweb.ComputeDIDKey(pub)
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/auth/verify-code" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verified": true,
+			})
+		case r.URL.Path == "/v1/agents/heartbeat" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"agent_id": "ag_verify409",
+				"alias":    "researcher",
+			})
+		case r.URL.Path == "/v1/agents/me/identity" && r.Method == http.MethodPut:
+			w.WriteHeader(409)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":    "IDENTITY_ALREADY_SET",
+					"message": "identity already bound",
+				},
+			})
+		case r.URL.Path == "/v1/agents/resolve/myco/researcher":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did":      serverDID,
+				"agent_id": "ag_verify409",
+				"address":  "myco/researcher",
+				"custody":  "managed",
+				"lifetime": "ephemeral",
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// Save the keypair so recovery can find it.
+	keysDir := filepath.Join(filepath.Dir(cfgPath), "keys")
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := awconfig.SaveKeypair(keysDir, "myco/researcher", pub, priv); err != nil {
+		t.Fatal(err)
+	}
+
+	// Config with API key and alias but no DID — forces identity provisioning.
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_verify409
+    email: test@example.com
+    agent_alias: researcher
+    namespace_slug: myco
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "verify",
+		"--code", "123456",
+		"--email", "test@example.com",
+		"--server-url", server.URL,
+	)
+	run.Stdin = strings.NewReader("")
+	var stdout, stderr bytes.Buffer
+	run.Stdout = &stdout
+	run.Stderr = &stderr
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+	)
+	run.Dir = tmp
+	if err := run.Run(); err != nil {
+		t.Fatalf("run failed: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	// Config should have recovered identity from server.
+	cfgData, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Accounts map[string]map[string]any `yaml:"accounts"`
+	}
+	if err := yaml.Unmarshal(cfgData, &cfg); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(cfgData))
+	}
+	acct := cfg.Accounts["acct"]
+	if acct["did"] != serverDID {
+		t.Fatalf("did=%q, want %q\n%s", acct["did"], serverDID, string(cfgData))
+	}
+	signingKey, _ := acct["signing_key"].(string)
+	if signingKey == "" {
+		t.Fatalf("signing_key not set after 409 recovery:\n%s", string(cfgData))
+	}
+	if acct["custody"] != "managed" {
+		t.Fatalf("custody=%v, want managed (from server)\n%s", acct["custody"], string(cfgData))
+	}
+	if acct["lifetime"] != "ephemeral" {
+		t.Fatalf("lifetime=%v, want ephemeral (from server)\n%s", acct["lifetime"], string(cfgData))
+	}
+}
+
+func TestAwVerify409CleansUpOrphanKey(t *testing.T) {
+	t.Parallel()
+
+	// Pre-create the "server's" keypair but do NOT save it to the keys dir.
+	// verify will generate its own key, hit 409, delete the orphan, then
+	// recoverIdentity409 will fail (no matching key) and exit 1.
+	pub, _, err := awconfig.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverDID := aweb.ComputeDIDKey(pub)
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/auth/verify-code" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verified": true,
+			})
+		case r.URL.Path == "/v1/agents/heartbeat" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"agent_id": "ag_orphan",
+				"alias":    "researcher",
+			})
+		case r.URL.Path == "/v1/agents/me/identity" && r.Method == http.MethodPut:
+			w.WriteHeader(409)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":    "IDENTITY_ALREADY_SET",
+					"message": "identity already bound",
+				},
+			})
+		case r.URL.Path == "/v1/agents/resolve/myco/researcher":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did":      serverDID,
+				"agent_id": "ag_orphan",
+				"address":  "myco/researcher",
+				"custody":  "self",
+				"lifetime": "persistent",
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// Create keys directory but do NOT save the server's key there.
+	keysDir := filepath.Join(filepath.Dir(cfgPath), "keys")
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_orphan_test
+    email: test@example.com
+    agent_alias: researcher
+    namespace_slug: myco
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "verify",
+		"--code", "123456",
+		"--email", "test@example.com",
+		"--server-url", server.URL,
+	)
+	var stdout, stderr bytes.Buffer
+	run.Stdout = &stdout
+	run.Stderr = &stderr
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+	)
+	run.Dir = tmp
+
+	// Should fail — no matching key on disk for recovery.
+	runErr := run.Run()
+	if runErr == nil {
+		t.Fatal("expected verify to fail when no matching key exists for 409 recovery")
+	}
+
+	// The orphan key files should have been cleaned up.
+	orphanKeyPath := filepath.Join(keysDir, "myco-researcher.signing.key")
+	orphanPubPath := filepath.Join(keysDir, "myco-researcher.signing.pub")
+	if _, err := os.Stat(orphanKeyPath); err == nil {
+		t.Fatalf("orphan key file should have been deleted: %s", orphanKeyPath)
+	}
+	if _, err := os.Stat(orphanPubPath); err == nil {
+		t.Fatalf("orphan pub file should have been deleted: %s", orphanPubPath)
+	}
+
+	// Error message should mention recovery options.
+	if !strings.Contains(stderr.String(), "no matching signing key found locally") {
+		t.Fatalf("expected 'no matching signing key' error, got:\n%s", stderr.String())
+	}
+}
+
 func TestAwVerifyResolvesServerFromName(t *testing.T) {
 	t.Parallel()
 
