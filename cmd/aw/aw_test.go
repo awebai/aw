@@ -3309,6 +3309,139 @@ func TestAwRegisterExistingAccountClaimsIdentity(t *testing.T) {
 	}
 }
 
+// TestAwRegisterWithCodeSkipsRegisterCall ensures that --code bypasses the
+// Register API call (which would invalidate the code) and goes straight to
+// VerifyCode. This is the non-interactive existing-account flow.
+func TestAwRegisterWithCodeSkipsRegisterCall(t *testing.T) {
+	t.Parallel()
+
+	var registerCalled bool
+	var identityClaimed bool
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/register":
+			registerCalled = true
+			t.Fatal("Register endpoint should NOT be called when --code is provided")
+		case "/v1/auth/verify-code":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verified":            true,
+				"username":            "testuser",
+				"registration_source": "cli",
+				"api_key":             "aw_sk_code_test",
+				"agent_id":            "agent-code-1",
+				"alias":               "researcher",
+				"namespace_slug":      "testuser",
+			})
+		case "/v1/agents/me/identity":
+			if r.Method != http.MethodPut {
+				t.Fatalf("identity method=%s, want PUT", r.Method)
+			}
+			identityClaimed = true
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":  "ok",
+				"did":     body["did"],
+				"custody": "self",
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	clawDIDServer := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Provide --code: register should skip the Register API call entirely.
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server-url", server.URL,
+		"--email", "test@example.com",
+		"--username", "testuser",
+		"--alias", "researcher",
+		"--namespace", "testuser",
+		"--code", "123456",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+		"HOME="+tmp,
+		"XDG_CONFIG_HOME="+filepath.Join(tmp, ".config"),
+		"CLAWDID_REGISTRY_URL="+clawDIDServer.URL,
+	)
+	run.Dir = tmp
+	var stdout, stderr bytes.Buffer
+	run.Stdout = &stdout
+	run.Stderr = &stderr
+	if err := run.Run(); err != nil {
+		t.Fatalf("register failed: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	if registerCalled {
+		t.Fatal("Register API was called despite --code being provided")
+	}
+
+	if !identityClaimed {
+		t.Fatal("ClaimIdentity was not called")
+	}
+
+	// Config should have full bootstrap credentials.
+	cfgData, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Accounts map[string]map[string]any `yaml:"accounts"`
+	}
+	if err := yaml.Unmarshal(cfgData, &cfg); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(cfgData))
+	}
+	// Find the account (name is derived).
+	var acct map[string]any
+	for _, a := range cfg.Accounts {
+		acct = a
+		break
+	}
+	if acct == nil {
+		t.Fatalf("no account in config after register --code:\n%s", string(cfgData))
+	}
+	if acct["api_key"] != "aw_sk_code_test" {
+		t.Fatalf("config api_key=%v, want aw_sk_code_test", acct["api_key"])
+	}
+	if acct["did"] == nil || acct["did"] == "" {
+		t.Fatalf("config did is empty:\n%s", string(cfgData))
+	}
+
+	stderrStr := stderr.String()
+	if !strings.Contains(stderrStr, "active") && !strings.Contains(stderrStr, "Verified") {
+		t.Fatalf("expected success message in stderr, got: %s", stderrStr)
+	}
+}
+
 func TestAwRegisterWritesConfig(t *testing.T) {
 	t.Parallel()
 

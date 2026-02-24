@@ -22,6 +22,7 @@ var (
 	registerAlias        string
 	registerHumanName    string
 	registerNamespace    string
+	registerCode         string
 	registerSaveConfig   bool
 	registerSetDefault   bool
 	registerWriteContext bool
@@ -44,6 +45,7 @@ func init() {
 	registerCmd.Flags().StringVar(&registerAlias, "alias", "", "Agent alias (required)")
 	registerCmd.Flags().StringVar(&registerHumanName, "human-name", "", "Human name (optional)")
 	registerCmd.Flags().StringVar(&registerNamespace, "namespace", "", "Target namespace for existing accounts (requires verification)")
+	registerCmd.Flags().StringVar(&registerCode, "code", "", "Verification code (skips Register call; for existing accounts)")
 	registerCmd.Flags().BoolVar(&registerSaveConfig, "save-config", true, "Write/update ~/.config/aw/config.yaml with the new credentials")
 	registerCmd.Flags().BoolVar(&registerSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
 	registerCmd.Flags().BoolVar(&registerWriteContext, "write-context", true, "Write/update .aw/context in the current worktree (non-secret pointer)")
@@ -85,6 +87,14 @@ func runRegister(cmd *cobra.Command, args []string) error {
 	if alias == "" {
 		fmt.Fprintln(os.Stderr, "Missing alias (use --alias)")
 		os.Exit(2)
+	}
+
+	// When --code is provided, skip the Register call (which would send a
+	// new verification code, invalidating the one the user already has) and
+	// go straight to VerifyCode with bootstrap fields.
+	code := strings.TrimSpace(registerCode)
+	if code != "" {
+		return runRegisterWithCode(baseURL, serverName, email, username, alias, code)
 	}
 
 	// Generate Ed25519 keypair and compute DID for self-custodial registration.
@@ -252,11 +262,37 @@ func saveNewRegistration(
 	}
 }
 
+// runRegisterWithCode handles the case where --code is provided: skip the
+// Register API call (which would invalidate the code) and go straight to
+// VerifyCode with bootstrap fields.
+func runRegisterWithCode(baseURL, serverName, email, username, alias, code string) error {
+	nsSlug := strings.TrimSpace(registerNamespace)
+
+	pub, priv, err := awconfig.GenerateKeypair()
+	if err != nil {
+		fatal(err)
+	}
+	did := aweb.ComputeDIDKey(pub)
+
+	client, err := aweb.New(baseURL)
+	if err != nil {
+		fatal(err)
+	}
+
+	var handlePtr *string
+	if username != "" {
+		h := "@" + username
+		handlePtr = &h
+	}
+
+	return verifyAndBootstrap(client, baseURL, serverName, email, alias, nsSlug, code, pub, priv, did, handlePtr, nil)
+}
+
 // handleExistingAccount handles the 409 existing_account flow: prompt for
 // verification code, then call verify-code with alias + namespace_slug to
 // bootstrap the agent inline.
 func handleExistingAccount(
-	ctx context.Context,
+	_ context.Context,
 	client *aweb.Client,
 	existing *aweb.ExistingAccountInfo,
 	baseURL, serverName, email, alias string,
@@ -294,11 +330,38 @@ func handleExistingAccount(
 	line, _ := reader.ReadString('\n')
 	code := strings.TrimSpace(line)
 	if code == "" {
+		if !isTTY() {
+			msg := "No code entered. A verification code was sent by email.\n" +
+				"To complete registration non-interactively, re-run with --code:\n" +
+				fmt.Sprintf("  aw register --server-url %s --email %s --username %s --alias %s --namespace %s --code CODE\n",
+					baseURL, email, registerUsername, alias, nsSlug)
+			fmt.Fprint(os.Stderr, msg)
+			return nil
+		}
 		fmt.Fprintln(os.Stderr, "No code entered.")
 		os.Exit(2)
 	}
 
-	// Verify + bootstrap inline (Option B from spec).
+	var handlePtr *string
+	if existing.Handle != "" {
+		h := "@" + existing.Handle
+		handlePtr = &h
+	}
+
+	return verifyAndBootstrap(client, baseURL, serverName, email, alias, nsSlug, code, pub, priv, did, handlePtr, existing.Namespaces)
+}
+
+// verifyAndBootstrap calls VerifyCode, claims self-custody identity, and
+// persists config + keypair. Shared by handleExistingAccount and
+// runRegisterWithCode.
+func verifyAndBootstrap(
+	client *aweb.Client,
+	baseURL, serverName, email, alias, nsSlug, code string,
+	pub, priv []byte,
+	did string,
+	handlePtr *string,
+	knownNamespaces []aweb.Namespace,
+) error {
 	vctx, vcancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer vcancel()
 
@@ -311,15 +374,15 @@ func handleExistingAccount(
 	if verr != nil {
 		vcode, ok := aweb.HTTPStatusCode(verr)
 		if ok && vcode == 403 {
-			msg := fmt.Sprintf("You don't have access to namespace %q.\n", nsSlug)
-			if len(existing.Namespaces) > 0 {
-				slugs := make([]string, len(existing.Namespaces))
-				for i, ns := range existing.Namespaces {
+			msg := fmt.Sprintf("you don't have access to namespace %q", nsSlug)
+			if len(knownNamespaces) > 0 {
+				slugs := make([]string, len(knownNamespaces))
+				for i, ns := range knownNamespaces {
 					slugs[i] = ns.Slug
 				}
-				msg += fmt.Sprintf("Your namespaces: %s\n", strings.Join(slugs, ", "))
+				msg += fmt.Sprintf("\nYour namespaces: %s", strings.Join(slugs, ", "))
 			}
-			fmt.Fprint(os.Stderr, msg)
+			fmt.Fprintln(os.Stderr, msg)
 			os.Exit(1)
 		}
 		if ok && vcode == 400 {
@@ -332,7 +395,6 @@ func handleExistingAccount(
 		fatal(fmt.Errorf("verification failed"))
 	}
 
-	// The verify-code response includes bootstrap credentials.
 	if vresp.APIKey == "" {
 		fatal(fmt.Errorf("verification succeeded but no API key returned. The server may not support inline bootstrap — try 'aw init --cloud' instead"))
 	}
@@ -382,12 +444,7 @@ func handleExistingAccount(
 	}
 
 	// Best-effort ClawDID registration.
-	var handlePtr *string
-	if existing.Handle != "" {
-		h := "@" + existing.Handle
-		handlePtr = &h
-	}
-	stableID := registerClawDIDWithHandle(ctx, resolveClawDIDRegistryURL(cfgPath), pub, priv, did, canonicalOrigin(baseURL), address, handlePtr)
+	stableID := registerClawDIDWithHandle(vctx, resolveClawDIDRegistryURL(cfgPath), pub, priv, did, canonicalOrigin(baseURL), address, handlePtr)
 
 	if registerSaveConfig {
 		updateErr := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
