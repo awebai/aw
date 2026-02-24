@@ -1,6 +1,9 @@
 package aweb
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // RegisterRequest is sent to POST /v1/auth/register.
 //
@@ -33,6 +36,35 @@ type RegisterResponse struct {
 	DID                  string `json:"did,omitempty"`
 	Custody              string `json:"custody,omitempty"`
 	Lifetime             string `json:"lifetime,omitempty"`
+}
+
+// ExistingAccountInfo is returned in a structured 409 body when the email
+// is already registered. The server sends a verification code and lists
+// the user's namespaces so the CLI can proceed with an existing account.
+type ExistingAccountInfo struct {
+	ExistingAccount      bool        `json:"existing_account"`
+	VerificationRequired bool        `json:"verification_required"`
+	Email                string      `json:"email"`
+	Handle               string      `json:"handle"`
+	Namespaces           []Namespace `json:"namespaces"`
+}
+
+// ParseExistingAccount attempts to parse an ExistingAccountInfo from an HTTP
+// error body. Returns nil if the error is not a 409 with existing_account: true.
+func ParseExistingAccount(err error) *ExistingAccountInfo {
+	code, ok := HTTPStatusCode(err)
+	if !ok || code != 409 {
+		return nil
+	}
+	body, ok := HTTPErrorBody(err)
+	if !ok {
+		return nil
+	}
+	var info ExistingAccountInfo
+	if json.Unmarshal([]byte(body), &info) != nil || !info.ExistingAccount {
+		return nil
+	}
+	return &info
 }
 
 // Register creates a new account on the server.

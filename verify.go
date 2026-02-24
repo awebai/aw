@@ -7,15 +7,23 @@ import "context"
 // This endpoint verifies email ownership using a 6-digit code.
 // It does not require an API key.
 type VerifyCodeRequest struct {
-	Email string `json:"email"`
-	Code  string `json:"code"`
+	Email         string `json:"email"`
+	Code          string `json:"code"`
+	Alias         string `json:"alias,omitempty"`
+	NamespaceSlug string `json:"namespace_slug,omitempty"`
 }
 
 // VerifyCodeResponse is returned by POST /v1/auth/verify-code.
+// When alias + namespace_slug are provided in the request, the server
+// bootstraps the agent inline and returns credentials.
 type VerifyCodeResponse struct {
 	Verified           bool   `json:"verified"`
 	Username           string `json:"username"`
 	RegistrationSource string `json:"registration_source"`
+	APIKey             string `json:"api_key,omitempty"`
+	AgentID            string `json:"agent_id,omitempty"`
+	Alias              string `json:"alias,omitempty"`
+	NamespaceSlug      string `json:"namespace_slug,omitempty"`
 }
 
 // VerifyCode submits a verification code for email ownership.
