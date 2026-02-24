@@ -2689,6 +2689,14 @@ func TestAwRegisterExistingAccountFlow(t *testing.T) {
 				"alias":               "researcher",
 				"namespace_slug":      "existinguser",
 			})
+		case "/v1/agents/me/identity":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":  "ok",
+				"did":     body["did"],
+				"custody": "self",
+			})
 		default:
 			t.Fatalf("unexpected path=%s", r.URL.Path)
 		}
@@ -2805,6 +2813,14 @@ func TestAwRegisterExistingAccountAutoSelectNamespace(t *testing.T) {
 				"agent_id":            "agent-auto",
 				"alias":               "bot",
 				"namespace_slug":      "autouser",
+			})
+		case "/v1/agents/me/identity":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":  "ok",
+				"did":     body["did"],
+				"custody": "self",
 			})
 		default:
 			t.Fatalf("unexpected path=%s", r.URL.Path)
@@ -3180,6 +3196,116 @@ func TestAwRegisterExistingAccountMultipleNamespacesNonTTY(t *testing.T) {
 	}
 	if !strings.Contains(outStr, "multiuser") || !strings.Contains(outStr, "bigcorp") {
 		t.Fatalf("expected namespace list, got:\n%s", outStr)
+	}
+}
+
+func TestAwRegisterExistingAccountClaimsIdentity(t *testing.T) {
+	t.Parallel()
+
+	var identityClaimed bool
+	var claimBody map[string]any
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/register":
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"existing_account":      true,
+				"verification_required": true,
+				"email":                 "claim@example.com",
+				"handle":                "claimuser",
+				"namespaces": []map[string]any{
+					{"slug": "claimuser", "tier": "free"},
+				},
+			})
+		case "/v1/auth/verify-code":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verified":            true,
+				"username":            "claimuser",
+				"registration_source": "cli",
+				"api_key":             "aw_sk_claim_test",
+				"agent_id":            "agent-claim-1",
+				"alias":               "researcher",
+				"namespace_slug":      "claimuser",
+			})
+		case "/v1/agents/me/identity":
+			if r.Method != http.MethodPut {
+				t.Fatalf("identity method=%s, want PUT", r.Method)
+			}
+			identityClaimed = true
+			_ = json.NewDecoder(r.Body).Decode(&claimBody)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":  "ok",
+				"did":     claimBody["did"],
+				"custody": "self",
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	clawDIDServer := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "register",
+		"--server-url", server.URL,
+		"--email", "claim@example.com",
+		"--username", "claimuser",
+		"--alias", "researcher",
+		"--namespace", "claimuser",
+	)
+	run.Stdin = strings.NewReader("123456\n")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+		"HOME="+tmp,
+		"XDG_CONFIG_HOME="+filepath.Join(tmp, ".config"),
+		"CLAWDID_REGISTRY_URL="+clawDIDServer.URL,
+	)
+	run.Dir = tmp
+	var stdout, stderr bytes.Buffer
+	run.Stdout = &stdout
+	run.Stderr = &stderr
+	if err := run.Run(); err != nil {
+		t.Fatalf("register failed: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	// ClaimIdentity must have been called with a valid DID and public key.
+	if !identityClaimed {
+		t.Fatal("ClaimIdentity was not called after existing-account verify")
+	}
+	did, _ := claimBody["did"].(string)
+	if !strings.HasPrefix(did, "did:key:z6Mk") {
+		t.Fatalf("ClaimIdentity did=%q, want did:key:z6Mk... prefix", did)
+	}
+	if claimBody["public_key"] == nil || claimBody["public_key"] == "" {
+		t.Fatal("ClaimIdentity public_key is empty")
+	}
+	if claimBody["custody"] != "self" {
+		t.Fatalf("ClaimIdentity custody=%v", claimBody["custody"])
 	}
 }
 
