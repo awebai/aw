@@ -5552,8 +5552,18 @@ default_account: acct-`+server.Listener.Addr().String()+`__agent-1
 	}
 }
 
-func TestAwConnectIdentityAlreadySet(t *testing.T) {
+func TestAwConnectIdentityAlreadySetNoLocalKey(t *testing.T) {
 	t.Parallel()
+
+	// Pre-create a keypair that the server will report as the agent's identity,
+	// but do NOT save it to the test's keysDir — simulating key loss.
+	// provisionIdentity will generate and save a different key, which won't
+	// match the server's DID, triggering the "no matching key" error.
+	pub, _, err := awconfig.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverDID := aweb.ComputeDIDKey(pub)
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -5576,6 +5586,14 @@ func TestAwConnectIdentityAlreadySet(t *testing.T) {
 					"code":    "IDENTITY_ALREADY_SET",
 					"message": "identity already bound",
 				},
+			})
+		case "/v1/agents/resolve/myco/alice":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did":      serverDID,
+				"agent_id": "agent-1",
+				"address":  "myco/alice",
+				"custody":  "self",
+				"lifetime": "persistent",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -5613,13 +5631,137 @@ func TestAwConnectIdentityAlreadySet(t *testing.T) {
 		"AWEB_API_KEY=aw_sk_test",
 	)
 	run.Dir = tmp
-	out, err := run.CombinedOutput()
-	if err == nil {
-		t.Fatalf("expected error for 409, got success: %s", string(out))
+	out, runErr := run.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("expected error for 409 with no local key, got success: %s", string(out))
 	}
-	if !strings.Contains(string(out), "Identity already set") {
-		t.Fatalf("expected clear error about identity, got: %s", string(out))
+	if !strings.Contains(string(out), "no matching signing key found locally") {
+		t.Fatalf("expected 'no matching signing key found locally', got: %s", string(out))
 	}
+}
+
+func TestAwConnectRecoverWith409AndLocalKey(t *testing.T) {
+	t.Parallel()
+
+	// Pre-create a keypair that the server will report as the agent's identity.
+	pub, priv, err := awconfig.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverDID := aweb.ComputeDIDKey(pub)
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/introspect":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
+				"agent_type": "agent",
+			})
+		case "/v1/projects/current":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"slug":       "myco",
+			})
+		case "/v1/agents/me/identity":
+			w.WriteHeader(409)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":    "IDENTITY_ALREADY_SET",
+					"message": "identity already bound",
+				},
+			})
+		case "/v1/agents/resolve/myco/alice":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did":      serverDID,
+				"agent_id": "agent-1",
+				"address":  "myco/alice",
+				"custody":  "self",
+				"lifetime": "persistent",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// Save the keypair to the keys directory so recovery can find it.
+	keysDir := filepath.Join(filepath.Dir(cfgPath), "keys")
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := awconfig.SaveKeypair(keysDir, "myco/alice", pub, priv); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "connect")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL="+server.URL,
+		"AWEB_API_KEY=aw_sk_test",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1", // unreachable — best-effort
+	)
+	run.Dir = tmp
+	out, runErr := run.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("expected 409 recovery to succeed, got error: %v\n%s", runErr, string(out))
+	}
+
+	// Verify config was written with recovered identity fields.
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Accounts map[string]map[string]any `yaml:"accounts"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(data))
+	}
+	for _, acct := range cfg.Accounts {
+		if acct["api_key"] == "aw_sk_test" {
+			did, _ := acct["did"].(string)
+			if did != serverDID {
+				t.Fatalf("did=%q, want %q", did, serverDID)
+			}
+			signingKey, _ := acct["signing_key"].(string)
+			if signingKey == "" {
+				t.Fatal("signing_key not set after recovery")
+			}
+			if acct["custody"] != "self" {
+				t.Fatalf("custody=%v, want self", acct["custody"])
+			}
+			if acct["lifetime"] != "persistent" {
+				t.Fatalf("lifetime=%v, want persistent", acct["lifetime"])
+			}
+			return
+		}
+	}
+	t.Fatalf("no account with api_key=aw_sk_test in config:\n%s", string(data))
 }
 
 func TestAwConnectClawDIDBestEffort(t *testing.T) {
