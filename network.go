@@ -255,7 +255,8 @@ func (c *Client) NetworkChatStream(ctx context.Context, sessionID string, deadli
 	}
 	path := "/v1/network/chat/" + urlPathEscape(sessionID) + "/stream?deadline=" + urlQueryEscape(deadline.UTC().Format(time.RFC3339Nano))
 	if after != nil && !after.IsZero() {
-		path += "&after=" + urlQueryEscape(after.UTC().Format(time.RFC3339Nano))
+		// See ChatStream comment: truncate + subtract 1s for server's > query.
+		path += "&after=" + urlQueryEscape(after.Truncate(time.Second).Add(-time.Second).UTC().Format(time.RFC3339))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)

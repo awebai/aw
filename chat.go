@@ -263,7 +263,14 @@ func (c *Client) ChatMarkRead(ctx context.Context, sessionID string, req *ChatMa
 func (c *Client) ChatStream(ctx context.Context, sessionID string, deadline time.Time, after *time.Time) (*SSEStream, error) {
 	path := "/v1/chat/sessions/" + urlPathEscape(sessionID) + "/stream?deadline=" + urlQueryEscape(deadline.UTC().Format(time.RFC3339Nano))
 	if after != nil && !after.IsZero() {
-		path += "&after=" + urlQueryEscape(after.UTC().Format(time.RFC3339Nano))
+		// Truncate to second precision so the server replay query
+		// (WHERE created_at > $after) always includes our sent message.
+		// The signed timestamp uses RFC3339 (second precision), but sentAt
+		// has nanosecond precision — without truncation the sent message
+		// falls before the after boundary and is excluded from the replay.
+		// Subtract one second to handle the > (not >=) query and the case
+		// where sentAt and the signed timestamp land in the same second.
+		path += "&after=" + urlQueryEscape(after.Truncate(time.Second).Add(-time.Second).UTC().Format(time.RFC3339))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)

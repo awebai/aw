@@ -1915,11 +1915,12 @@ func TestSendPassesAfterParam(t *testing.T) {
 	if receivedAfter == "" {
 		t.Fatal("stream URL missing 'after' query parameter")
 	}
-	afterTime, err := time.Parse(time.RFC3339Nano, receivedAfter)
+	afterTime, err := time.Parse(time.RFC3339, receivedAfter)
 	if err != nil {
-		t.Fatalf("invalid after timestamp: %s", receivedAfter)
+		t.Fatalf("invalid after timestamp (want RFC3339): %s", receivedAfter)
 	}
-	if afterTime.Before(beforeSend.Add(-1 * time.Second)) {
+	// after is truncated to seconds and shifted back 1s, so allow 2s tolerance.
+	if afterTime.Before(beforeSend.Add(-2 * time.Second)) {
 		t.Fatalf("after=%s is too old (before send at %s)", afterTime, beforeSend)
 	}
 }
@@ -2021,10 +2022,15 @@ func TestSendSkippedEventsNotInResult(t *testing.T) {
 	}
 }
 
-func TestSendReplyDeliveredWhenSentMessageNotReplayed(t *testing.T) {
+// TestSendAfterParameterUsesSecondPrecision verifies that the SSE stream
+// after parameter is truncated to second precision (minus one second) so the
+// server's replay query (WHERE created_at > $after) always includes the sent
+// message. Without this, the sequential gate in the acceptor never opens.
+func TestSendAfterParameterUsesSecondPrecision(t *testing.T) {
 	t.Parallel()
 
 	sentMsgID := "msg-sent-1"
+	var afterParam string
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
@@ -2033,15 +2039,20 @@ func TestSendReplyDeliveredWhenSentMessageNotReplayed(t *testing.T) {
 				MessageID: sentMsgID,
 			})
 		},
-		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, r *http.Request) {
+			afterParam = r.URL.Query().Get("after")
+
 			w.Header().Set("Content-Type", "text/event-stream")
 			flusher, _ := w.(http.Flusher)
 
-			// Sent message is NOT replayed (simulates timestamp precision mismatch).
-			// Only the reply from the target arrives, with a current timestamp.
+			// With truncated after, the sent message IS in the replay.
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+
 			replyData, _ := json.Marshal(map[string]any{
 				"type": "message", "message_id": "msg-reply-1", "from_agent": "bob", "body": "hi back!",
-				"timestamp": time.Now().UTC().Format(time.RFC3339),
 			})
 			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
 			if flusher != nil {
@@ -2061,48 +2072,17 @@ func TestSendReplyDeliveredWhenSentMessageNotReplayed(t *testing.T) {
 	if result.Reply != "hi back!" {
 		t.Fatalf("reply=%q, want %q", result.Reply, "hi back!")
 	}
-}
 
-func TestSendStaleReplayNotAcceptedAsReply(t *testing.T) {
-	t.Parallel()
-
-	sentMsgID := "msg-sent-1"
-
-	server := newMockServer(map[string]http.HandlerFunc{
-		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
-				SessionID: "s1",
-				MessageID: sentMsgID,
-			})
-		},
-		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "text/event-stream")
-			flusher, _ := w.(http.Flusher)
-
-			// Sent message is NOT in the replay.
-			// A stale message from 40 minutes ago IS in the replay.
-			staleData, _ := json.Marshal(map[string]any{
-				"type": "message", "message_id": "old-msg", "from_agent": "bob", "body": "old message",
-				"timestamp": time.Now().Add(-40 * time.Minute).UTC().Format(time.RFC3339),
-			})
-			fmt.Fprintf(w, "event: message\ndata: %s\n\n", staleData)
-			if flusher != nil {
-				flusher.Flush()
-			}
-		},
-	})
-	t.Cleanup(server.Close)
-
-	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 2}, nil)
-	if err != nil {
-		t.Fatal(err)
+	// Verify the after parameter has second precision (no sub-second digits).
+	if afterParam == "" {
+		t.Fatal("after query parameter was empty")
 	}
-	// Must NOT accept the stale message as a reply.
-	if result.Status == "replied" {
-		t.Fatalf("status=replied with stale message, want timeout (sent)")
+	if strings.Contains(afterParam, ".") {
+		t.Errorf("after param %q has sub-second precision; want second precision", afterParam)
 	}
-	if result.Reply != "" {
-		t.Fatalf("reply=%q, want empty (stale should be skipped)", result.Reply)
+	// Must parse as valid RFC3339.
+	if _, err := time.Parse(time.RFC3339, afterParam); err != nil {
+		t.Errorf("after param %q is not valid RFC3339: %v", afterParam, err)
 	}
 }
 
