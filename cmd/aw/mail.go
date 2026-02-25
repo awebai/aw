@@ -56,7 +56,11 @@ var mailSendCmd = &cobra.Command{
 			if err != nil {
 				fatal(err)
 			}
-			printJSON(resp)
+			if jsonFlag {
+				printJSON(resp)
+			} else {
+				fmt.Printf("Sent DM to %s (message_id=%s)\n", mailSendToAlias, resp.MessageID)
+			}
 			return nil
 		}
 
@@ -71,10 +75,18 @@ var mailSendCmd = &cobra.Command{
 			if err != nil {
 				fatal(err)
 			}
-			printJSON(resp)
+			if jsonFlag {
+				printJSON(resp)
+			} else {
+				fmt.Printf("Sent mail to %s (message_id=%s)\n", addr.String(), resp.MessageID)
+			}
 			return nil
 		}
 
+		target := mailSendToAlias
+		if target == "" {
+			target = mailSendToAgentID
+		}
 		resp, err := mustClient().SendMessage(ctx, &aweb.SendMessageRequest{
 			ToAgentID: mailSendToAgentID,
 			ToAlias:   mailSendToAlias,
@@ -85,7 +97,11 @@ var mailSendCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		if jsonFlag {
+			printJSON(resp)
+		} else {
+			fmt.Printf("Sent mail to %s (message_id=%s)\n", target, resp.MessageID)
+		}
 		return nil
 	},
 }
@@ -111,7 +127,7 @@ var mailInboxCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatMailInbox)
 		return nil
 	},
 }
@@ -136,7 +152,7 @@ var mailAckCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatMailAck)
 		return nil
 	},
 }

@@ -66,7 +66,7 @@ default_account: acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "mail", "send", "--to-alias", "acme/researcher", "--body", "hello network")
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--to-alias", "acme/researcher", "--body", "hello network", "--json")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -141,7 +141,7 @@ default_account: acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "mail", "send", "--to-alias", "bob", "--body", "hello local")
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--to-alias", "bob", "--body", "hello local", "--json")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -218,7 +218,7 @@ default_account: acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "chat", "send-and-leave", "acme/bot", "hello network")
+	run := exec.CommandContext(ctx, bin, "chat", "send-and-leave", "acme/bot", "hello network", "--json")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -303,7 +303,7 @@ default_account: acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "directory", "--capability", "translate")
+	run := exec.CommandContext(ctx, bin, "directory", "--capability", "translate", "--json")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -373,7 +373,7 @@ default_account: acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "directory", "acme/researcher")
+	run := exec.CommandContext(ctx, bin, "directory", "acme/researcher", "--json")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()

@@ -37,7 +37,7 @@ var agentsCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatAgentsList)
 		return nil
 	},
 }
@@ -66,10 +66,10 @@ var agentAccessModeCmd = &cobra.Command{
 			}
 			for _, a := range agents.Agents {
 				if a.AgentID == agentID {
-					printJSON(map[string]string{
+					printOutput(map[string]string{
 						"agent_id":    a.AgentID,
 						"access_mode": a.AccessMode,
-					})
+					}, formatAgentAccessMode)
 					return nil
 				}
 			}
@@ -88,7 +88,7 @@ var agentAccessModeCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatAgentPatch)
 		return nil
 	},
 }
@@ -111,10 +111,10 @@ var agentPrivacyCmd = &cobra.Command{
 			}
 			for _, a := range agents.Agents {
 				if a.AgentID == agentID {
-					printJSON(map[string]string{
+					printOutput(map[string]string{
 						"agent_id": a.AgentID,
 						"privacy":  a.Privacy,
-					})
+					}, formatAgentPrivacy)
 					return nil
 				}
 			}
@@ -132,7 +132,7 @@ var agentPrivacyCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatAgentPatch)
 		return nil
 	},
 }

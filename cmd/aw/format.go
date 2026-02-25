@@ -1,0 +1,466 @@
+package main
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/chat"
+)
+
+// --- introspect/whoami ---
+
+func formatIntrospect(v any) string {
+	out := v.(introspectOutput)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Project:  %s\n", out.ProjectID))
+	if out.AgentID != "" {
+		sb.WriteString(fmt.Sprintf("Agent:    %s\n", out.AgentID))
+	}
+	if out.Alias != "" {
+		sb.WriteString(fmt.Sprintf("Alias:    %s\n", out.Alias))
+	}
+	if out.HumanName != "" {
+		sb.WriteString(fmt.Sprintf("Human:    %s\n", out.HumanName))
+	}
+	if out.AgentType != "" {
+		sb.WriteString(fmt.Sprintf("Type:     %s\n", out.AgentType))
+	}
+	if out.DID != "" {
+		sb.WriteString(fmt.Sprintf("DID:      %s\n", out.DID))
+	}
+	if out.Custody != "" {
+		sb.WriteString(fmt.Sprintf("Custody:  %s\n", out.Custody))
+	}
+	if out.Lifetime != "" {
+		sb.WriteString(fmt.Sprintf("Lifetime: %s\n", out.Lifetime))
+	}
+	return sb.String()
+}
+
+// --- mail ---
+
+
+func formatMailInbox(v any) string {
+	resp := v.(*aweb.InboxResponse)
+	if len(resp.Messages) == 0 {
+		return "No messages.\n"
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("MAILS: %d\n\n", len(resp.Messages)))
+	for _, msg := range resp.Messages {
+		subj := strings.TrimSpace(msg.Subject)
+		if subj != "" {
+			subj = " — " + subj
+		}
+		sb.WriteString(fmt.Sprintf("- %s%s: %s\n", msg.FromAlias, subj, msg.Body))
+	}
+	return sb.String()
+}
+
+func formatMailAck(v any) string {
+	resp := v.(*aweb.AckResponse)
+	return fmt.Sprintf("Acknowledged %s\n", resp.MessageID)
+}
+
+// --- chat ---
+
+func formatChatSend(v any) string {
+	result := v.(*chat.SendResult)
+	var sb strings.Builder
+
+	writeChatLine := func(prefix, agent, ts string) {
+		timeAgo := ""
+		if ts != "" {
+			timeAgo = formatTimeAgo(ts)
+		}
+		if timeAgo != "" {
+			sb.WriteString(fmt.Sprintf("%s: %s — %s\n", prefix, agent, timeAgo))
+		} else {
+			sb.WriteString(fmt.Sprintf("%s: %s\n", prefix, agent))
+		}
+	}
+
+	firstTimestamp := ""
+	if len(result.Events) > 0 {
+		firstTimestamp = result.Events[0].Timestamp
+	}
+
+	switch result.Status {
+	case "replied":
+		writeChatLine("Chat from", result.TargetAgent, firstTimestamp)
+		sb.WriteString(fmt.Sprintf("Body: %s\n", result.Reply))
+		return sb.String()
+
+	case "sender_left":
+		writeChatLine("Chat from", result.TargetAgent, firstTimestamp)
+		sb.WriteString(fmt.Sprintf("Body: %s\n", result.Reply))
+		sb.WriteString(fmt.Sprintf("Note: %s has left the exchange\n", result.TargetAgent))
+		return sb.String()
+
+	case "pending":
+		lastFrom := result.TargetAgent
+		if len(result.Events) > 0 && result.Events[0].FromAgent != "" {
+			lastFrom = result.Events[0].FromAgent
+		}
+
+		if lastFrom == result.TargetAgent {
+			writeChatLine("Chat from", result.TargetAgent, firstTimestamp)
+			if result.SenderWaiting {
+				sb.WriteString("Status: WAITING for your reply\n")
+			}
+			sb.WriteString(fmt.Sprintf("Body: %s\n", result.Reply))
+			sb.WriteString(fmt.Sprintf("Next: Run \"aw chat send-and-wait %s \\\"your reply\\\"\"\n", result.TargetAgent))
+		} else {
+			writeChatLine("Chat to", result.TargetAgent, firstTimestamp)
+			sb.WriteString(fmt.Sprintf("Body: %s\n", result.Reply))
+			sb.WriteString(fmt.Sprintf("Awaiting reply from %s.\n", result.TargetAgent))
+		}
+		return sb.String()
+
+	case "sent":
+		sb.WriteString(fmt.Sprintf("Message sent to %s\n", result.TargetAgent))
+		if result.TargetNotConnected {
+			sb.WriteString(fmt.Sprintf("Note: %s was not connected.\n", result.TargetAgent))
+		}
+		if result.WaitedSeconds > 0 {
+			sb.WriteString(fmt.Sprintf("Waited %ds — no reply\n", result.WaitedSeconds))
+		}
+		return sb.String()
+
+	case "targets_left":
+		sb.WriteString(fmt.Sprintf("Message sent to %s\n", result.TargetAgent))
+		sb.WriteString(fmt.Sprintf("%s previously left the conversation.\n", result.TargetAgent))
+		sb.WriteString(fmt.Sprintf("To start a new exchange, run: \"aw chat send-and-wait %s \\\"message\\\" --start-conversation\"\n", result.TargetAgent))
+		return sb.String()
+	}
+
+	// Fallback: show message events.
+	messageIndex := 0
+	for _, event := range result.Events {
+		if event.Type != "message" {
+			continue
+		}
+		if messageIndex > 0 {
+			sb.WriteString("\n---\n\n")
+		}
+		writeChatLine("Chat from", event.FromAgent, event.Timestamp)
+		sb.WriteString(fmt.Sprintf("Body: %s\n", event.Body))
+		messageIndex++
+	}
+
+	if sb.Len() == 0 {
+		sb.WriteString("No chat events.\n")
+	}
+
+	return sb.String()
+}
+
+func formatChatPending(v any) string {
+	result := v.(*chat.PendingResult)
+	if len(result.Pending) == 0 {
+		return "No pending conversations\n"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("CHATS: %d unread conversation(s)\n\n", len(result.Pending)))
+
+	for _, p := range result.Pending {
+		openHint := ""
+		if p.LastFrom != "" {
+			openHint = fmt.Sprintf(" — Run \"aw chat open %s\"", p.LastFrom)
+		}
+
+		if p.SenderWaiting {
+			timeInfo := ""
+			if p.TimeRemainingSeconds != nil && *p.TimeRemainingSeconds < 60 && *p.TimeRemainingSeconds > 0 {
+				timeInfo = fmt.Sprintf(" (%ds left)", *p.TimeRemainingSeconds)
+			}
+			sb.WriteString(fmt.Sprintf("  CHAT WAITING: %s%s (unread: %d)%s\n", p.LastFrom, timeInfo, p.UnreadCount, openHint))
+		} else {
+			sb.WriteString(fmt.Sprintf("  CHAT: %s (unread: %d)%s\n", p.LastFrom, p.UnreadCount, openHint))
+		}
+	}
+
+	return sb.String()
+}
+
+func formatChatOpen(v any) string {
+	result := v.(*chat.OpenResult)
+	if len(result.Messages) == 0 {
+		if result.UnreadWasEmpty {
+			return fmt.Sprintf("No unread chat messages for %s\n", result.TargetAgent)
+		}
+		return "No unread chat messages\n"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Unread chat messages (%d marked as read):\n\n", result.MarkedRead))
+	if result.SenderWaiting {
+		sb.WriteString(fmt.Sprintf("Status: %s is WAITING for your reply\n\n", result.TargetAgent))
+	}
+
+	for i, m := range result.Messages {
+		if i > 0 {
+			sb.WriteString("\n---\n\n")
+		}
+		ts := ""
+		if m.Timestamp != "" {
+			if t, err := time.Parse(time.RFC3339, m.Timestamp); err == nil {
+				ts = t.Format("15:04:05")
+			}
+		}
+		if ts != "" {
+			sb.WriteString(fmt.Sprintf("[%s] %s: %s\n", ts, m.FromAgent, m.Body))
+		} else {
+			sb.WriteString(fmt.Sprintf("%s: %s\n", m.FromAgent, m.Body))
+		}
+	}
+
+	sb.WriteString(fmt.Sprintf("\nNext: Run \"aw chat send-and-wait %s \\\"your reply\\\"\"", result.TargetAgent))
+	if result.SenderWaiting {
+		sb.WriteString(fmt.Sprintf(" or \"aw chat extend-wait %s \\\"message\\\"\"", result.TargetAgent))
+	}
+	sb.WriteString("\n")
+
+	return sb.String()
+}
+
+func formatChatHistory(v any) string {
+	result := v.(*chat.HistoryResult)
+	if len(result.Messages) == 0 {
+		return "No messages in conversation\n"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Conversation history (%d messages):\n\n", len(result.Messages)))
+
+	for _, m := range result.Messages {
+		ts := ""
+		if m.Timestamp != "" {
+			if t, err := time.Parse(time.RFC3339, m.Timestamp); err == nil {
+				ts = t.Format("15:04:05")
+			}
+		}
+		if ts != "" {
+			sb.WriteString(fmt.Sprintf("[%s] %s: %s\n", ts, m.FromAgent, m.Body))
+		} else {
+			sb.WriteString(fmt.Sprintf("%s: %s\n", m.FromAgent, m.Body))
+		}
+	}
+
+	return sb.String()
+}
+
+func formatChatExtendWait(v any) string {
+	result := v.(*chat.ExtendWaitResult)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Sent extend-wait to %s\n", result.TargetAgent))
+	sb.WriteString(fmt.Sprintf("Message: %s\n", result.Message))
+	if result.ExtendsWaitSeconds > 0 {
+		minutes := result.ExtendsWaitSeconds / 60
+		sb.WriteString(fmt.Sprintf("%s's wait extended by %d min\n", result.TargetAgent, minutes))
+	}
+	return sb.String()
+}
+
+// --- agents ---
+
+func formatAgentsList(v any) string {
+	resp := v.(*aweb.ListAgentsResponse)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Project: %s\n\n", resp.ProjectID))
+
+	var online, offline []aweb.AgentView
+	for _, agent := range resp.Agents {
+		if agent.Online {
+			online = append(online, agent)
+		} else {
+			offline = append(offline, agent)
+		}
+	}
+	sort.Slice(online, func(i, j int) bool { return online[i].Alias < online[j].Alias })
+	sort.Slice(offline, func(i, j int) bool { return offline[i].Alias < offline[j].Alias })
+
+	if len(online) > 0 {
+		sb.WriteString("ONLINE\n")
+		for _, agent := range online {
+			desc := strings.TrimSpace(agent.Status)
+			if desc == "" {
+				desc = "active"
+			}
+			sb.WriteString(fmt.Sprintf("  %s (%s) — %s\n", agent.Alias, agent.AgentType, desc))
+		}
+		sb.WriteString("\n")
+	}
+	if len(offline) > 0 {
+		sb.WriteString("OFFLINE\n")
+		for _, agent := range offline {
+			sb.WriteString(fmt.Sprintf("  %s (%s)\n", agent.Alias, agent.AgentType))
+		}
+	}
+	return sb.String()
+}
+
+func formatAgentAccessMode(v any) string {
+	m := v.(map[string]string)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Agent:       %s\n", m["agent_id"]))
+	sb.WriteString(fmt.Sprintf("Access mode: %s\n", m["access_mode"]))
+	return sb.String()
+}
+
+func formatAgentPrivacy(v any) string {
+	m := v.(map[string]string)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Agent:   %s\n", m["agent_id"]))
+	sb.WriteString(fmt.Sprintf("Privacy: %s\n", m["privacy"]))
+	return sb.String()
+}
+
+func formatAgentPatch(v any) string {
+	resp := v.(*aweb.PatchAgentResponse)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Agent:       %s\n", resp.AgentID))
+	if resp.AccessMode != "" {
+		sb.WriteString(fmt.Sprintf("Access mode: %s\n", resp.AccessMode))
+	}
+	if resp.Privacy != "" {
+		sb.WriteString(fmt.Sprintf("Privacy:     %s\n", resp.Privacy))
+	}
+	return sb.String()
+}
+
+// --- locks ---
+
+func formatLockAcquire(v any) string {
+	resp := v.(*aweb.ReservationAcquireResponse)
+	return fmt.Sprintf("Locked %s\n", resp.ResourceKey)
+}
+
+func formatLockRenew(v any) string {
+	resp := v.(*aweb.ReservationRenewResponse)
+	remaining := ttlRemainingSeconds(resp.ExpiresAt, time.Now())
+	return fmt.Sprintf("Renewed %s (expires in %s)\n", resp.ResourceKey, formatDuration(remaining))
+}
+
+func formatLockRelease(v any) string {
+	resp := v.(*aweb.ReservationReleaseResponse)
+	return fmt.Sprintf("Released %s\n", resp.ResourceKey)
+}
+
+func formatLockRevoke(v any) string {
+	resp := v.(*aweb.ReservationRevokeResponse)
+	return fmt.Sprintf("Revoked %d lock(s)\n", resp.RevokedCount)
+}
+
+func formatLockList(v any) string {
+	resp := v.(*aweb.ReservationListResponse)
+	if len(resp.Reservations) == 0 {
+		return "No active locks.\n"
+	}
+	var sb strings.Builder
+	now := time.Now()
+	for _, r := range resp.Reservations {
+		sb.WriteString(fmt.Sprintf("- %s — %s (expires in %s)\n", r.ResourceKey, r.HolderAlias, formatDuration(ttlRemainingSeconds(r.ExpiresAt, now))))
+	}
+	return sb.String()
+}
+
+// --- block ---
+
+func formatBlock(v any) string {
+	resp := v.(*aweb.BlockResponse)
+	return fmt.Sprintf("Blocked %s\n", resp.Address)
+}
+
+func formatUnblock(v any) string {
+	m := v.(map[string]string)
+	return fmt.Sprintf("Unblocked %s\n", m["address"])
+}
+
+func formatBlockList(v any) string {
+	resp := v.(*aweb.ListBlockedResponse)
+	if len(resp.Blocked) == 0 {
+		return "No blocked addresses.\n"
+	}
+	var sb strings.Builder
+	for _, b := range resp.Blocked {
+		sb.WriteString(fmt.Sprintf("- %s (blocked %s)\n", b.Address, formatTimeAgo(b.BlockedAt)))
+	}
+	return sb.String()
+}
+
+// --- contacts ---
+
+func formatContactsList(v any) string {
+	resp := v.(*aweb.ContactListResponse)
+	if len(resp.Contacts) == 0 {
+		return "No contacts.\n"
+	}
+	var sb strings.Builder
+	for _, c := range resp.Contacts {
+		label := ""
+		if c.Label != "" {
+			label = " [" + c.Label + "]"
+		}
+		sb.WriteString(fmt.Sprintf("- %s%s\n", c.ContactAddress, label))
+	}
+	return sb.String()
+}
+
+func formatContactAdd(v any) string {
+	resp := v.(*aweb.ContactCreateResponse)
+	return fmt.Sprintf("Added contact %s\n", resp.ContactAddress)
+}
+
+
+// --- namespace/project ---
+
+func formatNamespace(v any) string {
+	resp := v.(*aweb.ProjectResponse)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Project: %s\n", resp.Name))
+	sb.WriteString(fmt.Sprintf("Slug:    %s\n", resp.Slug))
+	sb.WriteString(fmt.Sprintf("ID:      %s\n", resp.ProjectID))
+	return sb.String()
+}
+
+// --- network ---
+
+func formatPublish(v any) string {
+	resp := v.(*aweb.NetworkPublishResponse)
+	return fmt.Sprintf("Published %s\n", resp.Alias)
+}
+
+func formatDirectoryGet(v any) string {
+	resp := v.(*aweb.NetworkDirectoryAgent)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Agent:        %s/%s\n", resp.OrgSlug, resp.Alias))
+	if resp.Description != "" {
+		sb.WriteString(fmt.Sprintf("Description:  %s\n", resp.Description))
+	}
+	if len(resp.Capabilities) > 0 {
+		sb.WriteString(fmt.Sprintf("Capabilities: %s\n", strings.Join(resp.Capabilities, ", ")))
+	}
+	return sb.String()
+}
+
+func formatDirectorySearch(v any) string {
+	resp := v.(*aweb.NetworkDirectoryResponse)
+	if len(resp.Agents) == 0 {
+		return "No agents found.\n"
+	}
+	var sb strings.Builder
+	for _, a := range resp.Agents {
+		desc := ""
+		if a.Description != "" {
+			desc = " — " + a.Description
+		}
+		sb.WriteString(fmt.Sprintf("- %s/%s%s\n", a.OrgSlug, a.Alias, desc))
+	}
+	return sb.String()
+}
+

@@ -233,7 +233,9 @@ func saveNewRegistration(
 		}
 	}
 
-	printJSON(resp)
+	if jsonFlag {
+		printJSON(resp)
+	}
 
 	if resp.VerificationRequired {
 		fmt.Fprintf(os.Stderr, "\nA verification code was sent to %s.\n", email)
@@ -505,7 +507,9 @@ func verifyAndBootstrap(
 		}
 	}
 
-	printJSON(vresp)
+	if jsonFlag {
+		printJSON(vresp)
+	}
 	fmt.Fprintf(os.Stderr, "Verified! Agent %s/%s is now active.\n", namespaceSlug, respAlias)
 
 	return nil

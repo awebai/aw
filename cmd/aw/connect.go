@@ -171,8 +171,9 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "Config written to %s\n", cfgPath)
 
-	// Print introspect output as JSON for scriptability.
-	printJSON(resp)
+	if jsonFlag {
+		printJSON(resp)
+	}
 
 	return nil
 }

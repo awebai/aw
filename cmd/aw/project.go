@@ -19,7 +19,7 @@ var namespaceCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatNamespace)
 		return nil
 	},
 }

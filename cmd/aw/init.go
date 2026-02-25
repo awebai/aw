@@ -305,7 +305,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	printJSON(resp)
+	if jsonFlag {
+		printJSON(resp)
+	}
 	if initPrintExports {
 		fmt.Println("")
 		fmt.Println("# Copy/paste to configure your shell:")

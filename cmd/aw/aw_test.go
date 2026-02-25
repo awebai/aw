@@ -107,7 +107,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "introspect")
+	run := exec.CommandContext(ctx, bin, "introspect", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -125,6 +125,81 @@ default_account: acct
 	}
 	if got["project_id"] != "proj-123" {
 		t.Fatalf("project_id=%v", got["project_id"])
+	}
+}
+
+func TestAwIntrospectTextOutput(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/introspect":
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"project_id": "proj-123",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
+				"human_name": "Alice Dev",
+				"agent_type": "developer",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Run WITHOUT --json: should produce human-readable text.
+	run := exec.CommandContext(ctx, bin, "introspect")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	text := string(out)
+	for _, want := range []string{"Project:", "Agent:", "Alias:", "Human:", "Type:"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text output missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "{") {
+		t.Errorf("text output should not contain JSON braces:\n%s", text)
 	}
 }
 
@@ -179,7 +254,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "introspect")
+	run := exec.CommandContext(ctx, bin, "introspect", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -290,7 +365,7 @@ server_accounts:
 		t.Fatalf("write context: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "introspect", "--server-name", "b")
+	run := exec.CommandContext(ctx, bin, "introspect", "--server-name", "b", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -359,7 +434,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "introspect")
+	run := exec.CommandContext(ctx, bin, "introspect", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_API_KEY=aw_sk_env",
@@ -461,7 +536,7 @@ func TestAwInitRetriesWhenSuggestedAliasAlreadyExists(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--print-exports=false", "--write-context=false")
+	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--print-exports=false", "--write-context=false", "--json")
 	// Ensure non-TTY mode so aw init doesn't prompt during tests.
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
@@ -557,7 +632,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "agents")
+	run := exec.CommandContext(ctx, bin, "agents", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -643,7 +718,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "mail", "ack", "--message-id", "msg-42")
+	run := exec.CommandContext(ctx, bin, "mail", "ack", "--message-id", "msg-42", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -726,7 +801,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "lock", "renew", "--resource-key", "my-lock", "--ttl-seconds", "3600")
+	run := exec.CommandContext(ctx, bin, "lock", "renew", "--resource-key", "my-lock", "--ttl-seconds", "3600", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -805,7 +880,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "namespace")
+	run := exec.CommandContext(ctx, bin, "namespace", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -890,7 +965,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "lock", "revoke", "--prefix", "test-")
+	run := exec.CommandContext(ctx, bin, "lock", "revoke", "--prefix", "test-", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -971,7 +1046,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "chat", "send-and-leave", "bob", "hello there")
+	run := exec.CommandContext(ctx, bin, "chat", "send-and-leave", "bob", "hello there", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -1122,7 +1197,7 @@ func TestAwInitWritesConfig(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--server-name", "local", "--server-url", server.URL, "--account", "acct", "--print-exports=false", "--write-context=false")
+	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--server-name", "local", "--server-url", server.URL, "--account", "acct", "--print-exports=false", "--write-context=false", "--json")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1290,7 +1365,7 @@ func TestAwInitCloudModeSkipsInitProbe(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--namespace", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--server-url", server.URL)
+	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--namespace", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--server-url", server.URL, "--json")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1370,7 +1445,7 @@ func TestAwInitAcceptsAPIV1BaseURL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/api/v1")
+	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/api/v1", "--json")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1445,7 +1520,7 @@ func TestAwInitAllowsCustomMountRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/custom")
+	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/custom", "--json")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1534,7 +1609,7 @@ default_account: cloud-acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--namespace", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--server-url", server.URL)
+	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--namespace", "demo", "--alias", "researcher", "--print-exports=false", "--write-context=false", "--server-url", server.URL, "--json")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1622,7 +1697,7 @@ default_account: existing-acct
 	}
 
 	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--namespace", "demo",
-		"--alias", "bob", "--print-exports=false", "--write-context=false", "--server-url", server.URL)
+		"--alias", "bob", "--print-exports=false", "--write-context=false", "--server-url", server.URL, "--json")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1772,7 +1847,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "chat", "send-and-leave", "bob", "hello there")
+	run := exec.CommandContext(ctx, bin, "chat", "send-and-leave", "bob", "hello there", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -1896,7 +1971,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "contacts", "list")
+	run := exec.CommandContext(ctx, bin, "contacts", "list", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -1979,7 +2054,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "contacts", "add", "bob@example.com", "--label", "Bob")
+	run := exec.CommandContext(ctx, bin, "contacts", "add", "bob@example.com", "--label", "Bob", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -2063,7 +2138,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "contacts", "remove", "bob@example.com")
+	run := exec.CommandContext(ctx, bin, "contacts", "remove", "bob@example.com", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -2211,7 +2286,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "agent", "access-mode")
+	run := exec.CommandContext(ctx, bin, "agent", "access-mode", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -2295,7 +2370,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "agent", "access-mode", "open")
+	run := exec.CommandContext(ctx, bin, "agent", "access-mode", "open", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -2492,6 +2567,7 @@ func TestAwRegisterSuccess(t *testing.T) {
 		"--alias", "alice",
 		"--save-config=false",
 		"--write-context=false",
+		"--json",
 	)
 	run.Stdin = strings.NewReader("")
 	var stdout, stderr bytes.Buffer
@@ -2734,6 +2810,7 @@ func TestAwRegisterExistingAccountFlow(t *testing.T) {
 		"--username", "existinguser",
 		"--alias", "researcher",
 		"--namespace", "existinguser",
+		"--json",
 	)
 	// Provide verification code via stdin.
 	run.Stdin = strings.NewReader("123456\n")
@@ -2859,6 +2936,7 @@ func TestAwRegisterExistingAccountAutoSelectNamespace(t *testing.T) {
 		"--email", "auto@example.com",
 		"--username", "autouser",
 		"--alias", "bot",
+		"--json",
 	)
 	run.Stdin = strings.NewReader("999999\n")
 	run.Env = append(os.Environ(),
@@ -3498,6 +3576,7 @@ func TestAwRegisterWritesConfig(t *testing.T) {
 		"--username", "testuser",
 		"--alias", "alice",
 		"--write-context=false",
+		"--json",
 	)
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
@@ -4977,7 +5056,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "agent", "privacy")
+	run := exec.CommandContext(ctx, bin, "agent", "privacy", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -5061,7 +5140,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "agent", "privacy", "private")
+	run := exec.CommandContext(ctx, bin, "agent", "privacy", "private", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -5154,6 +5233,7 @@ default_account: acct
 		"--to-alias", "@juanre",
 		"--body", "hello from DM",
 		"--subject", "test DM",
+		"--json",
 	)
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -5301,7 +5381,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "block", "spammerco")
+	run := exec.CommandContext(ctx, bin, "block", "spammerco", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -5372,7 +5452,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "unblock", "spammerco")
+	run := exec.CommandContext(ctx, bin, "unblock", "spammerco", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -5448,7 +5528,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "block", "list")
+	run := exec.CommandContext(ctx, bin, "block", "list", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -5522,7 +5602,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "block", "spammerco/marketer")
+	run := exec.CommandContext(ctx, bin, "block", "spammerco/marketer", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",

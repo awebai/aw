@@ -37,7 +37,7 @@ var introspectCmd = &cobra.Command{
 			Custody:            sel.Custody,
 			Lifetime:           sel.Lifetime,
 		}
-		printJSON(out)
+		printOutput(out, formatIntrospect)
 		return nil
 	},
 }

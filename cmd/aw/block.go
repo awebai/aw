@@ -22,7 +22,7 @@ var blockCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatBlock)
 		return nil
 	},
 }
@@ -39,7 +39,7 @@ var blockListCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatBlockList)
 		return nil
 	},
 }
@@ -55,7 +55,7 @@ var unblockCmd = &cobra.Command{
 		if err := mustClient().Unblock(ctx, args[0]); err != nil {
 			fatal(err)
 		}
-		printJSON(map[string]string{"address": args[0], "status": "unblocked"})
+		printOutput(map[string]string{"address": args[0], "status": "unblocked"}, formatUnblock)
 		return nil
 	},
 }

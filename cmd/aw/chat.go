@@ -94,7 +94,7 @@ var chatSendAndWaitCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(result)
+		printOutput(result, formatChatSend)
 		return nil
 	},
 }
@@ -116,7 +116,7 @@ var chatSendAndLeaveCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(result)
+		printOutput(result, formatChatSend)
 		return nil
 	},
 }
@@ -134,7 +134,7 @@ var chatPendingCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(result)
+		printOutput(result, formatChatPending)
 		return nil
 	},
 }
@@ -153,7 +153,7 @@ var chatOpenCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(result)
+		printOutput(result, formatChatOpen)
 		return nil
 	},
 }
@@ -172,7 +172,7 @@ var chatHistoryCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(result)
+		printOutput(result, formatChatHistory)
 		return nil
 	},
 }
@@ -191,7 +191,7 @@ var chatExtendWaitCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(result)
+		printOutput(result, formatChatExtendWait)
 		return nil
 	},
 }
@@ -211,7 +211,7 @@ var chatListenCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(result)
+		printOutput(result, formatChatSend)
 		return nil
 	},
 }
@@ -230,7 +230,7 @@ var chatShowPendingCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(result)
+		printOutput(result, formatChatSend)
 		return nil
 	},
 }

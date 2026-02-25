@@ -28,7 +28,7 @@ var contactsListCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatContactsList)
 		return nil
 	},
 }
@@ -48,7 +48,7 @@ var contactsAddCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatContactAdd)
 		return nil
 	},
 }
@@ -85,7 +85,11 @@ var contactsRemoveCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		if jsonFlag {
+			printJSON(resp)
+		} else {
+			fmt.Printf("Removed contact %s\n", address)
+		}
 		return nil
 	},
 }

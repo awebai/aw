@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -479,6 +480,90 @@ func writeOrUpdateContext(serverName, accountName string) error {
 func printJSON(v any) {
 	data, _ := json.MarshalIndent(v, "", "  ")
 	fmt.Println(string(data))
+}
+
+func printOutput(v any, formatter func(v any) string) {
+	if jsonFlag {
+		printJSON(v)
+		return
+	}
+	fmt.Print(formatter(v))
+}
+
+func parseTimeBestEffort(value string) (time.Time, bool) {
+	if value == "" {
+		return time.Time{}, false
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return ts, true
+	}
+	if ts, err := time.Parse(time.RFC3339, value); err == nil {
+		return ts, true
+	}
+	return time.Time{}, false
+}
+
+func formatTimeAgo(timestamp string) string {
+	ts, ok := parseTimeBestEffort(timestamp)
+	if !ok {
+		return timestamp
+	}
+	d := time.Since(ts)
+	if d < 0 {
+		d = 0
+	}
+	secs := int(d.Seconds())
+	if secs < 60 {
+		return fmt.Sprintf("%ds ago", secs)
+	}
+	mins := secs / 60
+	if mins < 60 {
+		return fmt.Sprintf("%dm ago", mins)
+	}
+	hours := mins / 60
+	if hours < 48 {
+		return fmt.Sprintf("%dh ago", hours)
+	}
+	days := hours / 24
+	return fmt.Sprintf("%dd ago", days)
+}
+
+func formatDuration(seconds int) string {
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	if seconds < 3600 {
+		mins := seconds / 60
+		secs := seconds % 60
+		if secs == 0 {
+			return fmt.Sprintf("%dm", mins)
+		}
+		return fmt.Sprintf("%dm%ds", mins, secs)
+	}
+	hours := seconds / 3600
+	mins := (seconds % 3600) / 60
+	if mins == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh%dm", hours, mins)
+}
+
+func ttlRemainingSeconds(expiresAt string, now time.Time) int {
+	if expiresAt == "" {
+		return 0
+	}
+	ts, err := time.Parse(time.RFC3339Nano, expiresAt)
+	if err != nil {
+		ts, err = time.Parse(time.RFC3339, expiresAt)
+		if err != nil {
+			return 0
+		}
+	}
+	secs := int(math.Ceil(ts.Sub(now).Seconds()))
+	if secs < 0 {
+		return 0
+	}
+	return secs
 }
 
 func fatal(err error) {

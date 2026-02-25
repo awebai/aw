@@ -41,7 +41,7 @@ var lockAcquireCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatLockAcquire)
 		return nil
 	},
 }
@@ -72,7 +72,7 @@ var lockRenewCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatLockRenew)
 		return nil
 	},
 }
@@ -99,7 +99,7 @@ var lockReleaseCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatLockRelease)
 		return nil
 	},
 }
@@ -121,7 +121,7 @@ var lockRevokeCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatLockRevoke)
 		return nil
 	},
 }
@@ -141,7 +141,7 @@ var lockListCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatLockList)
 		return nil
 	},
 }

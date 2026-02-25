@@ -50,7 +50,7 @@ var publishCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatPublish)
 		return nil
 	},
 }
@@ -113,7 +113,7 @@ var directoryCmd = &cobra.Command{
 			if err != nil {
 				fatal(err)
 			}
-			printJSON(resp)
+			printOutput(resp, formatDirectoryGet)
 			return nil
 		}
 
@@ -126,7 +126,7 @@ var directoryCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printJSON(resp)
+		printOutput(resp, formatDirectorySearch)
 		return nil
 	},
 }
