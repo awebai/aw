@@ -369,30 +369,6 @@ func formatLockList(v any) string {
 	return sb.String()
 }
 
-// --- block ---
-
-func formatBlock(v any) string {
-	resp := v.(*aweb.BlockResponse)
-	return fmt.Sprintf("Blocked %s\n", resp.Address)
-}
-
-func formatUnblock(v any) string {
-	m := v.(map[string]string)
-	return fmt.Sprintf("Unblocked %s\n", m["address"])
-}
-
-func formatBlockList(v any) string {
-	resp := v.(*aweb.ListBlockedResponse)
-	if len(resp.Blocked) == 0 {
-		return "No blocked addresses.\n"
-	}
-	var sb strings.Builder
-	for _, b := range resp.Blocked {
-		sb.WriteString(fmt.Sprintf("- %s (blocked %s)\n", b.Address, formatTimeAgo(b.BlockedAt)))
-	}
-	return sb.String()
-}
-
 // --- contacts ---
 
 func formatContactsList(v any) string {
