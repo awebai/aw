@@ -174,6 +174,7 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
+    namespace_slug: testns
 default_account: acct
 `)+"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -193,7 +194,7 @@ default_account: acct
 	}
 
 	text := string(out)
-	for _, want := range []string{"Project:", "Agent:", "Alias:", "Human:", "Type:"} {
+	for _, want := range []string{"Address:", "Namespace:", "Human:", "Type:"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("text output missing %q:\n%s", want, text)
 		}

@@ -15,27 +15,26 @@ import (
 func formatIntrospect(v any) string {
 	out := v.(introspectOutput)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Project:  %s\n", out.ProjectID))
-	if out.AgentID != "" {
-		sb.WriteString(fmt.Sprintf("Agent:    %s\n", out.AgentID))
+	if out.Address != "" {
+		sb.WriteString(fmt.Sprintf("Address:   %s\n", out.Address))
 	}
-	if out.Alias != "" {
-		sb.WriteString(fmt.Sprintf("Alias:    %s\n", out.Alias))
+	if out.NamespaceSlug != "" {
+		sb.WriteString(fmt.Sprintf("Namespace: %s\n", out.NamespaceSlug))
 	}
 	if out.HumanName != "" {
-		sb.WriteString(fmt.Sprintf("Human:    %s\n", out.HumanName))
+		sb.WriteString(fmt.Sprintf("Human:     %s\n", out.HumanName))
 	}
 	if out.AgentType != "" {
-		sb.WriteString(fmt.Sprintf("Type:     %s\n", out.AgentType))
+		sb.WriteString(fmt.Sprintf("Type:      %s\n", out.AgentType))
 	}
 	if out.DID != "" {
-		sb.WriteString(fmt.Sprintf("DID:      %s\n", out.DID))
+		sb.WriteString(fmt.Sprintf("DID:       %s\n", out.DID))
 	}
 	if out.Custody != "" {
-		sb.WriteString(fmt.Sprintf("Custody:  %s\n", out.Custody))
+		sb.WriteString(fmt.Sprintf("Custody:   %s\n", out.Custody))
 	}
 	if out.Lifetime != "" {
-		sb.WriteString(fmt.Sprintf("Lifetime: %s\n", out.Lifetime))
+		sb.WriteString(fmt.Sprintf("Lifetime:  %s\n", out.Lifetime))
 	}
 	return sb.String()
 }
@@ -269,9 +268,12 @@ func formatChatExtendWait(v any) string {
 // --- agents ---
 
 func formatAgentsList(v any) string {
-	resp := v.(*aweb.ListAgentsResponse)
+	out := v.(agentsListOutput)
+	resp := out.ListAgentsResponse
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Project: %s\n\n", resp.ProjectID))
+	if out.NamespaceSlug != "" {
+		sb.WriteString(fmt.Sprintf("Namespace: %s\n\n", out.NamespaceSlug))
+	}
 
 	var online, offline []aweb.AgentView
 	for _, agent := range resp.Agents {
@@ -307,7 +309,7 @@ func formatAgentsList(v any) string {
 func formatAgentAccessMode(v any) string {
 	m := v.(map[string]string)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Agent:       %s\n", m["agent_id"]))
+	sb.WriteString(fmt.Sprintf("Agent:       %s\n", m["alias"]))
 	sb.WriteString(fmt.Sprintf("Access mode: %s\n", m["access_mode"]))
 	return sb.String()
 }
@@ -315,20 +317,24 @@ func formatAgentAccessMode(v any) string {
 func formatAgentPrivacy(v any) string {
 	m := v.(map[string]string)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Agent:   %s\n", m["agent_id"]))
+	sb.WriteString(fmt.Sprintf("Agent:   %s\n", m["alias"]))
 	sb.WriteString(fmt.Sprintf("Privacy: %s\n", m["privacy"]))
 	return sb.String()
 }
 
 func formatAgentPatch(v any) string {
-	resp := v.(*aweb.PatchAgentResponse)
+	out := v.(agentPatchOutput)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Agent:       %s\n", resp.AgentID))
-	if resp.AccessMode != "" {
-		sb.WriteString(fmt.Sprintf("Access mode: %s\n", resp.AccessMode))
+	if out.Alias != "" {
+		sb.WriteString(fmt.Sprintf("Agent:       %s\n", out.Alias))
+	} else {
+		sb.WriteString(fmt.Sprintf("Agent:       %s\n", out.AgentID))
 	}
-	if resp.Privacy != "" {
-		sb.WriteString(fmt.Sprintf("Privacy:     %s\n", resp.Privacy))
+	if out.AccessMode != "" {
+		sb.WriteString(fmt.Sprintf("Access mode: %s\n", out.AccessMode))
+	}
+	if out.Privacy != "" {
+		sb.WriteString(fmt.Sprintf("Privacy:     %s\n", out.Privacy))
 	}
 	return sb.String()
 }
@@ -393,14 +399,13 @@ func formatContactAdd(v any) string {
 }
 
 
-// --- namespace/project ---
+// --- namespace ---
 
 func formatNamespace(v any) string {
 	resp := v.(*aweb.ProjectResponse)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Project: %s\n", resp.Name))
-	sb.WriteString(fmt.Sprintf("Slug:    %s\n", resp.Slug))
-	sb.WriteString(fmt.Sprintf("ID:      %s\n", resp.ProjectID))
+	sb.WriteString(fmt.Sprintf("Namespace: %s\n", resp.Name))
+	sb.WriteString(fmt.Sprintf("Slug:      %s\n", resp.Slug))
 	return sb.String()
 }
 

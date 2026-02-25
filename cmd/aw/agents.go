@@ -10,6 +10,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// agentsListOutput wraps the server response with local config fields for display.
+type agentsListOutput struct {
+	*aweb.ListAgentsResponse
+	NamespaceSlug string `json:"namespace_slug,omitempty"`
+}
+
+// agentPatchOutput wraps the server response with the agent's alias for display.
+type agentPatchOutput struct {
+	*aweb.PatchAgentResponse
+	Alias string `json:"alias,omitempty"`
+}
+
 // mustAgentID resolves the current agent's ID via introspect, falling back
 // to the configured agent_id in the selection.
 func mustAgentID(ctx context.Context, client *aweb.Client, sel *awconfig.Selection) string {
@@ -33,11 +45,15 @@ var agentsCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := mustClient().ListAgents(ctx)
+		client, sel := mustResolve()
+		resp, err := client.ListAgents(ctx)
 		if err != nil {
 			fatal(err)
 		}
-		printOutput(resp, formatAgentsList)
+		printOutput(agentsListOutput{
+			ListAgentsResponse: resp,
+			NamespaceSlug:      sel.NamespaceSlug,
+		}, formatAgentsList)
 		return nil
 	},
 }
@@ -68,6 +84,7 @@ var agentAccessModeCmd = &cobra.Command{
 				if a.AgentID == agentID {
 					printOutput(map[string]string{
 						"agent_id":    a.AgentID,
+						"alias":       a.Alias,
 						"access_mode": a.AccessMode,
 					}, formatAgentAccessMode)
 					return nil
@@ -88,7 +105,10 @@ var agentAccessModeCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printOutput(resp, formatAgentPatch)
+		printOutput(agentPatchOutput{
+			PatchAgentResponse: resp,
+			Alias:              sel.AgentAlias,
+		}, formatAgentPatch)
 		return nil
 	},
 }
@@ -113,6 +133,7 @@ var agentPrivacyCmd = &cobra.Command{
 				if a.AgentID == agentID {
 					printOutput(map[string]string{
 						"agent_id": a.AgentID,
+						"alias":    a.Alias,
 						"privacy":  a.Privacy,
 					}, formatAgentPrivacy)
 					return nil
@@ -132,7 +153,10 @@ var agentPrivacyCmd = &cobra.Command{
 		if err != nil {
 			fatal(err)
 		}
-		printOutput(resp, formatAgentPatch)
+		printOutput(agentPatchOutput{
+			PatchAgentResponse: resp,
+			Alias:              sel.AgentAlias,
+		}, formatAgentPatch)
 		return nil
 	},
 }

@@ -11,9 +11,11 @@ import (
 // introspectOutput combines the server's introspect response with local identity fields.
 type introspectOutput struct {
 	aweb.IntrospectResponse
-	DID      string `json:"did,omitempty"`
-	Custody  string `json:"custody,omitempty"`
-	Lifetime string `json:"lifetime,omitempty"`
+	NamespaceSlug string `json:"namespace_slug,omitempty"`
+	Address       string `json:"address,omitempty"`
+	DID           string `json:"did,omitempty"`
+	Custody       string `json:"custody,omitempty"`
+	Lifetime      string `json:"lifetime,omitempty"`
 }
 
 var introspectCmd = &cobra.Command{
@@ -31,8 +33,15 @@ var introspectCmd = &cobra.Command{
 			fatal(err)
 		}
 
+		alias := resp.Alias
+		if alias == "" {
+			alias = sel.AgentAlias
+		}
+
 		out := introspectOutput{
 			IntrospectResponse: *resp,
+			NamespaceSlug:      sel.NamespaceSlug,
+			Address:            deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, alias),
 			DID:                sel.DID,
 			Custody:            sel.Custody,
 			Lifetime:           sel.Lifetime,
