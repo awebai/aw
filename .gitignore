@@ -18,6 +18,8 @@ coverage.out
 .beadhub
 .aw/
 .beads/
+.env*
+*.emacs-bu*
 
 # npm platform binaries (placed by CI, not committed)
 npm/*/bin/aw
