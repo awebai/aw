@@ -196,7 +196,11 @@ func formatChatOpen(v any) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Unread chat messages (%d marked as read):\n\n", result.MarkedRead))
+	if result.MarkedRead > 0 {
+		sb.WriteString(fmt.Sprintf("Unread chat messages (%d marked as read):\n\n", result.MarkedRead))
+	} else {
+		sb.WriteString(fmt.Sprintf("Unread chat messages (%d):\n\n", len(result.Messages)))
+	}
 	if result.SenderWaiting {
 		sb.WriteString(fmt.Sprintf("Status: %s is WAITING for your reply\n\n", result.TargetAgent))
 	}

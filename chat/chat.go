@@ -634,10 +634,9 @@ func Open(ctx context.Context, client *aweb.Client, targetAlias string) (*OpenRe
 	_, err = client.ChatMarkRead(ctx, sessionID, &aweb.ChatMarkReadRequest{
 		UpToMessageID: lastMessageID,
 	})
-	if err != nil {
-		return nil, fmt.Errorf("marking messages as read: %w", err)
+	if err == nil {
+		result.MarkedRead = len(messagesResp.Messages)
 	}
-	result.MarkedRead = len(messagesResp.Messages)
 
 	return result, nil
 }
@@ -829,10 +828,9 @@ func OpenNetwork(ctx context.Context, client *aweb.Client, targetAddress string)
 	_, err = client.NetworkChatMarkRead(ctx, sessionID, &aweb.NetworkChatMarkReadRequest{
 		UpToMessageID: lastMessageID,
 	})
-	if err != nil {
-		return nil, fmt.Errorf("marking messages as read: %w", err)
+	if err == nil {
+		result.MarkedRead = len(messagesResp.Messages)
 	}
-	result.MarkedRead = len(messagesResp.Messages)
 
 	return result, nil
 }
