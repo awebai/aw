@@ -605,6 +605,19 @@ func checkVerificationRequired(err error) string {
 	return hint
 }
 
+// networkFatal wraps fatal with a user-friendly message for network 404 errors.
+// When a network send fails because the target agent doesn't exist, the raw error
+// is "aweb: http 404: ..." which looks like a broken endpoint. This rewrites it
+// to mention the target address.
+func networkFatal(err error, target string) {
+	code, ok := aweb.HTTPStatusCode(err)
+	if ok && code == 404 {
+		fmt.Fprintf(os.Stderr, "agent not found: %s\n", target)
+		os.Exit(1)
+	}
+	fatal(err)
+}
+
 func debugLog(format string, args ...any) {
 	if debugFlag {
 		fmt.Fprintf(os.Stderr, "[debug] "+format+"\n", args...)

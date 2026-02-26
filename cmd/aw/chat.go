@@ -134,7 +134,7 @@ var chatSendAndWaitCmd = &cobra.Command{
 			StartConversation: chatSendAndWaitStartConversation,
 		})
 		if err != nil {
-			fatal(err)
+			networkFatal(err, args[0])
 		}
 		logsDir := defaultLogsDir()
 		myAddr := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
@@ -170,7 +170,7 @@ var chatSendAndLeaveCmd = &cobra.Command{
 			Leaving: true,
 		})
 		if err != nil {
-			fatal(err)
+			networkFatal(err, args[0])
 		}
 		logsDir := defaultLogsDir()
 		appendCommLog(logsDir, sel.AccountName, &CommLogEntry{

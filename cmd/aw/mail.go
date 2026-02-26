@@ -57,7 +57,7 @@ var mailSendCmd = &cobra.Command{
 				Priority: mailSendPriority,
 			})
 			if err != nil {
-				fatal(err)
+				networkFatal(err, mailSendToAlias)
 			}
 			appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
 				Timestamp: time.Now().UTC().Format(time.RFC3339),
@@ -86,7 +86,7 @@ var mailSendCmd = &cobra.Command{
 				Priority:  mailSendPriority,
 			})
 			if err != nil {
-				fatal(err)
+				networkFatal(err, addr.String())
 			}
 			appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
 				Timestamp: time.Now().UTC().Format(time.RFC3339),
