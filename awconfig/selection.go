@@ -24,7 +24,7 @@ type Selection struct {
 	NamespaceSlug      string
 	DID                string
 	StableID           string
-	SigningKey         string
+	SigningKey          string
 	Custody            string
 	Lifetime           string
 	ClawDIDRegistryURL string
