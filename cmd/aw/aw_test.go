@@ -6998,3 +6998,96 @@ func TestAwResetRemoteFromEnvOnly(t *testing.T) {
 		t.Fatalf("expected .aw/context to exist: %v", err)
 	}
 }
+
+func TestAwMailSendWritesCommLog(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/messages":
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"message_id":   "msg-log-1",
+				"status":       "delivered",
+				"delivered_at": "2026-02-26T12:00:00Z",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct-log-test:
+    server: local
+    api_key: aw_sk_test
+default_account: acct-log-test
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "mail", "send",
+		"--to-alias", "eve",
+		"--body", "hello from log test",
+		"--subject", "log test",
+	)
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	// The log should be in the same directory as config.yaml, under logs/.
+	logFile := filepath.Join(tmp, "logs", "acct-log-test.jsonl")
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("log file not created: %v", err)
+	}
+
+	var entry CommLogEntry
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(logData))), &entry); err != nil {
+		t.Fatalf("invalid log entry: %v\ndata: %s", err, string(logData))
+	}
+	if entry.Dir != "send" {
+		t.Fatalf("dir=%q, want send", entry.Dir)
+	}
+	if entry.Channel != "mail" {
+		t.Fatalf("channel=%q, want mail", entry.Channel)
+	}
+	if entry.MessageID != "msg-log-1" {
+		t.Fatalf("message_id=%q, want msg-log-1", entry.MessageID)
+	}
+	if entry.Body != "hello from log test" {
+		t.Fatalf("body=%q", entry.Body)
+	}
+	if entry.Subject != "log test" {
+		t.Fatalf("subject=%q", entry.Subject)
+	}
+}
