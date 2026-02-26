@@ -10,9 +10,10 @@ import (
 )
 
 type WorktreeContext struct {
-	DefaultAccount string            `yaml:"default_account,omitempty"`
-	ServerAccounts map[string]string `yaml:"server_accounts,omitempty"`
-	HumanAccount   string            `yaml:"human_account,omitempty"`
+	DefaultAccount        string            `yaml:"default_account,omitempty"`
+	ServerAccounts        map[string]string `yaml:"server_accounts,omitempty"`
+	ClientDefaultAccounts map[string]string `yaml:"client_default_accounts,omitempty"`
+	HumanAccount          string            `yaml:"human_account,omitempty"`
 }
 
 func DefaultWorktreeContextRelativePath() string {
@@ -48,6 +49,9 @@ func LoadWorktreeContextFrom(path string) (*WorktreeContext, error) {
 	if ctx.ServerAccounts == nil {
 		ctx.ServerAccounts = map[string]string{}
 	}
+	if ctx.ClientDefaultAccounts == nil {
+		ctx.ClientDefaultAccounts = map[string]string{}
+	}
 	return &ctx, nil
 }
 
@@ -69,6 +73,9 @@ func SaveWorktreeContextTo(path string, ctx *WorktreeContext) error {
 	}
 	if ctx.ServerAccounts == nil {
 		ctx.ServerAccounts = map[string]string{}
+	}
+	if ctx.ClientDefaultAccounts == nil {
+		ctx.ClientDefaultAccounts = map[string]string{}
 	}
 
 	data, err := yaml.Marshal(ctx)

@@ -16,8 +16,8 @@ import (
 )
 
 var (
-	resetRemote  bool
-	resetConfirm bool
+	resetRemote   bool
+	resetConfirm  bool
 	resetWipeKeys bool
 )
 
@@ -92,6 +92,7 @@ func runResetRemote() error {
 	sel, selErr := awconfig.Resolve(cfg, awconfig.ResolveOptions{
 		ServerName:        serverFlag,
 		AccountName:       accountFlag,
+		ClientName:        "aw",
 		WorkingDir:        wd,
 		AllowEnvOverrides: true,
 	})

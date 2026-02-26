@@ -34,6 +34,7 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
 		ServerName:        serverFlag,
 		AccountName:       accountFlag,
+		ClientName:        "aw",
 		WorkingDir:        wd,
 		AllowEnvOverrides: true,
 	})
@@ -110,6 +111,7 @@ func mustResolveAPIKeyOnly() (*aweb.Client, *awconfig.Selection) {
 	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
 		ServerName:        serverFlag,
 		AccountName:       accountFlag,
+		ClientName:        "aw",
 		WorkingDir:        wd,
 		AllowEnvOverrides: true,
 	})
@@ -451,6 +453,10 @@ func deriveAgentAddress(namespaceSlug, projectSlug, alias string) string {
 }
 
 func writeOrUpdateContext(serverName, accountName string) error {
+	return writeOrUpdateContextWithOptions(serverName, accountName, true)
+}
+
+func writeOrUpdateContextWithOptions(serverName, accountName string, setDefault bool) error {
 	wd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -470,9 +476,21 @@ func writeOrUpdateContext(serverName, accountName string) error {
 		if ctx.ServerAccounts == nil {
 			ctx.ServerAccounts = map[string]string{}
 		}
-		ctx.DefaultAccount = accountName
+		if ctx.ClientDefaultAccounts == nil {
+			ctx.ClientDefaultAccounts = map[string]string{}
+		}
+		// Multi-server-friendly: keep the existing default unless explicitly asked
+		// to override it, while still adding/updating the per-server mapping.
+		if strings.TrimSpace(ctx.DefaultAccount) == "" || setDefault {
+			ctx.DefaultAccount = accountName
+		}
 		ctx.ServerAccounts[serverName] = accountName
 	}
+	if ctx.ClientDefaultAccounts == nil {
+		ctx.ClientDefaultAccounts = map[string]string{}
+	}
+	// `aw` should default to the last identity set by `aw` in this directory.
+	ctx.ClientDefaultAccounts["aw"] = accountName
 
 	return awconfig.SaveWorktreeContextTo(ctxPath, ctx)
 }

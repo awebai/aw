@@ -125,6 +125,9 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		if cfg.Accounts == nil {
 			cfg.Accounts = map[string]awconfig.Account{}
 		}
+		if cfg.ClientDefaultAccounts == nil {
+			cfg.ClientDefaultAccounts = map[string]string{}
+		}
 
 		// Check for existing account with same server+agent_id — update it.
 		for name, acct := range cfg.Accounts {
@@ -152,13 +155,16 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(cfg.DefaultAccount) == "" || connectSetDefault {
 			cfg.DefaultAccount = accountName
 		}
+		// Per-client default: let `aw` pick this account by default without
+		// clobbering other clients' defaults.
+		cfg.ClientDefaultAccounts["aw"] = accountName
 		return nil
 	})
 	if updateErr != nil {
 		fatal(updateErr)
 	}
 
-	if err := writeOrUpdateContext(serverName, accountName); err != nil {
+	if err := writeOrUpdateContextWithOptions(serverName, accountName, connectSetDefault); err != nil {
 		fatal(err)
 	}
 

@@ -6109,6 +6109,106 @@ default_account: acct-`+server.Listener.Addr().String()+`__agent-1
 	}
 }
 
+func TestAwConnectDoesNotOverrideExistingContextDefaultWithoutSetDefault(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/introspect":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
+				"agent_type": "agent",
+			})
+		case "/v1/projects/current":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-123",
+				"slug":       "myco",
+			})
+		case "/v1/agents/me/identity":
+			if r.Method != http.MethodPut {
+				t.Fatalf("identity endpoint: method=%s, want PUT", r.Method)
+			}
+			var req map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":  "ok",
+				"did":     req["did"],
+				"custody": "self",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// Pre-create a context that already has a default identity.
+	if err := os.MkdirAll(filepath.Join(tmp, ".aw"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".aw", "context"), []byte(strings.TrimSpace(`
+default_account: keep-me
+server_accounts:
+  example.com: keep-me
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write empty config — connect will add the new account.
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "connect")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL="+server.URL,
+		"AWEB_API_KEY=aw_sk_test",
+		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1", // unreachable — forces best-effort failure
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	ctxData, err := os.ReadFile(filepath.Join(tmp, ".aw", "context"))
+	if err != nil {
+		t.Fatalf("read context: %v", err)
+	}
+	var got awconfig.WorktreeContext
+	if err := yaml.Unmarshal(ctxData, &got); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(ctxData))
+	}
+	if got.DefaultAccount != "keep-me" {
+		t.Fatalf("default_account=%q, want keep-me", got.DefaultAccount)
+	}
+	serverName, _ := awconfig.DeriveServerNameFromURL(server.URL)
+	if got.ServerAccounts[serverName] == "" {
+		t.Fatalf("expected server_accounts[%q] to be set", serverName)
+	}
+}
+
 func TestAwConnectIdentityAlreadySetNoLocalKey(t *testing.T) {
 	t.Parallel()
 

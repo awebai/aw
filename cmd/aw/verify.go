@@ -63,6 +63,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		resolved, selErr := awconfig.Resolve(cfg, awconfig.ResolveOptions{
 			ServerName:        serverFlag,
 			AccountName:       accountFlag,
+			ClientName:        "aw",
 			WorkingDir:        wd,
 			AllowEnvOverrides: true,
 		})
