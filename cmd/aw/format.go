@@ -12,6 +12,7 @@ import (
 
 // formatVerificationTag returns a warning string for non-verified messages.
 // Returns empty string for verified or unset status.
+// ALL CAPS for active security failures; lowercase for informational (no signature present).
 func formatVerificationTag(status aweb.VerificationStatus) string {
 	switch status {
 	case aweb.Failed:
