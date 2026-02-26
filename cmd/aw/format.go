@@ -129,48 +129,68 @@ func formatChatSend(v any) string {
 		}
 	}
 
-	var firstEvent *chat.Event
-	if len(result.Events) > 0 {
-		firstEvent = &result.Events[0]
+	// Prefer tags/timestamp from the reply message event, not from auxiliary
+	// events like read_receipt (which are typically unsigned and should not
+	// influence verification display).
+	pickTagEvent := func() *chat.Event {
+		// Prefer a message event matching the reply body (when present).
+		if strings.TrimSpace(result.Reply) != "" {
+			for i := len(result.Events) - 1; i >= 0; i-- {
+				ev := &result.Events[i]
+				if ev.Type == "message" && strings.TrimSpace(ev.Body) == strings.TrimSpace(result.Reply) {
+					return ev
+				}
+			}
+		}
+		// Otherwise, use the most recent message event.
+		for i := len(result.Events) - 1; i >= 0; i-- {
+			ev := &result.Events[i]
+			if ev.Type == "message" {
+				return ev
+			}
+		}
+		// Fallback: any event, if present.
+		if len(result.Events) > 0 {
+			return &result.Events[0]
+		}
+		return nil
 	}
-	firstTimestamp := ""
-	if firstEvent != nil {
-		firstTimestamp = firstEvent.Timestamp
-	}
+	tagEvent := pickTagEvent()
 
-	// Tags from the first event (the reply), if present.
-	firstTags := ""
-	if firstEvent != nil {
-		firstTags = formatVerificationTag(firstEvent.VerificationStatus) + formatContactTag(firstEvent.IsContact)
+	timestamp := ""
+	tags := ""
+	if tagEvent != nil {
+		timestamp = tagEvent.Timestamp
+		tags = formatVerificationTag(tagEvent.VerificationStatus) + formatContactTag(tagEvent.IsContact)
 	}
 
 	switch result.Status {
 	case "replied":
-		writeChatLine("Chat from", result.TargetAgent+firstTags, firstTimestamp)
+		writeChatLine("Chat from", result.TargetAgent+tags, timestamp)
 		sb.WriteString(fmt.Sprintf("Body: %s\n", result.Reply))
 		return sb.String()
 
 	case "sender_left":
-		writeChatLine("Chat from", result.TargetAgent+firstTags, firstTimestamp)
+		writeChatLine("Chat from", result.TargetAgent+tags, timestamp)
 		sb.WriteString(fmt.Sprintf("Body: %s\n", result.Reply))
 		sb.WriteString(fmt.Sprintf("Note: %s has left the exchange\n", result.TargetAgent))
 		return sb.String()
 
 	case "pending":
 		lastFrom := result.TargetAgent
-		if firstEvent != nil && firstEvent.FromAgent != "" {
-			lastFrom = firstEvent.FromAgent
+		if tagEvent != nil && tagEvent.FromAgent != "" {
+			lastFrom = tagEvent.FromAgent
 		}
 
 		if lastFrom == result.TargetAgent {
-			writeChatLine("Chat from", result.TargetAgent+firstTags, firstTimestamp)
+			writeChatLine("Chat from", result.TargetAgent+tags, timestamp)
 			if result.SenderWaiting {
 				sb.WriteString("Status: WAITING for your reply\n")
 			}
 			sb.WriteString(fmt.Sprintf("Body: %s\n", result.Reply))
 			sb.WriteString(fmt.Sprintf("Next: Run \"aw chat send-and-wait %s \\\"your reply\\\"\"\n", result.TargetAgent))
 		} else {
-			writeChatLine("Chat to", result.TargetAgent, firstTimestamp)
+			writeChatLine("Chat to", result.TargetAgent, timestamp)
 			sb.WriteString(fmt.Sprintf("Body: %s\n", result.Reply))
 			sb.WriteString(fmt.Sprintf("Awaiting reply from %s.\n", result.TargetAgent))
 		}
@@ -486,4 +506,3 @@ func formatDirectorySearch(v any) string {
 	}
 	return sb.String()
 }
-
