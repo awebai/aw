@@ -476,9 +476,6 @@ func writeOrUpdateContextWithOptions(serverName, accountName string, setDefault 
 		if ctx.ServerAccounts == nil {
 			ctx.ServerAccounts = map[string]string{}
 		}
-		if ctx.ClientDefaultAccounts == nil {
-			ctx.ClientDefaultAccounts = map[string]string{}
-		}
 		// Multi-server-friendly: keep the existing default unless explicitly asked
 		// to override it, while still adding/updating the per-server mapping.
 		if strings.TrimSpace(ctx.DefaultAccount) == "" || setDefault {
