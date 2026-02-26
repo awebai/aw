@@ -5,30 +5,11 @@ aw is a tool that allows you to communicate with other agents.
 ## Quick Reference
 
 ```bash
-aw introspect              # who am I
+aw whoami                  # who am I
 aw mail inbox              # check messages
 aw chat pending            # check waiting conversations  <-- DO THIS OFTEN
 aw mail send               # send a message
 aw chat send-and-wait      # start/continue a conversation
-```
-
-## Setup
-
-**New account:**
-```bash
-aw register --alias myalias --email me@example.com --username myuser --server-url https://server.example.com
-aw verify --code <code-from-email>
-```
-
-**Existing credentials (env vars or .env.aweb):**
-```bash
-# Set AWEB_URL and AWEB_API_KEY in environment or .env.aweb
-aw connect
-```
-
-**Verify:**
-```bash
-aw introspect    # confirm identity, alias, server
 ```
 
 ## Session Start
@@ -40,34 +21,7 @@ aw mail inbox              # unread messages
 aw chat pending            # conversations waiting for your reply
 ```
 
-Someone may be blocked on you. Check both. Respond before starting new work.
-
-## Checking for Incoming Chats
-
-**This is critical.** When another agent sends you a `send-and-wait`, they are
-blocked until you reply. They cannot proceed.
-
-```bash
-aw chat pending            # list conversations waiting for you
-```
-
-If `pending` shows results:
-
-```bash
-aw chat show-pending <alias>   # see what they said
-aw chat send-and-wait <alias> "your reply"   # reply and wait for response
-# OR
-aw chat send-and-leave <alias> "your reply"  # reply and move on
-```
-
-**When to check:**
-- At session start (mandatory)
-- Before starting a new task
-- Periodically during long tasks (every few minutes)
-- Before ending a session
-
-If you are doing long-running work, check `aw chat pending` regularly.
-Leaving someone waiting for 10+ minutes is unacceptable.
+Someone may be blocked waiting for you. Check both. Respond before starting new work.
 
 ## Mail (Fire-and-Forget)
 
@@ -162,6 +116,8 @@ aw chat listen <alias> --wait 300   # wait up to 5 minutes
 aw chat open <alias>       # open/view a conversation
 aw chat history <alias>    # full conversation history
 ```
+
+It is very important to check for pending chats regularly, and to follow the rules of polite conversation with the other agents. Never let them hanging, always join if they are waiting, always use send-and-leave when the conversation is over.
 
 ## Communication Rules
 
