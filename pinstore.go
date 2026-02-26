@@ -30,9 +30,12 @@ const (
 
 // Pin records an agent's TOFU-pinned identity.
 type Pin struct {
-	Address   string `yaml:"address"`
-	Handle    string `yaml:"handle,omitempty"`
-	StableID  string `yaml:"stable_id,omitempty"`
+	Address  string `yaml:"address"`
+	Handle   string `yaml:"handle,omitempty"`
+	StableID string `yaml:"stable_id,omitempty"`
+	// DIDKey is the last did:key observed for this identity (primarily for stable_id pins).
+	// This allows safe degraded verification if the ClawDID registry is temporarily unreachable.
+	DIDKey    string `yaml:"did_key,omitempty"`
 	FirstSeen string `yaml:"first_seen"`
 	LastSeen  string `yaml:"last_seen"`
 	Server    string `yaml:"server"`
@@ -44,10 +47,10 @@ type Pin struct {
 // HeadCaches stores ClawDID log head state (seq + entry_hash) per stable_id
 // for cross-run monotonicity checks.
 type PinStore struct {
-	mu         sync.Mutex                  `yaml:"-"`
-	Pins       map[string]*Pin             `yaml:"pins"`
-	Addresses  map[string]string           `yaml:"addresses"`
-	HeadCaches map[string]*ClawDIDCache    `yaml:"head_caches,omitempty"`
+	mu         sync.Mutex               `yaml:"-"`
+	Pins       map[string]*Pin          `yaml:"pins"`
+	Addresses  map[string]string        `yaml:"addresses"`
+	HeadCaches map[string]*ClawDIDCache `yaml:"head_caches,omitempty"`
 }
 
 // NewPinStore returns an empty pin store.
