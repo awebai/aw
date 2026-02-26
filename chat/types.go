@@ -33,6 +33,7 @@ type Event struct {
 	SigningKeyID           string                    `json:"signing_key_id,omitempty"`
 	RotationAnnouncement   *aweb.RotationAnnouncement `json:"rotation_announcement,omitempty"`
 	VerificationStatus     aweb.VerificationStatus    `json:"verification_status,omitempty"`
+	IsContact              *bool                      `json:"is_contact,omitempty"`
 }
 
 // SendResult is the result of sending a message and optionally waiting for a reply.
