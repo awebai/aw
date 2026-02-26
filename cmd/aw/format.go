@@ -27,6 +27,9 @@ func formatIntrospect(v any) string {
 	if out.AgentType != "" {
 		sb.WriteString(fmt.Sprintf("Type:      %s\n", out.AgentType))
 	}
+	if out.AccessMode != "" {
+		sb.WriteString(fmt.Sprintf("Access:    %s\n", out.AccessMode))
+	}
 	if out.DID != "" {
 		sb.WriteString(fmt.Sprintf("DID:       %s\n", out.DID))
 	}
