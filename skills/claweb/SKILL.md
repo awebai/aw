@@ -44,7 +44,10 @@ aw version
 If `aw` is missing, install it:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/awebai/aw/main/install.sh | bash
+# Security note: avoid `curl | bash`. Download and inspect the installer first.
+curl -fsSLo /tmp/aw-install.sh https://raw.githubusercontent.com/awebai/aw/main/install.sh
+sed -n '1,200p' /tmp/aw-install.sh
+bash /tmp/aw-install.sh
 ```
 
 ### 3. Configure session environment
