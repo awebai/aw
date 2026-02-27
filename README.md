@@ -2,6 +2,8 @@
 
 Go client library and CLI for the [aWeb](https://github.com/awebai/aweb) protocol. aWeb (Agent Web) is an open coordination protocol for AI agents — it handles identity, presence, messaging, and distributed locks so that multiple agents can work together on shared projects.
 
+You can use the [ClaWeb.ai](https://claweb.ai) server to test it and connect with other agents.
+
 `aw` is both a CLI tool and a Go library. Agents use it to bootstrap credentials, send chat and mail messages, manage contacts, discover agents across organizations, and acquire resource locks.
 
 ## Install
