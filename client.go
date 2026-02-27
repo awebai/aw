@@ -86,19 +86,19 @@ type agentMeta struct {
 // - the `aw` CLI
 // - the `bdh` CLI for `:mail/:chat/:lock` delegation
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
-	sseClient  *http.Client // No response timeout; SSE connections are long-lived.
-	apiKey     string
-	signingKey ed25519.PrivateKey // nil for legacy/custodial
-	did        string            // empty for legacy/custodial
-	address      string            // namespace/alias, used in signed envelopes
-	stableID     string            // did:claw:..., set on outgoing signed envelopes as from_stable_id
-	resolver     IdentityResolver  // optional; resolves recipient DID for to_did binding
-	pinStore       *PinStore         // optional; TOFU pin store for sender identity verification
-	pinStorePath   string            // disk path for persisting pin store
-	clawDIDClient  *ClawDIDClient   // optional; ClawDID registry client for split-trust verification
-	metaCache      sync.Map         // address → *agentMeta; cached resolver results
+	baseURL       string
+	httpClient    *http.Client
+	sseClient     *http.Client // No response timeout; SSE connections are long-lived.
+	apiKey        string
+	signingKey    ed25519.PrivateKey // nil for legacy/custodial
+	did           string             // empty for legacy/custodial
+	address       string             // namespace/alias, used in signed envelopes
+	stableID      string             // did:claw:..., set on outgoing signed envelopes as from_stable_id
+	resolver      IdentityResolver   // optional; resolves recipient DID for to_did binding
+	pinStore      *PinStore          // optional; TOFU pin store for sender identity verification
+	pinStorePath  string             // disk path for persisting pin store
+	clawDIDClient *ClawDIDClient     // optional; ClawDID registry client for split-trust verification
+	metaCache     sync.Map           // address → *agentMeta; cached resolver results
 }
 
 // New creates a new client.
@@ -298,15 +298,31 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 		c.pinStore.StorePin(pinKey, fromAlias, "", "")
 		if clawDIDVerified && fromStableID != "" {
 			c.pinStore.Pins[pinKey].StableID = fromStableID
+			c.pinStore.Pins[pinKey].DIDKey = fromDID
 		}
 		c.savePinStore()
 	case PinMismatch:
 		pinnedKey := c.pinStore.Addresses[fromAlias]
+		// Degraded mode safety: if the address is pinned by stable_id but we couldn't
+		// verify via ClawDID this time (so pinKey fell back to did:key), accept the
+		// message as long as the did:key matches what we last verified for that stable_id.
+		//
+		// This avoids false IdentityMismatch when the ClawDID registry is transiently
+		// unreachable, while still rejecting did:key changes without a valid rotation.
+		if fromStableID != "" && pinnedKey == fromStableID {
+			if pin, ok := c.pinStore.Pins[pinnedKey]; ok && strings.TrimSpace(pin.DIDKey) != "" && pin.DIDKey == fromDID {
+				c.pinStore.StorePin(pinnedKey, fromAlias, "", "")
+				c.pinStore.Pins[pinnedKey].StableID = fromStableID
+				c.savePinStore()
+				return status
+			}
+		}
 		if ra != nil && c.verifyRotationAnnouncement(ra, fromDID, pinnedKey) {
 			delete(c.pinStore.Pins, pinnedKey)
 			c.pinStore.StorePin(pinKey, fromAlias, "", "")
 			if clawDIDVerified && fromStableID != "" {
 				c.pinStore.Pins[pinKey].StableID = fromStableID
+				c.pinStore.Pins[pinKey].DIDKey = fromDID
 			}
 			c.savePinStore()
 			return status
