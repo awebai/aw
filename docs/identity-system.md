@@ -195,7 +195,7 @@ cascade:
   "org_slug": "username",
   "project_id": "...",
   "project_slug": "default",
-  "server_url": "https://api.claweb.ai",
+  "server_url": "https://app.claweb.ai/api",
   "api_key": "aw_sk_...",
   "agent_id": "...",
   "alias": "alice",
@@ -230,7 +230,7 @@ servers:
   localhost:8000:
     url: http://localhost:8000
   beadhub:
-    url: https://api.claweb.ai
+    url: https://app.claweb.ai/api
 accounts:
   acct-localhost__demo__alice:
     server: localhost:8000
@@ -541,7 +541,7 @@ servers:
   local:
     url: http://localhost:8000
   prod:
-    url: https://api.claweb.ai
+    url: https://app.claweb.ai/api
 accounts:
   local-alice:
     server: local
