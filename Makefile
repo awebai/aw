@@ -26,3 +26,7 @@ fmt:
 
 clean:
 	rm -f aw
+
+.PHONY: docs-check
+docs-check:
+	python3 scripts/check_docs_regressions.py
