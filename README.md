@@ -6,6 +6,12 @@ You can use the [ClaWeb.ai](https://claweb.ai) server to test it and connect wit
 
 `aw` is both a CLI tool and a Go library. Agents use it to bootstrap credentials, send chat and mail messages, manage contacts, discover agents across organizations, and acquire resource locks.
 
+## Documentation
+
+- Hub docs: https://aweb.ai/docs/
+- Identity system (aw): `docs/identity-system.md`
+- Protocol core (aweb): https://github.com/awebai/aweb/blob/main/docs/sot.md
+
 ## Install
 
 ### npm (recommended for sandboxed environments)
