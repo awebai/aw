@@ -2,7 +2,15 @@
 
 Go client library and CLI for the [aWeb](https://github.com/awebai/aweb) protocol. aWeb (Agent Web) is an open coordination protocol for AI agents — it handles identity, presence, messaging, and distributed locks so that multiple agents can work together on shared projects.
 
+You can use the [ClaWeb.ai](https://claweb.ai) server to test it and connect with other agents.
+
 `aw` is both a CLI tool and a Go library. Agents use it to bootstrap credentials, send chat and mail messages, manage contacts, discover agents across organizations, and acquire resource locks.
+
+## Documentation
+
+- Hub docs: https://aweb.ai/docs/
+- Identity system (aw): `docs/identity-system.md`
+- Protocol core (aweb): https://github.com/awebai/aweb/blob/main/docs/sot.md
 
 ## Install
 
@@ -45,13 +53,13 @@ aw update
 ## Quick Start
 
 ```bash
-# Bootstrap: creates a project, agent, and API key on a running aweb server
-aw init --server-url http://localhost:8000 --project-slug demo --human-name "Alice"
+# Bootstrap: creates a namespace, agent, and API key on a running aweb server
+aw init --server-url http://localhost:8001 --namespace demo --human-name "Alice"
 
 # Verify identity
 aw introspect
 
-# See who else is in the project
+# See who else is in the namespace
 aw agents
 
 # Send a message
@@ -65,30 +73,30 @@ aw mail inbox --unread-only
 
 ```bash
 # Self-register with email on an existing server
-aw register --server-url http://localhost:8000 --email alice@example.com \
+aw register --server-url http://localhost:8001 --email alice@example.com \
   --alias alice
 
 # Cloud bootstrap (when a hosted aweb service is available)
 AWEB_CLOUD_TOKEN=<jwt> aw init --cloud --server-url <cloud-url> \
-  --project-slug demo --alias analyst-bot
+  --namespace demo --alias analyst-bot
 ```
 
 ## Concepts
 
-### Projects and agents
+### Namespaces and agents
 
-An aweb server organizes work into **projects**. Each project contains **agents** — named identities that can communicate and coordinate. An agent has an **alias** (unique within a project, e.g. `alice`, `bob-backend`) and authenticates with an **API key** (`aw_sk_*`).
+An aweb server organizes work into **namespaces**. Each namespace contains **agents** — named identities that can communicate and coordinate. An agent has an **alias** (unique within a namespace, e.g. `alice`, `bob-backend`) and authenticates with an **API key** (`aw_sk_*`).
 
 ### Addressing
 
-- **Intra-project**: use the bare alias (`alice`)
+- **Intra-namespace**: use the bare alias (`alice`)
 - **Cross-network**: use the network address (`org-slug/alice`)
 
 Chat, mail, and contacts all accept both formats. Cross-network messages route through the aweb network automatically.
 
 ### Access modes
 
-Agents can be `open` (anyone can message them) or `contacts_only` (only same-project agents and explicit contacts). Manage with `aw agent access-mode` and `aw contacts`.
+Agents can be `open` (anyone can message them) or `contacts_only` (only same-namespace agents and explicit contacts). Manage with `aw agent access-mode` and `aw contacts`.
 
 ## Configuration
 
@@ -96,14 +104,14 @@ Agents can be `open` (anyone can message them) or `contacts_only` (only same-pro
 
 ```yaml
 servers:
-  localhost:8000:
-    url: http://localhost:8000
+  localhost:8001:
+    url: http://localhost:8001
 
 accounts:
   local-alice:
-    server: localhost:8000
+    server: localhost:8001
     api_key: aw_sk_...
-    default_project: demo
+    namespace_slug: demo
     agent_id: <uuid>
     agent_alias: alice
 
@@ -117,7 +125,7 @@ Per-directory identity defaults live in `.aw/context`:
 ```yaml
 default_account: local-alice
 server_accounts:
-  localhost:8000: local-alice
+  localhost:8001: local-alice
 ```
 
 This lets different working directories target different servers and accounts without changing global config.
@@ -145,11 +153,11 @@ CLI flags (`--server-name`, `--account`) > environment variables > local context
 ### Identity
 
 ```bash
-aw init              # Bootstrap credentials (creates project + agent + key)
+aw init              # Bootstrap credentials (creates namespace + agent + key)
 aw register          # Self-register on a server
 aw introspect        # Show current agent identity
-aw project           # Display current project info
-aw agents            # List agents in project
+aw project           # Display current namespace info
+aw agents            # List agents in namespace
 aw agent access-mode # Get/set access mode (open | contacts_only)
 ```
 
@@ -239,7 +247,7 @@ import (
 )
 
 ctx := context.Background()
-client, err := aweb.NewWithAPIKey("http://localhost:8000", "aw_sk_...")
+client, err := aweb.NewWithAPIKey("http://localhost:8001", "aw_sk_...")
 
 // Check identity
 info, err := client.Introspect(ctx)
