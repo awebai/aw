@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -31,24 +30,25 @@ var mailSendCmd = &cobra.Command{
 	Short: "Send a message to another agent",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if mailSendToAgentID == "" && mailSendToAlias == "" {
-			fmt.Fprintln(os.Stderr, "Missing required flag: --to-alias or --to-agent-id")
-			os.Exit(2)
+			return usageError("missing required flag: --to-alias or --to-agent-id")
 		}
 		if mailSendBody == "" {
-			fmt.Fprintln(os.Stderr, "Missing required flag: --body")
-			os.Exit(2)
+			return usageError("missing required flag: --body")
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		c, sel := mustResolve()
+		c, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
 		logsDir := defaultLogsDir()
 
 		if strings.HasPrefix(mailSendToAlias, "@") {
 			handle := strings.TrimPrefix(mailSendToAlias, "@")
 			if handle == "" {
-				fatal(fmt.Errorf("empty handle: use @username"))
+				return fmt.Errorf("empty handle: use @username")
 			}
 			resp, err := c.SendDM(ctx, &aweb.DMRequest{
 				ToHandle: handle,
@@ -57,7 +57,7 @@ var mailSendCmd = &cobra.Command{
 				Priority: mailSendPriority,
 			})
 			if err != nil {
-				networkFatal(err, mailSendToAlias)
+				return networkError(err, mailSendToAlias)
 			}
 			appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
 				Timestamp: time.Now().UTC().Format(time.RFC3339),
@@ -86,7 +86,7 @@ var mailSendCmd = &cobra.Command{
 				Priority:  mailSendPriority,
 			})
 			if err != nil {
-				networkFatal(err, addr.String())
+				return networkError(err, addr.String())
 			}
 			appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
 				Timestamp: time.Now().UTC().Format(time.RFC3339),
@@ -118,7 +118,7 @@ var mailSendCmd = &cobra.Command{
 			Priority:  aweb.MessagePriority(mailSendPriority),
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
@@ -153,13 +153,16 @@ var mailInboxCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		c, sel := mustResolve()
+		c, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
 		resp, err := c.Inbox(ctx, aweb.InboxParams{
 			UnreadOnly: mailInboxUnreadOnly,
 			Limit:      mailInboxLimit,
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		logsDir := defaultLogsDir()
 		for _, msg := range resp.Messages {
@@ -199,16 +202,19 @@ var mailAckCmd = &cobra.Command{
 	Short: "Acknowledge a message",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if mailAckMessageID == "" {
-			fmt.Fprintln(os.Stderr, "Missing required flag: --message-id")
-			os.Exit(2)
+			return usageError("missing required flag: --message-id")
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := mustClient().AckMessage(ctx, mailAckMessageID)
+		c, err := resolveClient()
 		if err != nil {
-			fatal(err)
+			return err
+		}
+		resp, err := c.AckMessage(ctx, mailAckMessageID)
+		if err != nil {
+			return err
 		}
 		printOutput(resp, formatMailAck)
 		return nil

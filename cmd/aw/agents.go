@@ -22,20 +22,20 @@ type agentPatchOutput struct {
 	Alias string `json:"alias,omitempty"`
 }
 
-// mustAgentID resolves the current agent's ID via introspect, falling back
+// resolveAgentID resolves the current agent's ID via introspect, falling back
 // to the configured agent_id in the selection.
-func mustAgentID(ctx context.Context, client *aweb.Client, sel *awconfig.Selection) string {
+func resolveAgentID(ctx context.Context, client *aweb.Client, sel *awconfig.Selection) (string, error) {
 	intro, err := client.Introspect(ctx)
 	if err != nil {
-		fatal(err)
+		return "", err
 	}
 	if intro.AgentID == "" && sel.AgentID != "" {
-		return sel.AgentID
+		return sel.AgentID, nil
 	}
 	if intro.AgentID == "" {
-		fatal(fmt.Errorf("cannot determine agent_id: not an agent-scoped key"))
+		return "", fmt.Errorf("cannot determine agent_id: not an agent-scoped key")
 	}
-	return intro.AgentID
+	return intro.AgentID, nil
 }
 
 var agentsCmd = &cobra.Command{
@@ -45,10 +45,13 @@ var agentsCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		client, sel := mustResolve()
+		client, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
 		resp, err := client.ListAgents(ctx)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printOutput(agentsListOutput{
 			ListAgentsResponse: resp,
@@ -71,14 +74,20 @@ var agentAccessModeCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		client, sel := mustResolve()
-		agentID := mustAgentID(ctx, client, sel)
+		client, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
+		agentID, err := resolveAgentID(ctx, client, sel)
+		if err != nil {
+			return err
+		}
 
 		if len(args) == 0 {
 			// GET: list agents, find self, print access_mode.
 			agents, err := client.ListAgents(ctx)
 			if err != nil {
-				fatal(err)
+				return err
 			}
 			for _, a := range agents.Agents {
 				if a.AgentID == agentID {
@@ -90,20 +99,20 @@ var agentAccessModeCmd = &cobra.Command{
 					return nil
 				}
 			}
-			fatal(fmt.Errorf("agent %s not found in agents list", agentID))
+			return fmt.Errorf("agent %s not found in agents list", agentID)
 		}
 
 		// SET: patch access mode.
 		mode := args[0]
 		if mode != "open" && mode != "contacts_only" {
-			fatal(fmt.Errorf("invalid access mode: %s (must be \"open\" or \"contacts_only\")", mode))
+			return fmt.Errorf("invalid access mode: %s (must be \"open\" or \"contacts_only\")", mode)
 		}
 
 		resp, err := client.PatchAgent(ctx, agentID, &aweb.PatchAgentRequest{
 			AccessMode: mode,
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printOutput(agentPatchOutput{
 			PatchAgentResponse: resp,
@@ -121,13 +130,19 @@ var agentPrivacyCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		client, sel := mustResolve()
-		agentID := mustAgentID(ctx, client, sel)
+		client, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
+		agentID, err := resolveAgentID(ctx, client, sel)
+		if err != nil {
+			return err
+		}
 
 		if len(args) == 0 {
 			agents, err := client.ListAgents(ctx)
 			if err != nil {
-				fatal(err)
+				return err
 			}
 			for _, a := range agents.Agents {
 				if a.AgentID == agentID {
@@ -139,19 +154,19 @@ var agentPrivacyCmd = &cobra.Command{
 					return nil
 				}
 			}
-			fatal(fmt.Errorf("agent %s not found in agents list", agentID))
+			return fmt.Errorf("agent %s not found in agents list", agentID)
 		}
 
 		privacy := args[0]
 		if privacy != "public" && privacy != "private" {
-			fatal(fmt.Errorf("invalid privacy: %s (must be \"public\" or \"private\")", privacy))
+			return fmt.Errorf("invalid privacy: %s (must be \"public\" or \"private\")", privacy)
 		}
 
 		resp, err := client.PatchAgent(ctx, agentID, &aweb.PatchAgentRequest{
 			Privacy: privacy,
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printOutput(agentPatchOutput{
 			PatchAgentResponse: resp,

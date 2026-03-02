@@ -24,9 +24,13 @@ var contactsListCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := mustClient().ListContacts(ctx)
+		client, err := resolveClient()
 		if err != nil {
-			fatal(err)
+			return err
+		}
+		resp, err := client.ListContacts(ctx)
+		if err != nil {
+			return err
 		}
 		printOutput(resp, formatContactsList)
 		return nil
@@ -41,12 +45,16 @@ var contactsAddCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := mustClient().CreateContact(ctx, &aweb.ContactCreateRequest{
+		client, err := resolveClient()
+		if err != nil {
+			return err
+		}
+		resp, err := client.CreateContact(ctx, &aweb.ContactCreateRequest{
 			ContactAddress: args[0],
 			Label:          contactsAddLabel,
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printOutput(resp, formatContactAdd)
 		return nil
@@ -61,12 +69,15 @@ var contactsRemoveCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		client := mustClient()
+		client, err := resolveClient()
+		if err != nil {
+			return err
+		}
 
 		// List contacts to find the ID for the given address.
 		list, err := client.ListContacts(ctx)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 
 		address := args[0]
@@ -78,12 +89,12 @@ var contactsRemoveCmd = &cobra.Command{
 			}
 		}
 		if contactID == "" {
-			fatal(fmt.Errorf("contact not found: %s", address))
+			return fmt.Errorf("contact not found: %s", address)
 		}
 
 		resp, err := client.DeleteContact(ctx, contactID)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		if jsonFlag {
 			printJSON(resp)

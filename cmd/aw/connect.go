@@ -35,24 +35,22 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	apiKey := strings.TrimSpace(os.Getenv("AWEB_API_KEY"))
 
 	if baseURL == "" {
-		fmt.Fprintln(os.Stderr, "AWEB_URL is not set. Create a .env.aweb file with AWEB_URL and AWEB_API_KEY, or export them.")
-		os.Exit(2)
+		return usageError("AWEB_URL is not set. Create a .env.aweb file with AWEB_URL and AWEB_API_KEY, or export them.")
 	}
 	if apiKey == "" {
-		fmt.Fprintln(os.Stderr, "AWEB_API_KEY is not set. Create a .env.aweb file with AWEB_URL and AWEB_API_KEY, or export them.")
-		os.Exit(2)
+		return usageError("AWEB_API_KEY is not set. Create a .env.aweb file with AWEB_URL and AWEB_API_KEY, or export them.")
 	}
 
 	baseURL, err := resolveWorkingBaseURL(baseURL)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	serverName, _ := awconfig.DeriveServerNameFromURL(baseURL)
 
 	client, err := aweb.NewWithAPIKey(baseURL, apiKey)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -60,12 +58,11 @@ func runConnect(cmd *cobra.Command, args []string) error {
 
 	resp, err := client.Introspect(ctx)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	if strings.TrimSpace(resp.AgentID) == "" {
-		fmt.Fprintln(os.Stderr, "This API key is not agent-scoped (no agent_id). Use an agent-scoped key from the dashboard.")
-		os.Exit(2)
+		return usageError("This API key is not agent-scoped (no agent_id). Use an agent-scoped key from the dashboard.")
 	}
 
 	// Fetch namespace slug for canonical address derivation (needed for
@@ -82,7 +79,10 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	// Derive account name from server + agent_id (stable across alias changes).
 	accountName := "acct-" + sanitizeKeyComponent(serverName) + "__" + sanitizeKeyComponent(agentID)
 
-	cfgPath := mustDefaultGlobalPath()
+	cfgPath, err := defaultGlobalPath()
+	if err != nil {
+		return err
+	}
 	keysDir := awconfig.KeysDir(cfgPath)
 
 	// Check existing config for identity fields before provisioning.
@@ -108,9 +108,13 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	custody := existingCustody
 	lifetime := existingLifetime
 	if existingDID == "" || existingSigningKey == "" {
-		identityDID, signingKeyPath, stableID, custody, lifetime = provisionIdentity(
+		var provErr error
+		identityDID, signingKeyPath, stableID, custody, lifetime, provErr = provisionIdentity(
 			ctx, client, cfgPath, keysDir, baseURL, namespaceSlug, alias,
 		)
+		if provErr != nil {
+			return provErr
+		}
 		// Preserve existing stable_id if provisioning didn't produce one
 		// (e.g. 409 recovery or ClawDID failure).
 		if stableID == "" && existingStableID != "" {
@@ -161,11 +165,11 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		return nil
 	})
 	if updateErr != nil {
-		fatal(updateErr)
+		return updateErr
 	}
 
 	if err := writeOrUpdateContextWithOptions(serverName, accountName, connectSetDefault); err != nil {
-		fatal(err)
+		return err
 	}
 
 	fmt.Fprintf(os.Stderr, "Connected as %s (%s)\n", alias, agentID)
@@ -190,7 +194,7 @@ func provisionIdentity(
 	ctx context.Context,
 	client *aweb.Client,
 	cfgPath, keysDir, baseURL, namespaceSlug, alias string,
-) (did, signingKeyPath, stableID, custody, lifetime string) {
+) (did, signingKeyPath, stableID, custody, lifetime string, err error) {
 	address := deriveAgentAddress(namespaceSlug, "", alias)
 	signingKeyPath = awconfig.SigningKeyPath(keysDir, address)
 
@@ -208,13 +212,13 @@ func provisionIdentity(
 		var genErr error
 		pub, priv, genErr = awconfig.GenerateKeypair()
 		if genErr != nil {
-			fatal(genErr)
+			return "", "", "", "", "", genErr
 		}
 		// Persist the keypair to disk BEFORE claiming on the server.
 		// If claim succeeds but disk write fails later, the key would be
 		// unrecoverable. An unused key file on disk is harmless.
 		if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
-			fatal(err)
+			return "", "", "", "", "", err
 		}
 		generatedNewKey = true
 	}
@@ -223,7 +227,7 @@ func provisionIdentity(
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
 	// Claim identity on the aweb server.
-	_, err := client.ClaimIdentity(ctx, &aweb.ClaimIdentityRequest{
+	_, err = client.ClaimIdentity(ctx, &aweb.ClaimIdentityRequest{
 		DID:       did,
 		PublicKey: pubKeyB64,
 		Custody:   "self",
@@ -239,10 +243,13 @@ func provisionIdentity(
 				pubPath := strings.TrimSuffix(signingKeyPath, ".key") + ".pub"
 				os.Remove(pubPath)
 			}
-			recoveredDID, recoveredKeyPath, recoveredCustody, recoveredLifetime := recoverIdentity409(ctx, client, keysDir, address)
-			return recoveredDID, recoveredKeyPath, stableID, recoveredCustody, recoveredLifetime
+			recoveredDID, recoveredKeyPath, recoveredCustody, recoveredLifetime, recoverErr := recoverIdentity409(ctx, client, keysDir, address)
+			if recoverErr != nil {
+				return "", "", "", "", "", recoverErr
+			}
+			return recoveredDID, recoveredKeyPath, stableID, recoveredCustody, recoveredLifetime, nil
 		}
-		fatal(err)
+		return "", "", "", "", "", err
 	}
 
 	custody = "self"
@@ -255,30 +262,27 @@ func provisionIdentity(
 	// Best-effort ClawDID registration.
 	stableID = registerClawDIDWithHandle(ctx, resolveClawDIDRegistryURL(cfgPath), pub, priv, did, serverOrigin, address, nil)
 
-	return did, signingKeyPath, stableID, custody, lifetime
+	return did, signingKeyPath, stableID, custody, lifetime, nil
 }
 
 // recoverIdentity409 handles a 409 from ClaimIdentity by resolving the
 // server's identity for this agent and looking for a matching local key.
-// If found, it returns the identity fields to persist. Otherwise it exits
-// with a descriptive error.
+// If found, it returns the identity fields to persist. Otherwise it returns
+// a descriptive error.
 func recoverIdentity409(
 	ctx context.Context,
 	client *aweb.Client,
 	keysDir, address string,
-) (did, signingKeyPath, custody, lifetime string) {
+) (did, signingKeyPath, custody, lifetime string, err error) {
 	resolver := &aweb.ServerResolver{Client: client}
 	identity, err := resolver.Resolve(ctx, address)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Identity already set on server, and could not resolve %s to recover: %v\n", address, err)
-		fmt.Fprintln(os.Stderr, "Run 'aw reset --remote --confirm' to clear the server identity and re-provision.")
-		os.Exit(1)
+		return "", "", "", "", fmt.Errorf("identity already set on server, and could not resolve %s to recover: %w\nRun 'aw reset --remote --confirm' to clear the server identity and re-provision.", address, err)
 	}
 
 	serverPub, err := aweb.ExtractPublicKey(identity.DID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Identity already set on server with invalid DID %q: %v\n", identity.DID, err)
-		os.Exit(1)
+		return "", "", "", "", fmt.Errorf("identity already set on server with invalid DID %q: %w", identity.DID, err)
 	}
 
 	// Fast path: check expected key location.
@@ -288,15 +292,14 @@ func recoverIdentity409(
 		loadedPub := priv.Public().(ed25519.PublicKey)
 		if loadedPub.Equal(serverPub) {
 			fmt.Fprintf(os.Stderr, "Recovered identity from existing key at %s\n", expectedPath)
-			return identity.DID, expectedPath, identity.Custody, identity.Lifetime
+			return identity.DID, expectedPath, identity.Custody, identity.Lifetime, nil
 		}
 	}
 
 	// Slow path: scan all keys (including rotated/).
 	foundPath, err := awconfig.ScanKeysForPublicKey(keysDir, serverPub)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Identity already set on server; error scanning local keys: %v\n", err)
-		os.Exit(1)
+		return "", "", "", "", fmt.Errorf("identity already set on server; error scanning local keys: %w", err)
 	}
 	if foundPath != "" {
 		if strings.Contains(foundPath, string(os.PathSeparator)+"rotated"+string(os.PathSeparator)) {
@@ -304,13 +307,10 @@ func recoverIdentity409(
 		} else {
 			fmt.Fprintf(os.Stderr, "Recovered identity from existing key at %s\n", foundPath)
 		}
-		return identity.DID, foundPath, identity.Custody, identity.Lifetime
+		return identity.DID, foundPath, identity.Custody, identity.Lifetime, nil
 	}
 
-	fmt.Fprintf(os.Stderr, "Identity already set on server (%s) but no matching signing key found locally.\n", identity.DID)
-	fmt.Fprintf(os.Stderr, "To recover, place the signing key at %s, or run 'aw reset --remote --confirm' to clear the server identity and re-provision.\n", expectedPath)
-	os.Exit(1)
-	return // unreachable
+	return "", "", "", "", fmt.Errorf("identity already set on server (%s) but no matching signing key found locally.\nTo recover, place the signing key at %s, or run 'aw reset --remote --confirm' to clear the server identity and re-provision.", identity.DID, expectedPath)
 }
 
 // registerClawDIDWithHandle attempts to register the agent's stable_id with ClawDID.

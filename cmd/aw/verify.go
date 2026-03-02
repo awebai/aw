@@ -26,7 +26,7 @@ var verifyCmd = &cobra.Command{
 	Short: "Verify email ownership with a 6-digit code",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		loadDotenvBestEffort()
-		// No heartbeat — the API key may not be active yet.
+		// No-op: verify command doesn't require command initialization side-effects.
 	},
 	RunE: runVerify,
 }
@@ -42,8 +42,7 @@ func init() {
 func runVerify(cmd *cobra.Command, args []string) error {
 	code := strings.TrimSpace(verifyCode)
 	if code == "" {
-		fmt.Fprintln(os.Stderr, "Missing verification code (use --code)")
-		os.Exit(2)
+		return usageError("Missing verification code (use --code)")
 	}
 
 	email := strings.TrimSpace(verifyEmail)
@@ -56,7 +55,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	// identity provisioning after verification.
 	cfg, loadErr := awconfig.LoadGlobal()
 	if loadErr != nil && email == "" {
-		fatal(fmt.Errorf("failed to load config: %w (use --email to specify directly)", loadErr))
+		return fmt.Errorf("failed to load config: %w (use --email to specify directly)", loadErr)
 	}
 	if loadErr == nil {
 		wd, _ := os.Getwd()
@@ -68,7 +67,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 			AllowEnvOverrides: true,
 		})
 		if selErr != nil && (email == "" || serverURL == "") {
-			fatal(fmt.Errorf("failed to resolve account: %w (use --email and --server-url to specify directly)", selErr))
+			return fmt.Errorf("failed to resolve account: %w (use --email and --server-url to specify directly)", selErr)
 		}
 		if selErr == nil {
 			sel = resolved
@@ -83,23 +82,21 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	}
 
 	if email == "" {
-		fmt.Fprintln(os.Stderr, "Missing email (use --email, or configure an account with an email field)")
-		os.Exit(2)
+		return usageError("Missing email (use --email, or configure an account with an email field)")
 	}
 
 	if serverURL == "" {
-		fmt.Fprintln(os.Stderr, "Missing server URL (use --server-url, or configure a default account)")
-		os.Exit(2)
+		return usageError("Missing server URL (use --server-url, or configure a default account)")
 	}
 
 	baseURL, err := resolveWorkingBaseURL(serverURL)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	client, err := aweb.New(baseURL)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -112,23 +109,23 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		statusCode, isHTTP := aweb.HTTPStatusCode(err)
 		if !isHTTP {
-			fatal(err)
+			return err
 		}
 		switch statusCode {
 		case 400:
 			body, _ := aweb.HTTPErrorBody(err)
-			fatal(formatVerifyError(body))
+			return formatVerifyError(body)
 		case 404:
-			fatal(fmt.Errorf("no pending verification found for %s", email))
+			return fmt.Errorf("no pending verification found for %s", email)
 		case 429:
-			fatal(fmt.Errorf("too many verification attempts. Please try again later"))
+			return fmt.Errorf("too many verification attempts. Please try again later")
 		default:
-			fatal(err)
+			return err
 		}
 	}
 
 	if !resp.Verified {
-		fatal(fmt.Errorf("verification failed"))
+		return fmt.Errorf("verification failed")
 	}
 
 	fmt.Println("Verified!")
@@ -152,7 +149,9 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	// produces a working DID. If a keypair exists in config, use it;
 	// otherwise generate a fresh one.
 	if apiKey != "" {
-		claimIdentityAfterVerify(baseURL, apiKey, sel)
+		if err := claimIdentityAfterVerify(baseURL, apiKey, sel); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -160,8 +159,11 @@ func runVerify(cmd *cobra.Command, args []string) error {
 
 // claimIdentityAfterVerify ensures the agent has a self-custody identity
 // registered on the server after email verification succeeds.
-func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
-	cfgPath := mustDefaultGlobalPath()
+func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) error {
+	cfgPath, err := defaultGlobalPath()
+	if err != nil {
+		return fmt.Errorf("could not determine config path: %w", err)
+	}
 	keysDir := awconfig.KeysDir(cfgPath)
 
 	var pub ed25519.PublicKey
@@ -176,7 +178,7 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 		loadedPriv, loadErr := awconfig.LoadSigningKey(sel.SigningKey)
 		if loadErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not load signing key %s: %v\n", sel.SigningKey, loadErr)
-			return
+			return nil
 		}
 		pub = loadedPriv.Public().(ed25519.PublicKey)
 		did = sel.DID
@@ -189,7 +191,7 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 		}
 		if alias == "" {
 			fmt.Fprintln(os.Stderr, "Warning: cannot provision identity — no agent alias in config.")
-			return
+			return nil
 		}
 		var nsSlug string
 		if sel != nil {
@@ -207,11 +209,11 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 			genPub, genPriv, genErr := awconfig.GenerateKeypair()
 			if genErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: keypair generation failed: %v\n", genErr)
-				return
+				return nil
 			}
 			if err := awconfig.SaveKeypair(keysDir, address, genPub, genPriv); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not save keypair: %v\n", err)
-				return
+				return nil
 			}
 			pub = genPub
 			generatedNewKey = true
@@ -224,7 +226,7 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 	authClient, err := aweb.NewWithAPIKey(baseURL, apiKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not create authenticated client: %v\n", err)
-		return
+		return nil
 	}
 
 	claimCtx, claimCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -244,7 +246,7 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 				address = deriveAgentAddress(sel.NamespaceSlug, "", sel.AgentAlias)
 			}
 			if address == "" {
-				fatal(fmt.Errorf("identity already set on server (409) but cannot derive address for recovery; run 'aw reset --remote --confirm'"))
+				return fmt.Errorf("identity already set on server (409) but cannot derive address for recovery; run 'aw reset --remote --confirm'")
 			}
 			// Remove orphan key if we just generated it — it doesn't match
 			// the server's identity.
@@ -254,7 +256,11 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 				os.Remove(pubPath)
 			}
 			var recoveredCustody, recoveredLifetime string
-			did, signingKeyPath, recoveredCustody, recoveredLifetime = recoverIdentity409(claimCtx, authClient, keysDir, address)
+			var recoverErr error
+			did, signingKeyPath, recoveredCustody, recoveredLifetime, recoverErr = recoverIdentity409(claimCtx, authClient, keysDir, address)
+			if recoverErr != nil {
+				return recoverErr
+			}
 			if recoveredCustody != "" {
 				custody = recoveredCustody
 			}
@@ -264,9 +270,9 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 			needConfigUpdate = true
 		} else if ok && claimCode == 404 {
 			fmt.Fprintln(os.Stderr, "Warning: server does not support identity claim (404). Signed messaging not available.")
-			return
+			return nil
 		} else {
-			fatal(fmt.Errorf("identity claim failed: %w", claimErr))
+			return fmt.Errorf("identity claim failed: %w", claimErr)
 		}
 	}
 
@@ -292,6 +298,7 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) {
 	}
 
 	fmt.Fprintf(os.Stderr, "Identity: %s\n", did)
+	return nil
 }
 
 // formatVerifyError parses structured error bodies from the verify-code endpoint.

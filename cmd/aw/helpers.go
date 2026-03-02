@@ -2,11 +2,9 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"math"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,11 +22,10 @@ func loadDotenvBestEffort() {
 	_ = godotenv.Overload(".env.aweb")
 }
 
-func mustResolve() (*aweb.Client, *awconfig.Selection) {
+func resolveClientSelection() (*aweb.Client, *awconfig.Selection, error) {
 	cfg, err := awconfig.LoadGlobal()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to read config:", err)
-		os.Exit(2)
+		return nil, nil, fmt.Errorf("failed to read config: %w", err)
 	}
 	wd, _ := os.Getwd()
 	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
@@ -39,14 +36,12 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 		AllowEnvOverrides: true,
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return nil, nil, err
 	}
 
 	baseURL, err := resolveWorkingBaseURL(sel.BaseURL)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return nil, nil, err
 	}
 	sel.BaseURL = baseURL
 
@@ -54,13 +49,11 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 	if sel.SigningKey != "" && sel.DID != "" {
 		priv, err := awconfig.LoadSigningKey(sel.SigningKey)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Failed to load signing key:", err)
-			os.Exit(2)
+			return nil, nil, fmt.Errorf("failed to load signing key: %w", err)
 		}
 		c, err = aweb.NewWithIdentity(baseURL, sel.APIKey, priv, sel.DID)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Invalid identity configuration:", err)
-			os.Exit(2)
+			return nil, nil, fmt.Errorf("invalid identity configuration: %w", err)
 		}
 		c.SetAddress(deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias))
 		if sel.StableID != "" {
@@ -69,7 +62,11 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 		c.SetResolver(&aweb.ServerResolver{Client: c})
 
 		// Load TOFU pin store for sender identity verification.
-		pinPath := filepath.Join(filepath.Dir(mustDefaultGlobalPath()), "known_agents.yaml")
+		cfgPath, err := defaultGlobalPath()
+		if err != nil {
+			return nil, nil, err
+		}
+		pinPath := filepath.Join(filepath.Dir(cfgPath), "known_agents.yaml")
 		ps, err := aweb.LoadPinStore(pinPath)
 		if err != nil {
 			debugLog("load pin store: %v", err)
@@ -80,8 +77,7 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 		var err error
 		c, err = aweb.NewWithAPIKey(baseURL, sel.APIKey)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Invalid base URL:", err)
-			os.Exit(2)
+			return nil, nil, fmt.Errorf("invalid base URL: %w", err)
 		}
 	}
 
@@ -90,22 +86,21 @@ func mustResolve() (*aweb.Client, *awconfig.Selection) {
 		c.SetClawDIDClient(&aweb.ClawDIDClient{RegistryURL: sel.ClawDIDRegistryURL})
 	}
 
-	return c, sel
+	return c, sel, nil
 }
 
-func mustClient() *aweb.Client {
-	c, _ := mustResolve()
-	return c
+func resolveClient() (*aweb.Client, error) {
+	c, _, err := resolveClientSelection()
+	return c, err
 }
 
-// mustResolveAPIKeyOnly resolves config and creates a client using only
+// resolveAPIKeyOnly resolves config and creates a client using only
 // the API key (no signing key). Used by commands like reset that need
 // to work even when the local signing key is missing or invalid.
-func mustResolveAPIKeyOnly() (*aweb.Client, *awconfig.Selection) {
+func resolveAPIKeyOnly() (*aweb.Client, *awconfig.Selection, error) {
 	cfg, err := awconfig.LoadGlobal()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to read config:", err)
-		os.Exit(2)
+		return nil, nil, fmt.Errorf("failed to read config: %w", err)
 	}
 	wd, _ := os.Getwd()
 	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
@@ -116,23 +111,20 @@ func mustResolveAPIKeyOnly() (*aweb.Client, *awconfig.Selection) {
 		AllowEnvOverrides: true,
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return nil, nil, err
 	}
 
 	baseURL, err := resolveWorkingBaseURL(sel.BaseURL)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return nil, nil, err
 	}
 	sel.BaseURL = baseURL
 
 	c, err := aweb.NewWithAPIKey(baseURL, sel.APIKey)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Invalid base URL:", err)
-		os.Exit(2)
+		return nil, nil, fmt.Errorf("invalid base URL: %w", err)
 	}
-	return c, sel
+	return c, sel, nil
 }
 
 // canonicalOrigin extracts scheme+host from a URL, stripping any path.
@@ -176,107 +168,8 @@ func cleanBaseURL(raw string) (string, error) {
 	return strings.TrimSuffix(u.String(), "/"), nil
 }
 
-func probeAwebBaseURL(ctx context.Context, baseURL string) (bool, error) {
-	// Stable across our servers: exists (POST) on /v1/agents/heartbeat.
-	// We use GET to avoid side effects; success is any non-404 response.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/agents/heartbeat", nil)
-	if err != nil {
-		return false, err
-	}
-	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
-	if err != nil {
-		return false, err
-	}
-	_ = resp.Body.Close()
-	return resp.StatusCode != http.StatusNotFound, nil
-}
-
 func resolveWorkingBaseURL(raw string) (string, error) {
-	base, err := cleanBaseURL(raw)
-	if err != nil {
-		return "", err
-	}
-
-	candidates := make([]string, 0, 4)
-	add := func(v string) {
-		v = strings.TrimSuffix(strings.TrimSpace(v), "/")
-		if v == "" {
-			return
-		}
-		for _, existing := range candidates {
-			if existing == v {
-				return
-			}
-		}
-		candidates = append(candidates, v)
-	}
-
-	add(base)
-	if strings.HasSuffix(base, "/v1") {
-		add(strings.TrimSuffix(base, "/v1"))
-	}
-	if strings.HasSuffix(base, "/api/v1") {
-		add(strings.TrimSuffix(base, "/v1"))
-	}
-	if !strings.HasSuffix(base, "/api") {
-		add(base + "/api")
-	}
-
-	var lastErr error
-	for _, cand := range candidates {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		ok, err := probeAwebBaseURL(ctx, cand)
-		cancel()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if ok {
-			return cand, nil
-		}
-	}
-	if lastErr != nil {
-		return "", fmt.Errorf("no aweb API detected at %q (tried %v): %w", raw, candidates, lastErr)
-	}
-	return "", fmt.Errorf("no aweb API detected at %q (tried %v)", raw, candidates)
-}
-
-// fireHeartbeat sends a best-effort heartbeat to the aweb server.
-// Called as a goroutine on every authenticated command invocation.
-func fireHeartbeat() {
-	cfg, err := awconfig.LoadGlobal()
-	if err != nil {
-		debugLog("heartbeat: load config: %v", err)
-		return
-	}
-	wd, _ := os.Getwd()
-	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
-		WorkingDir:        wd,
-		AllowEnvOverrides: true,
-	})
-	if err != nil {
-		debugLog("heartbeat: resolve account: %v", err)
-		return
-	}
-	if sel.APIKey == "" {
-		debugLog("heartbeat: no API key configured")
-		return
-	}
-	baseURL, err := resolveWorkingBaseURL(sel.BaseURL)
-	if err != nil {
-		debugLog("heartbeat: %v", err)
-		return
-	}
-	c, err := aweb.NewWithAPIKey(baseURL, sel.APIKey)
-	if err != nil {
-		debugLog("heartbeat: create client: %v", err)
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := c.Heartbeat(ctx); err != nil {
-		debugLog("heartbeat: %v", err)
-	}
+	return cleanBaseURL(raw)
 }
 
 func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName string, global *awconfig.GlobalConfig, err error) {
@@ -402,12 +295,8 @@ func promptString(label, defaultValue string) (string, error) {
 	return line, nil
 }
 
-func mustDefaultGlobalPath() string {
-	path, err := awconfig.DefaultGlobalConfigPath()
-	if err != nil {
-		fatal(err)
-	}
-	return path
+func defaultGlobalPath() (string, error) {
+	return awconfig.DefaultGlobalConfigPath()
 }
 
 func sanitizeKeyComponent(s string) string {
@@ -581,15 +470,6 @@ func ttlRemainingSeconds(expiresAt string, now time.Time) int {
 	return secs
 }
 
-func fatal(err error) {
-	msg := err.Error()
-	if hint := checkVerificationRequired(err); hint != "" {
-		msg = hint
-	}
-	fmt.Fprintln(os.Stderr, msg)
-	os.Exit(1)
-}
-
 // checkVerificationRequired detects EMAIL_VERIFICATION_REQUIRED 403 errors
 // and returns a user-friendly message. Returns "" for non-matching errors.
 func checkVerificationRequired(err error) string {
@@ -620,17 +500,16 @@ func checkVerificationRequired(err error) string {
 	return hint
 }
 
-// networkFatal wraps fatal with a user-friendly message for network 404 errors.
+// networkError wraps an error with a user-friendly message for network 404 errors.
 // When a network send fails because the target agent doesn't exist, the raw error
 // is "aweb: http 404: ..." which looks like a broken endpoint. This rewrites it
 // to mention the target address.
-func networkFatal(err error, target string) {
+func networkError(err error, target string) error {
 	code, ok := aweb.HTTPStatusCode(err)
 	if ok && code == 404 {
-		fmt.Fprintf(os.Stderr, "agent not found: %s\n", target)
-		os.Exit(1)
+		return fmt.Errorf("agent not found: %s", target)
 	}
-	fatal(err)
+	return err
 }
 
 func debugLog(format string, args ...any) {

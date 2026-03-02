@@ -49,7 +49,7 @@ func runReset(cmd *cobra.Command, args []string) error {
 func runResetLocal() error {
 	wd, err := os.Getwd()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	ctxPath, err := awconfig.FindWorktreeContextPath(wd)
@@ -59,7 +59,7 @@ func runResetLocal() error {
 	}
 
 	if err := os.Remove(ctxPath); err != nil {
-		fatal(err)
+		return err
 	}
 
 	// Remove the .aw directory if it's now empty.
@@ -76,15 +76,16 @@ func runResetLocal() error {
 // runResetRemote clears the server identity and re-provisions.
 func runResetRemote() error {
 	if !resetConfirm {
-		fmt.Fprintln(os.Stderr, "Remote reset requires --confirm to prevent accidental identity resets.")
-		fmt.Fprintln(os.Stderr, "Usage: aw reset --remote --confirm")
-		os.Exit(2)
+		return usageError("Remote reset requires --confirm to prevent accidental identity resets.\nUsage: aw reset --remote --confirm")
 	}
 
-	cfgPath := mustDefaultGlobalPath()
+	cfgPath, err := defaultGlobalPath()
+	if err != nil {
+		return err
+	}
 	cfg, cfgErr := awconfig.LoadGlobalFrom(cfgPath)
 	if cfgErr != nil {
-		fatal(cfgErr)
+		return cfgErr
 	}
 	keysDir := awconfig.KeysDir(cfgPath)
 
@@ -97,34 +98,32 @@ func runResetRemote() error {
 		AllowEnvOverrides: true,
 	})
 	if selErr != nil {
-		fatal(selErr)
+		return selErr
 	}
 
 	baseURL := strings.TrimSpace(sel.BaseURL)
 	apiKey := strings.TrimSpace(sel.APIKey)
 	if baseURL == "" {
-		fmt.Fprintln(os.Stderr, "Missing server URL. Set AWEB_URL (or configure a server in aw config).")
-		os.Exit(2)
+		return usageError("Missing server URL. Set AWEB_URL (or configure a server in aw config).")
 	}
 	if apiKey == "" {
-		fmt.Fprintln(os.Stderr, "Missing API key. Set AWEB_API_KEY (or configure an account in aw config).")
-		os.Exit(2)
+		return usageError("Missing API key. Set AWEB_API_KEY (or configure an account in aw config).")
 	}
 
-	baseURL, err := resolveWorkingBaseURL(baseURL)
+	baseURL, err = resolveWorkingBaseURL(baseURL)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	sel.BaseURL = baseURL
 
 	client, err := aweb.NewWithAPIKey(baseURL, apiKey)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	serverName, err := awconfig.DeriveServerNameFromURL(baseURL)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	// Generate and persist the new keypair BEFORE touching the server.
@@ -132,7 +131,7 @@ func runResetRemote() error {
 	// be bricked. A stale key file on disk is harmless.
 	pub, priv, err := awconfig.GenerateKeypair()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	did := aweb.ComputeDIDKey(pub)
@@ -143,12 +142,12 @@ func runResetRemote() error {
 
 	intro, err := client.Introspect(ctx)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	agentID := strings.TrimSpace(intro.AgentID)
 	alias := strings.TrimSpace(intro.Alias)
 	if agentID == "" || alias == "" {
-		fatal(fmt.Errorf("server did not return agent identity for this API key (agent_id=%q alias=%q)", agentID, alias))
+		return fmt.Errorf("server did not return agent identity for this API key (agent_id=%q alias=%q)", agentID, alias)
 	}
 
 	accountName := strings.TrimSpace(sel.AccountName)
@@ -171,24 +170,24 @@ func runResetRemote() error {
 	if namespaceSlug == "" {
 		proj, err := client.GetCurrentProject(ctx)
 		if err != nil {
-			fatal(fmt.Errorf("failed to resolve namespace slug (GET /v1/projects/current): %w", err))
+			return fmt.Errorf("failed to resolve namespace slug (GET /v1/projects/current): %w", err)
 		}
 		namespaceSlug = strings.TrimSpace(proj.Slug)
 	}
 	if namespaceSlug == "" {
-		fatal(errors.New("could not derive namespace slug for identity reset (empty project slug)"))
+		return errors.New("could not derive namespace slug for identity reset (empty project slug)")
 	}
 
 	address := deriveAgentAddress(namespaceSlug, sel.DefaultProject, alias)
 	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
-		fatal(err)
+		return err
 	}
 	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
 
 	// Clear the server identity.
 	_, err = client.ResetIdentity(ctx, &aweb.ResetIdentityRequest{Confirm: true})
 	if err != nil {
-		fatal(fmt.Errorf("server identity reset failed: %w", err))
+		return fmt.Errorf("server identity reset failed: %w", err)
 	}
 	fmt.Fprintln(os.Stderr, "Server identity cleared.")
 
@@ -200,7 +199,7 @@ func runResetRemote() error {
 		Lifetime:  "persistent",
 	})
 	if err != nil {
-		fatal(fmt.Errorf("identity re-claim failed (key saved at %s, retry with 'aw connect'): %w", signingKeyPath, err))
+		return fmt.Errorf("identity re-claim failed (key saved at %s, retry with 'aw connect'): %w", signingKeyPath, err)
 	}
 	fmt.Fprintf(os.Stderr, "Identity claimed: %s\n", did)
 
@@ -253,7 +252,7 @@ func runResetRemote() error {
 		return nil
 	})
 	if updateErr != nil {
-		fatal(updateErr)
+		return updateErr
 	}
 
 	fmt.Fprintf(os.Stderr, "Config updated: %s\n", cfgPath)

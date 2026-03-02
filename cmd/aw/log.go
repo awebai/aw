@@ -21,7 +21,10 @@ var logCmd = &cobra.Command{
 	Use:   "log",
 	Short: "Show local communication log",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		_, sel := mustResolve()
+		_, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
 		logsDir := defaultLogsDir()
 		path := commLogPath(logsDir, sel.AccountName)
 
@@ -31,7 +34,7 @@ var logCmd = &cobra.Command{
 				fmt.Println("No log entries yet.")
 				return nil
 			}
-			fatal(err)
+			return err
 		}
 
 		entries = filterCommLog(entries, logChannel, logFrom)

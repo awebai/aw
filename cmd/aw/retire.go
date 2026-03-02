@@ -26,19 +26,22 @@ func init() {
 }
 
 func runAgentRetire(cmd *cobra.Command, args []string) error {
-	c, sel := mustResolve()
+	c, sel, err := resolveClientSelection()
+	if err != nil {
+		return err
+	}
 
 	// Validate successor address format.
 	parts := strings.SplitN(retireSuccessor, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		fatal(fmt.Errorf("successor must be namespace/alias, got %q", retireSuccessor))
+		return fmt.Errorf("successor must be namespace/alias, got %q", retireSuccessor)
 	}
 
 	if sel.SigningKey == "" {
-		fatal(fmt.Errorf("no signing key configured; retirement requires a self-custody identity"))
+		return fmt.Errorf("no signing key configured; retirement requires a self-custody identity")
 	}
 	if sel.DID == "" {
-		fatal(fmt.Errorf("no DID configured for this account"))
+		return fmt.Errorf("no DID configured for this account")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -48,13 +51,13 @@ func runAgentRetire(cmd *cobra.Command, args []string) error {
 	resolver := &aweb.ServerResolver{Client: c}
 	successorIdentity, err := resolver.Resolve(ctx, retireSuccessor)
 	if err != nil {
-		fatal(fmt.Errorf("resolve successor %q: %w", retireSuccessor, err))
+		return fmt.Errorf("resolve successor %q: %w", retireSuccessor, err)
 	}
 	if successorIdentity.AgentID == "" {
-		fatal(fmt.Errorf("successor %q has no agent_id (server may not support resolution)", retireSuccessor))
+		return fmt.Errorf("successor %q has no agent_id (server may not support resolution)", retireSuccessor)
 	}
 	if successorIdentity.DID == "" {
-		fatal(fmt.Errorf("successor %q has no DID", retireSuccessor))
+		return fmt.Errorf("successor %q has no DID", retireSuccessor)
 	}
 
 	resp, err := c.RetireAgent(ctx, &aweb.RetireAgentRequest{
@@ -63,7 +66,7 @@ func runAgentRetire(cmd *cobra.Command, args []string) error {
 		SuccessorAddress: successorIdentity.Address,
 	})
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	fmt.Printf("Agent retired.\n")

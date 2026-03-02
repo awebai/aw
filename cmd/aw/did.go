@@ -42,22 +42,24 @@ func init() {
 }
 
 func runDidRotateKey(cmd *cobra.Command, args []string) error {
-	c, sel := mustResolve()
+	c, sel, err := resolveClientSelection()
+	if err != nil {
+		return err
+	}
 
 	// Custodial graduation: no local signing key, server signs on behalf.
 	if rotateKeySelfCustody {
 		if sel.Custody == aweb.CustodySelf {
-			fatal(fmt.Errorf("account %q is already self-custody", sel.AccountName))
+			return fmt.Errorf("account %q is already self-custody", sel.AccountName)
 		}
 		return runCustodialGraduation(sel)
 	}
 
 	if sel.SigningKey == "" {
-		fmt.Fprintln(os.Stderr, "No signing key configured. Use --self-custody to graduate from custodial to self-custody.")
-		os.Exit(2)
+		return usageError("No signing key configured. Use --self-custody to graduate from custodial to self-custody.")
 	}
 	if sel.DID == "" {
-		fatal(fmt.Errorf("no DID configured for this account"))
+		return fmt.Errorf("no DID configured for this account")
 	}
 
 	oldPriv := c.SigningKey()
@@ -67,7 +69,7 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 	// Generate new keypair.
 	newPub, newPriv, err := awconfig.GenerateKeypair()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	newDID := aweb.ComputeDIDKey(newPub)
 
@@ -80,25 +82,28 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 		Custody:      aweb.CustodySelf,
 	})
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	// Persist locally: archive old key, save new keypair, update config.
 	// Config update is last — it is atomic via UpdateGlobalAt, so partial
 	// failure before that point leaves the config pointing at the old key.
-	configPath := mustDefaultGlobalPath()
-	keysDir := awconfig.KeysDir(configPath)
+	cfgPath, err := defaultGlobalPath()
+	if err != nil {
+		return err
+	}
+	keysDir := awconfig.KeysDir(cfgPath)
 	address := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
 
 	if err := awconfig.ArchiveKey(keysDir, oldDID, oldPub, oldPriv); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to archive old key: %v\n", err)
 	}
 	if err := awconfig.SaveKeypair(keysDir, address, newPub, newPriv); err != nil {
-		fatal(fmt.Errorf("save new keypair: %w", err))
+		return fmt.Errorf("save new keypair: %w", err)
 	}
 	keyPath := awconfig.SigningKeyPath(keysDir, address)
 	if err := updateAccountIdentity(sel.AccountName, newDID, aweb.CustodySelf, keyPath); err != nil {
-		fatal(err)
+		return err
 	}
 
 	fmt.Printf("Key rotated successfully.\n")
@@ -114,14 +119,14 @@ func runCustodialGraduation(sel *awconfig.Selection) error {
 	// Generate new keypair locally.
 	newPub, newPriv, err := awconfig.GenerateKeypair()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	newDID := aweb.ComputeDIDKey(newPub)
 
 	// Use a regular API-key client (no local signing key).
 	c, err := aweb.NewWithAPIKey(sel.BaseURL, sel.APIKey)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -134,21 +139,24 @@ func runCustodialGraduation(sel *awconfig.Selection) error {
 		Custody:      aweb.CustodySelf,
 	})
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	// Save new keypair.
-	configPath := mustDefaultGlobalPath()
-	keysDir := awconfig.KeysDir(configPath)
+	cfgPath, err := defaultGlobalPath()
+	if err != nil {
+		return err
+	}
+	keysDir := awconfig.KeysDir(cfgPath)
 	address := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
 	if err := awconfig.SaveKeypair(keysDir, address, newPub, newPriv); err != nil {
-		fatal(fmt.Errorf("save new keypair: %w", err))
+		return fmt.Errorf("save new keypair: %w", err)
 	}
 
 	// Update config.
 	keyPath := awconfig.SigningKeyPath(keysDir, address)
 	if err := updateAccountIdentity(sel.AccountName, newDID, aweb.CustodySelf, keyPath); err != nil {
-		fatal(err)
+		return err
 	}
 
 	fmt.Printf("Graduated to self-custody.\n")
@@ -159,7 +167,10 @@ func runCustodialGraduation(sel *awconfig.Selection) error {
 }
 
 func runDidLog(cmd *cobra.Command, args []string) error {
-	c := mustClient()
+	c, err := resolveClient()
+	if err != nil {
+		return err
+	}
 
 	var address string
 	if len(args) > 0 {
@@ -171,7 +182,7 @@ func runDidLog(cmd *cobra.Command, args []string) error {
 
 	resp, err := c.AgentLog(ctx, address)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	if len(resp.Entries) == 0 {
@@ -200,8 +211,11 @@ func runDidLog(cmd *cobra.Command, args []string) error {
 
 // updateAccountIdentity updates DID, custody, and signing key path in the global config.
 func updateAccountIdentity(accountName, newDID, custody, signingKeyPath string) error {
-	configPath := mustDefaultGlobalPath()
-	return awconfig.UpdateGlobalAt(configPath, func(cfg *awconfig.GlobalConfig) error {
+	cfgPath, err := defaultGlobalPath()
+	if err != nil {
+		return err
+	}
+	return awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
 		acct := cfg.Accounts[accountName]
 		acct.DID = newDID
 		acct.Custody = custody

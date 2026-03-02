@@ -23,7 +23,10 @@ func chatStderrCallback(kind, message string) {
 
 // chatSend routes a message through the OSS or network path based on the alias format.
 func chatSend(ctx context.Context, toAlias, message string, opts chat.SendOptions) (*chat.SendResult, *awconfig.Selection, error) {
-	c, sel := mustResolve()
+	c, sel, err := resolveClientSelection()
+	if err != nil {
+		return nil, nil, err
+	}
 	addr := aweb.ParseNetworkAddress(toAlias)
 	if addr.IsNetwork {
 		r, err := chat.SendNetwork(ctx, c, sel.AgentAlias, []string{addr.String()}, message, opts, chatStderrCallback)
@@ -134,7 +137,7 @@ var chatSendAndWaitCmd = &cobra.Command{
 			StartConversation: chatSendAndWaitStartConversation,
 		})
 		if err != nil {
-			networkFatal(err, args[0])
+			return networkError(err, args[0])
 		}
 		logsDir := defaultLogsDir()
 		myAddr := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
@@ -170,7 +173,7 @@ var chatSendAndLeaveCmd = &cobra.Command{
 			Leaving: true,
 		})
 		if err != nil {
-			networkFatal(err, args[0])
+			return networkError(err, args[0])
 		}
 		logsDir := defaultLogsDir()
 		appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
@@ -196,9 +199,13 @@ var chatPendingCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		result, err := chat.Pending(ctx, mustClient())
+		c, err := resolveClient()
 		if err != nil {
-			fatal(err)
+			return err
+		}
+		result, err := chat.Pending(ctx, c)
+		if err != nil {
+			return err
 		}
 		printOutput(result, formatChatPending)
 		return nil
@@ -215,10 +222,13 @@ var chatOpenCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		c, sel := mustResolve()
+		c, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
 		result, err := chatOpen(ctx, c, args[0])
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		logsDir := defaultLogsDir()
 		myAddr := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
@@ -240,10 +250,13 @@ var chatHistoryCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		c, _ := mustResolve()
+		c, _, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
 		result, err := chatHistory(ctx, c, args[0])
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		// History is a replay; skip logging to avoid duplicates.
 		printOutput(result, formatChatHistory)
@@ -261,10 +274,13 @@ var chatExtendWaitCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		c, sel := mustResolve()
+		c, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
 		result, err := chatExtendWait(ctx, c, args[0], args[1])
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		logsDir := defaultLogsDir()
 		appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
@@ -292,10 +308,13 @@ var chatListenCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
-		c, sel := mustResolve()
+		c, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
 		result, err := chatListen(ctx, c, args[0], chatListenWait)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		logsDir := defaultLogsDir()
 		myAddr := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
@@ -315,10 +334,13 @@ var chatShowPendingCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		c, sel := mustResolve()
+		c, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
 		result, err := chatShowPending(ctx, c, args[0])
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		logsDir := defaultLogsDir()
 		myAddr := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
