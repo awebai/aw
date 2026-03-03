@@ -29,9 +29,19 @@ func newLocalHTTPServer(t *testing.T, handler http.Handler) *httptest.Server {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
+	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// aw probes for aweb by calling GET /v1/agents/heartbeat on candidate bases.
+		// Return any non-404 to indicate "endpoint exists" without side effects.
+		// Only intercept GET; POST is the actual heartbeat and should reach the inner handler.
+		if r.Method == http.MethodGet && (r.URL.Path == "/v1/agents/heartbeat" || r.URL.Path == "/api/v1/agents/heartbeat") {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
 	srv := &httptest.Server{
 		Listener: l,
-		Config:   &http.Server{Handler: handler},
+		Config:   &http.Server{Handler: wrapped},
 	}
 	srv.Start()
 	t.Cleanup(srv.Close)
@@ -1389,6 +1399,9 @@ func TestAwInitAcceptsAPIV1BaseURL(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/v1/agents/heartbeat":
+			// Probe path (GET) - any non-404 response is treated as "exists".
+			w.WriteHeader(http.StatusMethodNotAllowed)
 		case "/api/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_slug": "demo",
@@ -1433,7 +1446,7 @@ func TestAwInitAcceptsAPIV1BaseURL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/api", "--json")
+	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/api/v1", "--json")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1461,6 +1474,8 @@ func TestAwInitAllowsCustomMountRoot(t *testing.T) {
 	var gotInitPath string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/custom/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusMethodNotAllowed)
 		case "/custom/v1/init":
 			gotInitPath = r.URL.Path
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -3776,7 +3791,7 @@ func TestAwIntrospectVerificationRequired(t *testing.T) {
 						},
 					})
 				default:
-					// Ignore unexpected paths.
+					// Accept heartbeat probes.
 				}
 			}))
 

@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -168,8 +170,107 @@ func cleanBaseURL(raw string) (string, error) {
 	return strings.TrimSuffix(u.String(), "/"), nil
 }
 
+func probeAwebBaseURL(ctx context.Context, baseURL string) (bool, error) {
+	// Stable across our servers: exists (POST) on /v1/agents/heartbeat.
+	// We use GET to avoid side effects; success is any non-404 response.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/agents/heartbeat", nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
+	if err != nil {
+		return false, err
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode != http.StatusNotFound, nil
+}
+
 func resolveWorkingBaseURL(raw string) (string, error) {
-	return cleanBaseURL(raw)
+	base, err := cleanBaseURL(raw)
+	if err != nil {
+		return "", err
+	}
+
+	candidates := make([]string, 0, 4)
+	add := func(v string) {
+		v = strings.TrimSuffix(strings.TrimSpace(v), "/")
+		if v == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == v {
+				return
+			}
+		}
+		candidates = append(candidates, v)
+	}
+
+	add(base)
+	if strings.HasSuffix(base, "/v1") {
+		add(strings.TrimSuffix(base, "/v1"))
+	}
+	if strings.HasSuffix(base, "/api/v1") {
+		add(strings.TrimSuffix(base, "/v1"))
+	}
+	if !strings.HasSuffix(base, "/api") {
+		add(base + "/api")
+	}
+
+	var lastErr error
+	for _, cand := range candidates {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ok, err := probeAwebBaseURL(ctx, cand)
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if ok {
+			return cand, nil
+		}
+	}
+	if lastErr != nil {
+		return "", fmt.Errorf("no aweb API detected at %q (tried %v): %w", raw, candidates, lastErr)
+	}
+	return "", fmt.Errorf("no aweb API detected at %q (tried %v)", raw, candidates)
+}
+
+// fireHeartbeat sends a best-effort heartbeat to the aweb server.
+// Called as a goroutine on every authenticated command invocation.
+func fireHeartbeat() {
+	cfg, err := awconfig.LoadGlobal()
+	if err != nil {
+		debugLog("heartbeat: load config: %v", err)
+		return
+	}
+	wd, _ := os.Getwd()
+	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
+		WorkingDir:        wd,
+		AllowEnvOverrides: true,
+	})
+	if err != nil {
+		debugLog("heartbeat: resolve account: %v", err)
+		return
+	}
+	if sel.APIKey == "" {
+		debugLog("heartbeat: no API key configured")
+		return
+	}
+	baseURL, err := resolveWorkingBaseURL(sel.BaseURL)
+	if err != nil {
+		debugLog("heartbeat: %v", err)
+		return
+	}
+	c, err := aweb.NewWithAPIKey(baseURL, sel.APIKey)
+	if err != nil {
+		debugLog("heartbeat: create client: %v", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := c.Heartbeat(ctx); err != nil {
+		debugLog("heartbeat: %v", err)
+	}
 }
 
 func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName string, global *awconfig.GlobalConfig, err error) {
