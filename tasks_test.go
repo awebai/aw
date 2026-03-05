@@ -373,7 +373,81 @@ func TestTaskListQueryParams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotQuery != "status=open&assignee_agent_id=agent-1&task_type=feature&priority=1&labels=urgent&labels=backend" {
+	if gotQuery != "status=open&assignee_agent_id=agent-1&task_type=feature&priority=1&labels=urgent%2Cbackend" {
 		t.Fatalf("query=%s", gotQuery)
+	}
+}
+
+func TestTaskCommentCreate(t *testing.T) {
+	t.Parallel()
+
+	var gotBody TaskCommentCreateRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/tasks/aw-042/comments" {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(TaskComment{
+			CommentID: "comment-001",
+			TaskID:    "task-042",
+			Body:      gotBody.Body,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := c.TaskCommentCreate(context.Background(), "aw-042", &TaskCommentCreateRequest{
+		Body: "This is a comment",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.CommentID != "comment-001" {
+		t.Fatalf("comment_id=%s", resp.CommentID)
+	}
+	if resp.Body != "This is a comment" {
+		t.Fatalf("body=%s", resp.Body)
+	}
+	if gotBody.Body != "This is a comment" {
+		t.Fatalf("sent body=%s", gotBody.Body)
+	}
+}
+
+func TestTaskCommentList(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tasks/aw-042/comments" {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(TaskCommentListResponse{
+			Comments: []TaskComment{
+				{CommentID: "c-1", Body: "First"},
+				{CommentID: "c-2", Body: "Second"},
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := c.TaskCommentList(context.Background(), "aw-042")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Comments) != 2 {
+		t.Fatalf("comments=%d", len(resp.Comments))
+	}
+	if resp.Comments[0].Body != "First" {
+		t.Fatalf("comments[0].body=%s", resp.Comments[0].Body)
 	}
 }

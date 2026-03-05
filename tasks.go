@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // Task types
@@ -145,8 +146,8 @@ func (c *Client) TaskList(ctx context.Context, params TaskListParams) (*TaskList
 		path += sep + "priority=" + itoa(*params.Priority)
 		sep = "&"
 	}
-	for _, label := range params.Labels {
-		path += sep + "labels=" + urlQueryEscape(label)
+	if len(params.Labels) > 0 {
+		path += sep + "labels=" + urlQueryEscape(strings.Join(params.Labels, ","))
 		sep = "&"
 	}
 	var out TaskListResponse
@@ -216,4 +217,40 @@ func (c *Client) TaskAddDep(ctx context.Context, ref string, req *TaskAddDepRequ
 
 func (c *Client) TaskRemoveDep(ctx context.Context, ref string, depRef string) error {
 	return c.delete(ctx, "/v1/tasks/"+urlPathEscape(ref)+"/deps/"+urlPathEscape(depRef))
+}
+
+// Comments
+
+type TaskComment struct {
+	CommentID      string  `json:"comment_id"`
+	TaskID         string  `json:"task_id"`
+	AuthorAgentID  *string `json:"author_agent_id"`
+	Body           string  `json:"body"`
+	ParentID       *string `json:"parent_id"`
+	CreatedAt      string  `json:"created_at"`
+}
+
+type TaskCommentCreateRequest struct {
+	Body     string  `json:"body"`
+	ParentID *string `json:"parent_id,omitempty"`
+}
+
+type TaskCommentListResponse struct {
+	Comments []TaskComment `json:"comments"`
+}
+
+func (c *Client) TaskCommentCreate(ctx context.Context, ref string, req *TaskCommentCreateRequest) (*TaskComment, error) {
+	var out TaskComment
+	if err := c.post(ctx, "/v1/tasks/"+urlPathEscape(ref)+"/comments", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) TaskCommentList(ctx context.Context, ref string) (*TaskCommentListResponse, error) {
+	var out TaskCommentListResponse
+	if err := c.get(ctx, "/v1/tasks/"+urlPathEscape(ref)+"/comments", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
