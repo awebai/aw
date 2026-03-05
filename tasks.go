@@ -167,6 +167,14 @@ func (c *Client) TaskListReady(ctx context.Context) (*TaskListResponse, error) {
 	return &out, nil
 }
 
+func (c *Client) TaskListBlocked(ctx context.Context) (*TaskListResponse, error) {
+	var out TaskListResponse
+	if err := c.get(ctx, "/v1/tasks/blocked", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) TaskGet(ctx context.Context, ref string) (*Task, error) {
 	var out Task
 	if err := c.get(ctx, "/v1/tasks/"+urlPathEscape(ref), &out); err != nil {

@@ -128,6 +128,39 @@ func TestTaskListReady(t *testing.T) {
 	}
 }
 
+func TestTaskListBlocked(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tasks/blocked" {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(TaskListResponse{
+			Tasks: []TaskSummary{
+				{TaskID: "task-010", TaskRef: "aw-010", Title: "Blocked task", Status: "open"},
+				{TaskID: "task-011", TaskRef: "aw-011", Title: "Blocked in_progress", Status: "in_progress"},
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := c.TaskListBlocked(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Tasks) != 2 {
+		t.Fatalf("tasks=%d", len(resp.Tasks))
+	}
+	if resp.Tasks[1].Status != "in_progress" {
+		t.Fatalf("tasks[1].status=%s", resp.Tasks[1].Status)
+	}
+}
+
 func TestTaskGet(t *testing.T) {
 	t.Parallel()
 
