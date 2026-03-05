@@ -4,15 +4,16 @@ import "context"
 
 // AgentView is returned by GET /v1/agents.
 type AgentView struct {
-	AgentID    string `json:"agent_id"`
-	Alias      string `json:"alias"`
-	HumanName  string `json:"human_name,omitempty"`
-	AgentType  string `json:"agent_type,omitempty"`
-	Status     string `json:"status,omitempty"`
-	LastSeen   string `json:"last_seen,omitempty"`
-	Online     bool   `json:"online"`
-	AccessMode string `json:"access_mode,omitempty"`
-	Privacy    string `json:"privacy,omitempty"`
+	AgentID       string `json:"agent_id"`
+	Alias         string `json:"alias"`
+	HumanName     string `json:"human_name,omitempty"`
+	AgentType     string `json:"agent_type,omitempty"`
+	Status        string `json:"status,omitempty"`
+	LastSeen      string `json:"last_seen,omitempty"`
+	Online        bool   `json:"online"`
+	AccessMode    string `json:"access_mode,omitempty"`
+	Privacy       string `json:"privacy,omitempty"`
+	NamespaceSlug string `json:"namespace_slug,omitempty"`
 }
 
 type ListAgentsResponse struct {
