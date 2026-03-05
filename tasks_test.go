@@ -185,13 +185,15 @@ func TestTaskUpdate(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatal(err)
 		}
-		_ = json.NewEncoder(w).Encode(Task{
-			TaskID:   "task-042",
-			TaskRef:  "aw-042",
-			Title:    *gotBody.Title,
-			Status:   "open",
-			Priority: 2,
-			TaskType: "feature",
+		_ = json.NewEncoder(w).Encode(TaskUpdateResponse{
+			Task: Task{
+				TaskID:   "task-042",
+				TaskRef:  "aw-042",
+				Title:    *gotBody.Title,
+				Status:   "open",
+				Priority: 2,
+				TaskType: "feature",
+			},
 		})
 	}))
 	t.Cleanup(server.Close)
@@ -213,6 +215,45 @@ func TestTaskUpdate(t *testing.T) {
 	}
 	if *gotBody.Title != "Updated title" {
 		t.Fatalf("sent title=%s", *gotBody.Title)
+	}
+}
+
+func TestTaskUpdateCascadeClose(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(TaskUpdateResponse{
+			Task: Task{
+				TaskID:  "task-001",
+				TaskRef: "aw-001",
+				Title:   "Parent",
+				Status:  "closed",
+			},
+			AutoClosed: []TaskSummary{
+				{TaskID: "task-002", TaskRef: "aw-002", Title: "Child A", Status: "closed"},
+				{TaskID: "task-003", TaskRef: "aw-003", Title: "Child B", Status: "closed"},
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status := "closed"
+	resp, err := c.TaskUpdate(context.Background(), "aw-001", &TaskUpdateRequest{
+		Status: &status,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.AutoClosed) != 2 {
+		t.Fatalf("auto_closed=%d", len(resp.AutoClosed))
+	}
+	if resp.AutoClosed[0].TaskRef != "aw-002" {
+		t.Fatalf("auto_closed[0].task_ref=%s", resp.AutoClosed[0].TaskRef)
 	}
 }
 
@@ -306,6 +347,32 @@ func TestTaskAddDep(t *testing.T) {
 	}
 	if gotBody.DependsOn != "aw-041" {
 		t.Fatalf("depends_on=%s", gotBody.DependsOn)
+	}
+}
+
+func TestTaskAddDepCycleReturns422(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]string{"detail": "dependency cycle detected"})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = c.TaskAddDep(context.Background(), "aw-042", &TaskAddDepRequest{
+		DependsOn: "aw-001",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	code, ok := HTTPStatusCode(err)
+	if !ok || code != 422 {
+		t.Fatalf("expected 422, got ok=%v code=%d err=%v", ok, code, err)
 	}
 }
 

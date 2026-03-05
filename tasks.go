@@ -94,9 +94,11 @@ type TaskListResponse struct {
 	Tasks []TaskSummary `json:"tasks"`
 }
 
-type TaskDeleteResponse struct {
-	Status string `json:"status"`
-	TaskID string `json:"task_id"`
+// TaskUpdateResponse wraps a Task with the additional auto_closed array
+// returned when closing a parent task triggers cascade-close of children.
+type TaskUpdateResponse struct {
+	Task
+	AutoClosed []TaskSummary `json:"auto_closed,omitempty"`
 }
 
 // TaskHeldError is returned when a task status transition to in_progress
@@ -175,8 +177,9 @@ func (c *Client) TaskGet(ctx context.Context, ref string) (*Task, error) {
 
 // TaskUpdate updates a task and returns the updated task. If the update
 // sets status=in_progress and another agent already holds it, a 409 is
-// returned as a *TaskHeldError.
-func (c *Client) TaskUpdate(ctx context.Context, ref string, req *TaskUpdateRequest) (*Task, error) {
+// returned as a *TaskHeldError. When closing a parent task, the response
+// may include AutoClosed listing cascade-closed children.
+func (c *Client) TaskUpdate(ctx context.Context, ref string, req *TaskUpdateRequest) (*TaskUpdateResponse, error) {
 	resp, err := c.doRaw(ctx, http.MethodPatch, "/v1/tasks/"+urlPathEscape(ref), "application/json", req)
 	if err != nil {
 		return nil, err
@@ -191,7 +194,7 @@ func (c *Client) TaskUpdate(ctx context.Context, ref string, req *TaskUpdateRequ
 
 	if resp.StatusCode == http.StatusConflict {
 		var held TaskHeldError
-		if err := json.Unmarshal(data, &held); err == nil && held.Detail != "" {
+		if err := json.Unmarshal(data, &held); err == nil {
 			return nil, &held
 		}
 		return nil, &apiError{StatusCode: resp.StatusCode, Body: string(data)}
@@ -200,7 +203,7 @@ func (c *Client) TaskUpdate(ctx context.Context, ref string, req *TaskUpdateRequ
 		return nil, &apiError{StatusCode: resp.StatusCode, Body: string(data)}
 	}
 
-	var out Task
+	var out TaskUpdateResponse
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, err
 	}
@@ -211,6 +214,7 @@ func (c *Client) TaskDelete(ctx context.Context, ref string) error {
 	return c.delete(ctx, "/v1/tasks/"+urlPathEscape(ref))
 }
 
+// TaskAddDep adds a dependency. Returns 422 if this would create a cycle.
 func (c *Client) TaskAddDep(ctx context.Context, ref string, req *TaskAddDepRequest) error {
 	return c.post(ctx, "/v1/tasks/"+urlPathEscape(ref)+"/deps", req, nil)
 }
