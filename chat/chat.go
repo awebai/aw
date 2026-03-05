@@ -142,6 +142,9 @@ func parseSSEEvent(sseEvent *aweb.SSEEvent) Event {
 	if v, ok := data["signing_key_id"].(string); ok {
 		ev.SigningKeyID = v
 	}
+	if v, ok := data["is_contact"].(bool); ok {
+		ev.IsContact = &v
+	}
 	if raData, ok := data["rotation_announcement"].(map[string]any); ok {
 		ev.RotationAnnouncement = &aweb.RotationAnnouncement{}
 		if v, ok := raData["old_did"].(string); ok {
@@ -286,6 +289,7 @@ func buildMessages(messages []aweb.ChatMessage) []Event {
 			SigningKeyID:         m.SigningKeyID,
 			RotationAnnouncement: m.RotationAnnouncement,
 			VerificationStatus:   m.VerificationStatus,
+			IsContact:           m.IsContact,
 		}
 	}
 	return events

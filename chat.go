@@ -183,6 +183,7 @@ type ChatMessage struct {
 	SigningKeyID           string                `json:"signing_key_id,omitempty"`
 	RotationAnnouncement   *RotationAnnouncement `json:"rotation_announcement,omitempty"`
 	VerificationStatus     VerificationStatus    `json:"verification_status,omitempty"`
+	IsContact              *bool                 `json:"is_contact,omitempty"`
 }
 
 type ChatHistoryParams struct {

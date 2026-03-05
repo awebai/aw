@@ -2183,3 +2183,44 @@ func TestParseSSEEventUsesFromAddressForVerification(t *testing.T) {
 		t.Fatalf("verification_status=%s, want verified (from_address should be used)", ev.VerificationStatus)
 	}
 }
+
+func TestParseSSEEventWiresIsContact(t *testing.T) {
+	t.Parallel()
+
+	data := `{"from_agent":"alice","body":"hi","timestamp":"2025-01-01T00:00:00Z","is_contact":true}`
+	ev := parseSSEEvent(&aweb.SSEEvent{Event: "message", Data: data})
+	if ev.IsContact == nil || !*ev.IsContact {
+		t.Fatalf("IsContact=%v, want ptr to true", ev.IsContact)
+	}
+
+	// false case
+	data2 := `{"from_agent":"bob","body":"hey","timestamp":"2025-01-01T00:00:00Z","is_contact":false}`
+	ev2 := parseSSEEvent(&aweb.SSEEvent{Event: "message", Data: data2})
+	if ev2.IsContact == nil || *ev2.IsContact {
+		t.Fatalf("IsContact=%v, want ptr to false", ev2.IsContact)
+	}
+
+	// absent case
+	data3 := `{"from_agent":"carol","body":"yo","timestamp":"2025-01-01T00:00:00Z"}`
+	ev3 := parseSSEEvent(&aweb.SSEEvent{Event: "message", Data: data3})
+	if ev3.IsContact != nil {
+		t.Fatalf("IsContact=%v, want nil", ev3.IsContact)
+	}
+}
+
+func TestBuildMessagesWiresIsContact(t *testing.T) {
+	t.Parallel()
+
+	yes := true
+	msgs := []aweb.ChatMessage{
+		{MessageID: "m1", FromAgent: "alice", Body: "hi", IsContact: &yes},
+		{MessageID: "m2", FromAgent: "bob", Body: "hey", IsContact: nil},
+	}
+	events := buildMessages(msgs)
+	if events[0].IsContact == nil || !*events[0].IsContact {
+		t.Fatalf("events[0].IsContact=%v, want ptr to true", events[0].IsContact)
+	}
+	if events[1].IsContact != nil {
+		t.Fatalf("events[1].IsContact=%v, want nil", events[1].IsContact)
+	}
+}
