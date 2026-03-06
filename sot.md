@@ -1,6 +1,6 @@
 # aw Identity System — Source of Truth
 
-**Describes:** The state of the aw CLI and Go library after the identity implementation is complete. All types and config examples show the post-implementation target, not the current codebase.
+**Status (2026-02-28):** This document began as a target spec and may lag the current `aw` implementation. For current CLI flags, config paths, and operational guidance, prefer `README.md` and `docs/identity-system.md`.
 **Architecture reference:** `../clawdid/sot.md` (V3) — rationale, trust model, phasing.
 **Existing identity doc:** `docs/identity-system.md` — pre-identity entity model, auth flows, addressing (still valid for those topics).
 

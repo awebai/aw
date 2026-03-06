@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -142,6 +141,9 @@ func parseSSEEvent(sseEvent *aweb.SSEEvent) Event {
 	}
 	if v, ok := data["signing_key_id"].(string); ok {
 		ev.SigningKeyID = v
+	}
+	if v, ok := data["is_contact"].(bool); ok {
+		ev.IsContact = &v
 	}
 	if raData, ok := data["rotation_announcement"].(map[string]any); ok {
 		ev.RotationAnnouncement = &aweb.RotationAnnouncement{}
@@ -287,6 +289,7 @@ func buildMessages(messages []aweb.ChatMessage) []Event {
 			SigningKeyID:         m.SigningKeyID,
 			RotationAnnouncement: m.RotationAnnouncement,
 			VerificationStatus:   m.VerificationStatus,
+			IsContact:            m.IsContact,
 		}
 	}
 	return events
@@ -371,17 +374,9 @@ func waitForMessage(ctx context.Context, client *aweb.Client, openStream streamO
 			result.WaitedSeconds = int(time.Since(waitStart).Seconds())
 			return result, nil
 		case sr, ok := <-events:
-			if !ok {
+			if !ok || sr.err != nil {
 				result.WaitedSeconds = int(time.Since(waitStart).Seconds())
 				return result, nil
-			}
-			if sr.err != nil {
-				result.WaitedSeconds = int(time.Since(waitStart).Seconds())
-				if errors.Is(sr.err, io.EOF) {
-					// Normal stream close (e.g., server deadline reached) maps to timeout semantics.
-					return result, nil
-				}
-				return nil, fmt.Errorf("chat stream receive: %w", sr.err)
 			}
 
 			chatEvent := parseSSEEvent(sr.event)
@@ -446,19 +441,6 @@ type sendResponse struct {
 	MessageID        string
 	TargetsConnected []string
 	TargetsLeft      []string
-}
-
-type historyLoader func(ctx context.Context, params aweb.ChatHistoryParams) (*aweb.ChatHistoryResponse, error)
-type markReadLoader func(ctx context.Context, sessionID, lastMessageID string) error
-type extendWaitSender func(ctx context.Context, sessionID, message string) (int, error)
-
-type pendingEntry struct {
-	SessionID     string
-	Participants  []string
-	LastMessage   string
-	LastFrom      string
-	LastActivity  string
-	SenderWaiting bool
 }
 
 // Send sends a message to target agents and optionally waits for a reply.
@@ -605,104 +587,6 @@ func sendCommon(ctx context.Context, client *aweb.Client, openStream streamOpene
 	return result, nil
 }
 
-func openSession(
-	ctx context.Context,
-	sessionID string,
-	senderWaiting bool,
-	target string,
-	loadHistory historyLoader,
-	markRead markReadLoader,
-) (*OpenResult, error) {
-	messagesResp, err := loadHistory(ctx, aweb.ChatHistoryParams{
-		SessionID:  sessionID,
-		UnreadOnly: true,
-		Limit:      1000,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("getting unread messages: %w", err)
-	}
-
-	result := &OpenResult{
-		SessionID:     sessionID,
-		TargetAgent:   target,
-		Messages:      buildMessages(messagesResp.Messages),
-		SenderWaiting: senderWaiting,
-	}
-
-	if len(messagesResp.Messages) == 0 {
-		result.UnreadWasEmpty = true
-		return result, nil
-	}
-
-	lastMessageID := messagesResp.Messages[len(messagesResp.Messages)-1].MessageID
-	if err := markRead(ctx, sessionID, lastMessageID); err != nil {
-		return nil, fmt.Errorf("marking messages as read: %w", err)
-	}
-	result.MarkedRead = len(messagesResp.Messages)
-	return result, nil
-}
-
-func historySession(ctx context.Context, sessionID string, loadHistory historyLoader) (*HistoryResult, error) {
-	messagesResp, err := loadHistory(ctx, aweb.ChatHistoryParams{
-		SessionID: sessionID,
-		Limit:     1000,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("getting messages: %w", err)
-	}
-
-	return &HistoryResult{
-		SessionID: sessionID,
-		Messages:  buildMessages(messagesResp.Messages),
-	}, nil
-}
-
-func extendWaitSession(
-	ctx context.Context,
-	sessionID string,
-	target string,
-	message string,
-	send extendWaitSender,
-) (*ExtendWaitResult, error) {
-	extendsWaitSeconds, err := send(ctx, sessionID, message)
-	if err != nil {
-		return nil, fmt.Errorf("sending extend-wait message: %w", err)
-	}
-
-	return &ExtendWaitResult{
-		SessionID:          sessionID,
-		TargetAgent:        target,
-		Message:            message,
-		ExtendsWaitSeconds: extendsWaitSeconds,
-	}, nil
-}
-
-func showPendingSession(target string, pending []pendingEntry) (*SendResult, error) {
-	for _, p := range pending {
-		for _, participant := range p.Participants {
-			if participant == target {
-				return &SendResult{
-					SessionID:     p.SessionID,
-					Status:        "pending",
-					TargetAgent:   target,
-					Reply:         p.LastMessage,
-					SenderWaiting: p.SenderWaiting,
-					Events: []Event{
-						{
-							Type:      "message",
-							FromAgent: p.LastFrom,
-							Body:      p.LastMessage,
-							Timestamp: p.LastActivity,
-						},
-					},
-				}, nil
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("no pending conversation with %s", target)
-}
-
 // Listen waits for a message in an existing conversation without sending.
 // Returns on any message in the session (not filtered by sender).
 func Listen(ctx context.Context, client *aweb.Client, targetAlias string, waitSeconds int, callback StatusCallback) (*SendResult, error) {
@@ -728,19 +612,37 @@ func Open(ctx context.Context, client *aweb.Client, targetAlias string) (*OpenRe
 	if err != nil {
 		return nil, err
 	}
-	return openSession(
-		ctx,
-		sessionID,
-		senderWaiting,
-		targetAlias,
-		client.ChatHistory,
-		func(ctx context.Context, sessionID, lastMessageID string) error {
-			_, err := client.ChatMarkRead(ctx, sessionID, &aweb.ChatMarkReadRequest{
-				UpToMessageID: lastMessageID,
-			})
-			return err
-		},
-	)
+
+	messagesResp, err := client.ChatHistory(ctx, aweb.ChatHistoryParams{
+		SessionID:  sessionID,
+		UnreadOnly: true,
+		Limit:      1000,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("getting unread messages: %w", err)
+	}
+
+	result := &OpenResult{
+		SessionID:     sessionID,
+		TargetAgent:   targetAlias,
+		Messages:      buildMessages(messagesResp.Messages),
+		SenderWaiting: senderWaiting,
+	}
+
+	if len(messagesResp.Messages) == 0 {
+		result.UnreadWasEmpty = true
+		return result, nil
+	}
+
+	lastMessageID := messagesResp.Messages[len(messagesResp.Messages)-1].MessageID
+	_, err = client.ChatMarkRead(ctx, sessionID, &aweb.ChatMarkReadRequest{
+		UpToMessageID: lastMessageID,
+	})
+	if err == nil {
+		result.MarkedRead = len(messagesResp.Messages)
+	}
+
+	return result, nil
 }
 
 // History fetches all messages in a conversation.
@@ -749,7 +651,19 @@ func History(ctx context.Context, client *aweb.Client, targetAlias string) (*His
 	if err != nil {
 		return nil, err
 	}
-	return historySession(ctx, sessionID, client.ChatHistory)
+
+	messagesResp, err := client.ChatHistory(ctx, aweb.ChatHistoryParams{
+		SessionID: sessionID,
+		Limit:     1000,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("getting messages: %w", err)
+	}
+
+	return &HistoryResult{
+		SessionID: sessionID,
+		Messages:  buildMessages(messagesResp.Messages),
+	}, nil
 }
 
 // Pending lists conversations with unread messages (both local and network).
@@ -816,22 +730,21 @@ func ExtendWait(ctx context.Context, client *aweb.Client, targetAlias string, me
 	if err != nil {
 		return nil, err
 	}
-	return extendWaitSession(
-		ctx,
-		sessionID,
-		targetAlias,
-		message,
-		func(ctx context.Context, sessionID, message string) (int, error) {
-			msgResp, err := client.ChatSendMessage(ctx, sessionID, &aweb.ChatSendMessageRequest{
-				Body:       message,
-				ExtendWait: true,
-			})
-			if err != nil {
-				return 0, err
-			}
-			return msgResp.ExtendsWaitSeconds, nil
-		},
-	)
+
+	msgResp, err := client.ChatSendMessage(ctx, sessionID, &aweb.ChatSendMessageRequest{
+		Body:       message,
+		ExtendWait: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sending extend-wait message: %w", err)
+	}
+
+	return &ExtendWaitResult{
+		SessionID:          sessionID,
+		TargetAgent:        targetAlias,
+		Message:            message,
+		ExtendsWaitSeconds: msgResp.ExtendsWaitSeconds,
+	}, nil
 }
 
 // ShowPending shows the pending conversation with a specific agent.
@@ -840,18 +753,30 @@ func ShowPending(ctx context.Context, client *aweb.Client, targetAlias string) (
 	if err != nil {
 		return nil, fmt.Errorf("getting pending chats: %w", err)
 	}
-	entries := make([]pendingEntry, 0, len(pendingResp.Pending))
+
 	for _, p := range pendingResp.Pending {
-		entries = append(entries, pendingEntry{
-			SessionID:     p.SessionID,
-			Participants:  p.Participants,
-			LastMessage:   p.LastMessage,
-			LastFrom:      p.LastFrom,
-			LastActivity:  p.LastActivity,
-			SenderWaiting: p.SenderWaiting,
-		})
+		for _, participant := range p.Participants {
+			if participant == targetAlias {
+				return &SendResult{
+					SessionID:     p.SessionID,
+					Status:        "pending",
+					TargetAgent:   targetAlias,
+					Reply:         p.LastMessage,
+					SenderWaiting: p.SenderWaiting,
+					Events: []Event{
+						{
+							Type:      "message",
+							FromAgent: p.LastFrom,
+							Body:      p.LastMessage,
+							Timestamp: p.LastActivity,
+						},
+					},
+				}, nil
+			}
+		}
 	}
-	return showPendingSession(targetAlias, entries)
+
+	return nil, fmt.Errorf("no pending conversation with %s", targetAlias)
 }
 
 // --- Network variants ---
@@ -881,19 +806,37 @@ func OpenNetwork(ctx context.Context, client *aweb.Client, targetAddress string)
 	if err != nil {
 		return nil, err
 	}
-	return openSession(
-		ctx,
-		sessionID,
-		senderWaiting,
-		targetAddress,
-		client.NetworkChatHistory,
-		func(ctx context.Context, sessionID, lastMessageID string) error {
-			_, err := client.NetworkChatMarkRead(ctx, sessionID, &aweb.NetworkChatMarkReadRequest{
-				UpToMessageID: lastMessageID,
-			})
-			return err
-		},
-	)
+
+	messagesResp, err := client.NetworkChatHistory(ctx, aweb.ChatHistoryParams{
+		SessionID:  sessionID,
+		UnreadOnly: true,
+		Limit:      1000,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("getting unread messages: %w", err)
+	}
+
+	result := &OpenResult{
+		SessionID:     sessionID,
+		TargetAgent:   targetAddress,
+		Messages:      buildMessages(messagesResp.Messages),
+		SenderWaiting: senderWaiting,
+	}
+
+	if len(messagesResp.Messages) == 0 {
+		result.UnreadWasEmpty = true
+		return result, nil
+	}
+
+	lastMessageID := messagesResp.Messages[len(messagesResp.Messages)-1].MessageID
+	_, err = client.NetworkChatMarkRead(ctx, sessionID, &aweb.NetworkChatMarkReadRequest{
+		UpToMessageID: lastMessageID,
+	})
+	if err == nil {
+		result.MarkedRead = len(messagesResp.Messages)
+	}
+
+	return result, nil
 }
 
 // HistoryNetwork fetches all messages in a network conversation.
@@ -902,7 +845,19 @@ func HistoryNetwork(ctx context.Context, client *aweb.Client, targetAddress stri
 	if err != nil {
 		return nil, err
 	}
-	return historySession(ctx, sessionID, client.NetworkChatHistory)
+
+	messagesResp, err := client.NetworkChatHistory(ctx, aweb.ChatHistoryParams{
+		SessionID: sessionID,
+		Limit:     1000,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("getting messages: %w", err)
+	}
+
+	return &HistoryResult{
+		SessionID: sessionID,
+		Messages:  buildMessages(messagesResp.Messages),
+	}, nil
 }
 
 // ExtendWaitNetwork sends an extend-wait message in a network conversation.
@@ -911,22 +866,21 @@ func ExtendWaitNetwork(ctx context.Context, client *aweb.Client, targetAddress s
 	if err != nil {
 		return nil, err
 	}
-	return extendWaitSession(
-		ctx,
-		sessionID,
-		targetAddress,
-		message,
-		func(ctx context.Context, sessionID, message string) (int, error) {
-			msgResp, err := client.NetworkChatSendMessage(ctx, sessionID, &aweb.NetworkChatSendMessageRequest{
-				Body:       message,
-				ExtendWait: true,
-			})
-			if err != nil {
-				return 0, err
-			}
-			return msgResp.ExtendsWaitSeconds, nil
-		},
-	)
+
+	msgResp, err := client.NetworkChatSendMessage(ctx, sessionID, &aweb.NetworkChatSendMessageRequest{
+		Body:       message,
+		ExtendWait: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sending extend-wait message: %w", err)
+	}
+
+	return &ExtendWaitResult{
+		SessionID:          sessionID,
+		TargetAgent:        targetAddress,
+		Message:            message,
+		ExtendsWaitSeconds: msgResp.ExtendsWaitSeconds,
+	}, nil
 }
 
 // ShowPendingNetwork shows the pending network conversation with a specific agent.
@@ -935,16 +889,28 @@ func ShowPendingNetwork(ctx context.Context, client *aweb.Client, targetAddress 
 	if err != nil {
 		return nil, fmt.Errorf("getting network pending chats: %w", err)
 	}
-	entries := make([]pendingEntry, 0, len(pendingResp.Pending))
+
 	for _, p := range pendingResp.Pending {
-		entries = append(entries, pendingEntry{
-			SessionID:     p.SessionID,
-			Participants:  p.Participants,
-			LastMessage:   p.LastMessage,
-			LastFrom:      p.LastFrom,
-			LastActivity:  p.LastActivity,
-			SenderWaiting: p.SenderWaiting,
-		})
+		for _, participant := range p.Participants {
+			if participant == targetAddress {
+				return &SendResult{
+					SessionID:     p.SessionID,
+					Status:        "pending",
+					TargetAgent:   targetAddress,
+					Reply:         p.LastMessage,
+					SenderWaiting: p.SenderWaiting,
+					Events: []Event{
+						{
+							Type:      "message",
+							FromAgent: p.LastFrom,
+							Body:      p.LastMessage,
+							Timestamp: p.LastActivity,
+						},
+					},
+				}, nil
+			}
+		}
 	}
-	return showPendingSession(targetAddress, entries)
+
+	return nil, fmt.Errorf("no pending conversation with %s", targetAddress)
 }

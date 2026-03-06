@@ -66,7 +66,7 @@ default_account: acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "mail", "send", "--to-alias", "acme/researcher", "--body", "hello network")
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--to-alias", "acme/researcher", "--body", "hello network", "--json")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -141,7 +141,7 @@ default_account: acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "mail", "send", "--to-alias", "bob", "--body", "hello local")
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--to-alias", "bob", "--body", "hello local", "--json")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -218,7 +218,7 @@ default_account: acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "chat", "send-and-leave", "acme/bot", "hello network")
+	run := exec.CommandContext(ctx, bin, "chat", "send-and-leave", "acme/bot", "hello network", "--json")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -246,6 +246,129 @@ default_account: acct
 	}
 	if got["session_id"] != "net-sess-1" {
 		t.Fatalf("session_id=%v", got["session_id"])
+	}
+}
+
+func TestChatSendNetworkTarget404ShowsAgentNotFound(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/network/chat":
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"detail": "Target not found",
+			})
+		case "/api/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, _ := os.Getwd()
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`/api
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+    agent_alias: eve
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "chat", "send-and-wait", "--start-conversation", "claweb/merlin", "hello")
+	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected error, got success: %s", out)
+	}
+	output := string(out)
+	if !strings.Contains(output, "claweb/merlin") {
+		t.Fatalf("error should mention target address, got: %s", output)
+	}
+	if !strings.Contains(strings.ToLower(output), "not found") {
+		t.Fatalf("error should say not found, got: %s", output)
+	}
+}
+
+func TestMailSendNetworkTarget404ShowsAgentNotFound(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/network/mail":
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"detail": "Target not found",
+			})
+		case "/api/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, _ := os.Getwd()
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`/api
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--to-alias", "claweb/merlin", "--body", "hello", "--subject", "test")
+	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected error, got success: %s", out)
+	}
+	output := string(out)
+	if !strings.Contains(output, "claweb/merlin") {
+		t.Fatalf("error should mention target address, got: %s", output)
+	}
+	if !strings.Contains(strings.ToLower(output), "not found") {
+		t.Fatalf("error should say not found, got: %s", output)
 	}
 }
 
@@ -303,7 +426,7 @@ default_account: acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "directory", "--capability", "translate")
+	run := exec.CommandContext(ctx, bin, "directory", "--capability", "translate", "--json")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -373,7 +496,7 @@ default_account: acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "directory", "acme/researcher")
+	run := exec.CommandContext(ctx, bin, "directory", "acme/researcher", "--json")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()

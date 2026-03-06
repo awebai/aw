@@ -31,7 +31,7 @@ var publishCmd = &cobra.Command{
 		}
 		agentID := sel.AgentID
 		if agentID == "" {
-			return usageError("no agent_id in config; run 'aw init' first")
+			return usageError("No agent_id in config; run 'aw init' first")
 		}
 
 		var caps []string
@@ -52,7 +52,7 @@ var publishCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		printOutput(resp, formatPublish)
 		return nil
 	},
 }
@@ -68,19 +68,23 @@ var unpublishCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		client, sel, err := resolveClientSelection()
-		if err != nil {
-			return err
-		}
 		alias := unpublishAlias
 		if alias == "" {
+			_, sel, err := resolveClientSelection()
+			if err != nil {
+				return err
+			}
 			alias = sel.AgentAlias
 		}
 		if alias == "" {
-			return usageError("no alias specified and none in config; use --alias or run 'aw init' first")
+			return usageError("No alias specified and none in config; use --alias or run 'aw init' first")
 		}
 
-		if err := client.NetworkUnpublishAgent(ctx, alias); err != nil {
+		c, err := resolveClient()
+		if err != nil {
+			return err
+		}
+		if err := c.NetworkUnpublishAgent(ctx, alias); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "Unpublished %s\n", alias)
@@ -113,13 +117,13 @@ var directoryCmd = &cobra.Command{
 		if len(args) == 1 {
 			addr := aweb.ParseNetworkAddress(args[0])
 			if !addr.IsNetwork {
-				return usageError("directory lookup requires org-slug/alias format, got: %q", args[0])
+				return usageError("Directory lookup requires org-slug/alias format, got: %q", args[0])
 			}
 			resp, err := c.NetworkDirectoryGet(ctx, addr.OrgSlug, addr.Alias)
 			if err != nil {
 				return err
 			}
-			printJSON(resp)
+			printOutput(resp, formatDirectoryGet)
 			return nil
 		}
 
@@ -132,7 +136,7 @@ var directoryCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		printOutput(resp, formatDirectorySearch)
 		return nil
 	},
 }

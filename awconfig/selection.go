@@ -33,6 +33,7 @@ type Selection struct {
 type ResolveOptions struct {
 	AccountName string
 	ServerName  string
+	ClientName  string
 
 	WorkingDir  string
 	ContextPath string
@@ -99,6 +100,11 @@ func resolveAccount(global *GlobalConfig, opts ResolveOptions) (*Selection, erro
 	if ctx != nil && ctx.ServerAccounts == nil {
 		ctx.ServerAccounts = map[string]string{}
 	}
+	if ctx != nil && ctx.ClientDefaultAccounts == nil {
+		ctx.ClientDefaultAccounts = map[string]string{}
+	}
+
+	clientName := strings.TrimSpace(opts.ClientName)
 
 	accountName := strings.TrimSpace(opts.AccountName)
 	if accountName == "" && opts.AllowEnvOverrides {
@@ -179,9 +185,23 @@ func resolveAccount(global *GlobalConfig, opts ResolveOptions) (*Selection, erro
 				chosenAccountName = v
 			}
 		}
+		if chosenAccountName == "" && ctx != nil && clientName != "" {
+			if v := strings.TrimSpace(ctx.ClientDefaultAccounts[clientName]); v != "" {
+				if acct, ok := global.Accounts[v]; ok && strings.TrimSpace(acct.Server) == serverName {
+					chosenAccountName = v
+				}
+			}
+		}
 		if chosenAccountName == "" && ctx != nil && strings.TrimSpace(ctx.DefaultAccount) != "" {
 			if acct, ok := global.Accounts[strings.TrimSpace(ctx.DefaultAccount)]; ok && strings.TrimSpace(acct.Server) == serverName {
 				chosenAccountName = strings.TrimSpace(ctx.DefaultAccount)
+			}
+		}
+		if chosenAccountName == "" && clientName != "" {
+			if v := strings.TrimSpace(global.ClientDefaultAccounts[clientName]); v != "" {
+				if acct, ok := global.Accounts[v]; ok && strings.TrimSpace(acct.Server) == serverName {
+					chosenAccountName = v
+				}
 			}
 		}
 		if chosenAccountName == "" && strings.TrimSpace(global.DefaultAccount) != "" {
@@ -196,8 +216,18 @@ func resolveAccount(global *GlobalConfig, opts ResolveOptions) (*Selection, erro
 			return nil, fmt.Errorf("no account configured for server %q (set .aw/context server_accounts[%q], or pass --account)", serverName, serverName)
 		}
 	} else {
+		if clientName != "" && ctx != nil {
+			chosenAccountName = strings.TrimSpace(ctx.ClientDefaultAccounts[clientName])
+		}
 		if ctx != nil && strings.TrimSpace(ctx.DefaultAccount) != "" {
-			chosenAccountName = strings.TrimSpace(ctx.DefaultAccount)
+			if chosenAccountName == "" {
+				chosenAccountName = strings.TrimSpace(ctx.DefaultAccount)
+			}
+		}
+		if chosenAccountName == "" {
+			if clientName != "" {
+				chosenAccountName = strings.TrimSpace(global.ClientDefaultAccounts[clientName])
+			}
 		}
 		if chosenAccountName == "" {
 			chosenAccountName = strings.TrimSpace(global.DefaultAccount)

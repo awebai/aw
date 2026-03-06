@@ -93,9 +93,6 @@ func (c *Client) NetworkCreateChat(ctx context.Context, req *NetworkChatCreateRe
 		return nil, errors.New("aweb: request is required")
 	}
 	payload := *req
-	if req.ToAddresses != nil {
-		payload.ToAddresses = append([]string(nil), req.ToAddresses...)
-	}
 
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
 		To:   strings.Join(payload.ToAddresses, ","),
@@ -189,7 +186,34 @@ func (c *Client) NetworkChatHistory(ctx context.Context, p ChatHistoryParams) (*
 	if err := c.get(ctx, path, &out); err != nil {
 		return nil, err
 	}
-	c.verifyChatMessages(ctx, out.Messages)
+	for i := range out.Messages {
+		m := &out.Messages[i]
+		from := m.FromAgent
+		if m.FromAddress != "" {
+			from = m.FromAddress
+		}
+		to := ""
+		if m.ToAddress != "" {
+			to = m.ToAddress
+		}
+		env := &MessageEnvelope{
+			From:         from,
+			FromDID:      m.FromDID,
+			To:           to,
+			ToDID:        m.ToDID,
+			Type:         "chat",
+			Body:         m.Body,
+			Timestamp:    m.Timestamp,
+			FromStableID: m.FromStableID,
+			ToStableID:   m.ToStableID,
+			MessageID:    m.MessageID,
+			Signature:    m.Signature,
+			SigningKeyID: m.SigningKeyID,
+		}
+		// Error is encoded in VerificationStatus; discard it.
+		m.VerificationStatus, _ = VerifyMessage(env)
+		m.VerificationStatus = c.CheckTOFUPin(ctx, m.VerificationStatus, from, m.FromDID, m.FromStableID, m.RotationAnnouncement)
+	}
 	return &out, nil
 }
 

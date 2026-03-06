@@ -115,9 +115,6 @@ func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRe
 		return nil, errors.New("aweb: request is required")
 	}
 	payload := *req
-	if req.ToAliases != nil {
-		payload.ToAliases = append([]string(nil), req.ToAliases...)
-	}
 
 	to := strings.Join(payload.ToAliases, ",")
 	if c.signingKey != nil {
@@ -192,6 +189,7 @@ type ChatMessage struct {
 	SigningKeyID         string                `json:"signing_key_id,omitempty"`
 	RotationAnnouncement *RotationAnnouncement `json:"rotation_announcement,omitempty"`
 	VerificationStatus   VerificationStatus    `json:"verification_status,omitempty"`
+	IsContact            *bool                 `json:"is_contact,omitempty"`
 }
 
 type ChatHistoryParams struct {
@@ -215,13 +213,8 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 	if err := c.get(ctx, path, &out); err != nil {
 		return nil, err
 	}
-	c.verifyChatMessages(ctx, out.Messages)
-	return &out, nil
-}
-
-func (c *Client) verifyChatMessages(ctx context.Context, messages []ChatMessage) {
-	for i := range messages {
-		m := &messages[i]
+	for i := range out.Messages {
+		m := &out.Messages[i]
 		from := m.FromAgent
 		if m.FromAddress != "" {
 			from = m.FromAddress
@@ -248,6 +241,7 @@ func (c *Client) verifyChatMessages(ctx context.Context, messages []ChatMessage)
 		m.VerificationStatus, _ = VerifyMessage(env)
 		m.VerificationStatus = c.CheckTOFUPin(ctx, m.VerificationStatus, from, m.FromDID, m.FromStableID, m.RotationAnnouncement)
 	}
+	return &out, nil
 }
 
 type ChatMarkReadRequest struct {

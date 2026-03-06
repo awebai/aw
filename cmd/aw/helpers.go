@@ -2,12 +2,16 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/awconfig"
@@ -29,6 +33,7 @@ func resolveClientSelection() (*aweb.Client, *awconfig.Selection, error) {
 	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
 		ServerName:        serverFlag,
 		AccountName:       accountFlag,
+		ClientName:        "aw",
 		WorkingDir:        wd,
 		AllowEnvOverrides: true,
 	})
@@ -88,10 +93,7 @@ func resolveClientSelection() (*aweb.Client, *awconfig.Selection, error) {
 
 func resolveClient() (*aweb.Client, error) {
 	c, _, err := resolveClientSelection()
-	if err != nil {
-		return nil, err
-	}
-	return c, nil
+	return c, err
 }
 
 // resolveAPIKeyOnly resolves config and creates a client using only
@@ -106,6 +108,7 @@ func resolveAPIKeyOnly() (*aweb.Client, *awconfig.Selection, error) {
 	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
 		ServerName:        serverFlag,
 		AccountName:       accountFlag,
+		ClientName:        "aw",
 		WorkingDir:        wd,
 		AllowEnvOverrides: true,
 	})
@@ -167,12 +170,65 @@ func cleanBaseURL(raw string) (string, error) {
 	return strings.TrimSuffix(u.String(), "/"), nil
 }
 
+func probeAwebBaseURL(ctx context.Context, baseURL string) (bool, error) {
+	// Stable across our servers: exists (POST) on /v1/agents/heartbeat.
+	// We use GET to avoid side effects; success is any non-404 response.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/agents/heartbeat", nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
+	if err != nil {
+		return false, err
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode != http.StatusNotFound, nil
+}
+
 func resolveWorkingBaseURL(raw string) (string, error) {
 	base, err := cleanBaseURL(raw)
 	if err != nil {
 		return "", err
 	}
 	return base, nil
+}
+
+// fireHeartbeat sends a best-effort heartbeat to the aweb server.
+// Called as a goroutine on every authenticated command invocation.
+func fireHeartbeat() {
+	cfg, err := awconfig.LoadGlobal()
+	if err != nil {
+		debugLog("heartbeat: load config: %v", err)
+		return
+	}
+	wd, _ := os.Getwd()
+	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
+		WorkingDir:        wd,
+		AllowEnvOverrides: true,
+	})
+	if err != nil {
+		debugLog("heartbeat: resolve account: %v", err)
+		return
+	}
+	if sel.APIKey == "" {
+		debugLog("heartbeat: no API key configured")
+		return
+	}
+	baseURL, err := resolveWorkingBaseURL(sel.BaseURL)
+	if err != nil {
+		debugLog("heartbeat: %v", err)
+		return
+	}
+	c, err := aweb.NewWithAPIKey(baseURL, sel.APIKey)
+	if err != nil {
+		debugLog("heartbeat: create client: %v", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := c.Heartbeat(ctx); err != nil {
+		debugLog("heartbeat: %v", err)
+	}
 }
 
 func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName string, global *awconfig.GlobalConfig, err error) {
@@ -299,11 +355,7 @@ func promptString(label, defaultValue string) (string, error) {
 }
 
 func defaultGlobalPath() (string, error) {
-	path, err := awconfig.DefaultGlobalConfigPath()
-	if err != nil {
-		return "", err
-	}
-	return path, nil
+	return awconfig.DefaultGlobalConfigPath()
 }
 
 func sanitizeKeyComponent(s string) string {
@@ -349,6 +401,10 @@ func deriveAgentAddress(namespaceSlug, projectSlug, alias string) string {
 }
 
 func writeOrUpdateContext(serverName, accountName string) error {
+	return writeOrUpdateContextWithOptions(serverName, accountName, true)
+}
+
+func writeOrUpdateContextWithOptions(serverName, accountName string, setDefault bool) error {
 	wd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -368,9 +424,18 @@ func writeOrUpdateContext(serverName, accountName string) error {
 		if ctx.ServerAccounts == nil {
 			ctx.ServerAccounts = map[string]string{}
 		}
-		ctx.DefaultAccount = accountName
+		// Multi-server-friendly: keep the existing default unless explicitly asked
+		// to override it, while still adding/updating the per-server mapping.
+		if strings.TrimSpace(ctx.DefaultAccount) == "" || setDefault {
+			ctx.DefaultAccount = accountName
+		}
 		ctx.ServerAccounts[serverName] = accountName
 	}
+	if ctx.ClientDefaultAccounts == nil {
+		ctx.ClientDefaultAccounts = map[string]string{}
+	}
+	// `aw` should default to the last identity set by `aw` in this directory.
+	ctx.ClientDefaultAccounts["aw"] = accountName
 
 	return awconfig.SaveWorktreeContextTo(ctxPath, ctx)
 }
@@ -378,6 +443,90 @@ func writeOrUpdateContext(serverName, accountName string) error {
 func printJSON(v any) {
 	data, _ := json.MarshalIndent(v, "", "  ")
 	fmt.Println(string(data))
+}
+
+func printOutput(v any, formatter func(v any) string) {
+	if jsonFlag {
+		printJSON(v)
+		return
+	}
+	fmt.Print(formatter(v))
+}
+
+func parseTimeBestEffort(value string) (time.Time, bool) {
+	if value == "" {
+		return time.Time{}, false
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return ts, true
+	}
+	if ts, err := time.Parse(time.RFC3339, value); err == nil {
+		return ts, true
+	}
+	return time.Time{}, false
+}
+
+func formatTimeAgo(timestamp string) string {
+	ts, ok := parseTimeBestEffort(timestamp)
+	if !ok {
+		return timestamp
+	}
+	d := time.Since(ts)
+	if d < 0 {
+		d = 0
+	}
+	secs := int(d.Seconds())
+	if secs < 60 {
+		return fmt.Sprintf("%ds ago", secs)
+	}
+	mins := secs / 60
+	if mins < 60 {
+		return fmt.Sprintf("%dm ago", mins)
+	}
+	hours := mins / 60
+	if hours < 48 {
+		return fmt.Sprintf("%dh ago", hours)
+	}
+	days := hours / 24
+	return fmt.Sprintf("%dd ago", days)
+}
+
+func formatDuration(seconds int) string {
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	if seconds < 3600 {
+		mins := seconds / 60
+		secs := seconds % 60
+		if secs == 0 {
+			return fmt.Sprintf("%dm", mins)
+		}
+		return fmt.Sprintf("%dm%ds", mins, secs)
+	}
+	hours := seconds / 3600
+	mins := (seconds % 3600) / 60
+	if mins == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh%dm", hours, mins)
+}
+
+func ttlRemainingSeconds(expiresAt string, now time.Time) int {
+	if expiresAt == "" {
+		return 0
+	}
+	ts, err := time.Parse(time.RFC3339Nano, expiresAt)
+	if err != nil {
+		ts, err = time.Parse(time.RFC3339, expiresAt)
+		if err != nil {
+			return 0
+		}
+	}
+	secs := int(math.Ceil(ts.Sub(now).Seconds()))
+	if secs < 0 {
+		return 0
+	}
+	return secs
 }
 
 // checkVerificationRequired detects EMAIL_VERIFICATION_REQUIRED 403 errors
@@ -406,8 +555,20 @@ func checkVerificationRequired(err error) string {
 	if envelope.Error.Details.MaskedEmail != "" {
 		hint += " (" + envelope.Error.Details.MaskedEmail + ")"
 	}
-	hint += "; run 'aw verify --code CODE' to activate your agent"
+	hint += ". Run 'aw verify --code CODE' to activate your agent."
 	return hint
+}
+
+// networkError wraps an error with a user-friendly message for network 404 errors.
+// When a network send fails because the target agent doesn't exist, the raw error
+// is "aweb: http 404: ..." which looks like a broken endpoint. This rewrites it
+// to mention the target address.
+func networkError(err error, target string) error {
+	code, ok := aweb.HTTPStatusCode(err)
+	if ok && code == 404 {
+		return fmt.Errorf("agent not found: %s", target)
+	}
+	return err
 }
 
 func debugLog(format string, args ...any) {

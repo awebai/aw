@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -34,48 +35,82 @@ var mailSendCmd = &cobra.Command{
 		if mailSendBody == "" {
 			return usageError("missing required flag: --body")
 		}
-		client, err := resolveClient()
-		if err != nil {
-			return err
-		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		c, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
+		logsDir := defaultLogsDir()
+
 		if strings.HasPrefix(mailSendToAlias, "@") {
 			handle := strings.TrimPrefix(mailSendToAlias, "@")
 			if handle == "" {
-				return usageError("empty handle: use @username")
+				return fmt.Errorf("empty handle: use @username")
 			}
-			resp, err := client.SendDM(ctx, &aweb.DMRequest{
+			resp, err := c.SendDM(ctx, &aweb.DMRequest{
 				ToHandle: handle,
 				Subject:  mailSendSubject,
 				Body:     mailSendBody,
 				Priority: mailSendPriority,
 			})
 			if err != nil {
-				return err
+				return networkError(err, mailSendToAlias)
 			}
-			printJSON(resp)
+			appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+				Dir:       "send",
+				Channel:   "dm",
+				MessageID: resp.MessageID,
+				From:      deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias),
+				To:        "@" + handle,
+				Subject:   mailSendSubject,
+				Body:      mailSendBody,
+			})
+			if jsonFlag {
+				printJSON(resp)
+			} else {
+				fmt.Printf("Sent DM to %s (message_id=%s)\n", mailSendToAlias, resp.MessageID)
+			}
 			return nil
 		}
 
 		addr := aweb.ParseNetworkAddress(mailSendToAlias)
 		if addr.IsNetwork {
-			resp, err := client.NetworkSendMail(ctx, &aweb.NetworkMailRequest{
+			resp, err := c.NetworkSendMail(ctx, &aweb.NetworkMailRequest{
 				ToAddress: addr.String(),
 				Subject:   mailSendSubject,
 				Body:      mailSendBody,
 				Priority:  mailSendPriority,
 			})
 			if err != nil {
-				return err
+				return networkError(err, addr.String())
 			}
-			printJSON(resp)
+			appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+				Dir:       "send",
+				Channel:   "mail",
+				MessageID: resp.MessageID,
+				From:      resp.FromAddress,
+				To:        resp.ToAddress,
+				Subject:   mailSendSubject,
+				Body:      mailSendBody,
+			})
+			if jsonFlag {
+				printJSON(resp)
+			} else {
+				fmt.Printf("Sent mail to %s (message_id=%s)\n", addr.String(), resp.MessageID)
+			}
 			return nil
 		}
 
-		resp, err := client.SendMessage(ctx, &aweb.SendMessageRequest{
+		target := mailSendToAlias
+		if target == "" {
+			target = mailSendToAgentID
+		}
+		resp, err := c.SendMessage(ctx, &aweb.SendMessageRequest{
 			ToAgentID: mailSendToAgentID,
 			ToAlias:   mailSendToAlias,
 			Subject:   mailSendSubject,
@@ -85,7 +120,21 @@ var mailSendCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Dir:       "send",
+			Channel:   "mail",
+			MessageID: resp.MessageID,
+			From:      deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias),
+			To:        target,
+			Subject:   mailSendSubject,
+			Body:      mailSendBody,
+		})
+		if jsonFlag {
+			printJSON(resp)
+		} else {
+			fmt.Printf("Sent mail to %s (message_id=%s)\n", target, resp.MessageID)
+		}
 		return nil
 	},
 }
@@ -101,22 +150,45 @@ var mailInboxCmd = &cobra.Command{
 	Use:   "inbox",
 	Short: "List inbox messages",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, err := resolveClient()
-		if err != nil {
-			return err
-		}
-
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := client.Inbox(ctx, aweb.InboxParams{
+		c, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
+		resp, err := c.Inbox(ctx, aweb.InboxParams{
 			UnreadOnly: mailInboxUnreadOnly,
 			Limit:      mailInboxLimit,
 		})
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		logsDir := defaultLogsDir()
+		for _, msg := range resp.Messages {
+			// Only log unread messages to avoid duplicates on repeated inbox calls.
+			if msg.ReadAt != nil {
+				continue
+			}
+			appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
+				Timestamp:    msg.CreatedAt,
+				Dir:          "recv",
+				Channel:      "mail",
+				MessageID:    msg.MessageID,
+				From:         msg.FromAddress,
+				To:           msg.ToAddress,
+				Subject:      msg.Subject,
+				Body:         msg.Body,
+				FromDID:      msg.FromDID,
+				ToDID:        msg.ToDID,
+				FromStableID: msg.FromStableID,
+				ToStableID:   msg.ToStableID,
+				Signature:    msg.Signature,
+				SigningKeyID: msg.SigningKeyID,
+				Verification: string(msg.VerificationStatus),
+			})
+		}
+		printOutput(resp, formatMailInbox)
 		return nil
 	},
 }
@@ -132,19 +204,19 @@ var mailAckCmd = &cobra.Command{
 		if mailAckMessageID == "" {
 			return usageError("missing required flag: --message-id")
 		}
-		client, err := resolveClient()
-		if err != nil {
-			return err
-		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := client.AckMessage(ctx, mailAckMessageID)
+		c, err := resolveClient()
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		resp, err := c.AckMessage(ctx, mailAckMessageID)
+		if err != nil {
+			return err
+		}
+		printOutput(resp, formatMailAck)
 		return nil
 	},
 }

@@ -11,10 +11,11 @@ import (
 )
 
 type GlobalConfig struct {
-	Servers            map[string]Server  `yaml:"servers,omitempty"`
-	Accounts           map[string]Account `yaml:"accounts,omitempty"`
-	DefaultAccount     string             `yaml:"default_account,omitempty"`
-	ClawDIDRegistryURL string             `yaml:"clawdid_registry_url,omitempty"`
+	Servers               map[string]Server  `yaml:"servers,omitempty"`
+	Accounts              map[string]Account `yaml:"accounts,omitempty"`
+	DefaultAccount        string             `yaml:"default_account,omitempty"`
+	ClientDefaultAccounts map[string]string  `yaml:"client_default_accounts,omitempty"`
+	ClawDIDRegistryURL    string             `yaml:"clawdid_registry_url,omitempty"`
 }
 
 type Server struct {
@@ -83,6 +84,9 @@ func LoadGlobalFrom(path string) (*GlobalConfig, error) {
 	if cfg.Accounts == nil {
 		cfg.Accounts = map[string]Account{}
 	}
+	if cfg.ClientDefaultAccounts == nil {
+		cfg.ClientDefaultAccounts = map[string]string{}
+	}
 	return &cfg, nil
 }
 
@@ -100,6 +104,9 @@ func (c *GlobalConfig) SaveGlobalTo(path string) error {
 	}
 	if c.Accounts == nil {
 		c.Accounts = map[string]Account{}
+	}
+	if c.ClientDefaultAccounts == nil {
+		c.ClientDefaultAccounts = map[string]string{}
 	}
 
 	data, err := yaml.Marshal(c)

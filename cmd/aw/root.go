@@ -10,6 +10,7 @@ import (
 var serverFlag string
 var accountFlag string
 var debugFlag bool
+var jsonFlag bool
 
 var rootCmd = &cobra.Command{
 	Use:   "aw",
@@ -46,6 +47,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&serverFlag, "server-name", "", "Server name from config.yaml")
 	rootCmd.PersistentFlags().StringVar(&accountFlag, "account", "", "Account name from config.yaml")
 	rootCmd.PersistentFlags().BoolVar(&debugFlag, "debug", false, "Log background errors to stderr")
+	rootCmd.PersistentFlags().BoolVar(&jsonFlag, "json", false, "Output as JSON")
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(upgradeCmd)
 }

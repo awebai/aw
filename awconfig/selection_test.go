@@ -67,6 +67,70 @@ func TestResolveServerUsesContextServerAccounts(t *testing.T) {
 	}
 }
 
+func TestResolvePrefersClientDefaultAccountInContext(t *testing.T) {
+	t.Parallel()
+
+	global := &GlobalConfig{
+		Servers: map[string]Server{
+			"beadhub": {URL: "http://localhost:8000"},
+			"aweb":    {URL: "https://app.aweb.ai"},
+		},
+		Accounts: map[string]Account{
+			"acct-bh":   {Server: "beadhub", APIKey: "aw_sk_bh"},
+			"acct-aweb": {Server: "aweb", APIKey: "aw_sk_aweb"},
+		},
+		DefaultAccount: "acct-bh",
+	}
+	ctx := &WorktreeContext{
+		DefaultAccount: "acct-bh",
+		ServerAccounts: map[string]string{},
+		ClientDefaultAccounts: map[string]string{
+			"aw": "acct-aweb",
+		},
+	}
+
+	sel, err := Resolve(global, ResolveOptions{ClientName: "aw", Context: ctx})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if sel.AccountName != "acct-aweb" {
+		t.Fatalf("account=%q", sel.AccountName)
+	}
+	if sel.BaseURL != "https://app.aweb.ai" {
+		t.Fatalf("baseURL=%q", sel.BaseURL)
+	}
+}
+
+func TestResolvePrefersClientDefaultAccountInGlobalConfig(t *testing.T) {
+	t.Parallel()
+
+	global := &GlobalConfig{
+		Servers: map[string]Server{
+			"beadhub": {URL: "http://localhost:8000"},
+			"aweb":    {URL: "https://app.aweb.ai"},
+		},
+		Accounts: map[string]Account{
+			"acct-bh":   {Server: "beadhub", APIKey: "aw_sk_bh"},
+			"acct-aweb": {Server: "aweb", APIKey: "aw_sk_aweb"},
+		},
+		DefaultAccount: "acct-bh",
+		ClientDefaultAccounts: map[string]string{
+			"aw": "acct-aweb",
+		},
+	}
+
+	sel, err := Resolve(global, ResolveOptions{ClientName: "aw"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if sel.AccountName != "acct-aweb" {
+		t.Fatalf("account=%q", sel.AccountName)
+	}
+	if sel.BaseURL != "https://app.aweb.ai" {
+		t.Fatalf("baseURL=%q", sel.BaseURL)
+	}
+}
+
 func TestResolveEnvOverrides(t *testing.T) {
 	t.Setenv("AWEB_URL", "http://example.com")
 	t.Setenv("AWEB_API_KEY", "aw_sk_env")

@@ -10,6 +10,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// agentsListOutput wraps the server response with local config fields for display.
+type agentsListOutput struct {
+	*aweb.ListAgentsResponse
+	NamespaceSlug string `json:"namespace_slug,omitempty"`
+}
+
+// agentPatchOutput wraps the server response with the agent's alias for display.
+type agentPatchOutput struct {
+	*aweb.PatchAgentResponse
+	Alias string `json:"alias,omitempty"`
+}
+
 // resolveAgentID resolves the current agent's ID via introspect, falling back
 // to the configured agent_id in the selection.
 func resolveAgentID(ctx context.Context, client *aweb.Client, sel *awconfig.Selection) (string, error) {
@@ -33,7 +45,7 @@ var agentsCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		client, err := resolveClient()
+		client, sel, err := resolveClientSelection()
 		if err != nil {
 			return err
 		}
@@ -41,7 +53,10 @@ var agentsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		printOutput(agentsListOutput{
+			ListAgentsResponse: resp,
+			NamespaceSlug:      sel.NamespaceSlug,
+		}, formatAgentsList)
 		return nil
 	},
 }
@@ -76,10 +91,11 @@ var agentAccessModeCmd = &cobra.Command{
 			}
 			for _, a := range agents.Agents {
 				if a.AgentID == agentID {
-					printJSON(map[string]string{
+					printOutput(map[string]string{
 						"agent_id":    a.AgentID,
+						"alias":       a.Alias,
 						"access_mode": a.AccessMode,
-					})
+					}, formatAgentAccessMode)
 					return nil
 				}
 			}
@@ -89,7 +105,7 @@ var agentAccessModeCmd = &cobra.Command{
 		// SET: patch access mode.
 		mode := args[0]
 		if mode != "open" && mode != "contacts_only" {
-			return usageError("invalid access mode: %s (must be \"open\" or \"contacts_only\")", mode)
+			return fmt.Errorf("invalid access mode: %s (must be \"open\" or \"contacts_only\")", mode)
 		}
 
 		resp, err := client.PatchAgent(ctx, agentID, &aweb.PatchAgentRequest{
@@ -98,7 +114,10 @@ var agentAccessModeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		printOutput(agentPatchOutput{
+			PatchAgentResponse: resp,
+			Alias:              sel.AgentAlias,
+		}, formatAgentPatch)
 		return nil
 	},
 }
@@ -127,10 +146,11 @@ var agentPrivacyCmd = &cobra.Command{
 			}
 			for _, a := range agents.Agents {
 				if a.AgentID == agentID {
-					printJSON(map[string]string{
+					printOutput(map[string]string{
 						"agent_id": a.AgentID,
+						"alias":    a.Alias,
 						"privacy":  a.Privacy,
-					})
+					}, formatAgentPrivacy)
 					return nil
 				}
 			}
@@ -139,7 +159,7 @@ var agentPrivacyCmd = &cobra.Command{
 
 		privacy := args[0]
 		if privacy != "public" && privacy != "private" {
-			return usageError("invalid privacy: %s (must be \"public\" or \"private\")", privacy)
+			return fmt.Errorf("invalid privacy: %s (must be \"public\" or \"private\")", privacy)
 		}
 
 		resp, err := client.PatchAgent(ctx, agentID, &aweb.PatchAgentRequest{
@@ -148,7 +168,10 @@ var agentPrivacyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		printOutput(agentPatchOutput{
+			PatchAgentResponse: resp,
+			Alias:              sel.AgentAlias,
+		}, formatAgentPatch)
 		return nil
 	},
 }

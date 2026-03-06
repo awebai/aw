@@ -7,6 +7,7 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awconfig"
 	"github.com/awebai/aw/chat"
 	"github.com/spf13/cobra"
 )
@@ -21,76 +22,97 @@ func chatStderrCallback(kind, message string) {
 }
 
 // chatSend routes a message through the OSS or network path based on the alias format.
-func chatSend(ctx context.Context, toAlias, message string, opts chat.SendOptions) (*chat.SendResult, error) {
+func chatSend(ctx context.Context, toAlias, message string, opts chat.SendOptions) (*chat.SendResult, *awconfig.Selection, error) {
 	c, sel, err := resolveClientSelection()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	addr := aweb.ParseNetworkAddress(toAlias)
 	if addr.IsNetwork {
-		return chat.SendNetwork(ctx, c, sel.AgentAlias, []string{addr.String()}, message, opts, chatStderrCallback)
+		r, err := chat.SendNetwork(ctx, c, sel.AgentAlias, []string{addr.String()}, message, opts, chatStderrCallback)
+		return r, sel, err
 	}
-	return chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, opts, chatStderrCallback)
+	r, err := chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, opts, chatStderrCallback)
+	return r, sel, err
 }
 
-func chatOpen(ctx context.Context, alias string) (*chat.OpenResult, error) {
-	client, err := resolveClient()
-	if err != nil {
-		return nil, err
-	}
+func chatOpen(ctx context.Context, c *aweb.Client, alias string) (*chat.OpenResult, error) {
 	addr := aweb.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.OpenNetwork(ctx, client, addr.String())
+		return chat.OpenNetwork(ctx, c, addr.String())
 	}
-	return chat.Open(ctx, client, alias)
+	return chat.Open(ctx, c, alias)
 }
 
-func chatHistory(ctx context.Context, alias string) (*chat.HistoryResult, error) {
-	client, err := resolveClient()
-	if err != nil {
-		return nil, err
-	}
+func chatHistory(ctx context.Context, c *aweb.Client, alias string) (*chat.HistoryResult, error) {
 	addr := aweb.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.HistoryNetwork(ctx, client, addr.String())
+		return chat.HistoryNetwork(ctx, c, addr.String())
 	}
-	return chat.History(ctx, client, alias)
+	return chat.History(ctx, c, alias)
 }
 
-func chatExtendWait(ctx context.Context, alias, message string) (*chat.ExtendWaitResult, error) {
-	client, err := resolveClient()
-	if err != nil {
-		return nil, err
-	}
+func chatExtendWait(ctx context.Context, c *aweb.Client, alias, message string) (*chat.ExtendWaitResult, error) {
 	addr := aweb.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.ExtendWaitNetwork(ctx, client, addr.String(), message)
+		return chat.ExtendWaitNetwork(ctx, c, addr.String(), message)
 	}
-	return chat.ExtendWait(ctx, client, alias, message)
+	return chat.ExtendWait(ctx, c, alias, message)
 }
 
-func chatListen(ctx context.Context, alias string, waitSeconds int) (*chat.SendResult, error) {
-	client, err := resolveClient()
-	if err != nil {
-		return nil, err
-	}
+func chatListen(ctx context.Context, c *aweb.Client, alias string, waitSeconds int) (*chat.SendResult, error) {
 	addr := aweb.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.ListenNetwork(ctx, client, addr.String(), waitSeconds, chatStderrCallback)
+		return chat.ListenNetwork(ctx, c, addr.String(), waitSeconds, chatStderrCallback)
 	}
-	return chat.Listen(ctx, client, alias, waitSeconds, chatStderrCallback)
+	return chat.Listen(ctx, c, alias, waitSeconds, chatStderrCallback)
 }
 
-func chatShowPending(ctx context.Context, alias string) (*chat.SendResult, error) {
-	client, err := resolveClient()
-	if err != nil {
-		return nil, err
-	}
+func chatShowPending(ctx context.Context, c *aweb.Client, alias string) (*chat.SendResult, error) {
 	addr := aweb.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.ShowPendingNetwork(ctx, client, addr.String())
+		return chat.ShowPendingNetwork(ctx, c, addr.String())
 	}
-	return chat.ShowPending(ctx, client, alias)
+	return chat.ShowPending(ctx, c, alias)
+}
+
+// logChatEvent logs a single chat event to the communication log.
+func logChatEvent(logsDir, accountName, myAddress string, ev chat.Event) {
+	dir := "recv"
+	if ev.FromAddress != "" {
+		if ev.FromAddress == myAddress {
+			dir = "send"
+		}
+	} else if ev.FromAgent == myAddress {
+		dir = "send"
+	}
+	appendCommLog(logsDir, accountName, &CommLogEntry{
+		Timestamp:    ev.Timestamp,
+		Dir:          dir,
+		Channel:      "chat",
+		MessageID:    ev.MessageID,
+		SessionID:    ev.SessionID,
+		From:         ev.FromAddress,
+		To:           ev.ToAddress,
+		Body:         ev.Body,
+		FromDID:      ev.FromDID,
+		ToDID:        ev.ToDID,
+		FromStableID: ev.FromStableID,
+		ToStableID:   ev.ToStableID,
+		Signature:    ev.Signature,
+		SigningKeyID: ev.SigningKeyID,
+		Verification: string(ev.VerificationStatus),
+	})
+}
+
+// logChatEvents logs all message events from a list.
+func logChatEvents(logsDir, accountName, myAddress string, events []chat.Event) {
+	for _, ev := range events {
+		if ev.Type != "message" {
+			continue
+		}
+		logChatEvent(logsDir, accountName, myAddress, ev)
+	}
 }
 
 // chat send-and-wait
@@ -109,15 +131,29 @@ var chatSendAndWaitCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), chat.MaxSendTimeout)
 		defer cancel()
 
-		result, err := chatSend(ctx, args[0], args[1], chat.SendOptions{
+		result, sel, err := chatSend(ctx, args[0], args[1], chat.SendOptions{
 			Wait:              chatSendAndWaitWait,
 			WaitExplicit:      cmd.Flags().Changed("wait"),
 			StartConversation: chatSendAndWaitStartConversation,
 		})
 		if err != nil {
-			return err
+			return networkError(err, args[0])
 		}
-		printJSON(result)
+		logsDir := defaultLogsDir()
+		myAddr := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
+		// Log the sent message.
+		appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Dir:       "send",
+			Channel:   "chat",
+			SessionID: result.SessionID,
+			From:      myAddr,
+			To:        args[0],
+			Body:      args[1],
+		})
+		// Log any reply events.
+		logChatEvents(logsDir, sel.AccountName, myAddr, result.Events)
+		printOutput(result, formatChatSend)
 		return nil
 	},
 }
@@ -132,14 +168,24 @@ var chatSendAndLeaveCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), chat.MaxSendTimeout)
 		defer cancel()
 
-		result, err := chatSend(ctx, args[0], args[1], chat.SendOptions{
+		result, sel, err := chatSend(ctx, args[0], args[1], chat.SendOptions{
 			Wait:    0,
 			Leaving: true,
 		})
 		if err != nil {
-			return err
+			return networkError(err, args[0])
 		}
-		printJSON(result)
+		logsDir := defaultLogsDir()
+		appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Dir:       "send",
+			Channel:   "chat",
+			SessionID: result.SessionID,
+			From:      deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias),
+			To:        args[0],
+			Body:      args[1],
+		})
+		printOutput(result, formatChatSend)
 		return nil
 	},
 }
@@ -153,15 +199,15 @@ var chatPendingCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		client, err := resolveClient()
+		c, err := resolveClient()
 		if err != nil {
 			return err
 		}
-		result, err := chat.Pending(ctx, client)
+		result, err := chat.Pending(ctx, c)
 		if err != nil {
 			return err
 		}
-		printJSON(result)
+		printOutput(result, formatChatPending)
 		return nil
 	},
 }
@@ -176,11 +222,20 @@ var chatOpenCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		result, err := chatOpen(ctx, args[0])
+		c, sel, err := resolveClientSelection()
 		if err != nil {
 			return err
 		}
-		printJSON(result)
+		result, err := chatOpen(ctx, c, args[0])
+		if err != nil {
+			return err
+		}
+		logsDir := defaultLogsDir()
+		myAddr := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
+		for _, m := range result.Messages {
+			logChatEvent(logsDir, sel.AccountName, myAddr, m)
+		}
+		printOutput(result, formatChatOpen)
 		return nil
 	},
 }
@@ -195,11 +250,16 @@ var chatHistoryCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		result, err := chatHistory(ctx, args[0])
+		c, _, err := resolveClientSelection()
 		if err != nil {
 			return err
 		}
-		printJSON(result)
+		result, err := chatHistory(ctx, c, args[0])
+		if err != nil {
+			return err
+		}
+		// History is a replay; skip logging to avoid duplicates.
+		printOutput(result, formatChatHistory)
 		return nil
 	},
 }
@@ -214,11 +274,25 @@ var chatExtendWaitCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		result, err := chatExtendWait(ctx, args[0], args[1])
+		c, sel, err := resolveClientSelection()
 		if err != nil {
 			return err
 		}
-		printJSON(result)
+		result, err := chatExtendWait(ctx, c, args[0], args[1])
+		if err != nil {
+			return err
+		}
+		logsDir := defaultLogsDir()
+		appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Dir:       "send",
+			Channel:   "chat",
+			SessionID: result.SessionID,
+			From:      deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias),
+			To:        result.TargetAgent,
+			Body:      args[1],
+		})
+		printOutput(result, formatChatExtendWait)
 		return nil
 	},
 }
@@ -234,11 +308,18 @@ var chatListenCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
-		result, err := chatListen(ctx, args[0], chatListenWait)
+		c, sel, err := resolveClientSelection()
 		if err != nil {
 			return err
 		}
-		printJSON(result)
+		result, err := chatListen(ctx, c, args[0], chatListenWait)
+		if err != nil {
+			return err
+		}
+		logsDir := defaultLogsDir()
+		myAddr := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
+		logChatEvents(logsDir, sel.AccountName, myAddr, result.Events)
+		printOutput(result, formatChatSend)
 		return nil
 	},
 }
@@ -253,11 +334,18 @@ var chatShowPendingCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		result, err := chatShowPending(ctx, args[0])
+		c, sel, err := resolveClientSelection()
 		if err != nil {
 			return err
 		}
-		printJSON(result)
+		result, err := chatShowPending(ctx, c, args[0])
+		if err != nil {
+			return err
+		}
+		logsDir := defaultLogsDir()
+		myAddr := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
+		logChatEvents(logsDir, sel.AccountName, myAddr, result.Events)
+		printOutput(result, formatChatSend)
 		return nil
 	},
 }

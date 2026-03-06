@@ -34,13 +34,25 @@ var introspectCmd = &cobra.Command{
 			return err
 		}
 
+		alias := resp.Alias
+		if alias == "" {
+			alias = sel.AgentAlias
+		}
+
 		out := introspectOutput{
 			IntrospectResponse: *resp,
 			DID:                sel.DID,
 			Custody:            sel.Custody,
 			Lifetime:           sel.Lifetime,
 		}
-		printJSON(out)
+		// Prefer server-returned values; fall back to local config.
+		if out.NamespaceSlug == "" {
+			out.NamespaceSlug = sel.NamespaceSlug
+		}
+		if out.Address == "" {
+			out.Address = deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, alias)
+		}
+		printOutput(out, formatIntrospect)
 		return nil
 	},
 }
