@@ -43,7 +43,7 @@ var (
 )
 
 func init() {
-	initCmd.Flags().StringVar(&initServerURL, "server-url", "", "Base URL for the aweb API (or AWEB_URL). Use the exact API mount (for example: https://host/api).")
+	initCmd.Flags().StringVar(&initServerURL, "server-url", "", "Base URL for the aweb server (or AWEB_URL). Any URL is accepted; aw probes common mounts (including /api).")
 	initCmd.Flags().StringVar(&initNamespaceSlug, "namespace", "", "Namespace slug (default: AWEB_NAMESPACE or prompt in TTY)")
 	initCmd.Flags().StringVar(&initNamespaceName, "namespace-name", "", "Namespace display name (default: AWEB_NAMESPACE_NAME or namespace slug)")
 	initCmd.Flags().StringVar(&initAlias, "alias", "", "Agent alias (optional; default: server-suggested)")
@@ -305,7 +305,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	printJSON(resp)
+	if jsonFlag {
+		printJSON(resp)
+	}
 	if initPrintExports {
 		fmt.Println("")
 		fmt.Println("# Copy/paste to configure your shell:")
