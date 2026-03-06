@@ -98,7 +98,8 @@ type Client struct {
 	pinStore      *PinStore          // optional; TOFU pin store for sender identity verification
 	pinStorePath  string             // disk path for persisting pin store
 	clawDIDClient *ClawDIDClient     // optional; ClawDID registry client for split-trust verification
-	metaCache     sync.Map           // address → *agentMeta; cached resolver results
+	metaCache           sync.Map // address → *agentMeta; cached resolver results
+	latestClientVersion string   // last seen X-Latest-Client-Version header
 }
 
 // New creates a new client.
@@ -178,6 +179,10 @@ func (c *Client) SetPinStore(ps *PinStore, path string) {
 func (c *Client) SetClawDIDClient(dc *ClawDIDClient) {
 	c.clawDIDClient = dc
 }
+
+// LatestClientVersion returns the most recent X-Latest-Client-Version header
+// value seen in any API response, or empty if no header was received.
+func (c *Client) LatestClientVersion() string { return c.latestClientVersion }
 
 // resolveAgentMeta returns cached lifetime/custody metadata for a sender address.
 // On first contact, resolves via the client's IdentityResolver and caches the result.
@@ -479,6 +484,9 @@ func (c *Client) doRaw(ctx context.Context, method, path, accept string, in any)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
+	}
+	if v := resp.Header.Get("X-Latest-Client-Version"); v != "" {
+		c.latestClientVersion = v
 	}
 	return resp, nil
 }

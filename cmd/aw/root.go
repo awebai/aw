@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -61,5 +62,26 @@ func Execute() {
 		}
 		fmt.Fprintln(os.Stderr, msg)
 		os.Exit(exitCode(err))
+	}
+	checkVersionFromHeader()
+}
+
+// checkVersionFromHeader prints a stderr warning if the server reported
+// a newer client version via the X-Latest-Client-Version response header.
+func checkVersionFromHeader() {
+	if lastClient == nil {
+		return
+	}
+	latest := lastClient.LatestClientVersion()
+	if latest == "" {
+		return
+	}
+	current := strings.TrimPrefix(version, "v")
+	if current == "dev" || current == "" {
+		return
+	}
+	latest = strings.TrimPrefix(latest, "v")
+	if compareVersions(current, latest) < 0 {
+		fmt.Fprintf(os.Stderr, "Upgrade available: v%s → v%s (run `aw upgrade`)\n", current, latest)
 	}
 }

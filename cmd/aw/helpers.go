@@ -24,6 +24,10 @@ func loadDotenvBestEffort() {
 	_ = godotenv.Overload(".env.aweb")
 }
 
+// lastClient holds the most recently created client, used to check
+// the X-Latest-Client-Version header after command execution.
+var lastClient *aweb.Client
+
 func resolveClientSelection() (*aweb.Client, *awconfig.Selection, error) {
 	cfg, err := awconfig.LoadGlobal()
 	if err != nil {
@@ -88,6 +92,7 @@ func resolveClientSelection() (*aweb.Client, *awconfig.Selection, error) {
 		c.SetClawDIDClient(&aweb.ClawDIDClient{RegistryURL: sel.ClawDIDRegistryURL})
 	}
 
+	lastClient = c
 	return c, sel, nil
 }
 

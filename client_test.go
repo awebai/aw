@@ -3949,3 +3949,55 @@ func TestSignEnvelopeOmitsStableIDWhenNotSet(t *testing.T) {
 		t.Fatalf("env.FromStableID=%q, want empty (backward compat)", env.FromStableID)
 	}
 }
+
+func TestLatestClientVersionCapturedFromHeader(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Latest-Client-Version", "v0.99.0")
+		_ = json.NewEncoder(w).Encode(map[string]string{"project_id": "p1"})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Before any request, should be empty.
+	if v := c.LatestClientVersion(); v != "" {
+		t.Fatalf("before request: LatestClientVersion=%q, want empty", v)
+	}
+
+	var resp IntrospectResponse
+	if err := c.get(context.Background(), "/v1/auth/introspect", &resp); err != nil {
+		t.Fatal(err)
+	}
+
+	if v := c.LatestClientVersion(); v != "v0.99.0" {
+		t.Fatalf("after request: LatestClientVersion=%q, want v0.99.0", v)
+	}
+}
+
+func TestLatestClientVersionEmptyWhenNoHeader(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"project_id": "p1"})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var resp IntrospectResponse
+	if err := c.get(context.Background(), "/v1/auth/introspect", &resp); err != nil {
+		t.Fatal(err)
+	}
+
+	if v := c.LatestClientVersion(); v != "" {
+		t.Fatalf("LatestClientVersion=%q, want empty", v)
+	}
+}
