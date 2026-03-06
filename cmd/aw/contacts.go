@@ -21,19 +21,18 @@ var contactsListCmd = &cobra.Command{
 	Short: "List contacts",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
 		client, err := resolveClient()
 		if err != nil {
 			return err
 		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
 		resp, err := client.ListContacts(ctx)
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		printOutput(resp, formatContactsList)
 		return nil
 	},
 }
@@ -43,14 +42,13 @@ var contactsAddCmd = &cobra.Command{
 	Short: "Add a contact",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
 		client, err := resolveClient()
 		if err != nil {
 			return err
 		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
 		resp, err := client.CreateContact(ctx, &aweb.ContactCreateRequest{
 			ContactAddress: args[0],
 			Label:          contactsAddLabel,
@@ -58,7 +56,7 @@ var contactsAddCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		printOutput(resp, formatContactAdd)
 		return nil
 	},
 }
@@ -68,13 +66,13 @@ var contactsRemoveCmd = &cobra.Command{
 	Short: "Remove a contact by address",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
 		client, err := resolveClient()
 		if err != nil {
 			return err
 		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
 
 		// List contacts to find the ID for the given address.
 		list, err := client.ListContacts(ctx)
@@ -98,7 +96,11 @@ var contactsRemoveCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		if jsonFlag {
+			printJSON(resp)
+		} else {
+			fmt.Printf("Removed contact %s\n", address)
+		}
 		return nil
 	},
 }

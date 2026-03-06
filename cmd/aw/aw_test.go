@@ -1394,11 +1394,14 @@ func TestAwInitCloudModeSkipsInitProbe(t *testing.T) {
 	}
 }
 
-func TestAwInitUsesConfiguredBaseURLAsIs(t *testing.T) {
+func TestAwInitAcceptsAPIV1BaseURL(t *testing.T) {
 	t.Parallel()
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/v1/agents/heartbeat":
+			// Probe path (GET) - any non-404 response is treated as "exists".
+			w.WriteHeader(http.StatusMethodNotAllowed)
 		case "/api/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_slug": "demo",
@@ -1416,8 +1419,6 @@ func TestAwInitUsesConfiguredBaseURLAsIs(t *testing.T) {
 				"api_key":      "aw_sk_alice",
 				"created":      true,
 			})
-		case "/api/v1/v1/agents/suggest-alias-prefix", "/api/v1/v1/init":
-			http.NotFound(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1455,11 +1456,15 @@ func TestAwInitUsesConfiguredBaseURLAsIs(t *testing.T) {
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
-	if err == nil {
-		t.Fatalf("expected init to fail for misconfigured base URL, got success: %s", string(out))
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
-	if !strings.Contains(string(out), "404") {
-		t.Fatalf("expected 404-style failure, got: %s", string(out))
+	var got map[string]any
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if got["api_key"] != "aw_sk_alice" {
+		t.Fatalf("api_key=%v", got["api_key"])
 	}
 }
 

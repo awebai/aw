@@ -27,7 +27,8 @@ var lockAcquireCmd = &cobra.Command{
 		if lockAcquireResourceKey == "" {
 			return usageError("missing required flag: --resource-key")
 		}
-		client, err := resolveClient()
+
+		c, err := resolveClient()
 		if err != nil {
 			return err
 		}
@@ -35,14 +36,14 @@ var lockAcquireCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := client.ReservationAcquire(ctx, &aweb.ReservationAcquireRequest{
+		resp, err := c.ReservationAcquire(ctx, &aweb.ReservationAcquireRequest{
 			ResourceKey: lockAcquireResourceKey,
 			TTLSeconds:  lockAcquireTTLSeconds,
 		})
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		printOutput(resp, formatLockAcquire)
 		return nil
 	},
 }
@@ -61,7 +62,8 @@ var lockRenewCmd = &cobra.Command{
 		if lockRenewResourceKey == "" {
 			return usageError("missing required flag: --resource-key")
 		}
-		client, err := resolveClient()
+
+		c, err := resolveClient()
 		if err != nil {
 			return err
 		}
@@ -69,14 +71,14 @@ var lockRenewCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := client.ReservationRenew(ctx, &aweb.ReservationRenewRequest{
+		resp, err := c.ReservationRenew(ctx, &aweb.ReservationRenewRequest{
 			ResourceKey: lockRenewResourceKey,
 			TTLSeconds:  lockRenewTTLSeconds,
 		})
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		printOutput(resp, formatLockRenew)
 		return nil
 	},
 }
@@ -92,7 +94,8 @@ var lockReleaseCmd = &cobra.Command{
 		if lockReleaseResourceKey == "" {
 			return usageError("missing required flag: --resource-key")
 		}
-		client, err := resolveClient()
+
+		c, err := resolveClient()
 		if err != nil {
 			return err
 		}
@@ -100,13 +103,13 @@ var lockReleaseCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := client.ReservationRelease(ctx, &aweb.ReservationReleaseRequest{
+		resp, err := c.ReservationRelease(ctx, &aweb.ReservationReleaseRequest{
 			ResourceKey: lockReleaseResourceKey,
 		})
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		printOutput(resp, formatLockRelease)
 		return nil
 	},
 }
@@ -119,7 +122,7 @@ var lockRevokeCmd = &cobra.Command{
 	Use:   "revoke",
 	Short: "Revoke locks",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, err := resolveClient()
+		c, err := resolveClient()
 		if err != nil {
 			return err
 		}
@@ -127,13 +130,13 @@ var lockRevokeCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := client.ReservationRevoke(ctx, &aweb.ReservationRevokeRequest{
+		resp, err := c.ReservationRevoke(ctx, &aweb.ReservationRevokeRequest{
 			Prefix: lockRevokePrefix,
 		})
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		printOutput(resp, formatLockRevoke)
 		return nil
 	},
 }
@@ -146,7 +149,7 @@ var lockListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List active locks",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, err := resolveClient()
+		c, err := resolveClient()
 		if err != nil {
 			return err
 		}
@@ -154,11 +157,11 @@ var lockListCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := client.ReservationList(ctx, lockListPrefix)
+		resp, err := c.ReservationList(ctx, lockListPrefix)
 		if err != nil {
 			return err
 		}
-		printJSON(resp)
+		printOutput(resp, formatLockList)
 		return nil
 	},
 }

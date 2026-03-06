@@ -190,7 +190,49 @@ func resolveWorkingBaseURL(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return base, nil
+
+	candidates := make([]string, 0, 4)
+	add := func(v string) {
+		v = strings.TrimSuffix(strings.TrimSpace(v), "/")
+		if v == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == v {
+				return
+			}
+		}
+		candidates = append(candidates, v)
+	}
+
+	add(base)
+	if strings.HasSuffix(base, "/v1") {
+		add(strings.TrimSuffix(base, "/v1"))
+	}
+	if strings.HasSuffix(base, "/api/v1") {
+		add(strings.TrimSuffix(base, "/v1"))
+	}
+	if !strings.HasSuffix(base, "/api") {
+		add(base + "/api")
+	}
+
+	var lastErr error
+	for _, cand := range candidates {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ok, err := probeAwebBaseURL(ctx, cand)
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if ok {
+			return cand, nil
+		}
+	}
+	if lastErr != nil {
+		return "", fmt.Errorf("no aweb API detected at %q (tried %v): %w", raw, candidates, lastErr)
+	}
+	return "", fmt.Errorf("no aweb API detected at %q (tried %v)", raw, candidates)
 }
 
 // fireHeartbeat sends a best-effort heartbeat to the aweb server.

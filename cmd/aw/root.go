@@ -20,6 +20,7 @@ var rootCmd = &cobra.Command{
 			debugFlag = true
 		}
 		loadDotenvBestEffort()
+		go fireHeartbeat()
 	},
 	SilenceUsage:  true,
 	SilenceErrors: true,
