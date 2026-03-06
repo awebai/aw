@@ -21,12 +21,17 @@ var contactsListCmd = &cobra.Command{
 	Short: "List contacts",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		client, err := resolveClient()
+		if err != nil {
+			return err
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := mustClient().ListContacts(ctx)
+		resp, err := client.ListContacts(ctx)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(resp)
 		return nil
@@ -38,15 +43,20 @@ var contactsAddCmd = &cobra.Command{
 	Short: "Add a contact",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		client, err := resolveClient()
+		if err != nil {
+			return err
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := mustClient().CreateContact(ctx, &aweb.ContactCreateRequest{
+		resp, err := client.CreateContact(ctx, &aweb.ContactCreateRequest{
 			ContactAddress: args[0],
 			Label:          contactsAddLabel,
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(resp)
 		return nil
@@ -58,15 +68,18 @@ var contactsRemoveCmd = &cobra.Command{
 	Short: "Remove a contact by address",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		client, err := resolveClient()
+		if err != nil {
+			return err
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-
-		client := mustClient()
 
 		// List contacts to find the ID for the given address.
 		list, err := client.ListContacts(ctx)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 
 		address := args[0]
@@ -78,12 +91,12 @@ var contactsRemoveCmd = &cobra.Command{
 			}
 		}
 		if contactID == "" {
-			fatal(fmt.Errorf("contact not found: %s", address))
+			return fmt.Errorf("contact not found: %s", address)
 		}
 
 		resp, err := client.DeleteContact(ctx, contactID)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(resp)
 		return nil

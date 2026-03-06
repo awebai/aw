@@ -25,11 +25,13 @@ var publishCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		c, sel := mustResolve()
+		c, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
 		agentID := sel.AgentID
 		if agentID == "" {
-			fmt.Fprintln(os.Stderr, "No agent_id in config; run 'aw init' first")
-			os.Exit(2)
+			return usageError("no agent_id in config; run 'aw init' first")
 		}
 
 		var caps []string
@@ -48,7 +50,7 @@ var publishCmd = &cobra.Command{
 			Description:  publishDescription,
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(resp)
 		return nil
@@ -66,18 +68,20 @@ var unpublishCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		client, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
 		alias := unpublishAlias
 		if alias == "" {
-			_, sel := mustResolve()
 			alias = sel.AgentAlias
 		}
 		if alias == "" {
-			fmt.Fprintln(os.Stderr, "No alias specified and none in config; use --alias or run 'aw init' first")
-			os.Exit(2)
+			return usageError("no alias specified and none in config; use --alias or run 'aw init' first")
 		}
 
-		if err := mustClient().NetworkUnpublishAgent(ctx, alias); err != nil {
-			fatal(err)
+		if err := client.NetworkUnpublishAgent(ctx, alias); err != nil {
+			return err
 		}
 		fmt.Fprintf(os.Stderr, "Unpublished %s\n", alias)
 		return nil
@@ -101,17 +105,19 @@ var directoryCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		c := mustClient()
+		c, err := resolveClient()
+		if err != nil {
+			return err
+		}
 
 		if len(args) == 1 {
 			addr := aweb.ParseNetworkAddress(args[0])
 			if !addr.IsNetwork {
-				fmt.Fprintf(os.Stderr, "Directory lookup requires org-slug/alias format, got: %q\n", args[0])
-				os.Exit(2)
+				return usageError("directory lookup requires org-slug/alias format, got: %q", args[0])
 			}
 			resp, err := c.NetworkDirectoryGet(ctx, addr.OrgSlug, addr.Alias)
 			if err != nil {
-				fatal(err)
+				return err
 			}
 			printJSON(resp)
 			return nil
@@ -124,7 +130,7 @@ var directoryCmd = &cobra.Command{
 			Limit:      directoryLimit,
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(resp)
 		return nil

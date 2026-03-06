@@ -60,6 +60,28 @@ func TestNetworkSendMail(t *testing.T) {
 	}
 }
 
+func TestNetworkSendMailDoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(NetworkMailResponse{MessageID: "m1"})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &NetworkMailRequest{ToAddress: "acme/researcher", Subject: "hi", Body: "hello"}
+	_, err = c.NetworkSendMail(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.FromDID != "" || req.Signature != "" || req.MessageID != "" || req.Timestamp != "" {
+		t.Fatalf("input request was mutated: %+v", req)
+	}
+}
+
 func TestNetworkCreateChat(t *testing.T) {
 	t.Parallel()
 
@@ -77,14 +99,14 @@ func TestNetworkCreateChat(t *testing.T) {
 		if len(body.ToAddresses) != 1 || body.ToAddresses[0] != "acme/bot" {
 			t.Fatalf("to_addresses=%v", body.ToAddresses)
 		}
-			_ = json.NewEncoder(w).Encode(NetworkChatCreateResponse{
-				SessionID:        "net-sess-1",
-				MessageID:        "net-msg-2",
-				Participants:     []string{"myorg/me", "acme/bot"},
-				SSEURL:           "/v1/network/chat/net-sess-1/stream",
-				TargetsConnected: []string{},
-				TargetsLeft:      []string{},
-			})
+		_ = json.NewEncoder(w).Encode(NetworkChatCreateResponse{
+			SessionID:        "net-sess-1",
+			MessageID:        "net-msg-2",
+			Participants:     []string{"myorg/me", "acme/bot"},
+			SSEURL:           "/v1/network/chat/net-sess-1/stream",
+			TargetsConnected: []string{},
+			TargetsLeft:      []string{},
+		})
 	}))
 	t.Cleanup(server.Close)
 
@@ -101,6 +123,31 @@ func TestNetworkCreateChat(t *testing.T) {
 	}
 	if resp.SessionID != "net-sess-1" {
 		t.Fatalf("session_id=%s", resp.SessionID)
+	}
+}
+
+func TestNetworkCreateChatDoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(NetworkChatCreateResponse{SessionID: "net-sess-1"})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &NetworkChatCreateRequest{ToAddresses: []string{"acme/bot"}, Message: "hey"}
+	_, err = c.NetworkCreateChat(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.FromDID != "" || req.Signature != "" || req.MessageID != "" || req.Timestamp != "" {
+		t.Fatalf("input request was mutated: %+v", req)
+	}
+	if len(req.ToAddresses) != 1 || req.ToAddresses[0] != "acme/bot" {
+		t.Fatalf("to_addresses changed: %+v", req.ToAddresses)
 	}
 }
 
@@ -125,6 +172,31 @@ func TestNetworkChatSendMessage(t *testing.T) {
 	}
 	if resp.MessageID != "msg-3" {
 		t.Fatalf("message_id=%s", resp.MessageID)
+	}
+}
+
+func TestNetworkChatSendMessageDoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/network/chat/sess-1/messages" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(NetworkChatSendMessageResponse{MessageID: "msg-3", Delivered: true})
+	}))
+	t.Cleanup(server.Close)
+
+	c, _ := NewWithAPIKey(server.URL, "aw_sk_test")
+	req := &NetworkChatSendMessageRequest{Body: "follow up", ExtendWait: true}
+	_, err := c.NetworkChatSendMessage(context.Background(), "sess-1", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.FromDID != "" || req.Signature != "" || req.MessageID != "" || req.Timestamp != "" {
+		t.Fatalf("input request was mutated: %+v", req)
+	}
+	if !req.ExtendWait {
+		t.Fatal("extend_wait flag changed on input")
 	}
 }
 

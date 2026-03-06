@@ -19,7 +19,6 @@ var rootCmd = &cobra.Command{
 			debugFlag = true
 		}
 		loadDotenvBestEffort()
-		go fireHeartbeat()
 	},
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -29,7 +28,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		// No heartbeat for version.
+		// No-op: version command doesn't require command initialization side-effects.
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("aw %s\n", version)
@@ -53,7 +52,11 @@ func init() {
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		msg := err.Error()
+		if hint := checkVerificationRequired(err); hint != "" {
+			msg = hint
+		}
+		fmt.Fprintln(os.Stderr, msg)
+		os.Exit(exitCode(err))
 	}
 }

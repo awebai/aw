@@ -2,6 +2,7 @@ package aweb
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"sort"
@@ -110,30 +111,38 @@ type ChatParticipant struct {
 }
 
 func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRequest) (*ChatCreateSessionResponse, error) {
-	to := strings.Join(req.ToAliases, ",")
+	if req == nil {
+		return nil, errors.New("aweb: request is required")
+	}
+	payload := *req
+	if req.ToAliases != nil {
+		payload.ToAliases = append([]string(nil), req.ToAliases...)
+	}
+
+	to := strings.Join(payload.ToAliases, ",")
 	if c.signingKey != nil {
-		if toAddr := c.toAddressForAliases(req.ToAliases); toAddr != "" {
+		if toAddr := c.toAddressForAliases(payload.ToAliases); toAddr != "" {
 			to = toAddr
 		}
 	}
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
 		To:   to,
 		Type: "chat",
-		Body: req.Message,
+		Body: payload.Message,
 	})
 	if err != nil {
 		return nil, err
 	}
-	req.FromDID = sf.FromDID
-	req.ToDID = sf.ToDID
-	req.FromStableID = sf.FromStableID
-	req.Signature = sf.Signature
-	req.SigningKeyID = sf.SigningKeyID
-	req.Timestamp = sf.Timestamp
-	req.MessageID = sf.MessageID
+	payload.FromDID = sf.FromDID
+	payload.ToDID = sf.ToDID
+	payload.FromStableID = sf.FromStableID
+	payload.Signature = sf.Signature
+	payload.SigningKeyID = sf.SigningKeyID
+	payload.Timestamp = sf.Timestamp
+	payload.MessageID = sf.MessageID
 
 	var out ChatCreateSessionResponse
-	if err := c.post(ctx, "/v1/chat/sessions", req, &out); err != nil {
+	if err := c.post(ctx, "/v1/chat/sessions", &payload, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -168,21 +177,21 @@ type ChatHistoryResponse struct {
 }
 
 type ChatMessage struct {
-	MessageID          string             `json:"message_id"`
-	FromAgent          string             `json:"from_agent"`
-	FromAddress        string             `json:"from_address,omitempty"`
-	ToAddress          string             `json:"to_address,omitempty"`
-	Body               string             `json:"body"`
-	Timestamp          string             `json:"timestamp"`
-	SenderLeaving      bool               `json:"sender_leaving"`
-	FromDID            string             `json:"from_did,omitempty"`
-	ToDID              string             `json:"to_did,omitempty"`
-	FromStableID       string             `json:"from_stable_id,omitempty"`
-	ToStableID         string             `json:"to_stable_id,omitempty"`
-	Signature              string                `json:"signature,omitempty"`
-	SigningKeyID           string                `json:"signing_key_id,omitempty"`
-	RotationAnnouncement   *RotationAnnouncement `json:"rotation_announcement,omitempty"`
-	VerificationStatus     VerificationStatus    `json:"verification_status,omitempty"`
+	MessageID            string                `json:"message_id"`
+	FromAgent            string                `json:"from_agent"`
+	FromAddress          string                `json:"from_address,omitempty"`
+	ToAddress            string                `json:"to_address,omitempty"`
+	Body                 string                `json:"body"`
+	Timestamp            string                `json:"timestamp"`
+	SenderLeaving        bool                  `json:"sender_leaving"`
+	FromDID              string                `json:"from_did,omitempty"`
+	ToDID                string                `json:"to_did,omitempty"`
+	FromStableID         string                `json:"from_stable_id,omitempty"`
+	ToStableID           string                `json:"to_stable_id,omitempty"`
+	Signature            string                `json:"signature,omitempty"`
+	SigningKeyID         string                `json:"signing_key_id,omitempty"`
+	RotationAnnouncement *RotationAnnouncement `json:"rotation_announcement,omitempty"`
+	VerificationStatus   VerificationStatus    `json:"verification_status,omitempty"`
 }
 
 type ChatHistoryParams struct {
@@ -206,8 +215,13 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 	if err := c.get(ctx, path, &out); err != nil {
 		return nil, err
 	}
-	for i := range out.Messages {
-		m := &out.Messages[i]
+	c.verifyChatMessages(ctx, out.Messages)
+	return &out, nil
+}
+
+func (c *Client) verifyChatMessages(ctx context.Context, messages []ChatMessage) {
+	for i := range messages {
+		m := &messages[i]
 		from := m.FromAgent
 		if m.FromAddress != "" {
 			from = m.FromAddress
@@ -234,7 +248,6 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 		m.VerificationStatus, _ = VerifyMessage(env)
 		m.VerificationStatus = c.CheckTOFUPin(ctx, m.VerificationStatus, from, m.FromDID, m.FromStableID, m.RotationAnnouncement)
 	}
-	return &out, nil
 }
 
 type ChatMarkReadRequest struct {
@@ -315,6 +328,11 @@ type ChatSendMessageResponse struct {
 }
 
 func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *ChatSendMessageRequest) (*ChatSendMessageResponse, error) {
+	if req == nil {
+		return nil, errors.New("aweb: request is required")
+	}
+	payload := *req
+
 	// In-session messages: include deterministic To for signature verification.
 	// (aweb returns to_address for reconstruction; we sign the same value.)
 	to := ""
@@ -326,21 +344,21 @@ func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *Cha
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
 		To:   to,
 		Type: "chat",
-		Body: req.Body,
+		Body: payload.Body,
 	})
 	if err != nil {
 		return nil, err
 	}
-	req.FromDID = sf.FromDID
-	req.ToDID = sf.ToDID
-	req.FromStableID = sf.FromStableID
-	req.Signature = sf.Signature
-	req.SigningKeyID = sf.SigningKeyID
-	req.Timestamp = sf.Timestamp
-	req.MessageID = sf.MessageID
+	payload.FromDID = sf.FromDID
+	payload.ToDID = sf.ToDID
+	payload.FromStableID = sf.FromStableID
+	payload.Signature = sf.Signature
+	payload.SigningKeyID = sf.SigningKeyID
+	payload.Timestamp = sf.Timestamp
+	payload.MessageID = sf.MessageID
 
 	var out ChatSendMessageResponse
-	if err := c.post(ctx, "/v1/chat/sessions/"+urlPathEscape(sessionID)+"/messages", req, &out); err != nil {
+	if err := c.post(ctx, "/v1/chat/sessions/"+urlPathEscape(sessionID)+"/messages", &payload, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

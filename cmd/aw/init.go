@@ -27,23 +27,23 @@ var initCmd = &cobra.Command{
 }
 
 var (
-	initServerURL      string
-	initNamespaceSlug  string
-	initNamespaceName  string
-	initAlias          string
-	initHumanName      string
-	initAgentType      string
-	initSaveConfig     bool
-	initSetDefault     bool
-	initWriteContext   bool
-	initPrintExports   bool
-	initCloudToken     string
-	initCloudMode      bool
+	initServerURL       string
+	initNamespaceSlug   string
+	initNamespaceName   string
+	initAlias           string
+	initHumanName       string
+	initAgentType       string
+	initSaveConfig      bool
+	initSetDefault      bool
+	initWriteContext    bool
+	initPrintExports    bool
+	initCloudToken      string
+	initCloudMode       bool
 	initTargetNamespace string
 )
 
 func init() {
-	initCmd.Flags().StringVar(&initServerURL, "server-url", "", "Base URL for the aweb server (or AWEB_URL). Any URL is accepted; aw probes common mounts (including /api).")
+	initCmd.Flags().StringVar(&initServerURL, "server-url", "", "Base URL for the aweb API (or AWEB_URL). Use the exact API mount (for example: https://host/api).")
 	initCmd.Flags().StringVar(&initNamespaceSlug, "namespace", "", "Namespace slug (default: AWEB_NAMESPACE or prompt in TTY)")
 	initCmd.Flags().StringVar(&initNamespaceName, "namespace-name", "", "Namespace display name (default: AWEB_NAMESPACE_NAME or namespace slug)")
 	initCmd.Flags().StringVar(&initAlias, "alias", "", "Agent alias (optional; default: server-suggested)")
@@ -63,15 +63,14 @@ func init() {
 func runInit(cmd *cobra.Command, args []string) error {
 	if strings.TrimSpace(initTargetNamespace) != "" {
 		if strings.TrimSpace(initAlias) == "" && strings.TrimSpace(os.Getenv("AWEB_ALIAS")) == "" {
-			fmt.Fprintln(os.Stderr, "--target-namespace requires --alias (server cannot auto-assign in a specific namespace)")
-			os.Exit(2)
+			return usageError("--target-namespace requires --alias (server cannot auto-assign in a specific namespace)")
 		}
 		initCloudMode = true
 	}
 
 	baseURL, serverName, global, err := resolveBaseURLForInit(initServerURL, serverFlag)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	nsSlug := initNamespaceSlug
@@ -92,12 +91,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 			suggested := sanitizeSlug(filepath.Base(wd))
 			v, err := promptString("Namespace", suggested)
 			if err != nil {
-				fatal(err)
+				return err
 			}
 			nsSlug = v
 		} else {
-			fmt.Fprintln(os.Stderr, "Missing namespace (use --namespace or AWEB_NAMESPACE)")
-			os.Exit(2)
+			return usageError("missing namespace (use --namespace or AWEB_NAMESPACE)")
 		}
 	}
 
@@ -147,8 +145,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if initCloudMode && !aliasExplicit {
 		token := resolveCloudToken(baseURL, serverName, global)
 		if strings.HasPrefix(token, "aw_sk_") {
-			fmt.Fprintln(os.Stderr, "--alias is required when bootstrapping a new agent with an existing API key")
-			os.Exit(2)
+			return usageError("--alias is required when bootstrapping a new agent with an existing API key")
 		}
 	}
 
@@ -156,7 +153,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if !aliasExplicit {
 		bootstrapClient, err := aweb.New(baseURL)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -173,7 +170,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if isTTY() && !aliasExplicit {
 		v, err := promptString("Agent alias", alias)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		aliasWasDefaultSuggestion = v == alias
 		alias = strings.TrimSpace(v)
@@ -188,7 +185,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	bootstrapClient, err := aweb.New(baseURL)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	// Generate Ed25519 keypair for self-custodial identity.
@@ -196,7 +193,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// consistent with the registered key.
 	pub, priv, err := awconfig.GenerateKeypair()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	did := aweb.ComputeDIDKey(pub)
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
@@ -207,7 +204,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		HumanName:   humanName,
 		AgentType:   agentType,
 		DID:         did,
-		PublicKey:    pubKeyB64,
+		PublicKey:   pubKeyB64,
 		Custody:     aweb.CustodySelf,
 		Lifetime:    aweb.LifetimePersistent,
 	}
@@ -222,7 +219,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		resp, err = bootstrapClient.Init(ctx, req)
 	}
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	// If we got an existing alias using the default suggestion, retry with server allocation.
@@ -234,7 +231,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 			resp, err = bootstrapClient.Init(ctx, req)
 		}
 		if err != nil {
-			fatal(err)
+			return err
 		}
 	}
 
@@ -252,7 +249,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	address := deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
-	cfgPath := mustDefaultGlobalPath()
+	cfgPath, err := defaultGlobalPath()
+	if err != nil {
+		return err
+	}
 	keysDir := awconfig.KeysDir(cfgPath)
 	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
 
@@ -260,7 +260,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// the key save fails, the agent would be bricked (config pointing to a
 	// nonexistent key). An orphaned key file on disk is harmless.
 	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
-		fatal(err)
+		return err
 	}
 
 	// Best-effort ClawDID registration. Only persist StableID on success.
@@ -285,7 +285,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 				NamespaceSlug: namespaceSlug,
 				DID:           resp.DID,
 				StableID:      stableID,
-				SigningKey:     signingKeyPath,
+				SigningKey:    signingKeyPath,
 				Custody:       resp.Custody,
 				Lifetime:      resp.Lifetime,
 			}
@@ -295,13 +295,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 			return nil
 		})
 		if updateErr != nil {
-			fatal(updateErr)
+			return updateErr
 		}
 	}
 
 	if initWriteContext {
 		if err := writeOrUpdateContext(serverName, accountName); err != nil {
-			fatal(err)
+			return err
 		}
 	}
 

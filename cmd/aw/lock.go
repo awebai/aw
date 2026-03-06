@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"time"
 
 	aweb "github.com/awebai/aw"
@@ -27,19 +25,22 @@ var lockAcquireCmd = &cobra.Command{
 	Short: "Acquire a lock",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if lockAcquireResourceKey == "" {
-			fmt.Fprintln(os.Stderr, "Missing required flag: --resource-key")
-			os.Exit(2)
+			return usageError("missing required flag: --resource-key")
+		}
+		client, err := resolveClient()
+		if err != nil {
+			return err
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := mustClient().ReservationAcquire(ctx, &aweb.ReservationAcquireRequest{
+		resp, err := client.ReservationAcquire(ctx, &aweb.ReservationAcquireRequest{
 			ResourceKey: lockAcquireResourceKey,
 			TTLSeconds:  lockAcquireTTLSeconds,
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(resp)
 		return nil
@@ -58,19 +59,22 @@ var lockRenewCmd = &cobra.Command{
 	Short: "Renew a lock",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if lockRenewResourceKey == "" {
-			fmt.Fprintln(os.Stderr, "Missing required flag: --resource-key")
-			os.Exit(2)
+			return usageError("missing required flag: --resource-key")
+		}
+		client, err := resolveClient()
+		if err != nil {
+			return err
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := mustClient().ReservationRenew(ctx, &aweb.ReservationRenewRequest{
+		resp, err := client.ReservationRenew(ctx, &aweb.ReservationRenewRequest{
 			ResourceKey: lockRenewResourceKey,
 			TTLSeconds:  lockRenewTTLSeconds,
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(resp)
 		return nil
@@ -86,18 +90,21 @@ var lockReleaseCmd = &cobra.Command{
 	Short: "Release a lock",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if lockReleaseResourceKey == "" {
-			fmt.Fprintln(os.Stderr, "Missing required flag: --resource-key")
-			os.Exit(2)
+			return usageError("missing required flag: --resource-key")
+		}
+		client, err := resolveClient()
+		if err != nil {
+			return err
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := mustClient().ReservationRelease(ctx, &aweb.ReservationReleaseRequest{
+		resp, err := client.ReservationRelease(ctx, &aweb.ReservationReleaseRequest{
 			ResourceKey: lockReleaseResourceKey,
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(resp)
 		return nil
@@ -112,14 +119,19 @@ var lockRevokeCmd = &cobra.Command{
 	Use:   "revoke",
 	Short: "Revoke locks",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		client, err := resolveClient()
+		if err != nil {
+			return err
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := mustClient().ReservationRevoke(ctx, &aweb.ReservationRevokeRequest{
+		resp, err := client.ReservationRevoke(ctx, &aweb.ReservationRevokeRequest{
 			Prefix: lockRevokePrefix,
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(resp)
 		return nil
@@ -134,12 +146,17 @@ var lockListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List active locks",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		client, err := resolveClient()
+		if err != nil {
+			return err
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := mustClient().ReservationList(ctx, lockListPrefix)
+		resp, err := client.ReservationList(ctx, lockListPrefix)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(resp)
 		return nil

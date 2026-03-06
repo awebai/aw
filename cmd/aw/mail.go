@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -31,12 +29,14 @@ var mailSendCmd = &cobra.Command{
 	Short: "Send a message to another agent",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if mailSendToAgentID == "" && mailSendToAlias == "" {
-			fmt.Fprintln(os.Stderr, "Missing required flag: --to-alias or --to-agent-id")
-			os.Exit(2)
+			return usageError("missing required flag: --to-alias or --to-agent-id")
 		}
 		if mailSendBody == "" {
-			fmt.Fprintln(os.Stderr, "Missing required flag: --body")
-			os.Exit(2)
+			return usageError("missing required flag: --body")
+		}
+		client, err := resolveClient()
+		if err != nil {
+			return err
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -45,16 +45,16 @@ var mailSendCmd = &cobra.Command{
 		if strings.HasPrefix(mailSendToAlias, "@") {
 			handle := strings.TrimPrefix(mailSendToAlias, "@")
 			if handle == "" {
-				fatal(fmt.Errorf("empty handle: use @username"))
+				return usageError("empty handle: use @username")
 			}
-			resp, err := mustClient().SendDM(ctx, &aweb.DMRequest{
+			resp, err := client.SendDM(ctx, &aweb.DMRequest{
 				ToHandle: handle,
 				Subject:  mailSendSubject,
 				Body:     mailSendBody,
 				Priority: mailSendPriority,
 			})
 			if err != nil {
-				fatal(err)
+				return err
 			}
 			printJSON(resp)
 			return nil
@@ -62,20 +62,20 @@ var mailSendCmd = &cobra.Command{
 
 		addr := aweb.ParseNetworkAddress(mailSendToAlias)
 		if addr.IsNetwork {
-			resp, err := mustClient().NetworkSendMail(ctx, &aweb.NetworkMailRequest{
+			resp, err := client.NetworkSendMail(ctx, &aweb.NetworkMailRequest{
 				ToAddress: addr.String(),
 				Subject:   mailSendSubject,
 				Body:      mailSendBody,
 				Priority:  mailSendPriority,
 			})
 			if err != nil {
-				fatal(err)
+				return err
 			}
 			printJSON(resp)
 			return nil
 		}
 
-		resp, err := mustClient().SendMessage(ctx, &aweb.SendMessageRequest{
+		resp, err := client.SendMessage(ctx, &aweb.SendMessageRequest{
 			ToAgentID: mailSendToAgentID,
 			ToAlias:   mailSendToAlias,
 			Subject:   mailSendSubject,
@@ -83,7 +83,7 @@ var mailSendCmd = &cobra.Command{
 			Priority:  aweb.MessagePriority(mailSendPriority),
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(resp)
 		return nil
@@ -101,15 +101,20 @@ var mailInboxCmd = &cobra.Command{
 	Use:   "inbox",
 	Short: "List inbox messages",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		client, err := resolveClient()
+		if err != nil {
+			return err
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := mustClient().Inbox(ctx, aweb.InboxParams{
+		resp, err := client.Inbox(ctx, aweb.InboxParams{
 			UnreadOnly: mailInboxUnreadOnly,
 			Limit:      mailInboxLimit,
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(resp)
 		return nil
@@ -125,16 +130,19 @@ var mailAckCmd = &cobra.Command{
 	Short: "Acknowledge a message",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if mailAckMessageID == "" {
-			fmt.Fprintln(os.Stderr, "Missing required flag: --message-id")
-			os.Exit(2)
+			return usageError("missing required flag: --message-id")
+		}
+		client, err := resolveClient()
+		if err != nil {
+			return err
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := mustClient().AckMessage(ctx, mailAckMessageID)
+		resp, err := client.AckMessage(ctx, mailAckMessageID)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(resp)
 		return nil

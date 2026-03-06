@@ -56,37 +56,32 @@ func init() {
 func runRegister(cmd *cobra.Command, args []string) error {
 	serverURL := strings.TrimSpace(registerServer)
 	if serverURL == "" {
-		fmt.Fprintln(os.Stderr, "Missing server URL (use --server-url)")
-		os.Exit(2)
+		return usageError("missing server URL (use --server-url)")
 	}
 
 	baseURL, err := resolveWorkingBaseURL(serverURL)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	serverName, _ := awconfig.DeriveServerNameFromURL(baseURL)
 
 	email := strings.TrimSpace(registerEmail)
 	if email == "" {
-		fmt.Fprintln(os.Stderr, "Missing email (use --email)")
-		os.Exit(2)
+		return usageError("missing email (use --email)")
 	}
 	if at := strings.Index(email, "@"); at < 1 || at >= len(email)-1 {
-		fmt.Fprintln(os.Stderr, "Invalid email address")
-		os.Exit(2)
+		return usageError("invalid email address")
 	}
 
 	username := strings.TrimSpace(registerUsername)
 	if username == "" {
-		fmt.Fprintln(os.Stderr, "Missing username (use --username)")
-		os.Exit(2)
+		return usageError("missing username (use --username)")
 	}
 
 	alias := strings.TrimSpace(registerAlias)
 	if alias == "" {
-		fmt.Fprintln(os.Stderr, "Missing alias (use --alias)")
-		os.Exit(2)
+		return usageError("missing alias (use --alias)")
 	}
 
 	// When --code is provided, skip the Register call (which would send a
@@ -100,7 +95,7 @@ func runRegister(cmd *cobra.Command, args []string) error {
 	// Generate Ed25519 keypair and compute DID for self-custodial registration.
 	pub, priv, err := awconfig.GenerateKeypair()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	did := aweb.ComputeDIDKey(pub)
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
@@ -122,7 +117,7 @@ func runRegister(cmd *cobra.Command, args []string) error {
 
 	client, err := aweb.New(baseURL)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	resp, err := client.Register(ctx, req)
@@ -134,18 +129,18 @@ func runRegister(cmd *cobra.Command, args []string) error {
 
 		code, isHTTP := aweb.HTTPStatusCode(err)
 		if !isHTTP {
-			fatal(err)
+			return err
 		}
 		switch code {
 		case 404:
-			fatal(fmt.Errorf("this server does not support CLI registration. Visit %s to create an account", serverURL))
+			return fmt.Errorf("this server does not support CLI registration; visit %s to create an account", serverURL)
 		case 409:
 			body, _ := aweb.HTTPErrorBody(err)
-			fatal(formatConflictError(body))
+			return formatConflictError(body)
 		case 429:
-			fatal(fmt.Errorf("rate limited. Please try again later"))
+			return fmt.Errorf("rate limited; please try again later")
 		default:
-			fatal(err)
+			return err
 		}
 	}
 
@@ -153,7 +148,9 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr, "Note: --namespace is ignored for new accounts. Your first namespace is your handle.")
 	}
 
-	saveNewRegistration(ctx, resp, baseURL, serverName, email, username, alias, pub, priv, did, client)
+	if err := saveNewRegistration(ctx, resp, baseURL, serverName, email, username, alias, pub, priv, did, client); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -166,7 +163,7 @@ func saveNewRegistration(
 	pub, priv []byte,
 	did string,
 	client *aweb.Client,
-) {
+) error {
 	namespaceSlug := strings.TrimSpace(resp.NamespaceSlug)
 	if namespaceSlug == "" {
 		namespaceSlug = strings.TrimSpace(resp.ProjectSlug)
@@ -178,7 +175,10 @@ func saveNewRegistration(
 	}
 
 	address := deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
-	cfgPath := mustDefaultGlobalPath()
+	cfgPath, err := defaultGlobalPath()
+	if err != nil {
+		return err
+	}
 	keysDir := awconfig.KeysDir(cfgPath)
 	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
 
@@ -186,7 +186,7 @@ func saveNewRegistration(
 	// the key save fails, the agent would be bricked (config pointing to a
 	// nonexistent key). An orphaned key file on disk is harmless.
 	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
-		fatal(err)
+		return err
 	}
 
 	// Best-effort ClawDID registration. Only persist StableID on success.
@@ -213,7 +213,7 @@ func saveNewRegistration(
 				NamespaceSlug: namespaceSlug,
 				DID:           resp.DID,
 				StableID:      stableID,
-				SigningKey:     signingKeyPath,
+				SigningKey:    signingKeyPath,
 				Custody:       resp.Custody,
 				Lifetime:      resp.Lifetime,
 			}
@@ -223,13 +223,13 @@ func saveNewRegistration(
 			return nil
 		})
 		if updateErr != nil {
-			fatal(updateErr)
+			return updateErr
 		}
 	}
 
 	if registerWriteContext {
 		if err := writeOrUpdateContext(serverName, accountName); err != nil {
-			fatal(err)
+			return err
 		}
 	}
 
@@ -261,6 +261,8 @@ func saveNewRegistration(
 			fmt.Fprintln(os.Stderr, "Run 'aw verify --code CODE' to activate your agent.")
 		}
 	}
+
+	return nil
 }
 
 // runRegisterWithCode handles the case where --code is provided: skip the
@@ -271,13 +273,13 @@ func runRegisterWithCode(baseURL, serverName, email, username, alias, code strin
 
 	pub, priv, err := awconfig.GenerateKeypair()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	did := aweb.ComputeDIDKey(pub)
 
 	client, err := aweb.New(baseURL)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	var handlePtr *string
@@ -310,16 +312,19 @@ func handleExistingAccount(
 			nsSlug = existing.Namespaces[0].Slug
 			fmt.Fprintf(os.Stderr, "Using namespace: %s\n", nsSlug)
 		} else if len(existing.Namespaces) > 1 && isTTY() {
-			nsSlug = promptNamespaceChoice(existing.Namespaces)
+			var choiceErr error
+			nsSlug, choiceErr = promptNamespaceChoice(existing.Namespaces)
+			if choiceErr != nil {
+				return choiceErr
+			}
 		} else if len(existing.Namespaces) > 1 {
 			fmt.Fprintln(os.Stderr, "Multiple namespaces available. Use --namespace to select one:")
 			for _, ns := range existing.Namespaces {
 				fmt.Fprintf(os.Stderr, "  %s (%s)\n", ns.Slug, ns.Tier)
 			}
-			os.Exit(2)
+			return usageError("multiple namespaces available; use --namespace to select one")
 		} else {
-			fmt.Fprintln(os.Stderr, "No namespaces available for this account.")
-			os.Exit(2)
+			return usageError("no namespaces available for this account")
 		}
 	}
 
@@ -340,7 +345,7 @@ func handleExistingAccount(
 			return nil
 		}
 		fmt.Fprintln(os.Stderr, "No code entered.")
-		os.Exit(2)
+		return usageError("no code entered")
 	}
 
 	var handlePtr *string
@@ -383,21 +388,20 @@ func verifyAndBootstrap(
 				}
 				msg += fmt.Sprintf("\nYour namespaces: %s", strings.Join(slugs, ", "))
 			}
-			fmt.Fprintln(os.Stderr, msg)
-			os.Exit(1)
+			return usageError("%s", msg)
 		}
 		if ok && vcode == 400 {
 			body, _ := aweb.HTTPErrorBody(verr)
-			fatal(formatVerifyError(body))
+			return formatVerifyError(body)
 		}
-		fatal(verr)
+		return verr
 	}
 	if !vresp.Verified {
-		fatal(fmt.Errorf("verification failed"))
+		return fmt.Errorf("verification failed")
 	}
 
 	if vresp.APIKey == "" {
-		fatal(fmt.Errorf("verification succeeded but no API key returned. The server may not support inline bootstrap — try 'aw init --cloud' instead"))
+		return fmt.Errorf("verification succeeded but no API key returned; the server may not support inline bootstrap — try 'aw init --cloud' instead")
 	}
 
 	namespaceSlug := strings.TrimSpace(vresp.NamespaceSlug)
@@ -415,13 +419,16 @@ func verifyAndBootstrap(
 	}
 
 	address := deriveAgentAddress(namespaceSlug, "", respAlias)
-	cfgPath := mustDefaultGlobalPath()
+	cfgPath, err := defaultGlobalPath()
+	if err != nil {
+		return err
+	}
 	keysDir := awconfig.KeysDir(cfgPath)
 
 	// Claim self-custody identity using the new API key.
 	authClient, authErr := aweb.NewWithAPIKey(baseURL, vresp.APIKey)
 	if authErr != nil {
-		fatal(authErr)
+		return authErr
 	}
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 	claimCtx, claimCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -440,7 +447,11 @@ func verifyAndBootstrap(
 		claimCode, ok := aweb.HTTPStatusCode(claimErr)
 		if ok && claimCode == 409 {
 			var recoveredCustody, recoveredLifetime string
-			did, signingKeyPath, recoveredCustody, recoveredLifetime = recoverIdentity409(claimCtx, authClient, keysDir, address)
+			var recoveryErr error
+			did, signingKeyPath, recoveredCustody, recoveredLifetime, recoveryErr = recoverIdentity409(claimCtx, authClient, keysDir, address)
+			if recoveryErr != nil {
+				return recoveryErr
+			}
 			if recoveredCustody != "" {
 				custody = recoveredCustody
 			}
@@ -449,7 +460,7 @@ func verifyAndBootstrap(
 			}
 			recovered = true
 		} else {
-			fatal(fmt.Errorf("identity claim failed: %w", claimErr))
+			return fmt.Errorf("identity claim failed: %w", claimErr)
 		}
 	}
 
@@ -458,7 +469,7 @@ func verifyAndBootstrap(
 	// (never-registered) key would overwrite it.
 	if !recovered {
 		if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
-			fatal(err)
+			return err
 		}
 	}
 
@@ -485,7 +496,7 @@ func verifyAndBootstrap(
 				NamespaceSlug: namespaceSlug,
 				DID:           did,
 				StableID:      stableID,
-				SigningKey:     signingKeyPath,
+				SigningKey:    signingKeyPath,
 				Custody:       custody,
 				Lifetime:      lifetime,
 			}
@@ -495,13 +506,13 @@ func verifyAndBootstrap(
 			return nil
 		})
 		if updateErr != nil {
-			fatal(updateErr)
+			return updateErr
 		}
 	}
 
 	if registerWriteContext {
 		if err := writeOrUpdateContext(serverName, accountName); err != nil {
-			fatal(err)
+			return err
 		}
 	}
 
@@ -512,7 +523,7 @@ func verifyAndBootstrap(
 }
 
 // promptNamespaceChoice displays a numbered list and prompts for selection.
-func promptNamespaceChoice(namespaces []aweb.Namespace) string {
+func promptNamespaceChoice(namespaces []aweb.Namespace) (string, error) {
 	fmt.Fprintln(os.Stderr, "Available namespaces:")
 	for i, ns := range namespaces {
 		fmt.Fprintf(os.Stderr, "  [%d] %s (%s)\n", i+1, ns.Slug, ns.Tier)
@@ -522,14 +533,13 @@ func promptNamespaceChoice(namespaces []aweb.Namespace) string {
 	line, _ := reader.ReadString('\n')
 	line = strings.TrimSpace(line)
 	if line == "" {
-		return namespaces[0].Slug
+		return namespaces[0].Slug, nil
 	}
 	idx := 0
 	if _, err := fmt.Sscanf(line, "%d", &idx); err != nil || idx < 1 || idx > len(namespaces) {
-		fmt.Fprintf(os.Stderr, "Invalid selection. Use --namespace to specify, or try again.\n")
-		os.Exit(2)
+		return "", usageError("invalid selection; use --namespace to specify, or try again")
 	}
-	return namespaces[idx-1].Slug
+	return namespaces[idx-1].Slug, nil
 }
 
 // formatConflictError parses structured 409 error bodies from the server.
@@ -541,8 +551,8 @@ func formatConflictError(body string) error {
 			Message string `json:"message"`
 			Details struct {
 				AttemptedUsername string `json:"attempted_username"`
-				AttemptedAlias   string `json:"attempted_alias"`
-				Source           string `json:"source"`
+				AttemptedAlias    string `json:"attempted_alias"`
+				Source            string `json:"source"`
 			} `json:"details"`
 		} `json:"error"`
 	}

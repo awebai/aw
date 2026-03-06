@@ -319,9 +319,10 @@ server *name* is interpreted as a host:
 - `localhost*`, `127.0.0.1`, `[::1]` → `http://`
 - Everything else → `https://`
 
-After deriving the base URL, the CLI probes multiple mount paths
-(`/v1/agents/heartbeat`) to find where aweb is mounted — supporting bare
-mounts, `/api` prefixes, and other configurations.
+After deriving the base URL, the CLI treats it as authoritative. Configure the
+exact API mount in config/env (for example `https://host/api` for claweb, or
+`https://host` for bare OSS aweb). No mount probing or path rewriting is
+performed at runtime.
 
 > `awconfig/selection.go`, `cmd/aw/helpers.go:98-146`
 

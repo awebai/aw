@@ -3,6 +3,7 @@ package aweb
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 // AgentIdentity holds resolved identity information for an agent.
 type AgentIdentity struct {
 	DID         string
+	StableID    string
 	AgentID     string // server-assigned UUID
 	Address     string // namespace/alias
 	Handle      string // @alice
@@ -48,11 +50,13 @@ func (r *DIDKeyResolver) Resolve(_ context.Context, identifier string) (*AgentId
 // GET /v1/agents/resolve/{namespace}/{alias}.
 type serverResolveResponse struct {
 	DID       string `json:"did"`
+	StableID  string `json:"stable_id"`
 	AgentID   string `json:"agent_id"`
 	Address   string `json:"address"`
 	HumanName string `json:"human_name"`
 	Handle    string `json:"handle"`
 	Server    string `json:"server"`
+	PublicKey string `json:"public_key"`
 	Custody   string `json:"custody"`
 	Lifetime  string `json:"lifetime"`
 	Status    string `json:"status"`
@@ -69,8 +73,9 @@ func (r *ServerResolver) Resolve(ctx context.Context, identifier string) (*Agent
 	if err := r.Client.get(ctx, path, &resp); err != nil {
 		return nil, fmt.Errorf("ServerResolver: %w", err)
 	}
-	return &AgentIdentity{
+	identity := &AgentIdentity{
 		DID:         resp.DID,
+		StableID:    resp.StableID,
 		AgentID:     resp.AgentID,
 		Address:     resp.Address,
 		Handle:      resp.Handle,
@@ -79,7 +84,21 @@ func (r *ServerResolver) Resolve(ctx context.Context, identifier string) (*Agent
 		Lifetime:    resp.Lifetime,
 		ResolvedAt:  time.Now().UTC(),
 		ResolvedVia: "server",
-	}, nil
+	}
+	if strings.TrimSpace(resp.PublicKey) != "" {
+		pub, err := base64.RawStdEncoding.DecodeString(strings.TrimSpace(resp.PublicKey))
+		if err != nil {
+			return nil, fmt.Errorf("ServerResolver: invalid public_key: %w", err)
+		}
+		if len(pub) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("ServerResolver: invalid public_key length %d", len(pub))
+		}
+		identity.PublicKey = ed25519.PublicKey(pub)
+		if identity.DID != "" && ComputeDIDKey(identity.PublicKey) != identity.DID {
+			return nil, fmt.Errorf("ServerResolver: DID/public_key mismatch")
+		}
+	}
+	return identity, nil
 }
 
 // PinResolver looks up identity from the local TOFU pin store.

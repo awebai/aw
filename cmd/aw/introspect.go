@@ -21,14 +21,17 @@ var introspectCmd = &cobra.Command{
 	Aliases: []string{"whoami"},
 	Short:   "Show current agent identity",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, sel := mustResolve()
+		client, sel, err := resolveClientSelection()
+		if err != nil {
+			return err
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		resp, err := client.Introspect(ctx)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 
 		out := introspectOutput{

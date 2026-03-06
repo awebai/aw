@@ -22,7 +22,10 @@ func chatStderrCallback(kind, message string) {
 
 // chatSend routes a message through the OSS or network path based on the alias format.
 func chatSend(ctx context.Context, toAlias, message string, opts chat.SendOptions) (*chat.SendResult, error) {
-	c, sel := mustResolve()
+	c, sel, err := resolveClientSelection()
+	if err != nil {
+		return nil, err
+	}
 	addr := aweb.ParseNetworkAddress(toAlias)
 	if addr.IsNetwork {
 		return chat.SendNetwork(ctx, c, sel.AgentAlias, []string{addr.String()}, message, opts, chatStderrCallback)
@@ -31,43 +34,63 @@ func chatSend(ctx context.Context, toAlias, message string, opts chat.SendOption
 }
 
 func chatOpen(ctx context.Context, alias string) (*chat.OpenResult, error) {
+	client, err := resolveClient()
+	if err != nil {
+		return nil, err
+	}
 	addr := aweb.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.OpenNetwork(ctx, mustClient(), addr.String())
+		return chat.OpenNetwork(ctx, client, addr.String())
 	}
-	return chat.Open(ctx, mustClient(), alias)
+	return chat.Open(ctx, client, alias)
 }
 
 func chatHistory(ctx context.Context, alias string) (*chat.HistoryResult, error) {
+	client, err := resolveClient()
+	if err != nil {
+		return nil, err
+	}
 	addr := aweb.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.HistoryNetwork(ctx, mustClient(), addr.String())
+		return chat.HistoryNetwork(ctx, client, addr.String())
 	}
-	return chat.History(ctx, mustClient(), alias)
+	return chat.History(ctx, client, alias)
 }
 
 func chatExtendWait(ctx context.Context, alias, message string) (*chat.ExtendWaitResult, error) {
+	client, err := resolveClient()
+	if err != nil {
+		return nil, err
+	}
 	addr := aweb.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.ExtendWaitNetwork(ctx, mustClient(), addr.String(), message)
+		return chat.ExtendWaitNetwork(ctx, client, addr.String(), message)
 	}
-	return chat.ExtendWait(ctx, mustClient(), alias, message)
+	return chat.ExtendWait(ctx, client, alias, message)
 }
 
 func chatListen(ctx context.Context, alias string, waitSeconds int) (*chat.SendResult, error) {
+	client, err := resolveClient()
+	if err != nil {
+		return nil, err
+	}
 	addr := aweb.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.ListenNetwork(ctx, mustClient(), addr.String(), waitSeconds, chatStderrCallback)
+		return chat.ListenNetwork(ctx, client, addr.String(), waitSeconds, chatStderrCallback)
 	}
-	return chat.Listen(ctx, mustClient(), alias, waitSeconds, chatStderrCallback)
+	return chat.Listen(ctx, client, alias, waitSeconds, chatStderrCallback)
 }
 
 func chatShowPending(ctx context.Context, alias string) (*chat.SendResult, error) {
+	client, err := resolveClient()
+	if err != nil {
+		return nil, err
+	}
 	addr := aweb.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.ShowPendingNetwork(ctx, mustClient(), addr.String())
+		return chat.ShowPendingNetwork(ctx, client, addr.String())
 	}
-	return chat.ShowPending(ctx, mustClient(), alias)
+	return chat.ShowPending(ctx, client, alias)
 }
 
 // chat send-and-wait
@@ -92,7 +115,7 @@ var chatSendAndWaitCmd = &cobra.Command{
 			StartConversation: chatSendAndWaitStartConversation,
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(result)
 		return nil
@@ -114,7 +137,7 @@ var chatSendAndLeaveCmd = &cobra.Command{
 			Leaving: true,
 		})
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(result)
 		return nil
@@ -130,9 +153,13 @@ var chatPendingCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		result, err := chat.Pending(ctx, mustClient())
+		client, err := resolveClient()
 		if err != nil {
-			fatal(err)
+			return err
+		}
+		result, err := chat.Pending(ctx, client)
+		if err != nil {
+			return err
 		}
 		printJSON(result)
 		return nil
@@ -151,7 +178,7 @@ var chatOpenCmd = &cobra.Command{
 
 		result, err := chatOpen(ctx, args[0])
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(result)
 		return nil
@@ -170,7 +197,7 @@ var chatHistoryCmd = &cobra.Command{
 
 		result, err := chatHistory(ctx, args[0])
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(result)
 		return nil
@@ -189,7 +216,7 @@ var chatExtendWaitCmd = &cobra.Command{
 
 		result, err := chatExtendWait(ctx, args[0], args[1])
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(result)
 		return nil
@@ -209,7 +236,7 @@ var chatListenCmd = &cobra.Command{
 
 		result, err := chatListen(ctx, args[0], chatListenWait)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(result)
 		return nil
@@ -228,7 +255,7 @@ var chatShowPendingCmd = &cobra.Command{
 
 		result, err := chatShowPending(ctx, args[0])
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		printJSON(result)
 		return nil

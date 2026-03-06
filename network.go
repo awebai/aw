@@ -35,25 +35,30 @@ type NetworkMailResponse struct {
 }
 
 func (c *Client) NetworkSendMail(ctx context.Context, req *NetworkMailRequest) (*NetworkMailResponse, error) {
+	if req == nil {
+		return nil, errors.New("aweb: request is required")
+	}
+	payload := *req
+
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
-		To:      req.ToAddress,
+		To:      payload.ToAddress,
 		Type:    "mail",
-		Subject: req.Subject,
-		Body:    req.Body,
+		Subject: payload.Subject,
+		Body:    payload.Body,
 	})
 	if err != nil {
 		return nil, err
 	}
-	req.FromDID = sf.FromDID
-	req.ToDID = sf.ToDID
-	req.FromStableID = sf.FromStableID
-	req.Signature = sf.Signature
-	req.SigningKeyID = sf.SigningKeyID
-	req.Timestamp = sf.Timestamp
-	req.MessageID = sf.MessageID
+	payload.FromDID = sf.FromDID
+	payload.ToDID = sf.ToDID
+	payload.FromStableID = sf.FromStableID
+	payload.Signature = sf.Signature
+	payload.SigningKeyID = sf.SigningKeyID
+	payload.Timestamp = sf.Timestamp
+	payload.MessageID = sf.MessageID
 
 	var out NetworkMailResponse
-	if err := c.post(ctx, "/v1/network/mail", req, &out); err != nil {
+	if err := c.post(ctx, "/v1/network/mail", &payload, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -84,24 +89,32 @@ type NetworkChatCreateResponse struct {
 }
 
 func (c *Client) NetworkCreateChat(ctx context.Context, req *NetworkChatCreateRequest) (*NetworkChatCreateResponse, error) {
+	if req == nil {
+		return nil, errors.New("aweb: request is required")
+	}
+	payload := *req
+	if req.ToAddresses != nil {
+		payload.ToAddresses = append([]string(nil), req.ToAddresses...)
+	}
+
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
-		To:   strings.Join(req.ToAddresses, ","),
+		To:   strings.Join(payload.ToAddresses, ","),
 		Type: "chat",
-		Body: req.Message,
+		Body: payload.Message,
 	})
 	if err != nil {
 		return nil, err
 	}
-	req.FromDID = sf.FromDID
-	req.ToDID = sf.ToDID
-	req.FromStableID = sf.FromStableID
-	req.Signature = sf.Signature
-	req.SigningKeyID = sf.SigningKeyID
-	req.Timestamp = sf.Timestamp
-	req.MessageID = sf.MessageID
+	payload.FromDID = sf.FromDID
+	payload.ToDID = sf.ToDID
+	payload.FromStableID = sf.FromStableID
+	payload.Signature = sf.Signature
+	payload.SigningKeyID = sf.SigningKeyID
+	payload.Timestamp = sf.Timestamp
+	payload.MessageID = sf.MessageID
 
 	var out NetworkChatCreateResponse
-	if err := c.post(ctx, "/v1/network/chat", req, &out); err != nil {
+	if err := c.post(ctx, "/v1/network/chat", &payload, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -129,24 +142,29 @@ func (c *Client) NetworkChatSendMessage(ctx context.Context, sessionID string, r
 	if sessionID == "" {
 		return nil, errors.New("aweb: sessionID is required")
 	}
+	if req == nil {
+		return nil, errors.New("aweb: request is required")
+	}
+	payload := *req
+
 	// In-session messages: To is empty because the session implies recipients.
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
 		Type: "chat",
-		Body: req.Body,
+		Body: payload.Body,
 	})
 	if err != nil {
 		return nil, err
 	}
-	req.FromDID = sf.FromDID
-	req.ToDID = sf.ToDID
-	req.FromStableID = sf.FromStableID
-	req.Signature = sf.Signature
-	req.SigningKeyID = sf.SigningKeyID
-	req.Timestamp = sf.Timestamp
-	req.MessageID = sf.MessageID
+	payload.FromDID = sf.FromDID
+	payload.ToDID = sf.ToDID
+	payload.FromStableID = sf.FromStableID
+	payload.Signature = sf.Signature
+	payload.SigningKeyID = sf.SigningKeyID
+	payload.Timestamp = sf.Timestamp
+	payload.MessageID = sf.MessageID
 
 	var out NetworkChatSendMessageResponse
-	if err := c.post(ctx, "/v1/network/chat/"+urlPathEscape(sessionID)+"/messages", req, &out); err != nil {
+	if err := c.post(ctx, "/v1/network/chat/"+urlPathEscape(sessionID)+"/messages", &payload, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -171,34 +189,7 @@ func (c *Client) NetworkChatHistory(ctx context.Context, p ChatHistoryParams) (*
 	if err := c.get(ctx, path, &out); err != nil {
 		return nil, err
 	}
-	for i := range out.Messages {
-		m := &out.Messages[i]
-		from := m.FromAgent
-		if m.FromAddress != "" {
-			from = m.FromAddress
-		}
-		to := ""
-		if m.ToAddress != "" {
-			to = m.ToAddress
-		}
-		env := &MessageEnvelope{
-			From:         from,
-			FromDID:      m.FromDID,
-			To:           to,
-			ToDID:        m.ToDID,
-			Type:         "chat",
-			Body:         m.Body,
-			Timestamp:    m.Timestamp,
-			FromStableID: m.FromStableID,
-			ToStableID:   m.ToStableID,
-			MessageID:    m.MessageID,
-			Signature:    m.Signature,
-			SigningKeyID: m.SigningKeyID,
-		}
-		// Error is encoded in VerificationStatus; discard it.
-		m.VerificationStatus, _ = VerifyMessage(env)
-		m.VerificationStatus = c.CheckTOFUPin(ctx, m.VerificationStatus, from, m.FromDID, m.FromStableID, m.RotationAnnouncement)
-	}
+	c.verifyChatMessages(ctx, out.Messages)
 	return &out, nil
 }
 
