@@ -149,6 +149,50 @@ func TestChatCreateSessionSignsDeterministicTo(t *testing.T) {
 	}
 }
 
+func TestChatCreateSessionDoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/sessions" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(ChatCreateSessionResponse{
+			SessionID:        "sess-1",
+			MessageID:        "msg-1",
+			TargetsConnected: []string{"bob"},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+
+	req := &ChatCreateSessionRequest{
+		ToAliases: []string{"bob"},
+		Message:   "hello",
+	}
+	_, err = c.ChatCreateSession(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if req.FromDID != "" || req.Signature != "" || req.MessageID != "" || req.Timestamp != "" {
+		t.Fatalf("input request was mutated: %+v", req)
+	}
+	if len(req.ToAliases) != 1 || req.ToAliases[0] != "bob" {
+		t.Fatalf("to_aliases changed: %+v", req.ToAliases)
+	}
+}
+
 func TestChatSendMessageSignsDeterministicTo(t *testing.T) {
 	t.Parallel()
 
@@ -213,6 +257,48 @@ func TestChatSendMessageSignsDeterministicTo(t *testing.T) {
 	}
 	if status != Verified {
 		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestChatSendMessageDoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/sessions":
+			_ = json.NewEncoder(w).Encode(ChatListSessionsResponse{
+				Sessions: []ChatSessionItem{{SessionID: "sess-1", Participants: []string{"agent", "bob"}}},
+			})
+		case "/v1/chat/sessions/sess-1/messages":
+			_ = json.NewEncoder(w).Encode(ChatSendMessageResponse{MessageID: "msg-2", Delivered: true})
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+
+	req := &ChatSendMessageRequest{Body: "ping", ExtendWait: true}
+	_, err = c.ChatSendMessage(context.Background(), "sess-1", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.FromDID != "" || req.Signature != "" || req.MessageID != "" || req.Timestamp != "" {
+		t.Fatalf("input request was mutated: %+v", req)
+	}
+	if !req.ExtendWait {
+		t.Fatal("extend_wait flag changed on input")
 	}
 }
 
@@ -659,9 +745,9 @@ func TestInitRequestIncludesIdentityFields(t *testing.T) {
 		ProjectSlug: "default",
 		Alias:       &alias,
 		DID:         "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-		PublicKey:    "Lm/M42cB3HkUiODQsXRcweM6TByfzEHGO9ND274JcOY",
-		Custody:      "self",
-		Lifetime:     "persistent",
+		PublicKey:   "Lm/M42cB3HkUiODQsXRcweM6TByfzEHGO9ND274JcOY",
+		Custody:     "self",
+		Lifetime:    "persistent",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1196,6 +1282,48 @@ func TestSendMessageSignsWithToAgentID(t *testing.T) {
 	}
 	if status != Verified {
 		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestSendMessageDoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-02-22T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+
+	req := &SendMessageRequest{
+		ToAlias:  "bob",
+		Subject:  "hi",
+		Body:     "there",
+		Priority: PriorityHigh,
+	}
+	_, err = c.SendMessage(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.FromDID != "" || req.Signature != "" || req.MessageID != "" || req.Timestamp != "" {
+		t.Fatalf("input request was mutated: %+v", req)
+	}
+	if req.ToAlias != "bob" || req.Subject != "hi" || req.Body != "there" {
+		t.Fatalf("input request fields changed: %+v", req)
 	}
 }
 
@@ -2349,15 +2477,15 @@ func TestInboxTOFUPinFirstContact(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(InboxResponse{
 			Messages: []InboxMessage{{
-				MessageID:   "msg-tofu-1",
-				FromAgentID: "agent-1",
-				FromAlias:   "otherco/sender",
-				ToAlias:     "myco/agent",
-				Subject:     "hello",
-				Body:        "first contact",
-				CreatedAt:   env.Timestamp,
-				FromDID:     senderDID,
-				Signature:   sig,
+				MessageID:    "msg-tofu-1",
+				FromAgentID:  "agent-1",
+				FromAlias:    "otherco/sender",
+				ToAlias:      "myco/agent",
+				Subject:      "hello",
+				Body:         "first contact",
+				CreatedAt:    env.Timestamp,
+				FromDID:      senderDID,
+				Signature:    sig,
 				SigningKeyID: senderDID,
 			}},
 		})
@@ -2441,15 +2569,15 @@ func TestInboxTOFUPinMismatch(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(InboxResponse{
 			Messages: []InboxMessage{{
-				MessageID:   "msg-impostor-1",
-				FromAgentID: "agent-1",
-				FromAlias:   "otherco/sender",
-				ToAlias:     "myco/agent",
-				Subject:     "hello",
-				Body:        "impostor message",
-				CreatedAt:   env.Timestamp,
-				FromDID:     impostorDID,
-				Signature:   sig,
+				MessageID:    "msg-impostor-1",
+				FromAgentID:  "agent-1",
+				FromAlias:    "otherco/sender",
+				ToAlias:      "myco/agent",
+				Subject:      "hello",
+				Body:         "impostor message",
+				CreatedAt:    env.Timestamp,
+				FromDID:      impostorDID,
+				Signature:    sig,
 				SigningKeyID: impostorDID,
 			}},
 		})
@@ -2524,15 +2652,15 @@ func TestInboxRotationAnnouncementAccepted(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(InboxResponse{
 			Messages: []InboxMessage{{
-				MessageID:   "msg-rotated-1",
-				FromAgentID: "agent-1",
-				FromAlias:   "otherco/sender",
-				ToAlias:     "myco/agent",
-				Subject:     "post-rotation",
-				Body:        "hello after rotation",
-				CreatedAt:   env.Timestamp,
-				FromDID:     newDID,
-				Signature:   sig,
+				MessageID:    "msg-rotated-1",
+				FromAgentID:  "agent-1",
+				FromAlias:    "otherco/sender",
+				ToAlias:      "myco/agent",
+				Subject:      "post-rotation",
+				Body:         "hello after rotation",
+				CreatedAt:    env.Timestamp,
+				FromDID:      newDID,
+				Signature:    sig,
 				SigningKeyID: newDID,
 				RotationAnnouncement: &RotationAnnouncement{
 					OldDID:          oldDID,
@@ -2625,15 +2753,15 @@ func TestInboxRotationAnnouncementInvalid(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(InboxResponse{
 			Messages: []InboxMessage{{
-				MessageID:   "msg-forged-rot-1",
-				FromAgentID: "agent-1",
-				FromAlias:   "otherco/sender",
-				ToAlias:     "myco/agent",
-				Subject:     "forged rotation",
-				Body:        "should be rejected",
-				CreatedAt:   env.Timestamp,
-				FromDID:     newDID,
-				Signature:   sig,
+				MessageID:    "msg-forged-rot-1",
+				FromAgentID:  "agent-1",
+				FromAlias:    "otherco/sender",
+				ToAlias:      "myco/agent",
+				Subject:      "forged rotation",
+				Body:         "should be rejected",
+				CreatedAt:    env.Timestamp,
+				FromDID:      newDID,
+				Signature:    sig,
 				SigningKeyID: newDID,
 				RotationAnnouncement: &RotationAnnouncement{
 					OldDID:          oldDID,
@@ -2727,15 +2855,15 @@ func TestInboxRotationAnnouncementUnrelatedOldDID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(InboxResponse{
 			Messages: []InboxMessage{{
-				MessageID:   "msg-hijack-1",
-				FromAgentID: "agent-1",
-				FromAlias:   "otherco/sender",
-				ToAlias:     "myco/agent",
-				Subject:     "hijack attempt",
-				Body:        "attacker tries to take over",
-				CreatedAt:   env.Timestamp,
-				FromDID:     newDID,
-				Signature:   sig,
+				MessageID:    "msg-hijack-1",
+				FromAgentID:  "agent-1",
+				FromAlias:    "otherco/sender",
+				ToAlias:      "myco/agent",
+				Subject:      "hijack attempt",
+				Body:         "attacker tries to take over",
+				CreatedAt:    env.Timestamp,
+				FromDID:      newDID,
+				Signature:    sig,
 				SigningKeyID: newDID,
 				RotationAnnouncement: &RotationAnnouncement{
 					OldDID:          attackerDID, // NOT the pinned DID!
@@ -2828,15 +2956,15 @@ func TestInboxRotationAnnouncementNewDIDMismatch(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(InboxResponse{
 			Messages: []InboxMessage{{
-				MessageID:   "msg-newdid-mismatch-1",
-				FromAgentID: "agent-1",
-				FromAlias:   "otherco/sender",
-				ToAlias:     "myco/agent",
-				Subject:     "mismatch test",
-				Body:        "new_did != from_did",
-				CreatedAt:   env.Timestamp,
-				FromDID:     senderDID,
-				Signature:   sig,
+				MessageID:    "msg-newdid-mismatch-1",
+				FromAgentID:  "agent-1",
+				FromAlias:    "otherco/sender",
+				ToAlias:      "myco/agent",
+				Subject:      "mismatch test",
+				Body:         "new_did != from_did",
+				CreatedAt:    env.Timestamp,
+				FromDID:      senderDID,
+				Signature:    sig,
 				SigningKeyID: senderDID,
 				RotationAnnouncement: &RotationAnnouncement{
 					OldDID:          oldDID,
@@ -2910,21 +3038,21 @@ func TestInboxRotationAnnouncementEmptyFields(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(InboxResponse{
 			Messages: []InboxMessage{{
-				MessageID:   "msg-empty-rot-1",
-				FromAgentID: "agent-1",
-				FromAlias:   "otherco/sender",
-				ToAlias:     "myco/agent",
-				Subject:     "empty fields test",
-				Body:        "rotation with missing fields",
-				CreatedAt:   env.Timestamp,
-				FromDID:     newDID,
-				Signature:   sig,
+				MessageID:    "msg-empty-rot-1",
+				FromAgentID:  "agent-1",
+				FromAlias:    "otherco/sender",
+				ToAlias:      "myco/agent",
+				Subject:      "empty fields test",
+				Body:         "rotation with missing fields",
+				CreatedAt:    env.Timestamp,
+				FromDID:      newDID,
+				Signature:    sig,
 				SigningKeyID: newDID,
 				RotationAnnouncement: &RotationAnnouncement{
 					OldDID:          oldDID,
 					NewDID:          newDID,
 					Timestamp:       "", // Missing timestamp!
-					OldKeySignature: "",  // Missing signature!
+					OldKeySignature: "", // Missing signature!
 				},
 			}},
 		})

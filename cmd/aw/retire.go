@@ -34,7 +34,7 @@ func runAgentRetire(cmd *cobra.Command, args []string) error {
 	// Validate successor address format.
 	parts := strings.SplitN(retireSuccessor, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return fmt.Errorf("successor must be namespace/alias, got %q", retireSuccessor)
+		return usageError("successor must be namespace/alias, got %q", retireSuccessor)
 	}
 
 	if sel.SigningKey == "" {

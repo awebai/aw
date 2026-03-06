@@ -33,7 +33,7 @@ var registerCmd = &cobra.Command{
 	Short: "Register a new account on an aweb server",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		loadDotenvBestEffort()
-		// No-op: register command doesn't require command initialization side-effects.
+		// No heartbeat for register — no credentials yet.
 	},
 	RunE: runRegister,
 }
@@ -56,7 +56,7 @@ func init() {
 func runRegister(cmd *cobra.Command, args []string) error {
 	serverURL := strings.TrimSpace(registerServer)
 	if serverURL == "" {
-		return usageError("Missing server URL (use --server-url)")
+		return usageError("missing server URL (use --server-url)")
 	}
 
 	baseURL, err := resolveWorkingBaseURL(serverURL)
@@ -68,20 +68,20 @@ func runRegister(cmd *cobra.Command, args []string) error {
 
 	email := strings.TrimSpace(registerEmail)
 	if email == "" {
-		return usageError("Missing email (use --email)")
+		return usageError("missing email (use --email)")
 	}
 	if at := strings.Index(email, "@"); at < 1 || at >= len(email)-1 {
-		return usageError("Invalid email address")
+		return usageError("invalid email address")
 	}
 
 	username := strings.TrimSpace(registerUsername)
 	if username == "" {
-		return usageError("Missing username (use --username)")
+		return usageError("missing username (use --username)")
 	}
 
 	alias := strings.TrimSpace(registerAlias)
 	if alias == "" {
-		return usageError("Missing alias (use --alias)")
+		return usageError("missing alias (use --alias)")
 	}
 
 	// When --code is provided, skip the Register call (which would send a
@@ -133,12 +133,12 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		}
 		switch code {
 		case 404:
-			return fmt.Errorf("this server does not support CLI registration. Visit %s to create an account", serverURL)
+			return fmt.Errorf("this server does not support CLI registration; visit %s to create an account", serverURL)
 		case 409:
 			body, _ := aweb.HTTPErrorBody(err)
 			return formatConflictError(body)
 		case 429:
-			return fmt.Errorf("rate limited. Please try again later")
+			return fmt.Errorf("rate limited; please try again later")
 		default:
 			return err
 		}
@@ -148,7 +148,11 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr, "Note: --namespace is ignored for new accounts. Your first namespace is your handle.")
 	}
 
-	return saveNewRegistration(ctx, resp, baseURL, serverName, email, username, alias, pub, priv, did, client)
+	if err := saveNewRegistration(ctx, resp, baseURL, serverName, email, username, alias, pub, priv, did, client); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // saveNewRegistration persists credentials from a successful new-user registration.
@@ -209,7 +213,7 @@ func saveNewRegistration(
 				NamespaceSlug: namespaceSlug,
 				DID:           resp.DID,
 				StableID:      stableID,
-				SigningKey:     signingKeyPath,
+				SigningKey:    signingKeyPath,
 				Custody:       resp.Custody,
 				Lifetime:      resp.Lifetime,
 			}
@@ -259,6 +263,7 @@ func saveNewRegistration(
 			fmt.Fprintln(os.Stderr, "Run 'aw verify --code CODE' to activate your agent.")
 		}
 	}
+
 	return nil
 }
 
@@ -309,10 +314,10 @@ func handleExistingAccount(
 			nsSlug = existing.Namespaces[0].Slug
 			fmt.Fprintf(os.Stderr, "Using namespace: %s\n", nsSlug)
 		} else if len(existing.Namespaces) > 1 && isTTY() {
-			var nsErr error
-			nsSlug, nsErr = promptNamespaceChoice(existing.Namespaces)
-			if nsErr != nil {
-				return nsErr
+			var choiceErr error
+			nsSlug, choiceErr = promptNamespaceChoice(existing.Namespaces)
+			if choiceErr != nil {
+				return choiceErr
 			}
 		} else if len(existing.Namespaces) > 1 {
 			fmt.Fprintln(os.Stderr, "Multiple namespaces available. Use --namespace to select one:")
@@ -341,6 +346,7 @@ func handleExistingAccount(
 			fmt.Fprint(os.Stderr, msg)
 			return nil
 		}
+		fmt.Fprintln(os.Stderr, "No code entered.")
 		return usageError("no code entered")
 	}
 
@@ -384,7 +390,7 @@ func verifyAndBootstrap(
 				}
 				msg += fmt.Sprintf("\nYour namespaces: %s", strings.Join(slugs, ", "))
 			}
-			return fmt.Errorf("%s", msg)
+			return usageError("%s", msg)
 		}
 		if ok && vcode == 400 {
 			body, _ := aweb.HTTPErrorBody(verr)
@@ -397,7 +403,7 @@ func verifyAndBootstrap(
 	}
 
 	if vresp.APIKey == "" {
-		return fmt.Errorf("verification succeeded but no API key returned. The server may not support inline bootstrap — try 'aw init --cloud' instead")
+		return fmt.Errorf("verification succeeded but no API key returned; the server may not support inline bootstrap — try 'aw init --cloud' instead")
 	}
 
 	namespaceSlug := strings.TrimSpace(vresp.NamespaceSlug)
@@ -443,10 +449,10 @@ func verifyAndBootstrap(
 		claimCode, ok := aweb.HTTPStatusCode(claimErr)
 		if ok && claimCode == 409 {
 			var recoveredCustody, recoveredLifetime string
-			var recoverErr error
-			did, signingKeyPath, recoveredCustody, recoveredLifetime, recoverErr = recoverIdentity409(claimCtx, authClient, keysDir, address)
-			if recoverErr != nil {
-				return recoverErr
+			var recoveryErr error
+			did, signingKeyPath, recoveredCustody, recoveredLifetime, recoveryErr = recoverIdentity409(claimCtx, authClient, keysDir, address)
+			if recoveryErr != nil {
+				return recoveryErr
 			}
 			if recoveredCustody != "" {
 				custody = recoveredCustody
@@ -492,7 +498,7 @@ func verifyAndBootstrap(
 				NamespaceSlug: namespaceSlug,
 				DID:           did,
 				StableID:      stableID,
-				SigningKey:     signingKeyPath,
+				SigningKey:    signingKeyPath,
 				Custody:       custody,
 				Lifetime:      lifetime,
 			}
@@ -549,8 +555,8 @@ func formatConflictError(body string) error {
 			Message string `json:"message"`
 			Details struct {
 				AttemptedUsername string `json:"attempted_username"`
-				AttemptedAlias   string `json:"attempted_alias"`
-				Source           string `json:"source"`
+				AttemptedAlias    string `json:"attempted_alias"`
+				Source            string `json:"source"`
 			} `json:"details"`
 		} `json:"error"`
 	}

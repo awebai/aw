@@ -26,7 +26,7 @@ var verifyCmd = &cobra.Command{
 	Short: "Verify email ownership with a 6-digit code",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		loadDotenvBestEffort()
-		// No-op: verify command doesn't require command initialization side-effects.
+		// No heartbeat — the API key may not be active yet.
 	},
 	RunE: runVerify,
 }
@@ -42,7 +42,7 @@ func init() {
 func runVerify(cmd *cobra.Command, args []string) error {
 	code := strings.TrimSpace(verifyCode)
 	if code == "" {
-		return usageError("Missing verification code (use --code)")
+		return usageError("missing verification code (use --code)")
 	}
 
 	email := strings.TrimSpace(verifyEmail)
@@ -62,7 +62,6 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		resolved, selErr := awconfig.Resolve(cfg, awconfig.ResolveOptions{
 			ServerName:        serverFlag,
 			AccountName:       accountFlag,
-			ClientName:        "aw",
 			WorkingDir:        wd,
 			AllowEnvOverrides: true,
 		})
@@ -82,11 +81,11 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	}
 
 	if email == "" {
-		return usageError("Missing email (use --email, or configure an account with an email field)")
+		return usageError("missing email (use --email, or configure an account with an email field)")
 	}
 
 	if serverURL == "" {
-		return usageError("Missing server URL (use --server-url, or configure a default account)")
+		return usageError("missing server URL (use --server-url, or configure a default account)")
 	}
 
 	baseURL, err := resolveWorkingBaseURL(serverURL)
@@ -118,7 +117,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		case 404:
 			return fmt.Errorf("no pending verification found for %s", email)
 		case 429:
-			return fmt.Errorf("too many verification attempts. Please try again later")
+			return fmt.Errorf("too many verification attempts; please try again later")
 		default:
 			return err
 		}
@@ -162,7 +161,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) error {
 	cfgPath, err := defaultGlobalPath()
 	if err != nil {
-		return fmt.Errorf("could not determine config path: %w", err)
+		return err
 	}
 	keysDir := awconfig.KeysDir(cfgPath)
 
@@ -256,10 +255,10 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) e
 				os.Remove(pubPath)
 			}
 			var recoveredCustody, recoveredLifetime string
-			var recoverErr error
-			did, signingKeyPath, recoveredCustody, recoveredLifetime, recoverErr = recoverIdentity409(claimCtx, authClient, keysDir, address)
-			if recoverErr != nil {
-				return recoverErr
+			var recoveryErr error
+			did, signingKeyPath, recoveredCustody, recoveredLifetime, recoveryErr = recoverIdentity409(claimCtx, authClient, keysDir, address)
+			if recoveryErr != nil {
+				return recoveryErr
 			}
 			if recoveredCustody != "" {
 				custody = recoveredCustody

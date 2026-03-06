@@ -273,23 +273,23 @@ func buildMessages(messages []aweb.ChatMessage) []Event {
 	events := make([]Event, len(messages))
 	for i, m := range messages {
 		events[i] = Event{
-			Type:               "message",
-			MessageID:          m.MessageID,
-			FromAgent:          m.FromAgent,
-			FromAddress:        m.FromAddress,
-			ToAddress:          m.ToAddress,
-			Body:               m.Body,
-			Timestamp:          m.Timestamp,
-			SenderLeaving:      m.SenderLeaving,
-			FromDID:            m.FromDID,
-			ToDID:              m.ToDID,
-			FromStableID:       m.FromStableID,
-			ToStableID:         m.ToStableID,
-			Signature:          m.Signature,
+			Type:                 "message",
+			MessageID:            m.MessageID,
+			FromAgent:            m.FromAgent,
+			FromAddress:          m.FromAddress,
+			ToAddress:            m.ToAddress,
+			Body:                 m.Body,
+			Timestamp:            m.Timestamp,
+			SenderLeaving:        m.SenderLeaving,
+			FromDID:              m.FromDID,
+			ToDID:                m.ToDID,
+			FromStableID:         m.FromStableID,
+			ToStableID:           m.ToStableID,
+			Signature:            m.Signature,
 			SigningKeyID:         m.SigningKeyID,
 			RotationAnnouncement: m.RotationAnnouncement,
 			VerificationStatus:   m.VerificationStatus,
-			IsContact:           m.IsContact,
+			IsContact:            m.IsContact,
 		}
 	}
 	return events

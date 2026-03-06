@@ -56,7 +56,7 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 	}
 
 	if sel.SigningKey == "" {
-		return usageError("No signing key configured. Use --self-custody to graduate from custodial to self-custody.")
+		return usageError("no signing key configured; use --self-custody to graduate from custodial to self-custody")
 	}
 	if sel.DID == "" {
 		return fmt.Errorf("no DID configured for this account")
@@ -88,11 +88,11 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 	// Persist locally: archive old key, save new keypair, update config.
 	// Config update is last — it is atomic via UpdateGlobalAt, so partial
 	// failure before that point leaves the config pointing at the old key.
-	cfgPath, err := defaultGlobalPath()
+	configPath, err := defaultGlobalPath()
 	if err != nil {
 		return err
 	}
-	keysDir := awconfig.KeysDir(cfgPath)
+	keysDir := awconfig.KeysDir(configPath)
 	address := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
 
 	if err := awconfig.ArchiveKey(keysDir, oldDID, oldPub, oldPriv); err != nil {
@@ -143,11 +143,11 @@ func runCustodialGraduation(sel *awconfig.Selection) error {
 	}
 
 	// Save new keypair.
-	cfgPath, err := defaultGlobalPath()
+	configPath, err := defaultGlobalPath()
 	if err != nil {
 		return err
 	}
-	keysDir := awconfig.KeysDir(cfgPath)
+	keysDir := awconfig.KeysDir(configPath)
 	address := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
 	if err := awconfig.SaveKeypair(keysDir, address, newPub, newPriv); err != nil {
 		return fmt.Errorf("save new keypair: %w", err)
@@ -211,11 +211,11 @@ func runDidLog(cmd *cobra.Command, args []string) error {
 
 // updateAccountIdentity updates DID, custody, and signing key path in the global config.
 func updateAccountIdentity(accountName, newDID, custody, signingKeyPath string) error {
-	cfgPath, err := defaultGlobalPath()
+	configPath, err := defaultGlobalPath()
 	if err != nil {
 		return err
 	}
-	return awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
+	return awconfig.UpdateGlobalAt(configPath, func(cfg *awconfig.GlobalConfig) error {
 		acct := cfg.Accounts[accountName]
 		acct.DID = newDID
 		acct.Custody = custody

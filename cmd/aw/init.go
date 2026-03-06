@@ -21,24 +21,24 @@ var initCmd = &cobra.Command{
 	Short: "Initialize agent credentials",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		loadDotenvBestEffort()
-		// No-op: init command doesn't require command initialization side-effects.
+		// No heartbeat for init — no credentials yet.
 	},
 	RunE: runInit,
 }
 
 var (
-	initServerURL      string
-	initNamespaceSlug  string
-	initNamespaceName  string
-	initAlias          string
-	initHumanName      string
-	initAgentType      string
-	initSaveConfig     bool
-	initSetDefault     bool
-	initWriteContext   bool
-	initPrintExports   bool
-	initCloudToken     string
-	initCloudMode      bool
+	initServerURL       string
+	initNamespaceSlug   string
+	initNamespaceName   string
+	initAlias           string
+	initHumanName       string
+	initAgentType       string
+	initSaveConfig      bool
+	initSetDefault      bool
+	initWriteContext    bool
+	initPrintExports    bool
+	initCloudToken      string
+	initCloudMode       bool
 	initTargetNamespace string
 )
 
@@ -95,7 +95,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 			}
 			nsSlug = v
 		} else {
-			return usageError("Missing namespace (use --namespace or AWEB_NAMESPACE)")
+			return usageError("missing namespace (use --namespace or AWEB_NAMESPACE)")
 		}
 	}
 
@@ -204,7 +204,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		HumanName:   humanName,
 		AgentType:   agentType,
 		DID:         did,
-		PublicKey:    pubKeyB64,
+		PublicKey:   pubKeyB64,
 		Custody:     aweb.CustodySelf,
 		Lifetime:    aweb.LifetimePersistent,
 	}
@@ -285,7 +285,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 				NamespaceSlug: namespaceSlug,
 				DID:           resp.DID,
 				StableID:      stableID,
-				SigningKey:     signingKeyPath,
+				SigningKey:    signingKeyPath,
 				Custody:       resp.Custody,
 				Lifetime:      resp.Lifetime,
 			}

@@ -2,6 +2,7 @@ package aweb
 
 import (
 	"context"
+	"errors"
 	"strings"
 )
 
@@ -37,64 +38,69 @@ type SendMessageResponse struct {
 }
 
 func (c *Client) SendMessage(ctx context.Context, req *SendMessageRequest) (*SendMessageResponse, error) {
-	to := req.ToAlias
+	if req == nil {
+		return nil, errors.New("aweb: request is required")
+	}
+	payload := *req
+
+	to := payload.ToAlias
 	if to == "" {
-		to = req.ToAgentID
+		to = payload.ToAgentID
 	}
 	// When self-custody signing, use canonical address (namespace/alias)
 	// so the signature matches what aweb returns in to_address on the inbox side.
 	// Only canonicalize plain aliases, not raw agent IDs (ToAgentID path).
-	if c.signingKey != nil && req.ToAlias != "" && !strings.Contains(req.ToAlias, "/") {
+	if c.signingKey != nil && payload.ToAlias != "" && !strings.Contains(payload.ToAlias, "/") {
 		if ns := c.namespaceSlug(); ns != "" {
-			to = ns + "/" + req.ToAlias
+			to = ns + "/" + payload.ToAlias
 		}
 	}
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
 		To:      to,
 		Type:    "mail",
-		Subject: req.Subject,
-		Body:    req.Body,
+		Subject: payload.Subject,
+		Body:    payload.Body,
 	})
 	if err != nil {
 		return nil, err
 	}
-	req.FromDID = sf.FromDID
-	req.ToDID = sf.ToDID
-	req.FromStableID = sf.FromStableID
-	req.Signature = sf.Signature
-	req.SigningKeyID = sf.SigningKeyID
-	req.Timestamp = sf.Timestamp
-	req.MessageID = sf.MessageID
+	payload.FromDID = sf.FromDID
+	payload.ToDID = sf.ToDID
+	payload.FromStableID = sf.FromStableID
+	payload.Signature = sf.Signature
+	payload.SigningKeyID = sf.SigningKeyID
+	payload.Timestamp = sf.Timestamp
+	payload.MessageID = sf.MessageID
 
 	var out SendMessageResponse
-	if err := c.post(ctx, "/v1/messages", req, &out); err != nil {
+	if err := c.post(ctx, "/v1/messages", &payload, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
 type InboxMessage struct {
-	MessageID          string             `json:"message_id"`
-	FromAgentID        string             `json:"from_agent_id"`
-	FromAlias          string             `json:"from_alias"`
-	ToAlias            string             `json:"to_alias,omitempty"`
-	FromAddress        string             `json:"from_address,omitempty"`
-	ToAddress          string             `json:"to_address,omitempty"`
-	Subject            string             `json:"subject"`
-	Body               string             `json:"body"`
-	Priority           MessagePriority    `json:"priority"`
-	ThreadID           *string            `json:"thread_id"`
-	ReadAt             *string            `json:"read_at"`
-	CreatedAt          string             `json:"created_at"`
-	FromDID            string             `json:"from_did,omitempty"`
-	ToDID              string             `json:"to_did,omitempty"`
-	FromStableID       string             `json:"from_stable_id,omitempty"`
-	ToStableID         string             `json:"to_stable_id,omitempty"`
-	Signature              string                `json:"signature,omitempty"`
-	SigningKeyID           string                `json:"signing_key_id,omitempty"`
-	RotationAnnouncement   *RotationAnnouncement `json:"rotation_announcement,omitempty"`
-	VerificationStatus     VerificationStatus    `json:"verification_status,omitempty"`
-	IsContact              *bool                 `json:"is_contact,omitempty"`
+	MessageID            string                `json:"message_id"`
+	FromAgentID          string                `json:"from_agent_id"`
+	FromAlias            string                `json:"from_alias"`
+	ToAlias              string                `json:"to_alias,omitempty"`
+	FromAddress          string                `json:"from_address,omitempty"`
+	ToAddress            string                `json:"to_address,omitempty"`
+	Subject              string                `json:"subject"`
+	Body                 string                `json:"body"`
+	Priority             MessagePriority       `json:"priority"`
+	ThreadID             *string               `json:"thread_id"`
+	ReadAt               *string               `json:"read_at"`
+	CreatedAt            string                `json:"created_at"`
+	FromDID              string                `json:"from_did,omitempty"`
+	ToDID                string                `json:"to_did,omitempty"`
+	FromStableID         string                `json:"from_stable_id,omitempty"`
+	ToStableID           string                `json:"to_stable_id,omitempty"`
+	Signature            string                `json:"signature,omitempty"`
+	SigningKeyID         string                `json:"signing_key_id,omitempty"`
+	RotationAnnouncement *RotationAnnouncement `json:"rotation_announcement,omitempty"`
+	VerificationStatus   VerificationStatus    `json:"verification_status,omitempty"`
+	IsContact            *bool                 `json:"is_contact,omitempty"`
 }
 
 type InboxResponse struct {

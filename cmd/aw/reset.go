@@ -76,7 +76,7 @@ func runResetLocal() error {
 // runResetRemote clears the server identity and re-provisions.
 func runResetRemote() error {
 	if !resetConfirm {
-		return usageError("Remote reset requires --confirm to prevent accidental identity resets.\nUsage: aw reset --remote --confirm")
+		return usageError("remote reset requires --confirm to prevent accidental identity resets; usage: aw reset --remote --confirm")
 	}
 
 	cfgPath, err := defaultGlobalPath()
@@ -93,7 +93,6 @@ func runResetRemote() error {
 	sel, selErr := awconfig.Resolve(cfg, awconfig.ResolveOptions{
 		ServerName:        serverFlag,
 		AccountName:       accountFlag,
-		ClientName:        "aw",
 		WorkingDir:        wd,
 		AllowEnvOverrides: true,
 	})
@@ -104,10 +103,10 @@ func runResetRemote() error {
 	baseURL := strings.TrimSpace(sel.BaseURL)
 	apiKey := strings.TrimSpace(sel.APIKey)
 	if baseURL == "" {
-		return usageError("Missing server URL. Set AWEB_URL (or configure a server in aw config).")
+		return usageError("missing server URL; set AWEB_URL (or configure a server in aw config)")
 	}
 	if apiKey == "" {
-		return usageError("Missing API key. Set AWEB_API_KEY (or configure an account in aw config).")
+		return usageError("missing API key; set AWEB_API_KEY (or configure an account in aw config)")
 	}
 
 	baseURL, err = resolveWorkingBaseURL(baseURL)

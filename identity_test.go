@@ -3,6 +3,7 @@ package aweb
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -107,6 +108,81 @@ func TestServerResolverValidAddress(t *testing.T) {
 	}
 	if identity.ResolvedVia != "server" {
 		t.Fatalf("ResolvedVia=%q", identity.ResolvedVia)
+	}
+}
+
+func TestServerResolverIncludesStableIDAndPublicKey(t *testing.T) {
+	t.Parallel()
+
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	pubB64 := base64.RawStdEncoding.EncodeToString(pub)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"did":        did,
+			"stable_id":  "did:claw:test123",
+			"address":    "mycompany/researcher",
+			"public_key": pubB64,
+			"custody":    "self",
+			"lifetime":   "persistent",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &ServerResolver{Client: c}
+	identity, err := r.Resolve(context.Background(), "mycompany/researcher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.StableID != "did:claw:test123" {
+		t.Fatalf("stable_id=%q", identity.StableID)
+	}
+	if identity.PublicKey == nil || !identity.PublicKey.Equal(pub) {
+		t.Fatal("public_key was not decoded correctly")
+	}
+}
+
+func TestServerResolverRejectsDIDPublicKeyMismatch(t *testing.T) {
+	t.Parallel()
+
+	pubA, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	didA := ComputeDIDKey(pubA)
+	pubBB64 := base64.RawStdEncoding.EncodeToString(pubB)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"did":        didA,
+			"address":    "mycompany/researcher",
+			"public_key": pubBB64,
+			"custody":    "self",
+			"lifetime":   "persistent",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &ServerResolver{Client: c}
+	_, err = r.Resolve(context.Background(), "mycompany/researcher")
+	if err == nil {
+		t.Fatal("expected DID/public_key mismatch error")
 	}
 }
 
