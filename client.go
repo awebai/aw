@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -99,7 +100,7 @@ type Client struct {
 	pinStorePath  string             // disk path for persisting pin store
 	clawDIDClient *ClawDIDClient     // optional; ClawDID registry client for split-trust verification
 	metaCache           sync.Map // address → *agentMeta; cached resolver results
-	latestClientVersion string   // last seen X-Latest-Client-Version header
+	latestClientVersion atomic.Value // last seen X-Latest-Client-Version header (string)
 }
 
 // New creates a new client.
@@ -182,7 +183,12 @@ func (c *Client) SetClawDIDClient(dc *ClawDIDClient) {
 
 // LatestClientVersion returns the most recent X-Latest-Client-Version header
 // value seen in any API response, or empty if no header was received.
-func (c *Client) LatestClientVersion() string { return c.latestClientVersion }
+func (c *Client) LatestClientVersion() string {
+	if v, ok := c.latestClientVersion.Load().(string); ok {
+		return v
+	}
+	return ""
+}
 
 // resolveAgentMeta returns cached lifetime/custody metadata for a sender address.
 // On first contact, resolves via the client's IdentityResolver and caches the result.
@@ -486,7 +492,7 @@ func (c *Client) doRaw(ctx context.Context, method, path, accept string, in any)
 		return nil, err
 	}
 	if v := resp.Header.Get("X-Latest-Client-Version"); v != "" {
-		c.latestClientVersion = v
+		c.latestClientVersion.Store(v)
 	}
 	return resp, nil
 }

@@ -55,7 +55,9 @@ func init() {
 }
 
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	err := rootCmd.Execute()
+	checkVersionFromHeader()
+	if err != nil {
 		msg := err.Error()
 		if hint := checkVerificationRequired(err); hint != "" {
 			msg = hint
@@ -63,7 +65,6 @@ func Execute() {
 		fmt.Fprintln(os.Stderr, msg)
 		os.Exit(exitCode(err))
 	}
-	checkVersionFromHeader()
 }
 
 // checkVersionFromHeader prints a stderr warning if the server reported

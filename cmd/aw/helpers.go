@@ -131,6 +131,7 @@ func resolveAPIKeyOnly() (*aweb.Client, *awconfig.Selection, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid base URL: %w", err)
 	}
+	lastClient = c
 	return c, sel, nil
 }
 
