@@ -62,6 +62,8 @@ func ControlEventFromAgentEvent(evt aweb.AgentEvent) (ControlEvent, bool) {
 		return ControlEvent{Type: ControlResume}, true
 	case aweb.AgentEventControlInterrupt:
 		return ControlEvent{Type: ControlStop}, true
+	case aweb.AgentEventError:
+		return ControlEvent{Type: ControlStreamError, Text: strings.TrimSpace(evt.Text)}, true
 	default:
 		return ControlEvent{}, false
 	}

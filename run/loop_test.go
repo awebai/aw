@@ -39,6 +39,27 @@ func (f *fakeWakeStream) Stream(context.Context, time.Time) (<-chan aweb.AgentEv
 	return f.events, f.errs
 }
 
+type fakeProvider struct {
+	event *Event
+}
+
+func (fakeProvider) Name() string { return "fake" }
+
+func (fakeProvider) BuildCommand(prompt string, opts BuildOptions) ([]string, error) {
+	return []string{"fake-provider", prompt}, nil
+}
+
+func (f fakeProvider) ParseOutput(line string) (*Event, error) {
+	return f.event, nil
+}
+
+func (fakeProvider) SessionID(event *Event) string {
+	if event == nil {
+		return ""
+	}
+	return event.Session
+}
+
 func TestLoopMaintainsClaudeSessionContinuity(t *testing.T) {
 	var commands [][]string
 	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
@@ -124,5 +145,70 @@ func TestLoopWaitForWorkWakesOnChatMessage(t *testing.T) {
 
 	if err := <-done; err != nil {
 		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestLoopWaitForWorkWakesOnEventStreamError(t *testing.T) {
+	stream := newFakeWakeStream()
+	var out bytes.Buffer
+	loop := NewLoop(ClaudeProvider{}, &out)
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	loop.WakeStream = stream
+
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.waitForWorkEvents(context.Background(), 30, &state{})
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	stream.events <- aweb.AgentEvent{Type: aweb.AgentEventError, Text: "wake failed"}
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !strings.Contains(out.String(), "info: event stream error: wake failed") {
+		t.Fatalf("expected stream error to be printed, got %q", out.String())
+	}
+}
+
+func TestStartWakeControlRelayRelaysEventStreamError(t *testing.T) {
+	stream := newFakeWakeStream()
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.WakeStream = stream
+	relay := loop.startWakeControlRelay(context.Background())
+
+	stream.events <- aweb.AgentEvent{Type: aweb.AgentEventError, Text: "stream broke"}
+
+	select {
+	case event := <-relay:
+		if event.Type != ControlStreamError {
+			t.Fatalf("expected %q, got %q", ControlStreamError, event.Type)
+		}
+		if event.Text != "stream broke" {
+			t.Fatalf("expected relayed error text, got %q", event.Text)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for relayed stream error")
+	}
+}
+
+func TestLoopDoesNotSuppressBdhSpecificEchoText(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(fakeProvider{
+		event: &Event{
+			Type: EventText,
+			Text: "Primary mission:\nAGENTS.md instructions\nProject Context\n",
+		},
+	}, &out)
+	st := &state{}
+
+	loop.handleOutputLine("ignored", &presenterState{}, st, nil)
+
+	got := out.String()
+	if !strings.Contains(got, "AGENTS.md instructions") {
+		t.Fatalf("expected echoed prompt text to be preserved, got %q", got)
+	}
+	if strings.Contains(got, "[suppressed prompt/policy echo]") {
+		t.Fatalf("unexpected suppression marker in output: %q", got)
 	}
 }

@@ -44,8 +44,6 @@ type state struct {
 	NextPrompt         string
 	PendingInput       bool
 	InputBuffer        string
-	TextProbe          string
-	SuppressText       bool
 	StructuredOut      bool
 	LastRunError       string
 	LastRunUsage       UsageStats
@@ -233,8 +231,6 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 	l.renderInputPrompt(st)
 
 	presenter := &presenterState{}
-	st.TextProbe = ""
-	st.SuppressText = false
 	st.StructuredOut = false
 	observedSessionID := ""
 	runCtx, cancel := context.WithCancel(ctx)
@@ -333,6 +329,9 @@ func (l *Loop) startWakeControlRelay(ctx context.Context) <-chan ControlEvent {
 						return
 					case relay <- control:
 					}
+					if evt.Type == aweb.AgentEventError {
+						streamOpen = false
+					}
 				case err, ok := <-errs:
 					if !ok {
 						errs = nil
@@ -387,9 +386,6 @@ func (l *Loop) handleOutputLine(line string, presenter *presenterState, st *stat
 	}
 	switch event.Type {
 	case EventText:
-		if l.shouldSuppressText(st, event.Text) {
-			return
-		}
 		l.runPresenterEnsureTextSpacing(presenter)
 		l.print(event.Text)
 		presenter.lastWasText = true
@@ -450,29 +446,6 @@ func (l *Loop) runPresenterEnsureStructuredSpacing(presenter *presenterState) {
 		presenter.lastWasText = false
 		presenter.lastTextEndedWithNewline = false
 	}
-}
-
-func (l *Loop) shouldSuppressText(st *state, text string) bool {
-	if st == nil || st.StructuredOut {
-		return false
-	}
-	if st.SuppressText {
-		return true
-	}
-	st.TextProbe += text
-	if len(st.TextProbe) > 4000 {
-		st.TextProbe = st.TextProbe[len(st.TextProbe)-4000:]
-	}
-	probe := st.TextProbe
-	if len(probe) < 200 {
-		return false
-	}
-	if strings.Contains(probe, "AGENTS.md instructions") || strings.Contains(probe, "Project Context") {
-		st.SuppressText = true
-		l.println("[suppressed prompt/policy echo]")
-		return true
-	}
-	return false
 }
 
 func (l *Loop) waitForNextCycle(ctx context.Context, waitSeconds int, st *state) error {
@@ -574,7 +547,7 @@ func (l *Loop) shouldWakeForEvent(evt aweb.AgentEvent, st *state) bool {
 	case aweb.AgentEventControlPause, aweb.AgentEventControlResume, aweb.AgentEventControlInterrupt:
 		return true
 	case aweb.AgentEventError:
-		return false
+		return true
 	default:
 		return false
 	}
@@ -592,6 +565,13 @@ func (l *Loop) handleImmediateWakeEvent(ctx context.Context, evt aweb.AgentEvent
 	case aweb.AgentEventControlResume:
 		st.Paused = false
 		st.PauseNoticeShown = false
+		return true
+	case aweb.AgentEventError:
+		if text := strings.TrimSpace(evt.Text); text != "" {
+			l.printf("info: event stream error: %s\n", text)
+		} else {
+			l.println("info: event stream error")
+		}
 		return true
 	default:
 		return true
@@ -796,6 +776,13 @@ func (l *Loop) applyControlEvent(event ControlEvent, st *state, activeRun bool, 
 	case ControlAutofeedOff:
 		st.Autofeed = false
 		l.announceAutofeedState(false, "off. only comms can wake the agent.")
+		l.renderInputPrompt(st)
+	case ControlStreamError:
+		if text := strings.TrimSpace(event.Text); text != "" {
+			l.printf("info: event stream error: %s\n", text)
+		} else {
+			l.println("info: event stream error")
+		}
 		l.renderInputPrompt(st)
 	case ControlQuit:
 		l.confirmExit(st, activeRun, cancel)

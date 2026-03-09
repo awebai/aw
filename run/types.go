@@ -86,6 +86,7 @@ const (
 	ControlResume        ControlEventType = "resume"
 	ControlAutofeedOn    ControlEventType = "autofeed_on"
 	ControlAutofeedOff   ControlEventType = "autofeed_off"
+	ControlStreamError   ControlEventType = "stream_error"
 	ControlInterrupt     ControlEventType = "interrupt"
 	ControlExitPrompt    ControlEventType = "exit_prompt"
 	ControlExitConfirm   ControlEventType = "exit_confirm"
