@@ -29,16 +29,20 @@ func loadDotenvBestEffort() {
 var lastClient *aweb.Client
 
 func resolveClientSelection() (*aweb.Client, *awconfig.Selection, error) {
+	wd, _ := os.Getwd()
+	return resolveClientSelectionForDir(wd)
+}
+
+func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Selection, error) {
 	cfg, err := awconfig.LoadGlobal()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read config: %w", err)
 	}
-	wd, _ := os.Getwd()
 	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
 		ServerName:        serverFlag,
 		AccountName:       accountFlag,
 		ClientName:        "aw",
-		WorkingDir:        wd,
+		WorkingDir:        workingDir,
 		AllowEnvOverrides: true,
 	})
 	if err != nil {

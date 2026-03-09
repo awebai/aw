@@ -1,0 +1,211 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+
+	aweb "github.com/awebai/aw"
+	awrun "github.com/awebai/aw/run"
+	"github.com/spf13/cobra"
+)
+
+var (
+	runWaitSeconds  int
+	runContinueMode bool
+	runMaxRuns      int
+	runIdleWait     int
+	runBasePrompt   string
+	runWorkPrompt   string
+	runCommsPrompt  string
+	runWorkingDir   string
+	runAllowedTools string
+	runModel        string
+	runCompactPct   int
+	runProviderName string
+	runAutofeedWork bool
+	runInitConfig   bool
+)
+
+var (
+	runLoadUserConfig      = awrun.LoadUserConfig
+	runInitUserConfig      = awrun.InitUserConfig
+	runResolveSettings     = awrun.ResolveSettings
+	runNewProvider         = awrun.NewProvider
+	runNewLoop             = awrun.NewLoop
+	runExecuteLoop         = func(loop *awrun.Loop, ctx context.Context, opts awrun.LoopOptions) error { return loop.Run(ctx, opts) }
+	runNewWakeStream       = func(client *aweb.Client) awrun.WakeStream { return awrun.NewClientWakeStream(client) }
+	runNewScreenController = awrun.NewScreenController
+	runResolveClientForDir = resolveClientSelectionForDir
+	runGetwd               = os.Getwd
+)
+
+var runCmd = &cobra.Command{
+	Use:   "run [prompt]",
+	Short: "Run an AI coding agent in a loop",
+	Long: `Run an AI coding agent in a loop.
+
+Current implementation includes:
+  - repeated provider invocations (currently Claude and Codex)
+  - provider session continuity when --continue is requested
+  - /stop, /wait, /resume, /autofeed on|off, /quit, and prompt override controls
+  - aw event-stream wakeups for mail, chat, and optional work events
+  - optional background services declared in aw run config
+
+This aw-first command intentionally excludes bead-specific dispatch and policy glue.`,
+	Args: cobra.ArbitraryArgs,
+	RunE: runRun,
+}
+
+func init() {
+	runCmd.Flags().StringVar(&runBasePrompt, "base-prompt", "", "Override the configured base mission prompt for this run")
+	runCmd.Flags().StringVar(&runWorkPrompt, "work-prompt-suffix", "", "Override the configured work cycle prompt suffix for this run")
+	runCmd.Flags().StringVar(&runCommsPrompt, "comms-prompt-suffix", "", "Override the configured comms cycle prompt suffix for this run")
+	runCmd.Flags().IntVar(&runWaitSeconds, "wait", awrun.DefaultWaitSeconds, "Idle seconds between runs")
+	runCmd.Flags().IntVar(&runIdleWait, "idle-wait", awrun.DefaultIdleWaitSeconds, "Reserved idle-wait setting for future dispatch modes")
+	runCmd.Flags().IntVar(&runCompactPct, "compact-threshold-pct", awrun.DefaultCompactThreshold, "Run /compact after a successful cycle when context usage exceeds this percent (0 disables)")
+	runCmd.Flags().BoolVar(&runContinueMode, "continue", false, "Continue the most recent provider session across runs")
+	runCmd.Flags().BoolVar(&runContinueMode, "session", false, "Deprecated alias for --continue")
+	_ = runCmd.Flags().MarkDeprecated("session", "use --continue instead")
+	runCmd.Flags().IntVar(&runMaxRuns, "max-runs", 0, "Stop after N runs (0 means infinite)")
+	runCmd.Flags().StringVar(&runWorkingDir, "dir", "", "Working directory for the agent process")
+	runCmd.Flags().StringVar(&runAllowedTools, "allowed-tools", "", "Provider-specific allowed tools string")
+	runCmd.Flags().StringVar(&runModel, "model", "", "Provider-specific model override")
+	runCmd.Flags().StringVar(&runProviderName, "provider", "claude", "Agent provider to run")
+	runCmd.Flags().BoolVar(&runAutofeedWork, "autofeed-work", false, "Wake for work-related events in addition to incoming mail/chat")
+	runCmd.Flags().BoolVar(&runInitConfig, "init", false, "Prompt for ~/.config/aw/run.json values and write them")
+
+	rootCmd.AddCommand(runCmd)
+}
+
+func runRun(cmd *cobra.Command, args []string) error {
+	if runMaxRuns < 0 {
+		return fmt.Errorf("--max-runs must be >= 0")
+	}
+
+	workingDir, err := effectiveRunDir()
+	if err != nil {
+		return err
+	}
+
+	runCfg, err := runLoadUserConfig(workingDir)
+	if err != nil {
+		return err
+	}
+	if runInitConfig {
+		return runInitUserConfig(cmd.InOrStdin(), cmd.OutOrStdout(), runCfg)
+	}
+
+	settings, err := runResolveSettings(runCfg, awrun.SettingOverrides{
+		BasePrompt:        changedStringPtr(cmd, "base-prompt", runBasePrompt),
+		WorkPromptSuffix:  changedStringPtr(cmd, "work-prompt-suffix", runWorkPrompt),
+		CommsPromptSuffix: changedStringPtr(cmd, "comms-prompt-suffix", runCommsPrompt),
+		WaitSeconds:       changedIntPtr(cmd, "wait", runWaitSeconds),
+		IdleWaitSeconds:   changedIntPtr(cmd, "idle-wait", runIdleWait),
+		CompactThreshold:  changedIntPtr(cmd, "compact-threshold-pct", runCompactPct),
+	})
+	if err != nil {
+		return err
+	}
+
+	initialPrompt := strings.TrimSpace(strings.Join(args, " "))
+	if strings.TrimSpace(settings.BasePrompt) == "" && initialPrompt == "" {
+		return usageError("missing prompt (pass a prompt argument, --base-prompt, or configure base_prompt with `aw run --init`)")
+	}
+
+	provider, err := runNewProvider(runProviderName)
+	if err != nil {
+		return err
+	}
+
+	client, sel, err := runResolveClientForDir(workingDir)
+	if err != nil {
+		return err
+	}
+
+	inputPromptLabel := awrun.IdentityPromptLabel(sel.NamespaceSlug, "", "", sel.AgentAlias)
+	screen := runNewScreenController(cmd.InOrStdin(), cmd.OutOrStdout())
+	if screen != nil {
+		screen.SetPromptLabel(inputPromptLabel)
+	}
+
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+	defer stop()
+
+	loop := runNewLoop(provider, cmd.OutOrStdout())
+	loop.WakeStream = runNewWakeStream(client)
+	loop.Control = screen
+	loop.InputPromptLabel = inputPromptLabel
+
+	opts := awrun.LoopOptions{
+		InitialPrompt:       initialPrompt,
+		Prompt:              settings.BasePrompt,
+		WaitSeconds:         settings.WaitSeconds,
+		IdleWaitSeconds:     settings.IdleWaitSeconds,
+		MaxRuns:             runMaxRuns,
+		Autofeed:            runAutofeedWork,
+		ContinueMode:        runContinueMode,
+		WorkingDir:          workingDir,
+		AllowedTools:        runAllowedTools,
+		Model:               runModel,
+		CompactThresholdPct: settings.CompactThreshold,
+		Services:            settings.Services,
+	}
+
+	err = runExecuteLoop(loop, ctx, opts)
+	if err == nil || err == context.Canceled {
+		return nil
+	}
+	return err
+}
+
+func effectiveRunDir() (string, error) {
+	dir := strings.TrimSpace(runWorkingDir)
+	if dir == "" {
+		return runGetwd()
+	}
+	return filepath.Abs(dir)
+}
+
+func changedStringPtr(cmd *cobra.Command, name string, value string) *string {
+	if !cmd.Flags().Changed(name) {
+		return nil
+	}
+	result := value
+	return &result
+}
+
+func changedIntPtr(cmd *cobra.Command, name string, value int) *int {
+	if !cmd.Flags().Changed(name) {
+		return nil
+	}
+	result := value
+	return &result
+}
+
+func initRunCommandVars() {
+	runWaitSeconds = awrun.DefaultWaitSeconds
+	runContinueMode = false
+	runMaxRuns = 0
+	runIdleWait = awrun.DefaultIdleWaitSeconds
+	runBasePrompt = ""
+	runWorkPrompt = ""
+	runCommsPrompt = ""
+	runWorkingDir = ""
+	runAllowedTools = ""
+	runModel = ""
+	runCompactPct = awrun.DefaultCompactThreshold
+	runProviderName = "claude"
+	runAutofeedWork = false
+	runInitConfig = false
+}
+
+func setRunCommandIO(cmd *cobra.Command, in io.Reader, out io.Writer, errOut io.Writer) {
+	cmd.SetIn(in)
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+}
