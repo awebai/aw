@@ -196,6 +196,11 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 		}
 		return decision, nil
 	}
+	// Without an external dispatcher, run one cycle then rely on wake/control
+	// signals for subsequent cycles instead of periodic timer-triggered reruns.
+	if st.Run > 0 {
+		return DispatchDecision{WaitSeconds: opts.WaitSeconds, Skip: true}, nil
+	}
 	return DispatchDecision{MissionPrompt: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
 }
 

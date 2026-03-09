@@ -3,6 +3,7 @@ package run
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,20 @@ func (f *fakeWakeStream) Stream(context.Context, time.Time) (<-chan aweb.AgentEv
 	return f.events, f.errs
 }
 
+type fakeDispatcher struct {
+	decisions []DispatchDecision
+	index     int
+}
+
+func (d *fakeDispatcher) Next(context.Context, bool) (DispatchDecision, error) {
+	if d.index >= len(d.decisions) {
+		return DispatchDecision{}, errors.New("no dispatch decision available")
+	}
+	decision := d.decisions[d.index]
+	d.index++
+	return decision, nil
+}
+
 type fakeProvider struct {
 	event *Event
 }
@@ -71,9 +86,14 @@ func TestLoopMaintainsClaudeSessionContinuity(t *testing.T) {
 	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
 	controller := newFakeInputController()
 	loop.Control = controller
+	loop.Dispatch = &fakeDispatcher{
+		decisions: []DispatchDecision{
+			{MissionPrompt: "persistent mission", WaitSeconds: 1},
+			{MissionPrompt: "persistent mission", WaitSeconds: 1},
+		},
+	}
 
 	err := loop.Run(context.Background(), LoopOptions{
-		Prompt:      "persistent mission",
 		WaitSeconds: 1,
 		MaxRuns:     2,
 	})
@@ -101,9 +121,14 @@ func TestLoopMaintainsCodexSessionContinuity(t *testing.T) {
 		return nil
 	}
 	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	loop.Dispatch = &fakeDispatcher{
+		decisions: []DispatchDecision{
+			{MissionPrompt: "persistent mission", WaitSeconds: 1},
+			{MissionPrompt: "persistent mission", WaitSeconds: 1},
+		},
+	}
 
 	err := loop.Run(context.Background(), LoopOptions{
-		Prompt:      "persistent mission",
 		WaitSeconds: 1,
 		MaxRuns:     2,
 	})
@@ -124,20 +149,11 @@ func TestLoopMaintainsCodexSessionContinuity(t *testing.T) {
 func TestLoopWaitForWorkWakesOnChatMessage(t *testing.T) {
 	stream := newFakeWakeStream()
 	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
-	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
-		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
-		return nil
-	}
-	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
 	loop.WakeStream = stream
 
 	done := make(chan error, 1)
 	go func() {
-		done <- loop.Run(context.Background(), LoopOptions{
-			Prompt:      "persistent mission",
-			WaitSeconds: 30,
-			MaxRuns:     2,
-		})
+		done <- loop.waitForWorkEvents(context.Background(), 30, &state{})
 	}()
 
 	time.Sleep(20 * time.Millisecond)
@@ -210,5 +226,79 @@ func TestLoopDoesNotSuppressBdhSpecificEchoText(t *testing.T) {
 	}
 	if strings.Contains(got, "[suppressed prompt/policy echo]") {
 		t.Fatalf("unexpected suppression marker in output: %q", got)
+	}
+}
+
+func TestLoopInitialPromptOnlyWaitsForWakeInsteadOfTimerExit(t *testing.T) {
+	stream := newFakeWakeStream()
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.WakeStream = stream
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.Run(ctx, LoopOptions{
+			InitialPrompt: "what are we working on?",
+			WaitSeconds:   1,
+		})
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("loop exited unexpectedly: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	cancel()
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled after explicit cancel, got %v", err)
+	}
+}
+
+func TestLoopBasePromptDoesNotAutoRerunWithoutWake(t *testing.T) {
+	stream := newFakeWakeStream()
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.WakeStream = stream
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	runCount := 0
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		runCount++
+		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.Run(ctx, LoopOptions{
+			Prompt:      "persistent mission",
+			WaitSeconds: 1,
+		})
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("loop exited unexpectedly: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	if runCount != 1 {
+		t.Fatalf("expected exactly one run without wake events, got %d", runCount)
+	}
+
+	cancel()
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled after explicit cancel, got %v", err)
 	}
 }
