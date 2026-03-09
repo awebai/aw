@@ -8,9 +8,79 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestWhoAmIUsesConfiguredBaseURLWithoutExtraNetworkCalls(t *testing.T) {
+	t.Parallel()
+
+	var requestCount int32
+	var gotPath string
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		switch r.URL.Path {
+		case "/api/v1/auth/introspect":
+			gotPath = r.URL.Path
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id":     "proj_123",
+				"agent_id":       "ag_123",
+				"alias":          "eve",
+				"namespace_slug": "acme",
+				"address":        "acme/eve",
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, _ := os.Getwd()
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`/api
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+    agent_alias: eve
+    namespace_slug: acme
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "whoami", "--json")
+	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+
+	if gotPath != "/api/v1/auth/introspect" {
+		t.Fatalf("path=%s", gotPath)
+	}
+	if atomic.LoadInt32(&requestCount) != 1 {
+		t.Fatalf("requestCount=%d", atomic.LoadInt32(&requestCount))
+	}
+}
 
 func TestMailSendNetworkAddressRoutesToCloudEndpoint(t *testing.T) {
 	t.Parallel()
@@ -31,11 +101,11 @@ func TestMailSendNetworkAddressRoutesToCloudEndpoint(t *testing.T) {
 				"from_address": "myorg/me",
 				"to_address":   "acme/researcher",
 			})
-			case "/api/v1/agents/heartbeat":
-				w.WriteHeader(http.StatusOK)
-			default:
-				t.Fatalf("unexpected path=%s", r.URL.Path)
-			}
+		case "/api/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -182,11 +252,11 @@ func TestChatSendNetworkAddressRoutesToCloudEndpoint(t *testing.T) {
 				"targets_connected": []string{},
 				"targets_left":      []string{},
 			})
-			case "/api/v1/agents/heartbeat":
-				w.WriteHeader(http.StatusOK)
-			default:
-				t.Fatalf("unexpected path=%s", r.URL.Path)
-			}
+		case "/api/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -391,11 +461,11 @@ func TestDirectorySearch(t *testing.T) {
 				}},
 				"total": 1,
 			})
-			case "/api/v1/agents/heartbeat":
-				w.WriteHeader(http.StatusOK)
-			default:
-				t.Fatalf("unexpected path=%s", r.URL.Path)
-			}
+		case "/api/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -461,11 +531,11 @@ func TestDirectoryGetByAddress(t *testing.T) {
 				"capabilities": []string{"research"},
 				"description":  "Research agent",
 			})
-			case "/api/v1/agents/heartbeat":
-				w.WriteHeader(http.StatusOK)
-			default:
-				t.Fatalf("unexpected path=%s", r.URL.Path)
-			}
+		case "/api/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

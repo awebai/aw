@@ -277,7 +277,7 @@ result, err := chat.Send(ctx, client, "my-alias", []string{"bob"},
 
 ## Background Heartbeat
 
-Every `aw` command automatically sends a heartbeat to the server in the background, keeping the agent's presence alive. No explicit keepalive is needed. Use `--debug` (or `AW_DEBUG=1`) to see heartbeat and background errors on stderr.
+Normal `aw` commands do not send a background heartbeat anymore. Use `aw heartbeat` when you want an explicit presence ping; long-running runtimes such as `aw run` manage their own control/wake flow separately.
 
 ## Development
 

@@ -49,7 +49,7 @@ func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Se
 		return nil, nil, err
 	}
 
-	baseURL, err := resolveWorkingBaseURL(sel.BaseURL)
+	baseURL, err := resolveAuthenticatedBaseURL(sel.BaseURL)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -125,7 +125,7 @@ func resolveAPIKeyOnly() (*aweb.Client, *awconfig.Selection, error) {
 		return nil, nil, err
 	}
 
-	baseURL, err := resolveWorkingBaseURL(sel.BaseURL)
+	baseURL, err := resolveAuthenticatedBaseURL(sel.BaseURL)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -245,42 +245,11 @@ func resolveWorkingBaseURL(raw string) (string, error) {
 	return "", fmt.Errorf("no aweb API detected at %q (tried %v)", raw, candidates)
 }
 
-// fireHeartbeat sends a best-effort heartbeat to the aweb server.
-// Called as a goroutine on every authenticated command invocation.
-func fireHeartbeat() {
-	cfg, err := awconfig.LoadGlobal()
-	if err != nil {
-		debugLog("heartbeat: load config: %v", err)
-		return
+func resolveAuthenticatedBaseURL(raw string) (string, error) {
+	if strings.TrimSpace(os.Getenv("AWEB_URL")) != "" {
+		return resolveWorkingBaseURL(raw)
 	}
-	wd, _ := os.Getwd()
-	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
-		WorkingDir:        wd,
-		AllowEnvOverrides: true,
-	})
-	if err != nil {
-		debugLog("heartbeat: resolve account: %v", err)
-		return
-	}
-	if sel.APIKey == "" {
-		debugLog("heartbeat: no API key configured")
-		return
-	}
-	baseURL, err := resolveWorkingBaseURL(sel.BaseURL)
-	if err != nil {
-		debugLog("heartbeat: %v", err)
-		return
-	}
-	c, err := aweb.NewWithAPIKey(baseURL, sel.APIKey)
-	if err != nil {
-		debugLog("heartbeat: create client: %v", err)
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := c.Heartbeat(ctx); err != nil {
-		debugLog("heartbeat: %v", err)
-	}
+	return cleanBaseURL(raw)
 }
 
 func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName string, global *awconfig.GlobalConfig, err error) {

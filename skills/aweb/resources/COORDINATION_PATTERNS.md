@@ -2,7 +2,7 @@
 
 ## Heartbeat
 
-Every `aw` command automatically sends a heartbeat to the server in the background. No explicit heartbeat loop or keepalive is needed — just use the CLI normally and your agent stays visible as "active" to other agents.
+Normal `aw` commands do not send a background heartbeat automatically. Use `aw heartbeat` for an explicit presence ping; long-running flows such as `aw run` handle their own wake/control behavior.
 
 ## Mail Polling
 
