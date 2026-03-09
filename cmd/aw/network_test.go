@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -191,6 +192,127 @@ default_account: acct
 		if gotPaths[i] != want[i] {
 			t.Fatalf("paths=%v", gotPaths)
 		}
+	}
+}
+
+func TestResolveClientSelectionEventStreamFallsBackFromStaleBaseURL(t *testing.T) {
+	var pathsMu sync.Mutex
+	var paths []string
+
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server := &httptest.Server{
+		Listener: l,
+		Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			pathsMu.Lock()
+			paths = append(paths, r.URL.Path)
+			pathsMu.Unlock()
+
+			switch r.URL.Path {
+			case "/v1/events/stream":
+				http.NotFound(w, r)
+			case "/v1/agents/heartbeat":
+				http.NotFound(w, r)
+			case "/api/v1/agents/heartbeat":
+				w.WriteHeader(http.StatusOK)
+			case "/api/v1/events/stream":
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("event: connected\ndata: {\"agent_id\":\"ag_123\",\"project_id\":\"proj_123\"}\n\n"))
+			default:
+				t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+			}
+		})},
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("AW_CONFIG_PATH", cfgPath)
+	t.Setenv("AWEB_URL", "")
+	t.Setenv("AWEB_API_KEY", "")
+
+	client, _, err := resolveClientSelectionForDir(tmp)
+	if err != nil {
+		t.Fatalf("resolveClientSelectionForDir: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := client.EventStream(ctx, time.Now().Add(5*time.Second))
+	if err != nil {
+		t.Fatalf("EventStream: %v", err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+
+	event, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if event.Type != "connected" {
+		t.Fatalf("event=%#v", event)
+	}
+
+	cfgData, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfgData), "url: "+server.URL+"/api") {
+		t.Fatalf("expected config to persist recovered /api URL, got:\n%s", string(cfgData))
+	}
+
+	pathsMu.Lock()
+	gotPaths := append([]string(nil), paths...)
+	pathsMu.Unlock()
+	want := []string{
+		"/v1/events/stream",
+		"/v1/agents/heartbeat",
+		"/api/v1/agents/heartbeat",
+		"/api/v1/events/stream",
+	}
+	if len(gotPaths) != len(want) {
+		t.Fatalf("paths=%v", gotPaths)
+	}
+	for i := range want {
+		if gotPaths[i] != want[i] {
+			t.Fatalf("paths=%v", gotPaths)
+		}
+	}
+}
+
+func TestResolveWorkingBaseURLContextHonorsCancellation(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		http.NotFound(w, r)
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	_, err := resolveWorkingBaseURLContext(ctx, server.URL)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("expected prompt cancellation, took %s", time.Since(start))
 	}
 }
 

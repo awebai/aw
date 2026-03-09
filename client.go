@@ -158,6 +158,15 @@ func (c *Client) SetHTTPClient(httpClient *http.Client) {
 	c.httpClient = httpClient
 }
 
+// SetSSEClient replaces the client's HTTP client used for SSE requests.
+// A nil client is ignored.
+func (c *Client) SetSSEClient(httpClient *http.Client) {
+	if httpClient == nil {
+		return
+	}
+	c.sseClient = httpClient
+}
+
 // SigningKey returns the client's signing key, or nil for legacy/custodial clients.
 func (c *Client) SigningKey() ed25519.PrivateKey { return c.signingKey }
 

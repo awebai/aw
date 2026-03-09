@@ -200,6 +200,10 @@ func probeAwebBaseURL(ctx context.Context, baseURL string) (bool, error) {
 }
 
 func resolveWorkingBaseURL(raw string) (string, error) {
+	return resolveWorkingBaseURLContext(context.Background(), raw)
+}
+
+func resolveWorkingBaseURLContext(ctx context.Context, raw string) (string, error) {
 	base, err := cleanBaseURL(raw)
 	if err != nil {
 		return "", err
@@ -235,9 +239,12 @@ func resolveWorkingBaseURL(raw string) (string, error) {
 
 	var lastErr error
 	for _, cand := range candidates {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		debugLog("resolve base url: probing %s", cand)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		ok, err := probeAwebBaseURL(ctx, cand)
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		ok, err := probeAwebBaseURL(probeCtx, cand)
 		cancel()
 		if err != nil {
 			debugLog("resolve base url: probe %s failed: %v", cand, err)
@@ -269,17 +276,26 @@ func configureBaseURLFallback(c *aweb.Client, sel *awconfig.Selection, baseURL s
 	if strings.TrimSpace(os.Getenv("AWEB_URL")) != "" {
 		return
 	}
+	state := &baseURLFallbackState{
+		configuredBaseURL: strings.TrimSuffix(baseURL, "/"),
+		currentBaseURL:    strings.TrimSuffix(baseURL, "/"),
+		persist: func(resolved string) {
+			if err := persistResolvedServerURL(sel.ServerName, resolved); err != nil {
+				debugLog("persist resolved base URL for %s: %v", sel.ServerName, err)
+			}
+		},
+	}
 	c.SetHTTPClient(&http.Client{
 		Timeout: aweb.DefaultTimeout,
 		Transport: &baseURLFallbackTransport{
-			base:              http.DefaultTransport,
-			configuredBaseURL: strings.TrimSuffix(baseURL, "/"),
-			currentBaseURL:    strings.TrimSuffix(baseURL, "/"),
-			persist: func(resolved string) {
-				if err := persistResolvedServerURL(sel.ServerName, resolved); err != nil {
-					debugLog("persist resolved base URL for %s: %v", sel.ServerName, err)
-				}
-			},
+			base:  http.DefaultTransport,
+			state: state,
+		},
+	})
+	c.SetSSEClient(&http.Client{
+		Transport: &baseURLFallbackTransport{
+			base:  http.DefaultTransport,
+			state: state,
 		},
 	})
 }
@@ -304,12 +320,16 @@ func persistResolvedServerURL(serverName, baseURL string) error {
 	})
 }
 
-type baseURLFallbackTransport struct {
-	base              http.RoundTripper
+type baseURLFallbackState struct {
 	configuredBaseURL string
 	currentBaseURL    string
 	mu                sync.RWMutex
 	persist           func(string)
+}
+
+type baseURLFallbackTransport struct {
+	base  http.RoundTripper
+	state *baseURLFallbackState
 }
 
 func (t *baseURLFallbackTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -317,8 +337,11 @@ func (t *baseURLFallbackTransport) RoundTrip(req *http.Request) (*http.Response,
 	if base == nil {
 		base = http.DefaultTransport
 	}
+	if t.state == nil {
+		return base.RoundTrip(req)
+	}
 
-	current := t.current()
+	current := t.state.current()
 	prepared, err := t.requestForBase(req, current)
 	if err != nil {
 		return nil, err
@@ -329,7 +352,7 @@ func (t *baseURLFallbackTransport) RoundTrip(req *http.Request) (*http.Response,
 	}
 
 	debugLog("baseurl fallback: triggering for %s %s", req.Method, req.URL.String())
-	fresh, changed := t.refresh(req.Context(), current)
+	fresh, changed := t.state.refresh(req.Context(), current)
 	if !changed {
 		debugLog("baseurl fallback: no recovered base URL for %s", current)
 		return resp, err
@@ -343,36 +366,36 @@ func (t *baseURLFallbackTransport) RoundTrip(req *http.Request) (*http.Response,
 		return nil, err
 	}
 	resp, err = base.RoundTrip(retried)
-	if err == nil && t.persist != nil {
-		t.persist(fresh)
+	if err == nil && t.state.persist != nil {
+		t.state.persist(fresh)
 	}
 	debugLog("baseurl fallback: retried via %s", fresh)
 	return resp, err
 }
 
-func (t *baseURLFallbackTransport) current() string {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.currentBaseURL
+func (s *baseURLFallbackState) current() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.currentBaseURL
 }
 
-func (t *baseURLFallbackTransport) refresh(ctx context.Context, stale string) (string, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+func (s *baseURLFallbackState) refresh(ctx context.Context, stale string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if t.currentBaseURL != stale {
-		return t.currentBaseURL, t.currentBaseURL != stale
+	if s.currentBaseURL != stale {
+		return s.currentBaseURL, s.currentBaseURL != stale
 	}
-	fresh, err := resolveWorkingBaseURL(stale)
+	fresh, err := resolveWorkingBaseURLContext(ctx, stale)
 	if err != nil || fresh == "" || fresh == stale {
 		return stale, false
 	}
-	t.currentBaseURL = fresh
+	s.currentBaseURL = fresh
 	return fresh, true
 }
 
 func (t *baseURLFallbackTransport) requestForBase(req *http.Request, baseURL string) (*http.Request, error) {
-	if strings.TrimSuffix(baseURL, "/") == t.configuredBaseURL {
+	if t.state == nil || strings.TrimSuffix(baseURL, "/") == t.state.configuredBaseURL {
 		return req, nil
 	}
 
@@ -387,7 +410,7 @@ func (t *baseURLFallbackTransport) requestForBase(req *http.Request, baseURL str
 		}
 		clone.Body = body
 	}
-	rebased, err := rebaseRequestURL(req.URL, t.configuredBaseURL, baseURL)
+	rebased, err := rebaseRequestURL(req.URL, t.state.configuredBaseURL, baseURL)
 	if err != nil {
 		return nil, err
 	}
