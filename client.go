@@ -87,20 +87,20 @@ type agentMeta struct {
 // - the `aw` CLI
 // - the `bdh` CLI for `:mail/:chat/:lock` delegation
 type Client struct {
-	baseURL       string
-	httpClient    *http.Client
-	sseClient     *http.Client // No response timeout; SSE connections are long-lived.
-	apiKey        string
-	signingKey    ed25519.PrivateKey // nil for legacy/custodial
-	did           string             // empty for legacy/custodial
-	address       string             // namespace/alias, used in signed envelopes
-	stableID      string             // did:claw:..., set on outgoing signed envelopes as from_stable_id
-	resolver      IdentityResolver   // optional; resolves recipient DID for to_did binding
-	pinStore      *PinStore          // optional; TOFU pin store for sender identity verification
-	pinStorePath  string             // disk path for persisting pin store
-	clawDIDClient *ClawDIDClient     // optional; ClawDID registry client for split-trust verification
-	metaCache           sync.Map // address → *agentMeta; cached resolver results
-	latestClientVersion atomic.Value // last seen X-Latest-Client-Version header (string)
+	baseURL             string
+	httpClient          *http.Client
+	sseClient           *http.Client // No response timeout; SSE connections are long-lived.
+	apiKey              string
+	signingKey          ed25519.PrivateKey // nil for legacy/custodial
+	did                 string             // empty for legacy/custodial
+	address             string             // namespace/alias, used in signed envelopes
+	stableID            string             // did:claw:..., set on outgoing signed envelopes as from_stable_id
+	resolver            IdentityResolver   // optional; resolves recipient DID for to_did binding
+	pinStore            *PinStore          // optional; TOFU pin store for sender identity verification
+	pinStorePath        string             // disk path for persisting pin store
+	clawDIDClient       *ClawDIDClient     // optional; ClawDID registry client for split-trust verification
+	metaCache           sync.Map           // address → *agentMeta; cached resolver results
+	latestClientVersion atomic.Value       // last seen X-Latest-Client-Version header (string)
 }
 
 // New creates a new client.
@@ -147,6 +147,15 @@ func NewWithIdentity(baseURL, apiKey string, signingKey ed25519.PrivateKey, did 
 	c.signingKey = signingKey
 	c.did = did
 	return c, nil
+}
+
+// SetHTTPClient replaces the client's HTTP client used for normal API calls.
+// A nil client is ignored.
+func (c *Client) SetHTTPClient(httpClient *http.Client) {
+	if httpClient == nil {
+		return
+	}
+	c.httpClient = httpClient
 }
 
 // SigningKey returns the client's signing key, or nil for legacy/custodial clients.

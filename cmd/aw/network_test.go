@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -79,6 +82,115 @@ default_account: acct
 	}
 	if atomic.LoadInt32(&requestCount) != 1 {
 		t.Fatalf("requestCount=%d", atomic.LoadInt32(&requestCount))
+	}
+}
+
+func TestWhoAmIFallsBackAndPersistsRecoveredBaseURL(t *testing.T) {
+	t.Parallel()
+
+	var pathsMu sync.Mutex
+	var paths []string
+
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server := &httptest.Server{
+		Listener: l,
+		Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			pathsMu.Lock()
+			paths = append(paths, r.URL.Path)
+			pathsMu.Unlock()
+
+			switch r.URL.Path {
+			case "/v1/auth/introspect":
+				http.NotFound(w, r)
+			case "/v1/agents/heartbeat":
+				http.NotFound(w, r)
+			case "/api/v1/agents/heartbeat":
+				w.WriteHeader(http.StatusOK)
+			case "/api/v1/auth/introspect":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"project_id":     "proj_123",
+					"agent_id":       "ag_123",
+					"alias":          "eve",
+					"namespace_slug": "acme",
+					"address":        "acme/eve",
+				})
+			default:
+				t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+			}
+		})},
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, _ := os.Getwd()
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+    agent_alias: eve
+    namespace_slug: acme
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "whoami", "--json")
+	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		pathsMu.Lock()
+		gotPaths := append([]string(nil), paths...)
+		pathsMu.Unlock()
+		t.Fatalf("run: %v\npaths=%v\n%s", err, gotPaths, out)
+	}
+
+	cfgData, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfgData), "url: "+server.URL+"/api") {
+		t.Fatalf("expected config to persist recovered /api URL, got:\n%s", string(cfgData))
+	}
+
+	pathsMu.Lock()
+	gotPaths := append([]string(nil), paths...)
+	pathsMu.Unlock()
+
+	want := []string{
+		"/v1/auth/introspect",
+		"/v1/agents/heartbeat",
+		"/api/v1/agents/heartbeat",
+		"/api/v1/auth/introspect",
+	}
+	if len(gotPaths) != len(want) {
+		t.Fatalf("paths=%v", gotPaths)
+	}
+	for i := range want {
+		if gotPaths[i] != want[i] {
+			t.Fatalf("paths=%v", gotPaths)
+		}
 	}
 }
 

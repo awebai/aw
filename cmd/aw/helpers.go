@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	aweb "github.com/awebai/aw"
@@ -96,6 +97,7 @@ func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Se
 		c.SetClawDIDClient(&aweb.ClawDIDClient{RegistryURL: sel.ClawDIDRegistryURL})
 	}
 
+	configureBaseURLFallback(c, sel, baseURL)
 	lastClient = c
 	return c, sel, nil
 }
@@ -135,6 +137,7 @@ func resolveAPIKeyOnly() (*aweb.Client, *awconfig.Selection, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid base URL: %w", err)
 	}
+	configureBaseURLFallback(c, sel, baseURL)
 	lastClient = c
 	return c, sel, nil
 }
@@ -192,6 +195,7 @@ func probeAwebBaseURL(ctx context.Context, baseURL string) (bool, error) {
 		return false, err
 	}
 	_ = resp.Body.Close()
+	debugLog("probe aweb base url: %s -> %d", baseURL, resp.StatusCode)
 	return resp.StatusCode != http.StatusNotFound, nil
 }
 
@@ -222,20 +226,26 @@ func resolveWorkingBaseURL(raw string) (string, error) {
 	if strings.HasSuffix(base, "/api/v1") {
 		add(strings.TrimSuffix(base, "/v1"))
 	}
+	if strings.HasSuffix(base, "/api") {
+		add(strings.TrimSuffix(base, "/api"))
+	}
 	if !strings.HasSuffix(base, "/api") {
 		add(base + "/api")
 	}
 
 	var lastErr error
 	for _, cand := range candidates {
+		debugLog("resolve base url: probing %s", cand)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		ok, err := probeAwebBaseURL(ctx, cand)
 		cancel()
 		if err != nil {
+			debugLog("resolve base url: probe %s failed: %v", cand, err)
 			lastErr = err
 			continue
 		}
 		if ok {
+			debugLog("resolve base url: selected %s", cand)
 			return cand, nil
 		}
 	}
@@ -250,6 +260,189 @@ func resolveAuthenticatedBaseURL(raw string) (string, error) {
 		return resolveWorkingBaseURL(raw)
 	}
 	return cleanBaseURL(raw)
+}
+
+func configureBaseURLFallback(c *aweb.Client, sel *awconfig.Selection, baseURL string) {
+	if c == nil || sel == nil || strings.TrimSpace(sel.ServerName) == "" {
+		return
+	}
+	if strings.TrimSpace(os.Getenv("AWEB_URL")) != "" {
+		return
+	}
+	c.SetHTTPClient(&http.Client{
+		Timeout: aweb.DefaultTimeout,
+		Transport: &baseURLFallbackTransport{
+			base:              http.DefaultTransport,
+			configuredBaseURL: strings.TrimSuffix(baseURL, "/"),
+			currentBaseURL:    strings.TrimSuffix(baseURL, "/"),
+			persist: func(resolved string) {
+				if err := persistResolvedServerURL(sel.ServerName, resolved); err != nil {
+					debugLog("persist resolved base URL for %s: %v", sel.ServerName, err)
+				}
+			},
+		},
+	})
+}
+
+func persistResolvedServerURL(serverName, baseURL string) error {
+	serverName = strings.TrimSpace(serverName)
+	baseURL = strings.TrimSpace(baseURL)
+	if serverName == "" || baseURL == "" {
+		return nil
+	}
+	return awconfig.UpdateGlobal(func(cfg *awconfig.GlobalConfig) error {
+		if cfg.Servers == nil {
+			cfg.Servers = map[string]awconfig.Server{}
+		}
+		srv := cfg.Servers[serverName]
+		if strings.TrimSpace(srv.URL) == baseURL {
+			return nil
+		}
+		srv.URL = baseURL
+		cfg.Servers[serverName] = srv
+		return nil
+	})
+}
+
+type baseURLFallbackTransport struct {
+	base              http.RoundTripper
+	configuredBaseURL string
+	currentBaseURL    string
+	mu                sync.RWMutex
+	persist           func(string)
+}
+
+func (t *baseURLFallbackTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+
+	current := t.current()
+	prepared, err := t.requestForBase(req, current)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := base.RoundTrip(prepared)
+	if !shouldRetryBaseURLRequest(resp, err) {
+		return resp, err
+	}
+
+	debugLog("baseurl fallback: triggering for %s %s", req.Method, req.URL.String())
+	fresh, changed := t.refresh(req.Context(), current)
+	if !changed {
+		debugLog("baseurl fallback: no recovered base URL for %s", current)
+		return resp, err
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+
+	retried, err := t.requestForBase(req, fresh)
+	if err != nil {
+		return nil, err
+	}
+	resp, err = base.RoundTrip(retried)
+	if err == nil && t.persist != nil {
+		t.persist(fresh)
+	}
+	debugLog("baseurl fallback: retried via %s", fresh)
+	return resp, err
+}
+
+func (t *baseURLFallbackTransport) current() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.currentBaseURL
+}
+
+func (t *baseURLFallbackTransport) refresh(ctx context.Context, stale string) (string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.currentBaseURL != stale {
+		return t.currentBaseURL, t.currentBaseURL != stale
+	}
+	fresh, err := resolveWorkingBaseURL(stale)
+	if err != nil || fresh == "" || fresh == stale {
+		return stale, false
+	}
+	t.currentBaseURL = fresh
+	return fresh, true
+}
+
+func (t *baseURLFallbackTransport) requestForBase(req *http.Request, baseURL string) (*http.Request, error) {
+	if strings.TrimSuffix(baseURL, "/") == t.configuredBaseURL {
+		return req, nil
+	}
+
+	clone := req.Clone(req.Context())
+	if req.Body != nil {
+		if req.GetBody == nil {
+			return nil, fmt.Errorf("request body cannot be retried for base URL fallback")
+		}
+		body, err := req.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		clone.Body = body
+	}
+	rebased, err := rebaseRequestURL(req.URL, t.configuredBaseURL, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	clone.URL = rebased
+	clone.Host = rebased.Host
+	return clone, nil
+}
+
+func shouldRetryBaseURLRequest(resp *http.Response, err error) bool {
+	if err != nil {
+		return true
+	}
+	return resp != nil && resp.StatusCode == http.StatusNotFound
+}
+
+func rebaseRequestURL(reqURL *url.URL, fromBaseURL, toBaseURL string) (*url.URL, error) {
+	from, err := url.Parse(fromBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	to, err := url.Parse(toBaseURL)
+	if err != nil {
+		return nil, err
+	}
+
+	fromPath := strings.TrimSuffix(from.Path, "/")
+	toPath := strings.TrimSuffix(to.Path, "/")
+	relPath := reqURL.Path
+	if fromPath != "" && strings.HasPrefix(relPath, fromPath) {
+		relPath = strings.TrimPrefix(relPath, fromPath)
+		if relPath == "" {
+			relPath = "/"
+		}
+	}
+
+	rebased := *reqURL
+	rebased.Scheme = to.Scheme
+	rebased.Host = to.Host
+	rebased.Path = joinURLPath(toPath, relPath)
+	rebased.RawPath = ""
+	return &rebased, nil
+}
+
+func joinURLPath(basePath, relPath string) string {
+	basePath = strings.TrimSuffix(basePath, "/")
+	if relPath == "" {
+		relPath = "/"
+	}
+	if !strings.HasPrefix(relPath, "/") {
+		relPath = "/" + relPath
+	}
+	if basePath == "" {
+		return relPath
+	}
+	return basePath + relPath
 }
 
 func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName string, global *awconfig.GlobalConfig, err error) {
