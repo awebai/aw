@@ -1,0 +1,132 @@
+package run
+
+import (
+	"context"
+	"time"
+
+	aweb "github.com/awebai/aw"
+)
+
+type UsageStats struct {
+	InputTokens              int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
+	OutputTokens             int
+	ContextWindowSize        int
+}
+
+func (s UsageStats) TotalInput() int {
+	return s.InputTokens + s.CacheCreationInputTokens + s.CacheReadInputTokens
+}
+
+func (s UsageStats) ContextPct() float64 {
+	if s.ContextWindowSize <= 0 {
+		return 0
+	}
+	return float64(s.TotalInput()) / float64(s.ContextWindowSize) * 100
+}
+
+type BuildOptions struct {
+	SessionID       string
+	ContinueSession bool
+	AllowedTools    string
+	Model           string
+}
+
+type Provider interface {
+	Name() string
+	BuildCommand(prompt string, opts BuildOptions) ([]string, error)
+	ParseOutput(line string) (*Event, error)
+	SessionID(event *Event) string
+}
+
+type EventType string
+
+const (
+	EventText       EventType = "text"
+	EventToolCall   EventType = "tool_call"
+	EventToolResult EventType = "tool_result"
+	EventDone       EventType = "done"
+	EventSystem     EventType = "system"
+)
+
+type ToolCall struct {
+	Name  string
+	Input map[string]any
+}
+
+type Event struct {
+	Type       EventType
+	Text       string
+	ToolCalls  []ToolCall
+	DurationMS int
+	CostUSD    *float64
+	Session    string
+	IsError    bool
+	Usage      *UsageStats
+}
+
+type ControlEventType string
+
+const DefaultInputPromptLabel = "input> "
+
+const (
+	ControlTypingStarted ControlEventType = "typing_started"
+	ControlBufferUpdated ControlEventType = "buffer_updated"
+	ControlPrompt        ControlEventType = "prompt"
+	ControlQuit          ControlEventType = "quit"
+	ControlStop          ControlEventType = "stop"
+	ControlWait          ControlEventType = "wait"
+	ControlResume        ControlEventType = "resume"
+	ControlAutofeedOn    ControlEventType = "autofeed_on"
+	ControlAutofeedOff   ControlEventType = "autofeed_off"
+	ControlInterrupt     ControlEventType = "interrupt"
+	ControlExitPrompt    ControlEventType = "exit_prompt"
+	ControlExitConfirm   ControlEventType = "exit_confirm"
+	ControlExitCancel    ControlEventType = "exit_cancel"
+)
+
+type ControlEvent struct {
+	Type ControlEventType
+	Text string
+}
+
+type InputController interface {
+	Start() error
+	Stop() error
+	Events() <-chan ControlEvent
+	HasPendingInput() bool
+}
+
+type DispatchDecision struct {
+	MissionPrompt string
+	Prompt        string
+	WaitSeconds   int
+	Skip          bool
+}
+
+type Dispatcher interface {
+	Next(ctx context.Context, autofeed bool) (DispatchDecision, error)
+}
+
+type WakeStream interface {
+	Stream(ctx context.Context, deadline time.Time) (<-chan aweb.AgentEvent, <-chan error)
+}
+
+type CommandRunner func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error
+
+type SleepFunc func(ctx context.Context, d time.Duration) error
+
+type LoopOptions struct {
+	InitialPrompt       string
+	Prompt              string
+	WaitSeconds         int
+	IdleWaitSeconds     int
+	MaxRuns             int
+	Autofeed            bool
+	ContinueMode        bool
+	WorkingDir          string
+	AllowedTools        string
+	Model               string
+	CompactThresholdPct int
+}
