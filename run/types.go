@@ -15,6 +15,12 @@ type UsageStats struct {
 	ContextWindowSize        int
 }
 
+type ServiceConfig struct {
+	Name        string `json:"name"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
 func (s UsageStats) TotalInput() int {
 	return s.InputTokens + s.CacheCreationInputTokens + s.CacheReadInputTokens
 }
@@ -98,6 +104,11 @@ type InputController interface {
 	HasPendingInput() bool
 }
 
+type ServiceSupervisor interface {
+	Start(ctx context.Context, services []ServiceConfig, dir string) error
+	Stop() error
+}
+
 type DispatchDecision struct {
 	MissionPrompt string
 	Prompt        string
@@ -129,4 +140,5 @@ type LoopOptions struct {
 	AllowedTools        string
 	Model               string
 	CompactThresholdPct int
+	Services            []ServiceConfig
 }

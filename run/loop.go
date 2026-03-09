@@ -16,43 +16,46 @@ import (
 )
 
 type Loop struct {
-	Provider         Provider
-	Runner           CommandRunner
-	Sleep            SleepFunc
-	WakeStream       WakeStream
-	Out              io.Writer
-	Control          InputController
-	Dispatch         Dispatcher
-	Now              func() time.Time
-	InputPromptLabel string
+	Provider          Provider
+	Runner            CommandRunner
+	Sleep             SleepFunc
+	WakeStream        WakeStream
+	ServiceSupervisor ServiceSupervisor
+	Out               io.Writer
+	Control           InputController
+	Dispatch          Dispatcher
+	Now               func() time.Time
+	InputPromptLabel  string
 
 	writeMu sync.Mutex
 }
 
 type state struct {
-	Run              int
-	SessionID        string
-	RanOnce          bool
-	RunInterrupted   bool
-	PauseAfterRun    bool
-	PauseNoticeShown bool
-	StopRequested    bool
-	Paused           bool
-	Autofeed         bool
-	NextPrompt       string
-	PendingInput     bool
-	InputBuffer      string
-	TextProbe        string
-	SuppressText     bool
-	StructuredOut    bool
-	LastRunError     string
-	LastRunUsage     UsageStats
-	HasRunUsage      bool
+	Run                int
+	SessionID          string
+	RanOnce            bool
+	RunInterrupted     bool
+	PauseAfterRun      bool
+	PauseNoticeShown   bool
+	StopRequested      bool
+	Paused             bool
+	ExitConfirmPending bool
+	Autofeed           bool
+	NextPrompt         string
+	PendingInput       bool
+	InputBuffer        string
+	TextProbe          string
+	SuppressText       bool
+	StructuredOut      bool
+	LastRunError       string
+	LastRunUsage       UsageStats
+	HasRunUsage        bool
 }
 
 const (
 	pausedNoticeText = "paused. use /resume, /quit, or type a prompt to continue."
 	pausedStatusText = "paused: /resume, /quit, or type a prompt"
+	exitStatusText   = "exit aw run? [y/N]"
 )
 
 func NewLoop(provider Provider, out io.Writer) *Loop {
@@ -96,6 +99,16 @@ func (l *Loop) Run(ctx context.Context, opts LoopOptions) error {
 		}
 		defer func() { _ = l.Control.Stop() }()
 	}
+	serviceSupervisor := l.ServiceSupervisor
+	if serviceSupervisor == nil && len(opts.Services) > 0 {
+		serviceSupervisor = NewServiceManager(l.println)
+	}
+	if serviceSupervisor != nil && len(opts.Services) > 0 {
+		if err := serviceSupervisor.Start(ctx, opts.Services, opts.WorkingDir); err != nil {
+			return err
+		}
+		defer func() { _ = serviceSupervisor.Stop() }()
+	}
 
 	for {
 		decision, err := l.nextPrompt(ctx, opts, state)
@@ -113,7 +126,7 @@ func (l *Loop) Run(ctx context.Context, opts LoopOptions) error {
 		}
 
 		missionPrompt := resolveMissionPrompt(strings.TrimSpace(opts.Prompt), decision.MissionPrompt)
-		prompt := composePrompt(missionPrompt, decision.Prompt)
+		prompt := composePromptWithServices(missionPrompt, decision.Prompt, opts.Services)
 		displayPrompt := displayPrompt(missionPrompt, decision.Prompt)
 		if strings.TrimSpace(prompt) == "" {
 			if l.Dispatch == nil && state.Run > 0 && strings.TrimSpace(opts.Prompt) == "" && strings.TrimSpace(opts.InitialPrompt) != "" {
@@ -128,6 +141,14 @@ func (l *Loop) Run(ctx context.Context, opts LoopOptions) error {
 				return nil
 			}
 			return err
+		}
+		if state.ExitConfirmPending {
+			if err := l.waitForExitConfirmation(ctx, state); err != nil {
+				if state.StopRequested && errors.Is(err, context.Canceled) {
+					return nil
+				}
+				return err
+			}
 		}
 		compacted, err := l.maybeAutoCompact(ctx, opts, state)
 		if err != nil {
@@ -181,6 +202,7 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 }
 
 func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt string, display string) error {
+	l.clearStatusLine()
 	st.LastRunError = ""
 	st.LastRunUsage = UsageStats{}
 	st.HasRunUsage = false
@@ -581,6 +603,11 @@ func (l *Loop) waitWhilePaused(ctx context.Context, st *state) error {
 		if st.StopRequested {
 			return context.Canceled
 		}
+		if st.ExitConfirmPending {
+			if err := l.waitForExitConfirmation(ctx, st); err != nil {
+				return err
+			}
+		}
 		if strings.TrimSpace(st.NextPrompt) != "" {
 			st.Paused = false
 			return nil
@@ -593,6 +620,11 @@ func (l *Loop) waitWhilePaused(ctx context.Context, st *state) error {
 			l.applyControlEvent(event, st, false, nil)
 			if st.StopRequested {
 				return context.Canceled
+			}
+			if st.ExitConfirmPending {
+				if err := l.waitForExitConfirmation(ctx, st); err != nil {
+					return err
+				}
 			}
 			if strings.TrimSpace(st.NextPrompt) != "" {
 				st.Paused = false
@@ -614,9 +646,11 @@ func (l *Loop) idle(ctx context.Context, seconds int) error {
 	for remaining := seconds; remaining > 0; remaining-- {
 		l.renderIdleLine("next run", remaining, nil)
 		if err := l.Sleep(ctx, time.Second); err != nil {
+			l.clearStatusLine()
 			return err
 		}
 	}
+	l.clearStatusLine()
 	return nil
 }
 
@@ -636,6 +670,11 @@ func (l *Loop) idleWithControlsLabel(ctx context.Context, seconds int, st *state
 			if st.StopRequested {
 				return context.Canceled
 			}
+			if st.ExitConfirmPending {
+				if err := l.waitForExitConfirmation(ctx, st); err != nil {
+					return err
+				}
+			}
 			if strings.TrimSpace(st.NextPrompt) != "" {
 				return nil
 			}
@@ -644,13 +683,16 @@ func (l *Loop) idleWithControlsLabel(ctx context.Context, seconds int, st *state
 			}
 			remaining++
 		case <-ctx.Done():
+			l.clearStatusLine()
 			return ctx.Err()
 		default:
 			if err := l.Sleep(ctx, time.Second); err != nil {
+				l.clearStatusLine()
 				return err
 			}
 		}
 	}
+	l.clearStatusLine()
 	return nil
 }
 
@@ -662,6 +704,43 @@ func (l *Loop) controlEvents() <-chan ControlEvent {
 }
 
 func (l *Loop) applyControlEvent(event ControlEvent, st *state, activeRun bool, cancel context.CancelFunc) {
+	switch event.Type {
+	case ControlExitConfirm:
+		l.confirmExit(st, activeRun, cancel)
+		return
+	case ControlExitCancel:
+		l.cancelExitConfirmation(st)
+		l.renderInputPrompt(st)
+		return
+	case ControlInterrupt:
+		switch {
+		case st.ExitConfirmPending:
+			l.confirmExit(st, activeRun, cancel)
+			return
+		case st.PendingInput || st.InputBuffer != "":
+			l.clearPendingInput(st)
+			return
+		case activeRun && cancel != nil:
+			event = ControlEvent{Type: ControlStop}
+		default:
+			l.offerExit(st)
+			l.renderInputPrompt(st)
+			return
+		}
+	case ControlExitPrompt:
+		if st.ExitConfirmPending {
+			l.confirmExit(st, activeRun, cancel)
+			return
+		}
+		l.offerExit(st)
+		l.renderInputPrompt(st)
+		return
+	}
+
+	if st.ExitConfirmPending {
+		l.cancelExitConfirmation(st)
+	}
+
 	switch event.Type {
 	case ControlTypingStarted:
 		st.PendingInput = true
@@ -719,18 +798,8 @@ func (l *Loop) applyControlEvent(event ControlEvent, st *state, activeRun bool, 
 		l.announceAutofeedState(false, "off. only comms can wake the agent.")
 		l.renderInputPrompt(st)
 	case ControlQuit:
-		st.PendingInput = false
-		st.InputBuffer = ""
-		st.StopRequested = true
-		st.Paused = false
-		st.PauseNoticeShown = false
-		st.PauseAfterRun = false
-		if activeRun && cancel != nil {
-			l.println("\nquitting.")
-			cancel()
-			return
-		}
-	case ControlStop, ControlInterrupt:
+		l.confirmExit(st, activeRun, cancel)
+	case ControlStop:
 		st.PendingInput = false
 		st.InputBuffer = ""
 		st.Paused = true
@@ -751,12 +820,22 @@ func (l *Loop) renderInputPrompt(st *state) {
 	if st == nil {
 		return
 	}
+	if screen := l.screen(); screen != nil && screen.hasActiveProgram() {
+		return
+	}
 	if !st.PendingInput && !st.Paused && st.InputBuffer == "" {
+		if screen := l.screen(); screen != nil {
+			screen.ClearInputLine()
+		}
 		return
 	}
 	prompt := FormatInputLine(l.promptLabel(), st.InputBuffer)
 	if st.Paused && st.InputBuffer == "" {
 		prompt = l.promptLabel()
+	}
+	if screen := l.screen(); screen != nil {
+		screen.SetInputLine(prompt)
+		return
 	}
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
@@ -772,6 +851,11 @@ func (l *Loop) promptLabel() string {
 
 func (l *Loop) renderIdleLine(label string, remaining int, st *state) {
 	line := fmt.Sprintf("%s in %ds", label, remaining)
+	if screen := l.screen(); screen != nil {
+		screen.SetStatusLine(line)
+		l.renderInputPrompt(st)
+		return
+	}
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
 	if st != nil && strings.TrimSpace(st.InputBuffer) != "" {
@@ -781,26 +865,157 @@ func (l *Loop) renderIdleLine(label string, remaining int, st *state) {
 }
 
 func (l *Loop) announceAutofeedState(enabled bool, detail string) {
-	_ = enabled
 	l.println("info: autofeed " + detail)
+	mode := "off"
+	if enabled {
+		mode = "on"
+	}
+	l.setStatusLine("autofeed " + mode)
 }
 
 func (l *Loop) print(text string) {
+	if screen := l.screen(); screen != nil {
+		screen.AppendText(text)
+		return
+	}
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
 	fmt.Fprint(l.Out, text)
 }
 
 func (l *Loop) printf(format string, args ...any) {
+	if screen := l.screen(); screen != nil {
+		screen.AppendText(fmt.Sprintf(format, args...))
+		return
+	}
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
 	fmt.Fprintf(l.Out, format, args...)
 }
 
 func (l *Loop) println(text string) {
+	if screen := l.screen(); screen != nil {
+		screen.AppendLine(text)
+		return
+	}
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
 	fmt.Fprintln(l.Out, text)
+}
+
+func (l *Loop) offerExit(st *state) {
+	if st == nil {
+		return
+	}
+	st.ExitConfirmPending = true
+	l.setExitConfirmation(true)
+	l.setStatusLine(exitStatusText)
+	if l.screen() == nil {
+		l.println(exitStatusText)
+	}
+}
+
+func (l *Loop) cancelExitConfirmation(st *state) {
+	if st == nil || !st.ExitConfirmPending {
+		return
+	}
+	st.ExitConfirmPending = false
+	l.setExitConfirmation(false)
+	if st.Paused {
+		l.setStatusLine(pausedStatusText)
+		return
+	}
+	l.clearStatusLine()
+}
+
+func (l *Loop) confirmExit(st *state, activeRun bool, cancel context.CancelFunc) {
+	if st == nil {
+		return
+	}
+	st.PendingInput = false
+	st.InputBuffer = ""
+	st.StopRequested = true
+	st.Paused = false
+	st.PauseNoticeShown = false
+	st.PauseAfterRun = false
+	st.ExitConfirmPending = false
+	l.setExitConfirmation(false)
+	l.clearStatusLine()
+	l.renderInputPrompt(st)
+	if activeRun && cancel != nil {
+		l.println("\nquitting.")
+		cancel()
+	}
+}
+
+func (l *Loop) clearPendingInput(st *state) {
+	if st == nil {
+		return
+	}
+	st.PendingInput = false
+	st.InputBuffer = ""
+	if screen := l.screen(); screen != nil {
+		screen.ClearInputLine()
+		return
+	}
+	l.renderInputPrompt(st)
+}
+
+func (l *Loop) waitForExitConfirmation(ctx context.Context, st *state) error {
+	if st == nil || !st.ExitConfirmPending {
+		return nil
+	}
+	l.setStatusLine(exitStatusText)
+	for st.ExitConfirmPending && !st.StopRequested {
+		select {
+		case event := <-l.controlEvents():
+			l.applyControlEvent(event, st, false, nil)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if st.StopRequested {
+		return context.Canceled
+	}
+	return nil
+}
+
+func (l *Loop) setStatusLine(text string) {
+	if screen := l.screen(); screen != nil {
+		screen.SetStatusLine(text)
+	}
+}
+
+func (l *Loop) clearStatusLine() {
+	if screen := l.screen(); screen != nil {
+		screen.ClearStatusLine()
+	}
+}
+
+func (l *Loop) setExitConfirmation(active bool) {
+	if screen := l.screen(); screen != nil {
+		screen.SetExitConfirmation(active)
+	}
+}
+
+type loopScreen interface {
+	InputController
+	AppendText(string)
+	AppendLine(string)
+	SetInputLine(string)
+	SetStatusLine(string)
+	ClearStatusLine()
+	ClearInputLine()
+	SetExitConfirmation(bool)
+	hasActiveProgram() bool
+}
+
+func (l *Loop) screen() loopScreen {
+	if l == nil || l.Control == nil {
+		return nil
+	}
+	screen, _ := l.Control.(loopScreen)
+	return screen
 }
 
 func resolveMissionPrompt(basePrompt string, overridePrompt string) string {
@@ -821,6 +1036,18 @@ func composePrompt(missionPrompt string, cyclePrompt string) string {
 		return missionPrompt
 	}
 	return fmt.Sprintf("Primary mission:\n%s\n\nCurrent cycle:\n%s", missionPrompt, cyclePrompt)
+}
+
+func composePromptWithServices(missionPrompt string, cyclePrompt string, services []ServiceConfig) string {
+	base := composePrompt(missionPrompt, cyclePrompt)
+	servicesSection := FormatServicesPromptSection(services)
+	if servicesSection == "" {
+		return base
+	}
+	if strings.TrimSpace(base) == "" {
+		return servicesSection
+	}
+	return fmt.Sprintf("%s\n\n%s", base, servicesSection)
 }
 
 func displayPrompt(missionPrompt string, cyclePrompt string) string {
