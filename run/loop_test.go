@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -300,5 +302,47 @@ func TestLoopBasePromptDoesNotAutoRerunWithoutWake(t *testing.T) {
 	err := <-done
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled after explicit cancel, got %v", err)
+	}
+}
+
+func TestLoopFallsBackToTimedCyclesWhenWakeStreamUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/events/stream") {
+			http.Error(w, `{"detail":"Not Found"}`, http.StatusNotFound)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := aweb.New(server.URL)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	var out bytes.Buffer
+	loop := NewLoop(ClaudeProvider{}, &out)
+	loop.WakeStream = NewClientWakeStream(client)
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	runCount := 0
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		runCount++
+		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
+		return nil
+	}
+
+	err = loop.Run(context.Background(), LoopOptions{
+		Prompt:      "persistent mission",
+		WaitSeconds: 1,
+		MaxRuns:     2,
+	})
+	if err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	if runCount != 2 {
+		t.Fatalf("expected fallback to timed second run, got %d runs", runCount)
+	}
+	if !strings.Contains(out.String(), "event stream unavailable; falling back to timed cycles") {
+		t.Fatalf("expected fallback notice, got output: %q", out.String())
 	}
 }

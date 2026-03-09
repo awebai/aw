@@ -197,8 +197,8 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 		return decision, nil
 	}
 	// Without an external dispatcher, run one cycle then rely on wake/control
-	// signals for subsequent cycles instead of periodic timer-triggered reruns.
-	if st.Run > 0 {
+	// signals for subsequent cycles when wake streaming is available.
+	if st.Run > 0 && l.WakeStream != nil {
 		return DispatchDecision{WaitSeconds: opts.WaitSeconds, Skip: true}, nil
 	}
 	return DispatchDecision{MissionPrompt: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
@@ -533,12 +533,22 @@ func (l *Loop) waitForWorkEvents(ctx context.Context, waitSeconds int, st *state
 			if err == nil || ctx.Err() != nil {
 				return nil
 			}
+			if isUnsupportedWakeStreamError(err) {
+				l.println(fmt.Sprintf("info: event stream unavailable; falling back to timed cycles (%v)", err))
+				l.WakeStream = nil
+				return nil
+			}
 			l.println(fmt.Sprintf("info: event stream failed: %v", err))
 			return l.idleWithControlsLabel(ctx, waitSeconds, st, "waiting for work")
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
+}
+
+func isUnsupportedWakeStreamError(err error) bool {
+	code, ok := aweb.HTTPStatusCode(err)
+	return ok && code == 404
 }
 
 func (l *Loop) shouldWakeForEvent(evt aweb.AgentEvent, st *state) bool {
