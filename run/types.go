@@ -105,6 +105,20 @@ type InputController interface {
 	HasPendingInput() bool
 }
 
+// UI extends InputController with the optional screen operations the loop uses
+// when it is driving an interactive terminal view.
+type UI interface {
+	InputController
+	AppendText(string)
+	AppendLine(string)
+	SetInputLine(string)
+	SetStatusLine(string)
+	ClearStatusLine()
+	ClearInputLine()
+	SetExitConfirmation(bool)
+	HasActiveProgram() bool
+}
+
 type ServiceSupervisor interface {
 	Start(ctx context.Context, services []ServiceConfig, dir string) error
 	Stop() error

@@ -822,7 +822,7 @@ func (l *Loop) renderInputPrompt(st *state) {
 	if st == nil {
 		return
 	}
-	if screen := l.screen(); screen != nil && screen.hasActiveProgram() {
+	if screen := l.screen(); screen != nil && screen.HasActiveProgram() {
 		return
 	}
 	if !st.PendingInput && !st.Paused && st.InputBuffer == "" {
@@ -1000,23 +1000,11 @@ func (l *Loop) setExitConfirmation(active bool) {
 	}
 }
 
-type loopScreen interface {
-	InputController
-	AppendText(string)
-	AppendLine(string)
-	SetInputLine(string)
-	SetStatusLine(string)
-	ClearStatusLine()
-	ClearInputLine()
-	SetExitConfirmation(bool)
-	hasActiveProgram() bool
-}
-
-func (l *Loop) screen() loopScreen {
+func (l *Loop) screen() UI {
 	if l == nil || l.Control == nil {
 		return nil
 	}
-	screen, _ := l.Control.(loopScreen)
+	screen, _ := l.Control.(UI)
 	return screen
 }
 

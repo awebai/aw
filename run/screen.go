@@ -33,6 +33,8 @@ type ScreenController struct {
 	doneCh  chan error
 }
 
+var _ UI = (*ScreenController)(nil)
+
 type screenSnapshot struct {
 	Lines       []string
 	Current     string
@@ -289,7 +291,7 @@ func (s *ScreenController) SetPromptLabel(label string) {
 	}
 }
 
-func (s *ScreenController) hasActiveProgram() bool {
+func (s *ScreenController) HasActiveProgram() bool {
 	if s == nil {
 		return false
 	}
