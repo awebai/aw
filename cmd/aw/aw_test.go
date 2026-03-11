@@ -5754,7 +5754,7 @@ func TestAwInitCloudPrefersExplicitEnvProjectKeyOverConfigToken(t *testing.T) {
 	config := strings.TrimSpace(`
 servers:
   local:
-    url: ` + server.URL + `
+    url: `+server.URL+`
 accounts:
   old-cloud:
     server: local
@@ -5905,16 +5905,15 @@ default_account: acct
 		t.Fatal("message_id missing or empty")
 	}
 
-	// Verify the signature covers canonical to address (myco/monitor),
-	// matching what aweb returns in to_address on the inbox side.
+	// Same-project local delivery verifies against plain alias addressing.
 	var fromStableID string
 	if v, ok := gotBody["from_stable_id"].(string); ok {
 		fromStableID = v
 	}
 	env := &aweb.MessageEnvelope{
-		From:         "myco/agent",
+		From:         "agent",
 		FromDID:      did,
-		To:           "myco/monitor",
+		To:           "monitor",
 		ToDID:        recipientDID,
 		Type:         "mail",
 		Body:         "hello from identity",
@@ -5994,7 +5993,8 @@ func TestAwMailSendSignsWithIdentityNamespace(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	// namespace_slug takes priority over default_project in deriveAgentAddress.
+	// namespace_slug still determines the external address, but same-project
+	// local mail signs plain local names.
 	address := "acme/bot"
 	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
 		t.Fatal(err)
@@ -6035,7 +6035,7 @@ default_account: acct
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 
-	// Verify From address uses namespace_slug (not default_project).
+	// Verify local same-project signing still works when namespace_slug is present.
 	if gotBody["from_did"] != did {
 		t.Fatalf("from_did=%v, want %s", gotBody["from_did"], did)
 	}
@@ -6047,16 +6047,15 @@ default_account: acct
 		t.Fatal("signature missing")
 	}
 
-	// Verify the signature covers canonical to address (acme/monitor),
-	// matching what aweb returns in to_address on the inbox side.
+	// Same-project local delivery verifies against plain alias addressing.
 	var fromStableID string
 	if v, ok := gotBody["from_stable_id"].(string); ok {
 		fromStableID = v
 	}
 	env := &aweb.MessageEnvelope{
-		From:         "acme/bot",
+		From:         "bot",
 		FromDID:      did,
-		To:           "acme/monitor",
+		To:           "monitor",
 		ToDID:        recipientDID,
 		Type:         "mail",
 		Body:         "hello from namespace",
@@ -6070,7 +6069,7 @@ default_account: acct
 		t.Fatalf("VerifyMessage: %v", verifyErr)
 	}
 	if status != aweb.Verified {
-		t.Fatalf("status=%s, want verified (namespace_slug should be used for From address)", status)
+		t.Fatalf("status=%s, want verified", status)
 	}
 }
 

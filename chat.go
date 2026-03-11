@@ -26,9 +26,12 @@ func (c *Client) alias() string {
 	return ""
 }
 
+func (c *Client) defaultProjectSlug() string {
+	return strings.TrimSpace(c.projectSlug)
+}
+
 func (c *Client) toAddressForAliases(aliases []string) string {
-	ns := c.namespaceSlug()
-	if ns == "" || len(aliases) == 0 {
+	if len(aliases) == 0 {
 		return ""
 	}
 	clean := make([]string, 0, len(aliases))
@@ -47,8 +50,6 @@ func (c *Client) toAddressForAliases(aliases []string) string {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		b.WriteString(ns)
-		b.WriteByte('/')
 		b.WriteString(a)
 	}
 	return b.String()
@@ -58,9 +59,8 @@ func (c *Client) toAddressForSession(ctx context.Context, sessionID string) (str
 	if sessionID == "" {
 		return "", nil
 	}
-	ns := c.namespaceSlug()
 	selfAlias := c.alias()
-	if ns == "" || selfAlias == "" {
+	if selfAlias == "" {
 		return "", nil
 	}
 	resp, err := c.ChatListSessions(ctx)
@@ -117,12 +117,28 @@ func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRe
 	payload := *req
 
 	to := strings.Join(payload.ToAliases, ",")
+	from := c.address
 	if c.signingKey != nil {
 		if toAddr := c.toAddressForAliases(payload.ToAliases); toAddr != "" {
 			to = toAddr
 		}
+		crossProject := false
+		for _, alias := range payload.ToAliases {
+			if strings.Contains(alias, "~") {
+				crossProject = true
+				break
+			}
+		}
+		if crossProject {
+			if project := c.defaultProjectSlug(); project != "" {
+				from = project + "~" + c.alias()
+			}
+		} else {
+			from = c.alias()
+		}
 	}
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
+		From: from,
 		To:   to,
 		Type: "chat",
 		Body: payload.Message,
@@ -330,12 +346,21 @@ func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *Cha
 	// In-session messages: include deterministic To for signature verification.
 	// (aweb returns to_address for reconstruction; we sign the same value.)
 	to := ""
+	from := c.address
 	if c.signingKey != nil {
 		if toAddr, err := c.toAddressForSession(ctx, sessionID); err == nil {
 			to = toAddr
 		}
+		if strings.Contains(to, "~") {
+			if project := c.defaultProjectSlug(); project != "" {
+				from = project + "~" + c.alias()
+			}
+		} else {
+			from = c.alias()
+		}
 	}
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
+		From: from,
 		To:   to,
 		Type: "chat",
 		Body: payload.Body,

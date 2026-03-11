@@ -131,9 +131,61 @@ func TestChatCreateSessionSignsDeterministicTo(t *testing.T) {
 	}
 
 	env := &MessageEnvelope{
-		From:      "myco/agent",
+		From:      "agent",
 		FromDID:   did,
-		To:        "myco/ann,myco/bob",
+		To:        "ann,bob",
+		Type:      "chat",
+		Body:      "hello",
+		Timestamp: gotBody.Timestamp,
+		MessageID: gotBody.MessageID,
+		Signature: gotBody.Signature,
+	}
+	status, verifyErr := VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestChatCreateSessionSignsProjectQualifiedToAcrossProjects(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody ChatCreateSessionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(ChatCreateSessionResponse{SessionID: "sess-1", MessageID: "msg-1"})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+	c.SetProjectSlug("project-1")
+
+	_, err = c.ChatCreateSession(context.Background(), &ChatCreateSessionRequest{
+		ToAliases: []string{"project-2~bob", "project-2~ann"},
+		Message:   "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := &MessageEnvelope{
+		From:      "project-1~agent",
+		FromDID:   did,
+		To:        "project-2~ann,project-2~bob",
 		Type:      "chat",
 		Body:      "hello",
 		Timestamp: gotBody.Timestamp,
@@ -242,9 +294,72 @@ func TestChatSendMessageSignsDeterministicTo(t *testing.T) {
 	}
 
 	env := &MessageEnvelope{
-		From:      "myco/agent",
+		From:      "agent",
 		FromDID:   did,
-		To:        "myco/ann,myco/bob",
+		To:        "ann,bob",
+		Type:      "chat",
+		Body:      "ping",
+		Timestamp: gotSend.Timestamp,
+		MessageID: gotSend.MessageID,
+		Signature: gotSend.Signature,
+	}
+	status, verifyErr := VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestChatSendMessageSignsProjectQualifiedToAcrossProjects(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotSend ChatSendMessageRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/sessions":
+			_ = json.NewEncoder(w).Encode(ChatListSessionsResponse{
+				Sessions: []ChatSessionItem{
+					{SessionID: "sess-1", Participants: []string{"project-2~ann", "project-2~bob"}, CreatedAt: "2026-02-01T00:00:00Z"},
+				},
+			})
+		case "/v1/chat/sessions/sess-1/messages":
+			if err := json.NewDecoder(r.Body).Decode(&gotSend); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(ChatSendMessageResponse{
+				MessageID: "msg-2",
+				Delivered: true,
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+	c.SetProjectSlug("project-1")
+
+	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{Body: "ping"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := &MessageEnvelope{
+		From:      "project-1~agent",
+		FromDID:   did,
+		To:        "project-2~ann,project-2~bob",
 		Type:      "chat",
 		Body:      "ping",
 		Timestamp: gotSend.Timestamp,
@@ -1131,9 +1246,8 @@ func TestSendMessageSignsWhenIdentitySet(t *testing.T) {
 	}
 }
 
-// TestSendMessageSignsCanonicalToForPlainAlias verifies that when ToAlias is
-// a plain alias (no slash), the signed "to" field uses the canonical address
-// (namespace/alias), matching what aweb returns in to_address on the inbox side.
+// TestSendMessageSignsCanonicalToForPlainAlias verifies that same-project local
+// mail signs plain local names rather than external namespace addresses.
 func TestSendMessageSignsCanonicalToForPlainAlias(t *testing.T) {
 	t.Parallel()
 
@@ -1169,12 +1283,11 @@ func TestSendMessageSignsCanonicalToForPlainAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Simulate inbox-side verification: aweb returns to_address as "myco/monitor",
-	// so the verifier reconstructs "to" as the canonical address.
+	// Same-project local delivery verifies against plain alias addressing.
 	env := &MessageEnvelope{
-		From:      "myco/agent",
+		From:      "agent",
 		FromDID:   did,
-		To:        "myco/monitor",
+		To:        "monitor",
 		Type:      "mail",
 		Subject:   "task complete",
 		Body:      "results attached",
@@ -1187,7 +1300,63 @@ func TestSendMessageSignsCanonicalToForPlainAlias(t *testing.T) {
 		t.Fatalf("VerifyMessage: %v", verifyErr)
 	}
 	if status != Verified {
-		t.Fatalf("status=%s, want verified (plain alias 'monitor' should be signed as 'myco/monitor')", status)
+		t.Fatalf("status=%s, want verified (plain alias 'monitor' should be signed as local 'monitor')", status)
+	}
+}
+
+func TestSendMessageSignsProjectQualifiedAliasAcrossProjects(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-02-22T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+	c.SetProjectSlug("project-1")
+
+	_, err = c.SendMessage(context.Background(), &SendMessageRequest{
+		ToAlias: "project-2~monitor",
+		Subject: "task complete",
+		Body:    "results attached",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := &MessageEnvelope{
+		From:      "project-1~agent",
+		FromDID:   did,
+		To:        "project-2~monitor",
+		Type:      "mail",
+		Subject:   "task complete",
+		Body:      "results attached",
+		Timestamp: gotBody["timestamp"].(string),
+		MessageID: gotBody["message_id"].(string),
+		Signature: gotBody["signature"].(string),
+	}
+	status, verifyErr := VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
 	}
 }
 

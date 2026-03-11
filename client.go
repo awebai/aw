@@ -36,7 +36,9 @@ func (c *Client) signEnvelope(ctx context.Context, env *MessageEnvelope) (signed
 	if c.signingKey == nil {
 		return signedFields{}, nil
 	}
-	env.From = c.address
+	if strings.TrimSpace(env.From) == "" {
+		env.From = c.address
+	}
 	env.FromDID = c.did
 	env.FromStableID = c.stableID
 	env.Timestamp = time.Now().UTC().Format(time.RFC3339)
@@ -94,6 +96,7 @@ type Client struct {
 	signingKey          ed25519.PrivateKey // nil for legacy/custodial
 	did                 string             // empty for legacy/custodial
 	address             string             // namespace/alias, used in signed envelopes
+	projectSlug         string             // current local project slug, used for project~alias addressing
 	stableID            string             // did:aw:..., set on outgoing signed envelopes as from_stable_id
 	resolver            IdentityResolver   // optional; resolves recipient DID for to_did binding
 	pinStore            *PinStore          // optional; TOFU pin store for sender identity verification
@@ -175,6 +178,9 @@ func (c *Client) DID() string { return c.did }
 // SetAddress sets the client's agent address (namespace/alias) for use in
 // signed message envelopes.
 func (c *Client) SetAddress(address string) { c.address = address }
+
+// SetProjectSlug sets the current project slug for local project~alias addressing.
+func (c *Client) SetProjectSlug(projectSlug string) { c.projectSlug = strings.TrimSpace(projectSlug) }
 
 // SetStableID sets the client's stable identifier (did:aw:...) for use
 // as from_stable_id in outgoing signed envelopes.
