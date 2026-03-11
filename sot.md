@@ -1,7 +1,7 @@
 # aw Identity System — Source of Truth
 
 **Status (2026-02-28):** This document began as a target spec and may lag the current `aw` implementation. For current CLI flags, config paths, and operational guidance, prefer `README.md` and `docs/identity-system.md`.
-**Architecture reference:** `../clawdid/sot.md` (V3) — rationale, trust model, phasing.
+**Architecture reference:** `../stable_registry/sot.md` (V3) — rationale, trust model, phasing.
 **Existing identity doc:** `docs/identity-system.md` — pre-identity entity model, auth flows, addressing (still valid for those topics).
 
 **Endpoint URL convention:** The aw client uses `/v1/auth/register` and `/v1/init` for registration. The architecture doc uses `/api/register` as a simplified form. This SoT uses the actual client paths. New identity endpoints use `/v1/agents/me/...` for self-operations (bearer token identifies the agent) and `/v1/agents/{namespace}/{alias}/...` for peer operations. No DID or UUID in API paths — DIDs belong in message envelopes (protocol layer), not in server routing paths.
@@ -28,7 +28,7 @@ Agents have a `lifetime` property set at registration: `persistent` or `ephemera
 
 **Persistent agents** (ClaWeb default) have long-lived identities. TOFU pinning, key rotation, succession, and ClaWDID publication apply.
 
-**Ephemeral agents** (BeadHub default) are session-scoped and disposable. Created per worktree, destroyed on cleanup. The alias may be reused by a future agent with a different key and DID. No TOFU pinning, no identity mismatch warnings, no succession.
+**Ephemeral agents** (aweb coordination default) are session-scoped and disposable. Created per worktree, destroyed on cleanup. The alias may be reused by a future agent with a different key and DID. No TOFU pinning, no identity mismatch warnings, no succession.
 
 The protocol is identical for both: every message carries `from_did` and `signature`, and verification is offline from the DID. The difference is what the receiving side does with that information.
 
@@ -57,13 +57,13 @@ Identity uses two DID methods that serve different purposes:
 
 **`did:key` (base layer, Phase 1):** The public key encoded as a DID. What aw builds and launches with. Offline verification — extract the key from the DID string, check the signature. Changes on every key rotation (new key = new DID). Present in every signed message as `from_did` / `to_did`.
 
-**`did:claw` (stable alias, Phase 2):** An optional stable identifier derived from the agent's initial public key. Does not change on key rotation. Resolved via ClaWDID to the agent's current `did:key`. Present in message envelopes as `from_stable_id` / `to_stable_id` when the agent has registered with ClaWDID. Absent for ephemeral agents and pre-ClaWDID agents.
+**`did:aw` (stable alias, Phase 2):** An optional stable identifier derived from the agent's initial public key. Does not change on key rotation. Present in message envelopes as `from_stable_id` / `to_stable_id` when the agent has a stable identity. Absent for ephemeral agents and pre-stable-identity agents.
 
 The two layers answer different questions:
 - `did:key` → "who signed this message?" (cryptographic, offline)
-- `did:claw` → "is this the same agent I talked to last month?" (identity continuity, requires ClaWDID)
+- `did:aw` → "is this the same agent I talked to last month?" (identity continuity)
 
-`did:claw` does not block launch. The entire Phase 1 identity system — signing, verification, TOFU pinning, rotation announcements — works with `did:key` alone. `did:claw` and ClaWDID add stable identity resolution on top without changing the base protocol.
+`did:aw` does not block launch. The entire Phase 1 identity system — signing, verification, TOFU pinning, rotation announcements — works with `did:key` alone. `did:aw` adds stable identity resolution on top without changing the base protocol.
 
 ---
 
@@ -187,7 +187,7 @@ pins:
   "did:key:z6MkrT4Jxd...":
     address: "otherco/monitor"
     handle: "@bob"
-    stable_id: "did:claw:Qm9iJ3x..."  # optional, present when agent has ClaWDID registration
+    stable_id: "did:aw:Qm9iJ3x..."  # optional, present when agent has ClaWDID registration
     first_seen: "2026-03-15T10:00:00Z"
     last_seen: "2026-03-20T14:30:00Z"
     server: "app.claweb.ai"
@@ -195,7 +195,7 @@ addresses:
   "otherco/monitor": "did:key:z6MkrT4Jxd..."
 ```
 
-Pins are keyed by `did:key` (the verification key). The `addresses` map is a reverse index for the TOFU identity-mismatch check. The `stable_id` field (Phase 2) records the agent's `did:claw` when available — on key rotation, TOFU can cross-check via ClaWDID that the `did:claw` → `did:key` mapping actually changed. Pins apply to persistent agents only.
+Pins are keyed by `did:key` or `did:aw` depending on what continuity data is available. The `addresses` map is a reverse index for the TOFU identity-mismatch check. The `stable_id` field (Phase 2) records the agent's `did:aw` when available so key continuity can be enforced across rotations. Pins apply to persistent agents only.
 
 ---
 
@@ -300,7 +300,7 @@ type CloudBootstrapAgentRequest struct {
 }
 ```
 
-**bdh usage (custodial, ephemeral):** bdh passes `Custody="custodial"` and `Lifetime="ephemeral"` in Init. The server generates the keypair, returns the DID. bdh stores the DID in awconfig. No crypto code in bdh.
+**Workspace usage (custodial, ephemeral):** `aw` provisions custodial ephemeral identities for worktree coordination. The server generates the keypair, returns the DID, and `aw` stores the resulting state locally. No second CLI layer is required.
 
 ### Existing agents (no DID in config)
 
@@ -377,8 +377,8 @@ This is a subset of RFC 8785 (JSON Canonicalization Scheme).
 | `server` | No | Originating server (metadata) |
 | `signature` | No | Base64-encoded Ed25519 signature |
 | `signing_key_id` | No | DID of the signing key |
-| `from_stable_id` | Yes (when present) | Sender's `did:claw` stable identity (optional, Phase 2) |
-| `to_stable_id` | Yes (when present) | Recipient's `did:claw` stable identity (optional, Phase 2) |
+| `from_stable_id` | Yes (when present) | Sender's `did:aw` stable identity (optional, Phase 2) |
+| `to_stable_id` | Yes (when present) | Recipient's `did:aw` stable identity (optional, Phase 2) |
 | `rotation_announcement` | No | Present after key rotation (see §9) |
 
 ### Signing procedure
@@ -401,7 +401,7 @@ For self-custodial agents, the aw client signs before transmission. For custodia
 |---|---|---|
 | `aw mail send` | Client signs | Server signs |
 | `aw chat send` | Client signs | Server signs |
-| bdh messages | N/A (bdh agents are custodial) | Server signs |
+| coordination workspace messages | N/A (workspace agents are custodial) | Server signs |
 
 The `Client` struct gains optional `signingKey` and `did` fields. When set (self-custodial), `post()` calls that create messages include identity fields. When nil (custodial/legacy), messages are sent without client-side signatures.
 
@@ -502,8 +502,8 @@ type InboxMessage struct {
     // ... existing fields ...
     FromDID            string             `json:"from_did,omitempty"`
     ToDID              string             `json:"to_did,omitempty"`
-    FromStableID       string             `json:"from_stable_id,omitempty"` // did:claw (Phase 2, optional)
-    ToStableID         string             `json:"to_stable_id,omitempty"`   // did:claw (Phase 2, optional)
+    FromStableID       string             `json:"from_stable_id,omitempty"` // did:aw (Phase 2, optional)
+    ToStableID         string             `json:"to_stable_id,omitempty"`   // did:aw (Phase 2, optional)
     Signature          string             `json:"signature,omitempty"`
     SigningKeyID       string             `json:"signing_key_id,omitempty"`
     VerificationStatus VerificationStatus `json:"verification_status,omitempty"` // populated by client on receive
@@ -515,8 +515,8 @@ type ChatMessage struct {
     // ... existing fields ...
     FromDID            string             `json:"from_did,omitempty"`
     ToDID              string             `json:"to_did,omitempty"`
-    FromStableID       string             `json:"from_stable_id,omitempty"` // did:claw (Phase 2, optional)
-    ToStableID         string             `json:"to_stable_id,omitempty"`   // did:claw (Phase 2, optional)
+    FromStableID       string             `json:"from_stable_id,omitempty"` // did:aw (Phase 2, optional)
+    ToStableID         string             `json:"to_stable_id,omitempty"`   // did:aw (Phase 2, optional)
     Signature          string             `json:"signature,omitempty"`
     SigningKeyID       string             `json:"signing_key_id,omitempty"`
     VerificationStatus VerificationStatus `json:"verification_status,omitempty"` // populated by client on receive
@@ -557,7 +557,7 @@ type AgentIdentity struct {
     Custody     string              // "self" or "custodial"
     Lifetime    string              // "persistent" or "ephemeral"
     ResolvedAt  time.Time
-    ResolvedVia string              // "did:key", "server", "clawdid", "pin"
+    ResolvedVia string              // "did:key", "server", "stable_registry", "pin"
 }
 
 type IdentityResolver interface {
@@ -689,7 +689,7 @@ func (c *Client) DeregisterAgent(ctx context.Context, namespace, alias string) e
 }
 ```
 
-`Deregister` is called by bdh during worktree cleanup. Server destroys the keypair, marks agent as deregistered, frees the alias for reuse. If the call fails (network down), server-side staleness catches it.
+`Deregister` is called by `aw` during worktree cleanup. Server destroys the keypair, marks agent as deregistered, frees the alias for reuse. If the call fails (network down), server-side staleness catches it.
 
 `DeregisterAgent` is for peer operations — any agent in the same project can deregister an ephemeral agent.
 
@@ -960,37 +960,30 @@ When ClaWDID is added (Phase 2):
 
 ---
 
-## 14. aw ↔ bdh contract
+## 14. aw coordination contract
 
-The identity system is designed so that bdh (which uses aw as a library) requires minimal changes.
+The identity system is designed so the single `aw` CLI can own both general messaging
+and coordination worktree flows without a second wrapper client.
 
-### What aw provides to bdh
+### What the coordination layer uses from aw
 
-| Component | What bdh gets |
+| Component | Usage |
 |---|---|
-| `NewWithAPIKey(baseURL, apiKey)` | Unchanged. Used by all custodial agents. |
-| `InitRequest` / `CloudBootstrapAgentRequest` | New `Custody`, `Lifetime` fields. |
+| `NewWithAPIKey(baseURL, apiKey)` | Used by custodial agents and hosted worktree flows. |
+| `InitRequest` / `CloudBootstrapAgentRequest` | Carry `Custody` and `Lifetime`. |
 | `InitResponse` | Returns `DID`. |
-| `awconfig.Account` | New `DID`, `Custody`, `Lifetime` fields. |
-| `InboxMessage` / `ChatMessage` | New `VerificationStatus` field, populated on receive. |
-| `Deregister(ctx) error` | New method. DELETE /v1/agents/me. |
-| Automatic verification | aw verifies all incoming messages and populates `VerificationStatus`. |
+| `awconfig.Account` | Stores `DID`, `Custody`, and `Lifetime`. |
+| `InboxMessage` / `ChatMessage` | Carry verification status on receive. |
+| `Deregister(ctx) error` | Supports cleanup of ephemeral agents. |
+| Automatic verification | `aw` verifies incoming messages and populates `VerificationStatus`. |
 
-### What bdh does
+### What aw owns directly
 
-1. Pass `Custody="custodial"`, `Lifetime="ephemeral"` in Init().
-2. Store returned `DID` in awconfig via `UpdateGlobal()`.
-3. Read `VerificationStatus` on incoming messages, log non-verified.
-4. Call `Deregister()` on worktree cleanup (graceful degradation if it fails).
-5. Zero crypto code.
-
-### What bdh does NOT do
-
-- No keypair generation
-- No signing
-- No `NewWithIdentity()` constructor
-- No TOFU pin management
-- No identity mismatch handling
+1. Pass custodial and ephemeral bootstrap settings when provisioning worktree identities.
+2. Store the returned DID and account state locally.
+3. Read `VerificationStatus` on incoming messages and surface non-verified content clearly.
+4. Call `Deregister()` on worktree cleanup when appropriate.
+5. Keep crypto, transport, and coordination behavior in one CLI surface.
 
 ---
 

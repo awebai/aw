@@ -2,7 +2,7 @@
 
 **Status (2026-03-09):** Foundational Source of Truth for what `aw run` is becoming.
 This document is architectural and directional. It defines the intended runtime
-boundary between `aw`, `aweb`, and `bdh`, even where the implementation is
+boundary between `aw`, `atext`, and `aweb`, even where the implementation is
 still incomplete.
 
 ---
@@ -16,11 +16,11 @@ script. It is the reusable local runtime that:
 
 - runs a provider loop
 - owns local input/output and local machine capabilities
-- consumes remote wake/control signals delivered through `aweb`
-- exposes a stable integration surface for higher-level products such as `bdh`
+- consumes remote wake/control signals delivered through `atext`
+- exposes a stable integration surface for higher-level coordination products
 
 This note exists so future work does not drift back into ad hoc layering where
-runtime behavior is reimplemented in `bdh` or mixed into `aweb`.
+runtime behavior is reimplemented in product wrappers or mixed into transport.
 
 ---
 
@@ -40,9 +40,9 @@ runtime behavior is reimplemented in `bdh` or mixed into `aweb`.
 
 `aw run` is the canonical CLI surface for this runtime.
 
-### `aweb`
+### `atext`
 
-`aweb` owns **transport, identity, and delivery**:
+`atext` owns **transport, identity, and delivery**:
 
 - authenticated transport
 - agent identity and addressing
@@ -51,18 +51,18 @@ runtime behavior is reimplemented in `bdh` or mixed into `aweb`.
 - presence and state distribution
 - durable audit/event storage as needed by the networked system
 
-`aweb` should not own provider-specific run loops or local machine tool wiring.
+`atext` should not own provider-specific run loops or local machine tool wiring.
 
-### `bdh`
+### `aweb`
 
-`bdh` owns **bead-aware dispatch and policy glue**:
+`aweb` owns **coordination policy and task-aware dispatch**:
 
 - ready-work / claim / mail prioritization
-- bead-specific autofeed and dispatch policy
-- prompts and behaviors that depend on beads semantics
-- any product logic that is specifically about BeadHub work coordination
+- task-aware autofeed and dispatch policy
+- prompts and behaviors that depend on coordination semantics
+- product logic that is specifically about hosted and managed coordination
 
-`bdh` should consume the `aw` runtime, not reimplement it.
+`aweb` should consume the `aw` runtime, not reimplement it.
 
 ---
 
@@ -70,18 +70,18 @@ runtime behavior is reimplemented in `bdh` or mixed into `aweb`.
 
 The intended runtime stack is:
 
-1. `aweb` delivers events and control inputs to the agent.
+1. `atext` delivers events and control inputs to the agent.
 2. `aw run` maps those inputs into a local runtime loop.
 3. The runtime loop decides when to run a provider, pause, resume, wait, or
    invoke capabilities.
 4. Provider execution and capability execution happen on the local machine that
    owns the relevant access.
-5. Higher-level products such as `bdh` influence the runtime by providing
+5. Higher-level coordination products influence the runtime by providing
    dispatch policy, not by replacing the runtime itself.
 
 This means the runtime is **provider-agnostic** and **product-agnostic**.
 Claude, Codex, and later providers are adapters inside the same loop.
-Bead-aware and non-bead-aware products should sit above the same loop.
+Task-aware and non-task-aware products should sit above the same loop.
 
 ---
 
@@ -256,10 +256,10 @@ provider adapters.
 The following rules are normative for future work:
 
 1. `aw run` is the reusable runtime. New general runtime behavior should land in
-   `aw`, not in `bdh`.
-2. `aweb` is the network/control substrate. New event/control delivery behavior
-   should land in `aweb`/`aw` transport layers, not in `bdh`.
-3. `bdh` may decide **when** and **why** to run, but it should not own the
+   `aw`, not in product-specific wrappers.
+2. `atext` is the network/control substrate. New event/control delivery behavior
+   should land in `atext`/`aw` transport layers, not in higher-level products.
+3. `aweb` may decide **when** and **why** to run, but it should not own the
    generic mechanics of running.
 4. Remote capability use should prefer structured capability invocation over raw
    remote MCP tunneling.
@@ -288,8 +288,8 @@ than redefine it.
 
 This design note does not require:
 
-- `aweb` to understand provider-specific command lines
-- `bdh` to disappear as a product layer
+- `atext` to understand provider-specific command lines
+- every wrapper pattern to disappear immediately
 - raw remote execution of arbitrary local MCP servers
 - every current runtime concern to be immediately networked
 

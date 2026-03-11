@@ -85,7 +85,7 @@ type agentMeta struct {
 //
 // It is designed to be easy to extract into a standalone repo and to be used by:
 // - the `aw` CLI
-// - the `bdh` CLI for `:mail/:chat/:lock` delegation
+// - higher-level coordination products built on the same transport
 type Client struct {
 	baseURL             string
 	httpClient          *http.Client
@@ -94,11 +94,10 @@ type Client struct {
 	signingKey          ed25519.PrivateKey // nil for legacy/custodial
 	did                 string             // empty for legacy/custodial
 	address             string             // namespace/alias, used in signed envelopes
-	stableID            string             // did:claw:..., set on outgoing signed envelopes as from_stable_id
+	stableID            string             // did:aw:..., set on outgoing signed envelopes as from_stable_id
 	resolver            IdentityResolver   // optional; resolves recipient DID for to_did binding
 	pinStore            *PinStore          // optional; TOFU pin store for sender identity verification
 	pinStorePath        string             // disk path for persisting pin store
-	clawDIDClient       *ClawDIDClient     // optional; ClawDID registry client for split-trust verification
 	metaCache           sync.Map           // address → *agentMeta; cached resolver results
 	latestClientVersion atomic.Value       // last seen X-Latest-Client-Version header (string)
 }
@@ -177,7 +176,7 @@ func (c *Client) DID() string { return c.did }
 // signed message envelopes.
 func (c *Client) SetAddress(address string) { c.address = address }
 
-// SetStableID sets the client's stable identifier (did:claw:...) for use
+// SetStableID sets the client's stable identifier (did:aw:...) for use
 // as from_stable_id in outgoing signed envelopes.
 func (c *Client) SetStableID(id string) { c.stableID = id }
 
@@ -190,13 +189,6 @@ func (c *Client) SetResolver(r IdentityResolver) { c.resolver = r }
 func (c *Client) SetPinStore(ps *PinStore, path string) {
 	c.pinStore = ps
 	c.pinStorePath = path
-}
-
-// SetClawDIDClient sets the ClawDID registry client for split-trust verification.
-// When set and a message includes from_stable_id, CheckTOFUPin will cross-check
-// the server-reported DID against the ClawDID registry.
-func (c *Client) SetClawDIDClient(dc *ClawDIDClient) {
-	c.clawDIDClient = dc
 }
 
 // LatestClientVersion returns the most recent X-Latest-Client-Version header
@@ -245,54 +237,17 @@ func (c *Client) resolveAgentMeta(ctx context.Context, address string) *agentMet
 // Uses the resolver to determine the sender's lifetime (ephemeral agents
 // skip pinning) and custody (custodial agents return VerifiedCustodial).
 //
-// When fromStableID is non-empty and a ClawDID client is configured,
-// cross-checks the server-reported DID against the ClawDID registry.
-// A mismatch is a hard error (IdentityMismatch). If ClawDID is unreachable
-// or returns OK_DEGRADED, Phase-1 verification continues.
-//
 // When fromStableID is present, pins are keyed by stable_id instead of did:key.
-// An existing did:key pin is upgraded to a stable_id pin on first sight
-// if the did:key matches.
+// The pin stores the last observed did:key for that stable identity, so a
+// stable_id can survive key rotation while still enforcing continuity.
 func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fromAlias, fromDID, fromStableID string, ra *RotationAnnouncement) VerificationStatus {
 	if c.pinStore == nil || (status != Verified && status != VerifiedCustodial) || fromDID == "" || fromAlias == "" {
 		return status
 	}
 
 	// Validate stable_id prefix before using it as a pin key.
-	if fromStableID != "" && !strings.HasPrefix(fromStableID, "did:claw:") && !strings.HasPrefix(fromStableID, "did:aw:") {
+	if fromStableID != "" && !strings.HasPrefix(fromStableID, "did:aw:") {
 		fromStableID = "" // Treat invalid prefix as absent.
-	}
-
-	// ClawDID cross-check: when stable_id and client are available.
-	// Only pin by stable_id and advance the head cache on ClawDIDVerified.
-	// Unreachable/degraded → fall back to Phase-1 (pin by did:key).
-	clawDIDVerified := false
-	if fromStableID != "" && c.clawDIDClient != nil {
-		keyResp, err := c.clawDIDClient.FetchKey(ctx, fromStableID)
-		// FetchKey error (unreachable, 5xx, etc.) → degrade gracefully, continue Phase-1.
-		if err == nil {
-			c.pinStore.mu.Lock()
-			headCache := c.pinStore.GetHeadCache(fromStableID)
-			c.pinStore.mu.Unlock()
-			if headCache == nil {
-				headCache = &ClawDIDCache{}
-			}
-			result := VerifyClawDIDKeyResponse(fromStableID, keyResp, headCache)
-			switch result.Status {
-			case ClawDIDVerified:
-				if keyResp.CurrentDIDKey != fromDID {
-					return IdentityMismatch
-				}
-				clawDIDVerified = true
-				c.pinStore.mu.Lock()
-				c.pinStore.SetHeadCache(fromStableID, headCache)
-				c.pinStore.mu.Unlock()
-			case ClawDIDDegraded:
-				// Don't advance head cache or use stable_id for pinning.
-			case ClawDIDHardError:
-				return IdentityMismatch
-			}
-		}
 	}
 
 	meta := c.resolveAgentMeta(ctx, fromAlias)
@@ -304,9 +259,8 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 	c.pinStore.mu.Lock()
 	defer c.pinStore.mu.Unlock()
 
-	// Pin key: use stable_id only when ClawDID verified the binding, else did:key.
 	pinKey := fromDID
-	if fromStableID != "" && clawDIDVerified {
+	if fromStableID != "" {
 		pinKey = fromStableID
 
 		// Upgrade-on-first-sight: if we have a did:key pin for this address
@@ -323,33 +277,50 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 
 	pinResult := c.pinStore.CheckPin(fromAlias, pinKey, meta.Lifetime)
 	switch pinResult {
-	case PinNew, PinOK:
+	case PinNew:
 		c.pinStore.StorePin(pinKey, fromAlias, "", "")
-		if clawDIDVerified && fromStableID != "" {
+		if fromStableID != "" {
+			c.pinStore.Pins[pinKey].StableID = fromStableID
+			c.pinStore.Pins[pinKey].DIDKey = fromDID
+		}
+		c.savePinStore()
+	case PinOK:
+		if fromStableID != "" {
+			if pin, ok := c.pinStore.Pins[pinKey]; ok && strings.TrimSpace(pin.DIDKey) != "" && pin.DIDKey != fromDID {
+				if ra == nil || !c.verifyRotationAnnouncement(ra, fromDID, pin.DIDKey) {
+					return IdentityMismatch
+				}
+			}
+		}
+		c.pinStore.StorePin(pinKey, fromAlias, "", "")
+		if fromStableID != "" {
 			c.pinStore.Pins[pinKey].StableID = fromStableID
 			c.pinStore.Pins[pinKey].DIDKey = fromDID
 		}
 		c.savePinStore()
 	case PinMismatch:
 		pinnedKey := c.pinStore.Addresses[fromAlias]
-		// Degraded mode safety: if the address is pinned by stable_id but we couldn't
-		// verify via ClawDID this time (so pinKey fell back to did:key), accept the
-		// message as long as the did:key matches what we last verified for that stable_id.
-		//
-		// This avoids false IdentityMismatch when the ClawDID registry is transiently
-		// unreachable, while still rejecting did:key changes without a valid rotation.
 		if fromStableID != "" && pinnedKey == fromStableID {
-			if pin, ok := c.pinStore.Pins[pinnedKey]; ok && strings.TrimSpace(pin.DIDKey) != "" && pin.DIDKey == fromDID {
-				c.pinStore.StorePin(pinnedKey, fromAlias, "", "")
-				c.pinStore.Pins[pinnedKey].StableID = fromStableID
-				c.savePinStore()
-				return status
+			if pin, ok := c.pinStore.Pins[pinnedKey]; ok {
+				if strings.TrimSpace(pin.DIDKey) != "" && pin.DIDKey == fromDID {
+					c.pinStore.StorePin(pinnedKey, fromAlias, "", "")
+					c.pinStore.Pins[pinnedKey].StableID = fromStableID
+					c.savePinStore()
+					return status
+				}
+				if strings.TrimSpace(pin.DIDKey) != "" && ra != nil && c.verifyRotationAnnouncement(ra, fromDID, pin.DIDKey) {
+					c.pinStore.StorePin(pinnedKey, fromAlias, "", "")
+					c.pinStore.Pins[pinnedKey].StableID = fromStableID
+					c.pinStore.Pins[pinnedKey].DIDKey = fromDID
+					c.savePinStore()
+					return status
+				}
 			}
 		}
 		if ra != nil && c.verifyRotationAnnouncement(ra, fromDID, pinnedKey) {
 			delete(c.pinStore.Pins, pinnedKey)
 			c.pinStore.StorePin(pinKey, fromAlias, "", "")
-			if clawDIDVerified && fromStableID != "" {
+			if fromStableID != "" {
 				c.pinStore.Pins[pinKey].StableID = fromStableID
 				c.pinStore.Pins[pinKey].DIDKey = fromDID
 			}

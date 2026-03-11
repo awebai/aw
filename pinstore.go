@@ -33,8 +33,9 @@ type Pin struct {
 	Address  string `yaml:"address"`
 	Handle   string `yaml:"handle,omitempty"`
 	StableID string `yaml:"stable_id,omitempty"`
-	// DIDKey is the last did:key observed for this identity (primarily for stable_id pins).
-	// This allows safe degraded verification if the ClawDID registry is temporarily unreachable.
+	// DIDKey is the last did:key observed for this identity when the pin key is
+	// a stable_id. It allows key-rotation checks without treating stable_id as a
+	// blind trust anchor.
 	DIDKey    string `yaml:"did_key,omitempty"`
 	FirstSeen string `yaml:"first_seen"`
 	LastSeen  string `yaml:"last_seen"`
@@ -42,23 +43,19 @@ type Pin struct {
 }
 
 // PinStore manages TOFU identity pins for known agents.
-// Pins are keyed by did:key or stable_id (did:claw/did:aw). The Addresses
-// map is a reverse index from address to pin key for the identity-mismatch check.
-// HeadCaches stores ClawDID log head state (seq + entry_hash) per stable_id
-// for cross-run monotonicity checks.
+// Pins are keyed by did:key or stable_id (did:aw). The Addresses map is a
+// reverse index from address to pin key for the identity-mismatch check.
 type PinStore struct {
-	mu         sync.Mutex               `yaml:"-"`
-	Pins       map[string]*Pin          `yaml:"pins"`
-	Addresses  map[string]string        `yaml:"addresses"`
-	HeadCaches map[string]*ClawDIDCache `yaml:"head_caches,omitempty"`
+	mu        sync.Mutex        `yaml:"-"`
+	Pins      map[string]*Pin   `yaml:"pins"`
+	Addresses map[string]string `yaml:"addresses"`
 }
 
 // NewPinStore returns an empty pin store.
 func NewPinStore() *PinStore {
 	return &PinStore{
-		Pins:       make(map[string]*Pin),
-		Addresses:  make(map[string]string),
-		HeadCaches: make(map[string]*ClawDIDCache),
+		Pins:      make(map[string]*Pin),
+		Addresses: make(map[string]string),
 	}
 }
 
@@ -81,9 +78,6 @@ func LoadPinStore(path string) (*PinStore, error) {
 	}
 	if ps.Addresses == nil {
 		ps.Addresses = make(map[string]string)
-	}
-	if ps.HeadCaches == nil {
-		ps.HeadCaches = make(map[string]*ClawDIDCache)
 	}
 	return &ps, nil
 }
@@ -148,28 +142,4 @@ func (ps *PinStore) StorePin(did, address, handle, server string) {
 		Server:    server,
 	}
 	ps.Addresses[address] = did
-}
-
-// GetHeadCache returns the cached ClawDID log head state for a stable_id.
-// Returns nil if no cache exists.
-func (ps *PinStore) GetHeadCache(stableID string) *ClawDIDCache {
-	if ps.HeadCaches == nil {
-		return nil
-	}
-	c, ok := ps.HeadCaches[stableID]
-	if !ok {
-		return nil
-	}
-	// Return a copy so callers can mutate without affecting the store.
-	snapshot := *c
-	return &snapshot
-}
-
-// SetHeadCache stores the ClawDID log head state for a stable_id.
-func (ps *PinStore) SetHeadCache(stableID string, cache *ClawDIDCache) {
-	if ps.HeadCaches == nil {
-		ps.HeadCaches = make(map[string]*ClawDIDCache)
-	}
-	snapshot := *cache
-	ps.HeadCaches[stableID] = &snapshot
 }

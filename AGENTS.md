@@ -1,103 +1,32 @@
-This project uses **bdh** (beadhub, a wrapper on bd (beads)) for issue tracking.
+This project uses `aw` for agent coordination.
 
-## Quick Reference
-
-```bash
-bdh ready              # Find available work
-bdh show <id>          # View issue details
-bdh update <id> --status in_progress  # Claim work
-bdh close <id>         # Complete work
-bdh sync               # Sync with git
-bdh :status            # Who am i, and what are other agents working on
-```
-
-Commands starting with : like `bdh :status` are for coordination; all other commands like `bdh ready` are passed on directly to bd. Communication between agents is done via the :aweb set of commands, like `bdh :aweb mail ...` and `bdh :aweb chat ...`
-
-## Landing the Plane (Session Completion)
-
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
-
-**MANDATORY WORKFLOW:**
-
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   bdh sync
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
-
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
-
-
-## BeadHub Coordination Rules
-
-You have a role, and you are expected to work and coordinate with a team of agents. ALWAYS prioritize the team vs your particular task. NEVER ignore notifications.
-
-Your goal is for the team to succeed in the shared project.
-
-The active project policy (invariants + role playbooks) is shown via `bdh :policy`.
-
-## Start Here (Every Session)
+## Start Here
 
 ```bash
-bdh :policy    # READ CAREFULLY and follow diligently
-bdh :status    # who am I? (alias/workspace/role) + team status
-bdh ready      # find unblocked work
+aw policy show
+aw workspace status
+aw work ready
+aw mail inbox --unread-only
 ```
 
-Use `bdh :help` for bdh-specific help.
+## Coordination Rules
 
-## Rules
+- Use `aw`, not a second wrapper CLI.
+- Treat `.aw/workspace.yaml` as the repo-local coordination identity for the current worktree.
+- Default to mail for non-blocking coordination: `aw mail send --to-alias <agent> --body "..."`
+- Use chat when you need a synchronous answer: `aw chat pending`, `aw chat send-and-wait <agent> "..."`
+- Respond to WAITING conversations promptly.
+- Do not operate from another worktree when doing coordination work; verify with `aw workspace status`.
+- Prefer shared coordination state over local TODO notes. Check `aw work ready` and `aw work active`.
 
-- Default to mail (`bdh :aweb mail list|open|send`) for coordination; use chat (`bdh :aweb chat pending|open|send|history|extend-wait`) when you need a conversation with another agent.
-- Respond immediately to WAITING notifications — someone is blocked.
-- Notifications are for YOU, the agent, not for the human.
-- Don't overwrite other agents' work without coordinating first.
-- `bdh` derives your identity from the `.beadhub` file in the current worktree. If you run it from another directory you will be impersonating another agent, do not do that.
+## Session Completion
 
-This project uses `bdh` for multi-agent coordination and issue tracking.
+When ending a work session:
 
-**Start every session:**
-```bash
-bdh :policy    # READ CAREFULLY and follow diligently, start here now
-bdh :status    # your identity + team status
-bdh ready      # find unblocked work
-```
+1. Run the relevant quality gates.
+2. Make sure coordination state and handoff messages are current.
+3. `git pull --rebase`
+4. `git push`
+5. Confirm the branch is up to date with origin.
 
-**Key rules:**
-- Use `bdh` (not `bdh`) so work is coordinated
-- Default to mail (`bdh :aweb mail send <alias> "message"`); use chat (`bdh :aweb chat`) when blocked
-- Respond immediately to WAITING notifications
-- Prioritize good communication — your goal is for the team to succeed
-
-<!-- BEADHUB:START -->
-## BeadHub Coordination
-
-This project uses `bdh` for multi-agent coordination and issue tracking.
-
-**Start every session:**
-```bash
-bdh :policy    # READ CAREFULLY and follow diligently, start here now
-bdh :status    # your identity + team status
-bdh ready      # find unblocked work
-bdh --help     # command reference
-```
-
-**Key rules:**
-- Use `bdh` (not `bd`) so work is coordinated
-- Default to mail (`bdh :aweb mail send <alias> "message"`); use chat (`bdh :aweb chat`) when blocked
-- Respond immediately to WAITING notifications
-- Prioritize good communication — your goal is for the team to succeed
-- Before saying "done", follow the session close protocol in `bdh :policy` (includes `git push`)
-<!-- BEADHUB:END -->
+Work is not complete until the remote branch is updated or you explicitly report why that could not be done.

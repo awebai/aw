@@ -275,8 +275,8 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) e
 		}
 	}
 
-	// Persist identity to config. ClawDID registration is deferred to
-	// aw connect or aw register (which have richer context for the handle).
+	// Persist identity to config. Stable IDs come from the canonical server
+	// identity path, not a separate local registration flow.
 	if needConfigUpdate {
 		if sel == nil || sel.AccountName == "" {
 			fmt.Fprintln(os.Stderr, "Warning: identity claimed but no account in config to update. Run 'aw connect' to persist.")

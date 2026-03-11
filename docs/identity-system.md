@@ -229,8 +229,8 @@ Contains secrets (API keys). Overridable via `AW_CONFIG_PATH` env var.
 servers:
   localhost:8000:
     url: http://localhost:8000
-  beadhub:
-    url: https://app.claweb.ai/api
+  aweb:
+    url: https://app.aweb.ai/api
 accounts:
   acct-localhost__demo__alice:
     server: localhost:8000
@@ -238,8 +238,8 @@ accounts:
     default_project: demo
     agent_id: <uuid>
     agent_alias: alice
-  acct-beadhub__proj__bob:
-    server: beadhub
+  acct-aweb__proj__bob:
+    server: aweb
     api_key: aw_sk_def456...
     default_project: proj
     agent_id: <uuid>
@@ -265,7 +265,7 @@ in the global config.
 ```yaml
 default_account: acct-localhost__demo__alice
 server_accounts:
-  beadhub: acct-beadhub__proj__bob
+  aweb: acct-aweb__proj__bob
 human_account: acct-localhost__demo__alice-human
 ```
 
@@ -358,11 +358,11 @@ Two auth extraction functions are used by route handlers:
 
 ### Proxy Mode (Cloud)
 
-In cloud deployments, claweb authenticates the user (JWT/cookie/API key) and
+In cloud deployments, aweb-cloud authenticates the user (JWT/cookie/API key) and
 proxies to the embedded aweb instance with signed headers.
 
 ```
-Client                   claweb (auth bridge)              aweb (OSS core)
+Client                 aweb-cloud (auth bridge)            aweb (OSS core)
   │                           │                                │
   │  Bearer <jwt>             │                                │
   │ ────────────────────────► │                                │
@@ -373,7 +373,7 @@ Client                   claweb (auth bridge)              aweb (OSS core)
   │                           │  X-Project-ID: <uuid>          │
   │                           │  X-User-ID: <uuid>             │
   │                           │  X-Aweb-Actor-ID: <uuid>       │
-  │                           │  X-BH-Auth: v2:...:hmac        │
+  │                           │  X-AWEB-Auth: v2:...:hmac      │
   │                           │ ─────────────────────────────► │
   │                           │                                │ Verify HMAC
   │                           │                                │ Extract context
@@ -400,7 +400,7 @@ Startup validation ensures the secret is configured when proxy trust is
 enabled.
 
 **Header injection prevention:** The auth bridge strips any client-provided
-`X-BH-Auth`, `X-Project-ID`, `X-User-ID`, `X-Aweb-Actor-ID`, and
+`X-AWEB-Auth`, `X-Project-ID`, `X-User-ID`, `X-Aweb-Actor-ID`, and
 `X-Org-ID` headers before processing, so clients cannot forge identity
 context.
 
@@ -414,8 +414,8 @@ bridge ensures an agent exists for them:
 These aliases are stable (deterministic from user+project) but not
 human-reversible.
 
-> `aweb/auth.py:122-208`, `claweb/middleware/auth_bridge.py`,
-> `claweb/middleware/oss_auth.py`
+> `aweb/auth.py:122-208`, `aweb_cloud/middleware/auth_bridge.py`,
+> `aweb_cloud/middleware/oss_auth.py`
 
 ### Introspection
 

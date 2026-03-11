@@ -15,7 +15,6 @@ type GlobalConfig struct {
 	Accounts              map[string]Account `yaml:"accounts,omitempty"`
 	DefaultAccount        string             `yaml:"default_account,omitempty"`
 	ClientDefaultAccounts map[string]string  `yaml:"client_default_accounts,omitempty"`
-	ClawDIDRegistryURL    string             `yaml:"clawdid_registry_url,omitempty"`
 }
 
 type Server struct {

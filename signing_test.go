@@ -66,8 +66,8 @@ func TestSignVerifyWithStableIDs(t *testing.T) {
 		Subject:      "task complete",
 		Body:         "results attached",
 		Timestamp:    "2026-02-21T15:30:00Z",
-		FromStableID: "did:claw:Qm9iJ3x",
-		ToStableID:   "did:claw:Qm9iJ3y",
+		FromStableID: "did:aw:Qm9iJ3x",
+		ToStableID:   "did:aw:Qm9iJ3y",
 	}
 
 	sig, err := SignMessage(priv, env)
@@ -254,12 +254,12 @@ func TestCanonicalJSONWithStableIDs(t *testing.T) {
 		Subject:      "",
 		Body:         "hi",
 		Timestamp:    "2026-01-01T00:00:00Z",
-		FromStableID: "did:claw:abc",
-		ToStableID:   "did:claw:def",
+		FromStableID: "did:aw:abc",
+		ToStableID:   "did:aw:def",
 	}
 
 	got := CanonicalJSON(env)
-	want := `{"body":"hi","from":"a/b","from_did":"did:key:z6Mk...","from_stable_id":"did:claw:abc","subject":"","timestamp":"2026-01-01T00:00:00Z","to":"c/d","to_did":"did:key:z6Mr...","to_stable_id":"did:claw:def","type":"chat"}`
+	want := `{"body":"hi","from":"a/b","from_did":"did:key:z6Mk...","from_stable_id":"did:aw:abc","subject":"","timestamp":"2026-01-01T00:00:00Z","to":"c/d","to_did":"did:key:z6Mr...","to_stable_id":"did:aw:def","type":"chat"}`
 
 	if got != want {
 		t.Fatalf("canonicalJSON:\ngot:  %s\nwant: %s", got, want)

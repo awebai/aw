@@ -24,6 +24,7 @@ type VerifyCodeResponse struct {
 	AgentID            string `json:"agent_id,omitempty"`
 	Alias              string `json:"alias,omitempty"`
 	NamespaceSlug      string `json:"namespace_slug,omitempty"`
+	StableID           string `json:"stable_id,omitempty"`
 }
 
 // VerifyCode submits a verification code for email ownership.

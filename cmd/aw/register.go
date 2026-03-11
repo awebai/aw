@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -48,7 +49,7 @@ func init() {
 	registerCmd.Flags().StringVar(&registerCode, "code", "", "Verification code (skips Register call; for existing accounts)")
 	registerCmd.Flags().BoolVar(&registerSaveConfig, "save-config", true, "Write/update ~/.config/aw/config.yaml with the new credentials")
 	registerCmd.Flags().BoolVar(&registerSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
-	registerCmd.Flags().BoolVar(&registerWriteContext, "write-context", true, "Write/update .aw/context in the current worktree (non-secret pointer)")
+	registerCmd.Flags().BoolVar(&registerWriteContext, "write-context", true, "Write/update .aw/context in the current directory (non-secret pointer)")
 
 	rootCmd.AddCommand(registerCmd)
 }
@@ -189,9 +190,10 @@ func saveNewRegistration(
 		return err
 	}
 
-	// Best-effort ClawDID registration. Only persist StableID on success.
-	handle := "@" + username
-	stableID := registerClawDIDWithHandle(ctx, resolveClawDIDRegistryURL(cfgPath), pub, priv, did, canonicalOrigin(baseURL), address, &handle)
+	stableID := strings.TrimSpace(resp.StableID)
+	if stableID == "" {
+		stableID = aweb.ComputeStableID(ed25519.PublicKey(pub))
+	}
 
 	if registerSaveConfig {
 		updateErr := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
@@ -233,8 +235,23 @@ func saveNewRegistration(
 		}
 	}
 
+	var attachResult *contextAttachResult
+	if registerWriteContext {
+		authClient, err := aweb.NewWithAPIKey(baseURL, resp.APIKey)
+		if err != nil {
+			return err
+		}
+		workingDir, _ := os.Getwd()
+		attachResult, err = autoAttachContext(workingDir, authClient)
+		if err != nil {
+			return err
+		}
+	}
+
 	if jsonFlag {
 		printJSON(resp)
+	} else {
+		printRegisterSummary(resp, accountName, serverName, attachResult)
 	}
 
 	if resp.VerificationRequired {
@@ -265,6 +282,33 @@ func saveNewRegistration(
 	}
 
 	return nil
+}
+
+func printRegisterSummary(resp *aweb.RegisterResponse, accountName, serverName string, attachResult *contextAttachResult) {
+	if resp == nil {
+		return
+	}
+	fmt.Printf("Registered agent %s\n", resp.Alias)
+	if strings.TrimSpace(resp.NamespaceSlug) != "" {
+		fmt.Printf("Namespace:  %s\n", strings.TrimSpace(resp.NamespaceSlug))
+	}
+	if strings.TrimSpace(accountName) != "" {
+		fmt.Printf("Account:    %s\n", strings.TrimSpace(accountName))
+	}
+	if strings.TrimSpace(serverName) != "" {
+		fmt.Printf("Server:     %s\n", strings.TrimSpace(serverName))
+	}
+	if attachResult == nil {
+		return
+	}
+	switch strings.TrimSpace(attachResult.ContextKind) {
+	case "repo_worktree":
+		if attachResult.Workspace != nil {
+			fmt.Printf("Context:    attached %s\n", strings.TrimSpace(attachResult.Workspace.CanonicalOrigin))
+		}
+	case "local_dir":
+		fmt.Println("Context:    attached local directory")
+	}
 }
 
 // runRegisterWithCode handles the case where --code is provided: skip the
@@ -435,7 +479,7 @@ func verifyAndBootstrap(
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 	claimCtx, claimCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer claimCancel()
-	_, claimErr := authClient.ClaimIdentity(claimCtx, &aweb.ClaimIdentityRequest{
+	claimResp, claimErr := authClient.ClaimIdentity(claimCtx, &aweb.ClaimIdentityRequest{
 		DID:       did,
 		PublicKey: pubKeyB64,
 		Custody:   aweb.CustodySelf,
@@ -444,15 +488,19 @@ func verifyAndBootstrap(
 	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
 	custody := aweb.CustodySelf
 	lifetime := aweb.LifetimePersistent
+	stableID := strings.TrimSpace(vresp.StableID)
 	recovered := false
 	if claimErr != nil {
 		claimCode, ok := aweb.HTTPStatusCode(claimErr)
 		if ok && claimCode == 409 {
-			var recoveredCustody, recoveredLifetime string
+			var recoveredCustody, recoveredLifetime, recoveredStableID string
 			var recoveryErr error
-			did, signingKeyPath, recoveredCustody, recoveredLifetime, recoveryErr = recoverIdentity409(claimCtx, authClient, keysDir, address)
+			did, signingKeyPath, recoveredStableID, recoveredCustody, recoveredLifetime, recoveryErr = recoverIdentity409WithStableID(claimCtx, authClient, keysDir, address)
 			if recoveryErr != nil {
 				return recoveryErr
+			}
+			if recoveredStableID != "" {
+				stableID = recoveredStableID
 			}
 			if recoveredCustody != "" {
 				custody = recoveredCustody
@@ -464,6 +512,8 @@ func verifyAndBootstrap(
 		} else {
 			return fmt.Errorf("identity claim failed: %w", claimErr)
 		}
+	} else if strings.TrimSpace(claimResp.StableID) != "" {
+		stableID = strings.TrimSpace(claimResp.StableID)
 	}
 
 	// Save keypair to disk BEFORE writing config. Skip when recovery ran —
@@ -475,8 +525,9 @@ func verifyAndBootstrap(
 		}
 	}
 
-	// Best-effort ClawDID registration.
-	stableID := registerClawDIDWithHandle(vctx, resolveClawDIDRegistryURL(cfgPath), pub, priv, did, canonicalOrigin(baseURL), address, handlePtr)
+	if stableID == "" {
+		stableID = aweb.ComputeStableID(ed25519.PublicKey(pub))
+	}
 
 	if registerSaveConfig {
 		updateErr := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
@@ -515,6 +566,20 @@ func verifyAndBootstrap(
 	if registerWriteContext {
 		if err := writeOrUpdateContext(serverName, accountName); err != nil {
 			return err
+		}
+
+		workingDir, _ := os.Getwd()
+		attachResult, err := autoAttachContext(workingDir, authClient)
+		if err != nil {
+			return err
+		}
+		switch strings.TrimSpace(attachResult.ContextKind) {
+		case "repo_worktree":
+			if attachResult.Workspace != nil {
+				fmt.Fprintf(os.Stderr, "Context attached: %s\n", attachResult.Workspace.CanonicalOrigin)
+			}
+		case "local_dir":
+			fmt.Fprintln(os.Stderr, "Context attached: local directory")
 		}
 	}
 

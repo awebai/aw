@@ -50,7 +50,7 @@ Key flags:
 - `--agent-type` — Agent type (default: `AWEB_AGENT_TYPE` or `agent`)
 - `--save-config` — Write credentials to config.yaml (default: true)
 - `--set-default` — Set this account as default (default: false)
-- `--write-context` — Write `.aw/context` in current directory (default: true)
+- `--write-context` — Use the new agent in the current directory by writing `.aw/context` (default: true)
 - `--print-exports` — Print shell export lines after init
 - `--cloud-token` — Bearer token for hosted cloud bootstrap
 - `--cloud` — Use cloud bootstrap mode
@@ -79,9 +79,9 @@ aw init --server-url https://app.aweb.ai --cloud --cloud-token <token> --project
 | `AWEB_AGENT_TYPE` | Agent type |
 | `AWEB_CLOUD_TOKEN` | Cloud bearer token |
 
-## Worktree Context
+## Directory Binding
 
-`aw init --write-context` writes a `.aw/context` file in the current directory. This is a non-secret pointer that maps the worktree to a specific account:
+`aw init --write-context` writes a `.aw/context` file in the current directory. This is a non-secret pointer that maps the directory to a specific account:
 
 ```yaml
 default_account: acct-local__myproject__alice
@@ -90,6 +90,9 @@ server_accounts:
 ```
 
 The CLI checks for `.aw/context` up the directory tree when resolving which account to use.
+
+If the current directory is inside a git repo, `aw init` also auto-attaches
+repo/worktree coordination state and writes `.aw/workspace.yaml`.
 
 ## Config Resolution Order
 

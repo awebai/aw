@@ -21,7 +21,7 @@ type AgentIdentity struct {
 	Custody     string // "self" or "custodial"
 	Lifetime    string // "persistent" or "ephemeral"
 	ResolvedAt  time.Time
-	ResolvedVia string // "did:key", "server", "clawdid", "pin"
+	ResolvedVia string // "did:key", "server", "pin"
 }
 
 // IdentityResolver resolves an identifier to an AgentIdentity.
@@ -147,9 +147,11 @@ type ClaimIdentityRequest struct {
 
 // ClaimIdentityResponse is returned by PUT /v1/agents/me/identity.
 type ClaimIdentityResponse struct {
-	Status  string `json:"status"`
-	DID     string `json:"did"`
-	Custody string `json:"custody"`
+	Status   string `json:"status"`
+	DID      string `json:"did"`
+	StableID string `json:"stable_id,omitempty"`
+	Custody  string `json:"custody"`
+	Lifetime string `json:"lifetime,omitempty"`
 }
 
 // ClaimIdentity binds a did:key + public key to the agent identified by the
@@ -192,8 +194,6 @@ type ChainResolver struct {
 	DIDKey *DIDKeyResolver
 	Server *ServerResolver
 	Pin    *PinResolver
-	// ClaWDID is a nil-safe Phase 2 slot.
-	ClaWDID IdentityResolver
 }
 
 func (r *ChainResolver) Resolve(ctx context.Context, identifier string) (*AgentIdentity, error) {

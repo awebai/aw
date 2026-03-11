@@ -191,7 +191,7 @@ func runResetRemote() error {
 	fmt.Fprintln(os.Stderr, "Server identity cleared.")
 
 	// Claim the new identity.
-	_, err = client.ClaimIdentity(ctx, &aweb.ClaimIdentityRequest{
+	claimResp, err := client.ClaimIdentity(ctx, &aweb.ClaimIdentityRequest{
 		DID:       did,
 		PublicKey: pubKeyB64,
 		Custody:   "self",
@@ -215,15 +215,13 @@ func runResetRemote() error {
 		os.Remove(pubPath)
 	}
 
-	// Best-effort ClawDID registration.
-	serverOrigin := canonicalOrigin(baseURL)
-	stableID := registerClawDIDWithHandle(
-		ctx, resolveClawDIDRegistryURL(cfgPath),
-		pub, priv, did, serverOrigin, address, nil,
-	)
+	stableID := strings.TrimSpace(claimResp.StableID)
+	if stableID == "" {
+		stableID = aweb.ComputeStableID(pub)
+	}
 
-	// Update config. Always clear old stable ID since the old identity
-	// is gone; only set the new one if ClawDID registration succeeded.
+	// Update config. Always clear the old stable ID since the old identity
+	// is gone; persist the newly claimed did:aw stable ID.
 	updateErr := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
 		if cfg.Servers == nil {
 			cfg.Servers = map[string]awconfig.Server{}

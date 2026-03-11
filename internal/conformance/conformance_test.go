@@ -2,7 +2,6 @@ package conformance_test
 
 import (
 	"crypto/ed25519"
-	"crypto/sha256"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -17,12 +16,12 @@ var vectorsFS embed.FS
 // --- message-signing-v1 ---
 
 type messageSigningVector struct {
-	Name             string            `json:"name"`
-	SigningSeedHex   string            `json:"signing_seed_hex"`
-	SigningDIDKey    string            `json:"signing_did_key"`
-	Message          messageFields     `json:"message"`
-	CanonicalPayload string            `json:"canonical_payload"`
-	SignatureB64     string            `json:"signature_b64"`
+	Name             string        `json:"name"`
+	SigningSeedHex   string        `json:"signing_seed_hex"`
+	SigningDIDKey    string        `json:"signing_did_key"`
+	Message          messageFields `json:"message"`
+	CanonicalPayload string        `json:"canonical_payload"`
+	SignatureB64     string        `json:"signature_b64"`
 }
 
 type messageFields struct {
@@ -109,12 +108,11 @@ func TestMessageSigningVectors(t *testing.T) {
 // --- stable-id-v1 ---
 
 type stableIDVector struct {
-	Name          string `json:"name"`
-	SeedHex       string `json:"seed_hex"`
-	DIDKey        string `json:"did_key"`
-	PublicKeyHex  string `json:"public_key_hex"`
-	StableIDClaw  string `json:"stable_id_claw"`
-	StableIDAW    string `json:"stable_id_aw"`
+	Name         string `json:"name"`
+	SeedHex      string `json:"seed_hex"`
+	DIDKey       string `json:"did_key"`
+	PublicKeyHex string `json:"public_key_hex"`
+	StableIDAW   string `json:"stable_id_aw"`
 }
 
 func TestStableIDVectors(t *testing.T) {
@@ -139,14 +137,9 @@ func TestStableIDVectors(t *testing.T) {
 				t.Errorf("public key hex: got %s, want %s", hex.EncodeToString(pub), v.PublicKeyHex)
 			}
 
-			gotClaw := aweb.ComputeStableID(pub, "claw")
-			if gotClaw != v.StableIDClaw {
-				t.Errorf("ComputeStableID(claw): got %s, want %s", gotClaw, v.StableIDClaw)
-			}
-
-			gotAW := aweb.ComputeStableID(pub, "aw")
+			gotAW := aweb.ComputeStableID(pub)
 			if gotAW != v.StableIDAW {
-				t.Errorf("ComputeStableID(aw): got %s, want %s", gotAW, v.StableIDAW)
+				t.Errorf("ComputeStableID: got %s, want %s", gotAW, v.StableIDAW)
 			}
 		})
 	}
@@ -155,10 +148,10 @@ func TestStableIDVectors(t *testing.T) {
 // --- rotation-announcements-v1 ---
 
 type rotationVector struct {
-	Name               string              `json:"name"`
-	Links              []rotationLink      `json:"links"`
-	PinnedDIDKey       string              `json:"pinned_did_key"`
-	EnvelopeFromDIDKey string              `json:"envelope_from_did_key"`
+	Name               string         `json:"name"`
+	Links              []rotationLink `json:"links"`
+	PinnedDIDKey       string         `json:"pinned_did_key"`
+	EnvelopeFromDIDKey string         `json:"envelope_from_did_key"`
 }
 
 type rotationLink struct {
@@ -234,95 +227,6 @@ func TestRotationAnnouncementVectors(t *testing.T) {
 				if lastNew != v.EnvelopeFromDIDKey {
 					t.Errorf("chain: last new_did %s != envelope from_did %s", lastNew, v.EnvelopeFromDIDKey)
 				}
-			}
-		})
-	}
-}
-
-// --- clawdid-log-v1 ---
-
-type clawdidLogVector struct {
-	KeySeeds keySeedsInfo   `json:"key_seeds"`
-	Mapping  mappingInfo    `json:"mapping"`
-	Entries  []logEntryInfo `json:"entries"`
-}
-
-type keySeedsInfo struct {
-	InitialSeedHex string `json:"initial_seed_hex"`
-	RotatedSeedHex string `json:"rotated_seed_hex"`
-}
-
-type mappingInfo struct {
-	DIDClaw       string `json:"did_claw"`
-	InitialDIDKey string `json:"initial_did_key"`
-	RotatedDIDKey string `json:"rotated_did_key"`
-	Server        string `json:"server"`
-	Address       string `json:"address"`
-	Handle        string `json:"handle"`
-}
-
-type logEntryInfo struct {
-	Name                  string                 `json:"name"`
-	StateHash             string                 `json:"state_hash"`
-	EntryPayload          map[string]interface{} `json:"entry_payload"`
-	CanonicalEntryPayload string                 `json:"canonical_entry_payload"`
-	EntryHash             string                 `json:"entry_hash"`
-	SignatureB64          string                 `json:"signature_b64"`
-}
-
-func TestClawDIDLogVectors(t *testing.T) {
-	data, err := vectorsFS.ReadFile("vectors/clawdid-log-v1.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var v clawdidLogVector
-	if err := json.Unmarshal(data, &v); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, entry := range v.Entries {
-		t.Run(entry.Name, func(t *testing.T) {
-			// Test canonical entry payload.
-			logEntry := aweb.LogEntry{
-				AuthorizedBy: strField(entry.EntryPayload, "authorized_by"),
-				DIDClaw:      strField(entry.EntryPayload, "did_claw"),
-				NewDIDKey:    strField(entry.EntryPayload, "new_did_key"),
-				Operation:    strField(entry.EntryPayload, "operation"),
-				Seq:          intField(entry.EntryPayload, "seq"),
-				StateHash:    strField(entry.EntryPayload, "state_hash"),
-				Timestamp:    strField(entry.EntryPayload, "timestamp"),
-			}
-			if v, ok := entry.EntryPayload["prev_entry_hash"].(string); ok {
-				logEntry.PrevEntryHash = &v
-			}
-			if v, ok := entry.EntryPayload["previous_did_key"].(string); ok {
-				logEntry.PreviousDIDKey = &v
-			}
-
-			canonical := logEntry.CanonicalJSON()
-			if canonical != entry.CanonicalEntryPayload {
-				t.Errorf("CanonicalJSON:\n  got:  %s\n  want: %s", canonical, entry.CanonicalEntryPayload)
-			}
-
-			// Test entry hash.
-			hash := sha256.Sum256([]byte(canonical))
-			gotHash := hex.EncodeToString(hash[:])
-			if gotHash != entry.EntryHash {
-				t.Errorf("entry_hash: got %s, want %s", gotHash, entry.EntryHash)
-			}
-
-			// Test signature verification.
-			authorizedBy := strField(entry.EntryPayload, "authorized_by")
-			pub, err := aweb.ExtractPublicKey(authorizedBy)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ok, err := aweb.VerifyLogEntrySignature(pub, entry.SignatureB64, canonical)
-			if err != nil {
-				t.Fatalf("VerifyLogEntrySignature: %v", err)
-			}
-			if !ok {
-				t.Error("VerifyLogEntrySignature returned false")
 			}
 		})
 	}

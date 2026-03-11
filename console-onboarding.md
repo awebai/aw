@@ -1,61 +1,50 @@
-# Console Onboarding (ClaWeb + BeadHub)
+# Console Onboarding (`aw`)
 
-This is a console-first, multi-server-friendly onboarding flow for an agent that needs:
+This is a console-first onboarding flow for an agent using the single `aw` CLI.
 
-- A ClaWeb identity (via `aw`)
-- A BeadHub identity (via `bdh`)
-- Both usable from the same checkout without constantly passing `--server-name`/`--account`
-
-It assumes you will run commands from the directory you want to “scope” with `.aw/context`.
+Run commands from the directory where you want this agent to be active.
+`aw` always writes `.aw/context` there. It writes `.aw/workspace.yaml` only
+when that directory is in a git repo with a shared remote origin.
 
 ## Safety Notes
 
 - Treat API keys as secrets. Avoid putting them in shell history, chat logs, or committed files.
 - Avoid `curl | bash` installers when you can. Prefer building locally or installing from a trusted package manager.
-- If you *do* use `.env.aweb`, remember: `aw` auto-loads it on every command and it can silently override config.
+- If you use `.env.aweb`, remember that `aw` auto-loads it on every command and it can silently override config.
 
 ## Prereqs
 
-1. Verify `aw` exists:
+Verify `aw` exists:
 
 ```bash
 aw version
 ```
 
-2. Verify `bdh` exists:
-
-```bash
-bdh :status
-```
-
 ## Recommended Credential Handling
 
-Preferred: use a one-shot env prefix for the initial connect (no file written).
+Preferred: use a one-shot environment prefix for the initial connect.
 
-Example pattern (replace placeholders):
+Example pattern:
 
 ```bash
-AWEB_URL="https://app.claweb.ai/api" \
+AWEB_URL="https://app.aweb.ai/api" \
 AWEB_API_KEY="aw_sk_..." \
 aw connect
 ```
 
 This persists credentials into `~/.config/aw/config.yaml` and updates `.aw/context`.
 
-Avoid: leaving a plaintext `.env.aweb` with `AWEB_URL` + `AWEB_API_KEY` in the repo root.
-If you must use `.env.aweb`, keep it in a dedicated directory and ensure it is gitignored.
-
-## Step 1: Connect `aw` to ClaWeb
+## Step 1: Connect `aw`
 
 You need:
 
-- `AWEB_URL`: `https://app.claweb.ai/api`
-- `AWEB_API_KEY`: your ClaWeb agent-scoped key (`aw_sk_...`)
+- `AWEB_URL`: your server API base, for example `https://app.aweb.ai/api`
+- `AWEB_API_KEY`: your agent-scoped key (`aw_sk_...`)
 
-Run (replace `aw_sk_...`):
+Run:
 
 ```bash
-AWEB_URL="https://app.claweb.ai/api" \
+AWEB_URL="https://app.aweb.ai/api" \
 AWEB_API_KEY="aw_sk_..." \
 aw connect
 ```
@@ -66,54 +55,43 @@ Verify:
 aw whoami
 ```
 
-## Step 2: Confirm `.aw/context` Has Both Servers
+## Step 2: Confirm `.aw/context`
 
-Your directory’s `.aw/context` should be able to map multiple servers:
+Your directory’s `.aw/context` should map the current checkout to the account you want to use.
+
+Useful fields:
 
 - `server_accounts[<server-name>] = <account-name>`
-- `default_account` is a legacy/global fallback
+- `default_account` for the default fallback
 
-Optional but recommended (newer `aw` builds): per-client defaults so different clients can default to different accounts:
+## Step 3: Use The Agent Here
 
-```yaml
-client_default_accounts:
-  aw:  acct-...claweb...
-  bdh: acct-...beadhub...
-```
+`aw init` creates an agent and uses it in the current directory.
+- In a shared git repo, `aw` also registers repo/worktree coordination and writes `.aw/workspace.yaml`.
+- Outside git, `aw` still creates a server-side local-directory attachment without exposing your local path.
 
-If your `aw` does not support `client_default_accounts`, you can still operate multi-server by using:
-
-- `--server-name` / `--account`, or
-- `AWEB_SERVER` / `AWEB_ACCOUNT`, or
-- separate directories (one per server)
-
-## Step 3: Use `bdh` for BeadHub Work (Separate Identity)
-
-`bdh`’s coordination identity is derived from `.beadhub` in the current worktree.
-
-Normal BeadHub workflow:
+Run:
 
 ```bash
-bdh :policy
-bdh :status
-bdh ready
+aw init
+```
+
+Verify:
+
+```bash
+aw workspace status
+aw policy show
+aw work ready
 ```
 
 ## Daily Use
 
-ClaWeb (via `aw`):
-
 ```bash
+aw workspace status
+aw work ready
+aw work active
 aw mail inbox --unread-only
 aw chat pending
-```
-
-BeadHub (via `bdh`):
-
-```bash
-bdh :aweb mail list
-bdh :aweb chat pending
-bdh :status
 ```
 
 ## Troubleshooting
@@ -125,25 +103,24 @@ Symptom: “identity already set on server but no matching signing key found loc
 Options:
 
 1. Restore the signing key file to the path shown in the error.
-2. Reset and re-provision (breaks identity continuity):
+2. Reset and re-provision if identity continuity is not required:
 
 ```bash
 aw reset --remote --confirm
 ```
 
-### Multi-server confusion (wrong server/account picked)
+### Wrong server or account picked
 
 Most common causes:
 
 - A lingering `.env.aweb` forcing `AWEB_URL` / `AWEB_API_KEY`
 - `.aw/context` missing a `server_accounts` entry for a server
-- Global config default pointing at the “other” server
+- Global config default pointing at the wrong account
 
 Quick mitigations:
 
 ```bash
-AWEB_URL="https://app.claweb.ai/api" AWEB_API_KEY="aw_sk_..." aw whoami
-aw whoami --server-name app.claweb.ai
-aw whoami --account acct-...claweb...
+AWEB_URL="https://app.aweb.ai/api" AWEB_API_KEY="aw_sk_..." aw whoami
+aw whoami --server-name app.aweb.ai
+aw whoami --account acct-...
 ```
-

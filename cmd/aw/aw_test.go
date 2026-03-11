@@ -543,7 +543,7 @@ func TestAwInitRetriesWhenSuggestedAliasAlreadyExists(t *testing.T) {
 	run.Env = append(os.Environ(),
 		"AWEB_URL="+server.URL,
 		"AW_CONFIG_PATH="+cfgPath,
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1167,18 +1167,13 @@ func TestAwInitWritesConfig(t *testing.T) {
 				"alias":        "alice",
 				"api_key":      "aw_sk_alice",
 				"created":      true,
+				"stable_id":    "did:aw:test-stable-id",
 			})
 			return
 		default:
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 	}))
-
-	// Mock ClawDID registry to verify stable_id registration.
-	clawDIDServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"did_claw": "did:claw:test", "status": "created"})
-	}))
-	t.Cleanup(clawDIDServer.Close)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1202,7 +1197,6 @@ func TestAwInitWritesConfig(t *testing.T) {
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
-		"CLAWDID_REGISTRY_URL="+clawDIDServer.URL,
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1260,8 +1254,8 @@ func TestAwInitWritesConfig(t *testing.T) {
 		t.Fatalf("accounts.acct.agent_alias=%v", acct["agent_alias"])
 	}
 	stableID, _ := acct["stable_id"].(string)
-	if !strings.HasPrefix(stableID, "did:claw:") {
-		t.Fatalf("accounts.acct.stable_id=%v, want did:claw: prefix", acct["stable_id"])
+	if stableID != "did:aw:test-stable-id" {
+		t.Fatalf("accounts.acct.stable_id=%v, want did:aw:test-stable-id", acct["stable_id"])
 	}
 }
 
@@ -1302,7 +1296,7 @@ func TestAwInitCloudModeRequiresCloudToken(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1371,7 +1365,7 @@ func TestAwInitCloudModeSkipsInitProbe(t *testing.T) {
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_CLOUD_TOKEN=cloud_jwt_token",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1452,7 +1446,7 @@ func TestAwInitAcceptsAPIV1BaseURL(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1527,7 +1521,7 @@ func TestAwInitAllowsCustomMountRoot(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1616,7 +1610,7 @@ default_account: cloud-acct
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1704,7 +1698,7 @@ default_account: existing-acct
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1775,7 +1769,7 @@ default_account: existing-acct
 		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
 		"AWEB_ALIAS=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -2438,7 +2432,7 @@ func TestAwRegisterMissingEmail(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -2486,7 +2480,7 @@ func TestAwRegisterInvalidEmail(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -2578,7 +2572,7 @@ func TestAwRegisterSuccess(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	if err := run.Run(); err != nil {
@@ -2658,7 +2652,7 @@ func TestAwRegisterServerNotSupported(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -2720,7 +2714,7 @@ func TestAwRegisterEmailTaken(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -2774,6 +2768,16 @@ func TestAwRegisterExistingAccountFlow(t *testing.T) {
 				"did":     body["did"],
 				"custody": "self",
 			})
+		case "/v1/workspaces/attach":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspace_id":    "agent-existing-42",
+				"project_id":      "proj-existing",
+				"project_slug":    "existinguser",
+				"alias":           "researcher",
+				"human_name":      "existing",
+				"attachment_type": "local_dir",
+				"created":         true,
+			})
 		default:
 			t.Fatalf("unexpected path=%s", r.URL.Path)
 		}
@@ -2821,7 +2825,7 @@ func TestAwRegisterExistingAccountFlow(t *testing.T) {
 		"AWEB_API_KEY=",
 		"HOME="+tmp,
 		"XDG_CONFIG_HOME="+filepath.Join(tmp, ".config"),
-		"CLAWDID_REGISTRY_URL="+clawDIDServer.URL,
+		"AW_DID_REGISTRY_URL="+clawDIDServer.URL,
 	)
 	run.Dir = tmp
 	var stdout, stderr bytes.Buffer
@@ -2900,6 +2904,16 @@ func TestAwRegisterExistingAccountAutoSelectNamespace(t *testing.T) {
 				"did":     body["did"],
 				"custody": "self",
 			})
+		case "/v1/workspaces/attach":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspace_id":    "agent-auto",
+				"project_id":      "proj-auto",
+				"project_slug":    "autouser",
+				"alias":           "bot",
+				"human_name":      "auto",
+				"attachment_type": "local_dir",
+				"created":         true,
+			})
 		default:
 			t.Fatalf("unexpected path=%s", r.URL.Path)
 		}
@@ -2946,7 +2960,7 @@ func TestAwRegisterExistingAccountAutoSelectNamespace(t *testing.T) {
 		"AWEB_API_KEY=",
 		"HOME="+tmp,
 		"XDG_CONFIG_HOME="+filepath.Join(tmp, ".config"),
-		"CLAWDID_REGISTRY_URL="+clawDIDServer.URL,
+		"AW_DID_REGISTRY_URL="+clawDIDServer.URL,
 	)
 	run.Dir = tmp
 	var stdout, stderr bytes.Buffer
@@ -3027,7 +3041,7 @@ func TestAwRegisterUsernameTaken(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -3103,7 +3117,7 @@ func TestAwRegisterAliasTaken(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -3186,7 +3200,7 @@ func TestAwRegisterExistingAccountNamespaceNotOwned(t *testing.T) {
 		"AWEB_API_KEY=",
 		"HOME="+tmp,
 		"XDG_CONFIG_HOME="+filepath.Join(tmp, ".config"),
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -3262,7 +3276,7 @@ func TestAwRegisterExistingAccountMultipleNamespacesNonTTY(t *testing.T) {
 		"AWEB_API_KEY=",
 		"HOME="+tmp,
 		"XDG_CONFIG_HOME="+filepath.Join(tmp, ".config"),
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -3317,6 +3331,16 @@ func TestAwRegisterExistingAccountClaimsIdentity(t *testing.T) {
 				"did":     claimBody["did"],
 				"custody": "self",
 			})
+		case "/v1/workspaces/attach":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspace_id":    "agent-claim-1",
+				"project_id":      "proj-claim",
+				"project_slug":    "claimuser",
+				"alias":           "researcher",
+				"human_name":      "claim",
+				"attachment_type": "local_dir",
+				"created":         true,
+			})
 		default:
 			t.Fatalf("unexpected path=%s", r.URL.Path)
 		}
@@ -3362,7 +3386,7 @@ func TestAwRegisterExistingAccountClaimsIdentity(t *testing.T) {
 		"AWEB_API_KEY=",
 		"HOME="+tmp,
 		"XDG_CONFIG_HOME="+filepath.Join(tmp, ".config"),
-		"CLAWDID_REGISTRY_URL="+clawDIDServer.URL,
+		"AW_DID_REGISTRY_URL="+clawDIDServer.URL,
 	)
 	run.Dir = tmp
 	var stdout, stderr bytes.Buffer
@@ -3423,6 +3447,16 @@ func TestAwRegisterWithCodeSkipsRegisterCall(t *testing.T) {
 				"did":     body["did"],
 				"custody": "self",
 			})
+		case "/v1/workspaces/attach":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspace_id":    "agent-code-1",
+				"project_id":      "proj-code",
+				"project_slug":    "testuser",
+				"alias":           "researcher",
+				"human_name":      "code",
+				"attachment_type": "local_dir",
+				"created":         true,
+			})
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
@@ -3470,7 +3504,7 @@ func TestAwRegisterWithCodeSkipsRegisterCall(t *testing.T) {
 		"AWEB_API_KEY=",
 		"HOME="+tmp,
 		"XDG_CONFIG_HOME="+filepath.Join(tmp, ".config"),
-		"CLAWDID_REGISTRY_URL="+clawDIDServer.URL,
+		"AW_DID_REGISTRY_URL="+clawDIDServer.URL,
 	)
 	run.Dir = tmp
 	var stdout, stderr bytes.Buffer
@@ -3543,9 +3577,9 @@ func TestAwRegisterWritesConfig(t *testing.T) {
 		}
 	}))
 
-	// Mock ClawDID registry to verify stable_id registration.
+	// Mock stable ID registry to verify stable_id registration.
 	clawDIDServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"did_claw": "did:claw:test", "status": "created"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"did_claw": "did:aw:test", "status": "created"})
 	}))
 	t.Cleanup(clawDIDServer.Close)
 
@@ -3584,7 +3618,7 @@ func TestAwRegisterWritesConfig(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL="+clawDIDServer.URL,
+		"AW_DID_REGISTRY_URL="+clawDIDServer.URL,
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -3634,8 +3668,8 @@ func TestAwRegisterWritesConfig(t *testing.T) {
 				t.Fatalf("accounts.%s.email=%v", name, acct["email"])
 			}
 			stableID, _ := acct["stable_id"].(string)
-			if !strings.HasPrefix(stableID, "did:claw:") {
-				t.Fatalf("accounts.%s.stable_id=%v, want did:claw: prefix", name, acct["stable_id"])
+			if !strings.HasPrefix(stableID, "did:aw:") {
+				t.Fatalf("accounts.%s.stable_id=%v, want did:aw: prefix", name, acct["stable_id"])
 			}
 			break
 		}
@@ -3695,7 +3729,7 @@ func TestAwRegisterMissingUsername(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -3746,7 +3780,7 @@ func TestAwRegisterMissingAlias(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -4237,7 +4271,7 @@ default_account: acct
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	if err := run.Run(); err != nil {
@@ -4378,7 +4412,7 @@ default_account: acct
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	if err := run.Run(); err != nil {
@@ -4513,7 +4547,7 @@ default_account: acct
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	if err := run.Run(); err != nil {
@@ -4643,7 +4677,7 @@ default_account: acct
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 
@@ -4828,7 +4862,7 @@ func TestAwRegisterNamespaceSlugStoredInConfig(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -4922,7 +4956,7 @@ func TestAwRegisterSendsIdentityFields(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -5373,7 +5407,7 @@ default_account: acct
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -5454,7 +5488,7 @@ func TestAwInitNamespaceForcesCloudMode(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -5533,7 +5567,7 @@ func TestAwInitNamespaceStoresInConfig(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
 		"AWEB_API_KEY=",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -5857,6 +5891,7 @@ func TestAwConnect(t *testing.T) {
 	t.Parallel()
 
 	var identityClaimed atomic.Bool
+	const stableID = "did:aw:GrRZYotwid5A4FxaddwPxsxChzo"
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/auth/introspect":
@@ -5884,9 +5919,11 @@ func TestAwConnect(t *testing.T) {
 			var req map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":  "ok",
-				"did":     req["did"],
-				"custody": "self",
+				"status":    "ok",
+				"did":       req["did"],
+				"stable_id": stableID,
+				"custody":   "self",
+				"lifetime":  "persistent",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -5923,7 +5960,6 @@ func TestAwConnect(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL="+server.URL,
 		"AWEB_API_KEY=aw_sk_test",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1", // unreachable — forces best-effort failure
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -5979,6 +6015,9 @@ func TestAwConnect(t *testing.T) {
 			}
 			if acct["lifetime"] != "persistent" {
 				t.Fatalf("lifetime=%v, want persistent", acct["lifetime"])
+			}
+			if acct["stable_id"] != stableID {
+				t.Fatalf("stable_id=%v, want %s", acct["stable_id"], stableID)
 			}
 			break
 		}
@@ -6067,7 +6106,7 @@ accounts:
     signing_key: "`+keyPath+`"
     custody: self
     lifetime: persistent
-    stable_id: "did:claw:existing"
+    stable_id: "did:aw:existing"
 default_account: acct-`+server.Listener.Addr().String()+`__agent-1
 `)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -6101,8 +6140,8 @@ default_account: acct-`+server.Listener.Addr().String()+`__agent-1
 			if acct["did"] != did {
 				t.Fatalf("did=%v, want %s (preserved)", acct["did"], did)
 			}
-			if acct["stable_id"] != "did:claw:existing" {
-				t.Fatalf("stable_id=%v, want did:claw:existing (preserved)", acct["stable_id"])
+			if acct["stable_id"] != "did:aw:existing" {
+				t.Fatalf("stable_id=%v, want did:aw:existing (preserved)", acct["stable_id"])
 			}
 			break
 		}
@@ -6184,7 +6223,7 @@ server_accounts:
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL="+server.URL,
 		"AWEB_API_KEY=aw_sk_test",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1", // unreachable — forces best-effort failure
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1", // unreachable — forces best-effort failure
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -6309,6 +6348,7 @@ func TestAwConnectRecoverWith409AndLocalKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	serverDID := aweb.ComputeDIDKey(pub)
+	serverStableID := aweb.ComputeStableID(pub)
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -6334,11 +6374,12 @@ func TestAwConnectRecoverWith409AndLocalKey(t *testing.T) {
 			})
 		case "/v1/agents/resolve/myco/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"did":      serverDID,
-				"agent_id": "agent-1",
-				"address":  "myco/alice",
-				"custody":  "self",
-				"lifetime": "persistent",
+				"did":       serverDID,
+				"stable_id": serverStableID,
+				"agent_id":  "agent-1",
+				"address":   "myco/alice",
+				"custody":   "self",
+				"lifetime":  "persistent",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -6383,7 +6424,6 @@ func TestAwConnectRecoverWith409AndLocalKey(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL="+server.URL,
 		"AWEB_API_KEY=aw_sk_test",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1", // unreachable — best-effort
 	)
 	run.Dir = tmp
 	out, runErr := run.CombinedOutput()
@@ -6418,14 +6458,19 @@ func TestAwConnectRecoverWith409AndLocalKey(t *testing.T) {
 			if acct["lifetime"] != "persistent" {
 				t.Fatalf("lifetime=%v, want persistent", acct["lifetime"])
 			}
+			if acct["stable_id"] != serverStableID {
+				t.Fatalf("stable_id=%q, want %q", acct["stable_id"], serverStableID)
+			}
 			return
 		}
 	}
 	t.Fatalf("no account with api_key=aw_sk_test in config:\n%s", string(data))
 }
 
-func TestAwConnectClawDIDBestEffort(t *testing.T) {
+func TestAwConnectUsesServerStableID(t *testing.T) {
 	t.Parallel()
+
+	const stableID = "did:aw:4FAsTHsY3uUjQ6rLw8TDwQyd5Ek"
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -6445,9 +6490,11 @@ func TestAwConnectClawDIDBestEffort(t *testing.T) {
 			var req map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":  "ok",
-				"did":     req["did"],
-				"custody": "self",
+				"status":    "ok",
+				"did":       req["did"],
+				"stable_id": stableID,
+				"custody":   "self",
+				"lifetime":  "persistent",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -6483,15 +6530,14 @@ func TestAwConnectClawDIDBestEffort(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL="+server.URL,
 		"AWEB_API_KEY=aw_sk_test",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1", // unreachable
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
 	if err != nil {
-		t.Fatalf("run failed (should succeed despite ClawDID failure): %v\n%s", err, string(out))
+		t.Fatalf("run failed (should succeed despite stable ID failure): %v\n%s", err, string(out))
 	}
 
-	// Connect should succeed with identity but no stable_id.
+	// Connect should persist the server-issued did:aw stable_id.
 	data, _ := os.ReadFile(cfgPath)
 	var cfg struct {
 		Accounts map[string]map[string]any `yaml:"accounts"`
@@ -6503,17 +6549,11 @@ func TestAwConnectClawDIDBestEffort(t *testing.T) {
 			if did == "" || !strings.HasPrefix(did, "did:key:z") {
 				t.Fatalf("did=%v, want did:key:z...", acct["did"])
 			}
-			// StableID should be empty when ClawDID is unreachable.
-			if acct["stable_id"] != nil && acct["stable_id"] != "" {
-				t.Fatalf("stable_id=%v, want empty (ClawDID unreachable)", acct["stable_id"])
+			if acct["stable_id"] != stableID {
+				t.Fatalf("stable_id=%v, want %s", acct["stable_id"], stableID)
 			}
 			break
 		}
-	}
-
-	// Verify stderr warns about ClawDID failure.
-	if !strings.Contains(string(out), "ClawDID registration failed") {
-		t.Fatalf("expected warning about ClawDID failure in output: %s", string(out))
 	}
 }
 
@@ -6791,7 +6831,7 @@ default_account: test-acct
 	run := exec.CommandContext(ctx, bin, "reset", "--remote", "--confirm")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1", // unreachable — best-effort
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1", // unreachable — best-effort
 	)
 	run.Dir = tmp
 	out, runErr := run.CombinedOutput()
@@ -6931,7 +6971,7 @@ default_account: test-acct
 	run := exec.CommandContext(ctx, bin, "reset", "--remote", "--confirm", "--wipe-keys")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = tmp
 	out, runErr := run.CombinedOutput()
@@ -7044,7 +7084,7 @@ func TestAwResetRemoteFromEnvOnly(t *testing.T) {
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL="+server.URL,
 		"AWEB_API_KEY=aw_sk_test",
-		"CLAWDID_REGISTRY_URL=http://127.0.0.1:1", // unreachable — best-effort
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1", // unreachable — best-effort
 	)
 	run.Dir = tmp
 	out, runErr := run.CombinedOutput()

@@ -110,13 +110,12 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	if existingDID == "" || existingSigningKey == "" {
 		var provErr error
 		identityDID, signingKeyPath, stableID, custody, lifetime, provErr = provisionIdentity(
-			ctx, client, cfgPath, keysDir, baseURL, namespaceSlug, alias,
+			ctx, client, keysDir, namespaceSlug, alias,
 		)
 		if provErr != nil {
 			return provErr
 		}
-		// Preserve existing stable_id if provisioning didn't produce one
-		// (e.g. 409 recovery or ClawDID failure).
+		// Preserve an existing stable_id if the server did not return one.
 		if stableID == "" && existingStableID != "" {
 			stableID = existingStableID
 		}
@@ -189,11 +188,11 @@ func runConnect(cmd *cobra.Command, args []string) error {
 }
 
 // provisionIdentity generates a keypair, claims identity on the server, and
-// optionally registers with ClawDID. Returns the identity fields to persist.
+// returns the canonical identity fields to persist.
 func provisionIdentity(
 	ctx context.Context,
 	client *aweb.Client,
-	cfgPath, keysDir, baseURL, namespaceSlug, alias string,
+	keysDir, namespaceSlug, alias string,
 ) (did, signingKeyPath, stableID, custody, lifetime string, err error) {
 	address := deriveAgentAddress(namespaceSlug, "", alias)
 	signingKeyPath = awconfig.SigningKeyPath(keysDir, address)
@@ -227,14 +226,14 @@ func provisionIdentity(
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
 	// Claim identity on the aweb server.
-	_, err = client.ClaimIdentity(ctx, &aweb.ClaimIdentityRequest{
+	resp, claimErr := client.ClaimIdentity(ctx, &aweb.ClaimIdentityRequest{
 		DID:       did,
 		PublicKey: pubKeyB64,
 		Custody:   "self",
 		Lifetime:  "persistent",
 	})
-	if err != nil {
-		code, ok := aweb.HTTPStatusCode(err)
+	if claimErr != nil {
+		code, ok := aweb.HTTPStatusCode(claimErr)
 		if ok && code == 409 {
 			// Remove orphan key if we just generated it — it doesn't match
 			// the server's identity and would be confusing on disk.
@@ -243,24 +242,26 @@ func provisionIdentity(
 				pubPath := strings.TrimSuffix(signingKeyPath, ".key") + ".pub"
 				os.Remove(pubPath)
 			}
-			recoveredDID, recoveredKeyPath, recoveredCustody, recoveredLifetime, recoverErr := recoverIdentity409(ctx, client, keysDir, address)
+			recoveredDID, recoveredKeyPath, recoveredStableID, recoveredCustody, recoveredLifetime, recoverErr := recoverIdentity409WithStableID(ctx, client, keysDir, address)
 			if recoverErr != nil {
 				return "", "", "", "", "", recoverErr
 			}
-			return recoveredDID, recoveredKeyPath, stableID, recoveredCustody, recoveredLifetime, nil
+			return recoveredDID, recoveredKeyPath, recoveredStableID, recoveredCustody, recoveredLifetime, nil
 		}
-		return "", "", "", "", "", err
+		return "", "", "", "", "", claimErr
 	}
 
-	custody = "self"
-	lifetime = "persistent"
-
-	// ClawDID expects canonical server origin (scheme+host), not the API
-	// base URL which may include a path like /api.
-	serverOrigin := canonicalOrigin(baseURL)
-
-	// Best-effort ClawDID registration.
-	stableID = registerClawDIDWithHandle(ctx, resolveClawDIDRegistryURL(cfgPath), pub, priv, did, serverOrigin, address, nil)
+	if resp != nil {
+		stableID = strings.TrimSpace(resp.StableID)
+		custody = strings.TrimSpace(resp.Custody)
+		lifetime = strings.TrimSpace(resp.Lifetime)
+	}
+	if custody == "" {
+		custody = "self"
+	}
+	if lifetime == "" {
+		lifetime = "persistent"
+	}
 
 	return did, signingKeyPath, stableID, custody, lifetime, nil
 }
@@ -274,15 +275,24 @@ func recoverIdentity409(
 	client *aweb.Client,
 	keysDir, address string,
 ) (did, signingKeyPath, custody, lifetime string, err error) {
+	did, signingKeyPath, _, custody, lifetime, err = recoverIdentity409WithStableID(ctx, client, keysDir, address)
+	return did, signingKeyPath, custody, lifetime, err
+}
+
+func recoverIdentity409WithStableID(
+	ctx context.Context,
+	client *aweb.Client,
+	keysDir, address string,
+) (did, signingKeyPath, stableID, custody, lifetime string, err error) {
 	resolver := &aweb.ServerResolver{Client: client}
 	identity, err := resolver.Resolve(ctx, address)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("identity already set on server, and could not resolve %s to recover: %w\nRun 'aw reset --remote --confirm' to clear the server identity and re-provision.", address, err)
+		return "", "", "", "", "", fmt.Errorf("identity already set on server, and could not resolve %s to recover: %w\nRun 'aw reset --remote --confirm' to clear the server identity and re-provision.", address, err)
 	}
 
 	serverPub, err := aweb.ExtractPublicKey(identity.DID)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("identity already set on server with invalid DID %q: %w", identity.DID, err)
+		return "", "", "", "", "", fmt.Errorf("identity already set on server with invalid DID %q: %w", identity.DID, err)
 	}
 
 	// Fast path: check expected key location.
@@ -292,14 +302,14 @@ func recoverIdentity409(
 		loadedPub := priv.Public().(ed25519.PublicKey)
 		if loadedPub.Equal(serverPub) {
 			fmt.Fprintf(os.Stderr, "Recovered identity from existing key at %s\n", expectedPath)
-			return identity.DID, expectedPath, identity.Custody, identity.Lifetime, nil
+			return identity.DID, expectedPath, identity.StableID, identity.Custody, identity.Lifetime, nil
 		}
 	}
 
 	// Slow path: scan all keys (including rotated/).
 	foundPath, err := awconfig.ScanKeysForPublicKey(keysDir, serverPub)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("identity already set on server; error scanning local keys: %w", err)
+		return "", "", "", "", "", fmt.Errorf("identity already set on server; error scanning local keys: %w", err)
 	}
 	if foundPath != "" {
 		if strings.Contains(foundPath, string(os.PathSeparator)+"rotated"+string(os.PathSeparator)) {
@@ -307,58 +317,8 @@ func recoverIdentity409(
 		} else {
 			fmt.Fprintf(os.Stderr, "Recovered identity from existing key at %s\n", foundPath)
 		}
-		return identity.DID, foundPath, identity.Custody, identity.Lifetime, nil
+		return identity.DID, foundPath, identity.StableID, identity.Custody, identity.Lifetime, nil
 	}
 
-	return "", "", "", "", fmt.Errorf("identity already set on server (%s) but no matching signing key found locally.\nTo recover, place the signing key at %s, or run 'aw reset --remote --confirm' to clear the server identity and re-provision.", identity.DID, expectedPath)
-}
-
-// registerClawDIDWithHandle attempts to register the agent's stable_id with ClawDID.
-// Returns the stable_id on success, or empty string on failure.
-// handle is included in the state_hash and registration request when non-nil.
-func registerClawDIDWithHandle(
-	ctx context.Context,
-	registryURL string,
-	pub ed25519.PublicKey, priv ed25519.PrivateKey,
-	did, serverURL, address string,
-	handle *string,
-) string {
-	didClaw := aweb.ComputeStableID(pub, "claw")
-	stateHash := aweb.ComputeStateHash(didClaw, did, serverURL, address, handle)
-	timestamp := time.Now().UTC().Format(time.RFC3339)
-
-	entry := aweb.LogEntry{
-		AuthorizedBy:   did,
-		DIDClaw:        didClaw,
-		NewDIDKey:      did,
-		Operation:      "create",
-		PrevEntryHash:  nil,
-		PreviousDIDKey: nil,
-		Seq:            1,
-		StateHash:      stateHash,
-		Timestamp:      timestamp,
-	}
-	canonical := entry.CanonicalJSON()
-	sig := ed25519.Sign(priv, []byte(canonical))
-	proof := base64.RawStdEncoding.EncodeToString(sig)
-
-	clawDIDClient := &aweb.ClawDIDClient{RegistryURL: registryURL}
-	_, err := clawDIDClient.Register(ctx, &aweb.ClawDIDRegisterRequest{
-		DIDClaw:      didClaw,
-		DIDKey:       did,
-		Server:       serverURL,
-		Address:      address,
-		Handle:       handle,
-		Seq:          1,
-		StateHash:    stateHash,
-		AuthorizedBy: did,
-		Timestamp:    timestamp,
-		Proof:        proof,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: ClawDID registration failed (non-fatal): %v\n", err)
-		return ""
-	}
-
-	return didClaw
+	return "", "", "", "", "", fmt.Errorf("identity already set on server (%s) but no matching signing key found locally.\nTo recover, place the signing key at %s, or run 'aw reset --remote --confirm' to clear the server identity and re-provision.", identity.DID, expectedPath)
 }

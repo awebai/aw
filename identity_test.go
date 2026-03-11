@@ -124,7 +124,7 @@ func TestServerResolverIncludesStableIDAndPublicKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"did":        did,
-			"stable_id":  "did:claw:test123",
+			"stable_id":  "did:aw:test123",
 			"address":    "mycompany/researcher",
 			"public_key": pubB64,
 			"custody":    "self",
@@ -142,7 +142,7 @@ func TestServerResolverIncludesStableIDAndPublicKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if identity.StableID != "did:claw:test123" {
+	if identity.StableID != "did:aw:test123" {
 		t.Fatalf("stable_id=%q", identity.StableID)
 	}
 	if identity.PublicKey == nil || !identity.PublicKey.Equal(pub) {

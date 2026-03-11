@@ -6,8 +6,8 @@ import (
 )
 
 func TestCheckTOFUPinStablePinDegradedAcceptsKnownDIDKey(t *testing.T) {
-	// If an address is pinned by stable_id, but ClawDID verification is unavailable
-	// (client has no clawdid client / registry unreachable), the client falls back
+	// If an address is pinned by stable_id, but stable ID verification is unavailable
+	// (client has no stable_registry client / registry unreachable), the client falls back
 	// to pinning by did:key. That must not cause a false IdentityMismatch as long
 	// as the did:key matches what we last verified for the stable_id pin.
 	c, err := New("http://example")
@@ -19,7 +19,7 @@ func TestCheckTOFUPinStablePinDegradedAcceptsKnownDIDKey(t *testing.T) {
 	c.SetPinStore(ps, "")
 
 	addr := "juan/merlin"
-	stableID := "did:claw:49RVkxsgqYDxawqpb77fvYEmHw1t"
+	stableID := "did:aw:49RVkxsgqYDxawqpb77fvYEmHw1t"
 	did := "did:key:z6Mks3e5U8apRpvF9c8mpPGZ3TQyeG2gXpv4qcbF8DvnVSpB"
 
 	ps.StorePin(stableID, addr, "", "")
@@ -42,7 +42,7 @@ func TestCheckTOFUPinStablePinDegradedRejectsChangedDIDKey(t *testing.T) {
 	c.SetPinStore(ps, "")
 
 	addr := "juan/merlin"
-	stableID := "did:claw:49RVkxsgqYDxawqpb77fvYEmHw1t"
+	stableID := "did:aw:49RVkxsgqYDxawqpb77fvYEmHw1t"
 	didPinned := "did:key:z6Mks3e5U8apRpvF9c8mpPGZ3TQyeG2gXpv4qcbF8DvnVSpB"
 	didNew := "did:key:z6MktvG6qJusedKvbECR7XVTuiYzs5J689AgnDM9GosTtKSU"
 

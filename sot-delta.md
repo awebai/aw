@@ -12,9 +12,9 @@ It tightens the Source of Truth (SOT) where yesterday’s implementation and tod
 This delta covers:
 - **Dashboard-first onboarding** using an agent-scoped `aw_sk_*` API key.
 - Ensuring `aw` produces **signed** envelopes for all messaging.
-- ClawDID Phase 2 behavior: `did:key` signatures + optional `did:claw` split-trust cross-check.
+- stable ID Phase 2 behavior: `did:key` signatures + optional `did:aw` continuity checks.
 
-This delta does **not** change canonicalization, signature formats, or the ClawDID API shape (see `../clawdid/sot.md` and addenda).
+This delta does **not** change canonicalization, signature formats, or the stable ID API shape (see `../stable_registry/sot.md` and addenda).
 
 ---
 
@@ -48,12 +48,12 @@ When `aw connect` succeeds, it MUST ensure the selected account is **identity-ca
    - persist `SigningKey` + `DID` in `~/.config/aw/config.yaml`
 
 3) Stable identity (Phase 2):
-   - `aw connect` MUST compute the derived stable id (`did:claw:`) from the **initial** public key.
-   - `aw connect` MUST attempt to register that stable id with ClawDID (`POST /v1/did`) using the canonical proof.
-   - ClawDID registration is **best-effort**:
+   - `aw connect` MUST compute the derived stable id (`did:aw:`) from the **initial** public key.
+   - `aw connect` MUST attempt to register that stable id with stable ID (`POST /v1/did`) using the canonical proof.
+   - stable ID registration is **best-effort**:
      - on success: store `StableID` in config and include `from_stable_id` on all outgoing signed envelopes
      - on failure: do **not** store `StableID` (avoid emitting unregistered stable ids)
-     - never block onboarding on ClawDID availability
+     - never block onboarding on stable ID availability
 
 4) After `aw connect`, `aw` MUST NOT send unsigned mail/chat/network envelopes for this account.
    - If a user somehow reaches a command path without a signing identity, the CLI MUST fail with an actionable error

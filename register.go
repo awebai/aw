@@ -35,6 +35,7 @@ type RegisterResponse struct {
 	NamespaceSlug        string `json:"namespace_slug,omitempty"`
 	VerificationRequired bool   `json:"verification_required"`
 	DID                  string `json:"did,omitempty"`
+	StableID             string `json:"stable_id,omitempty"`
 	Custody              string `json:"custody,omitempty"`
 	Lifetime             string `json:"lifetime,omitempty"`
 }

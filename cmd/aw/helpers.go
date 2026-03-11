@@ -34,10 +34,10 @@ func resolveClientSelection() (*aweb.Client, *awconfig.Selection, error) {
 	return resolveClientSelectionForDir(wd)
 }
 
-func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Selection, error) {
+func resolveSelectionForDir(workingDir string) (*awconfig.Selection, error) {
 	cfg, err := awconfig.LoadGlobal()
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read config: %w", err)
+		return nil, fmt.Errorf("failed to read config: %w", err)
 	}
 	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
 		ServerName:        serverFlag,
@@ -46,6 +46,14 @@ func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Se
 		WorkingDir:        workingDir,
 		AllowEnvOverrides: true,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return sel, nil
+}
+
+func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Selection, error) {
+	sel, err := resolveSelectionForDir(workingDir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -92,11 +100,6 @@ func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Se
 		}
 	}
 
-	// Enable ClawDID split-trust verification when a registry URL is configured.
-	if sel.ClawDIDRegistryURL != "" {
-		c.SetClawDIDClient(&aweb.ClawDIDClient{RegistryURL: sel.ClawDIDRegistryURL})
-	}
-
 	configureBaseURLFallback(c, sel, baseURL)
 	lastClient = c
 	return c, sel, nil
@@ -111,18 +114,8 @@ func resolveClient() (*aweb.Client, error) {
 // the API key (no signing key). Used by commands like reset that need
 // to work even when the local signing key is missing or invalid.
 func resolveAPIKeyOnly() (*aweb.Client, *awconfig.Selection, error) {
-	cfg, err := awconfig.LoadGlobal()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read config: %w", err)
-	}
 	wd, _ := os.Getwd()
-	sel, err := awconfig.Resolve(cfg, awconfig.ResolveOptions{
-		ServerName:        serverFlag,
-		AccountName:       accountFlag,
-		ClientName:        "aw",
-		WorkingDir:        wd,
-		AllowEnvOverrides: true,
-	})
+	sel, err := resolveSelectionForDir(wd)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -140,28 +133,6 @@ func resolveAPIKeyOnly() (*aweb.Client, *awconfig.Selection, error) {
 	configureBaseURLFallback(c, sel, baseURL)
 	lastClient = c
 	return c, sel, nil
-}
-
-// canonicalOrigin extracts scheme+host from a URL, stripping any path.
-// For example, "https://app.claweb.ai/api" → "https://app.claweb.ai".
-func canonicalOrigin(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Host == "" {
-		return rawURL
-	}
-	return u.Scheme + "://" + u.Host
-}
-
-// resolveClawDIDRegistryURL returns the ClawDID registry URL from env, config, or default.
-func resolveClawDIDRegistryURL(cfgPath string) string {
-	if v := strings.TrimSpace(os.Getenv("CLAWDID_REGISTRY_URL")); v != "" {
-		return v
-	}
-	cfg, err := awconfig.LoadGlobalFrom(cfgPath)
-	if err == nil && strings.TrimSpace(cfg.ClawDIDRegistryURL) != "" {
-		return strings.TrimSpace(cfg.ClawDIDRegistryURL)
-	}
-	return awconfig.DefaultClawDIDRegistryURL
 }
 
 func cleanBaseURL(raw string) (string, error) {

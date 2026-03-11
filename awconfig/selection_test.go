@@ -10,11 +10,11 @@ func TestResolveExplicitAccountWins(t *testing.T) {
 
 	global := &GlobalConfig{
 		Servers: map[string]Server{
-			"beadhub": {URL: "http://localhost:8000"},
+			"aweb": {URL: "http://localhost:8000"},
 		},
 		Accounts: map[string]Account{
-			"a": {Server: "beadhub", APIKey: "aw_sk_a"},
-			"b": {Server: "beadhub", APIKey: "aw_sk_b"},
+			"a": {Server: "aweb", APIKey: "aw_sk_a"},
+			"b": {Server: "aweb", APIKey: "aw_sk_b"},
 		},
 		DefaultAccount: "a",
 	}
@@ -39,17 +39,17 @@ func TestResolveServerUsesContextServerAccounts(t *testing.T) {
 
 	global := &GlobalConfig{
 		Servers: map[string]Server{
-			"beadhub": {URL: "http://localhost:8000"},
-			"aweb":    {URL: "https://app.aweb.ai"},
+			"local": {URL: "http://localhost:8000"},
+			"aweb":  {URL: "https://app.aweb.ai"},
 		},
 		Accounts: map[string]Account{
-			"wt-bh":   {Server: "beadhub", APIKey: "aw_sk_bh"},
-			"wt-aweb": {Server: "aweb", APIKey: "aw_sk_aweb"},
+			"wt-local": {Server: "local", APIKey: "aw_sk_local"},
+			"wt-aweb":  {Server: "aweb", APIKey: "aw_sk_aweb"},
 		},
-		DefaultAccount: "wt-bh",
+		DefaultAccount: "wt-aweb",
 	}
 	ctx := &WorktreeContext{
-		DefaultAccount: "wt-bh",
+		DefaultAccount: "wt-aweb",
 		ServerAccounts: map[string]string{
 			"aweb": "wt-aweb",
 		},
@@ -72,17 +72,17 @@ func TestResolvePrefersClientDefaultAccountInContext(t *testing.T) {
 
 	global := &GlobalConfig{
 		Servers: map[string]Server{
-			"beadhub": {URL: "http://localhost:8000"},
-			"aweb":    {URL: "https://app.aweb.ai"},
+			"local": {URL: "http://localhost:8000"},
+			"aweb":  {URL: "https://app.aweb.ai"},
 		},
 		Accounts: map[string]Account{
-			"acct-bh":   {Server: "beadhub", APIKey: "aw_sk_bh"},
-			"acct-aweb": {Server: "aweb", APIKey: "aw_sk_aweb"},
+			"acct-local": {Server: "local", APIKey: "aw_sk_local"},
+			"acct-aweb":  {Server: "aweb", APIKey: "aw_sk_aweb"},
 		},
-		DefaultAccount: "acct-bh",
+		DefaultAccount: "acct-aweb",
 	}
 	ctx := &WorktreeContext{
-		DefaultAccount: "acct-bh",
+		DefaultAccount: "acct-aweb",
 		ServerAccounts: map[string]string{},
 		ClientDefaultAccounts: map[string]string{
 			"aw": "acct-aweb",
@@ -106,14 +106,14 @@ func TestResolvePrefersClientDefaultAccountInGlobalConfig(t *testing.T) {
 
 	global := &GlobalConfig{
 		Servers: map[string]Server{
-			"beadhub": {URL: "http://localhost:8000"},
-			"aweb":    {URL: "https://app.aweb.ai"},
+			"local": {URL: "http://localhost:8000"},
+			"aweb":  {URL: "https://app.aweb.ai"},
 		},
 		Accounts: map[string]Account{
-			"acct-bh":   {Server: "beadhub", APIKey: "aw_sk_bh"},
-			"acct-aweb": {Server: "aweb", APIKey: "aw_sk_aweb"},
+			"acct-local": {Server: "local", APIKey: "aw_sk_local"},
+			"acct-aweb":  {Server: "aweb", APIKey: "aw_sk_aweb"},
 		},
-		DefaultAccount: "acct-bh",
+		DefaultAccount: "acct-aweb",
 		ClientDefaultAccounts: map[string]string{
 			"aw": "acct-aweb",
 		},
@@ -138,7 +138,7 @@ func TestResolveEnvOverrides(t *testing.T) {
 
 	global := &GlobalConfig{
 		Accounts: map[string]Account{
-			"a": {Server: "beadhub", APIKey: "aw_sk_a"},
+			"a": {Server: "aweb", APIKey: "aw_sk_a"},
 		},
 		DefaultAccount: "a",
 	}
@@ -162,11 +162,11 @@ func TestResolveEnvAccount(t *testing.T) {
 
 	global := &GlobalConfig{
 		Servers: map[string]Server{
-			"beadhub": {URL: "http://localhost:8000"},
+			"aweb": {URL: "http://localhost:8000"},
 		},
 		Accounts: map[string]Account{
-			"a": {Server: "beadhub", APIKey: "aw_sk_a"},
-			"b": {Server: "beadhub", APIKey: "aw_sk_b"},
+			"a": {Server: "aweb", APIKey: "aw_sk_a"},
+			"b": {Server: "aweb", APIKey: "aw_sk_b"},
 		},
 		DefaultAccount: "a",
 	}
@@ -264,10 +264,10 @@ func TestResolveStableID(t *testing.T) {
 
 	global := &GlobalConfig{
 		Servers: map[string]Server{
-			"beadhub": {URL: "http://localhost:8000"},
+			"aweb": {URL: "http://localhost:8000"},
 		},
 		Accounts: map[string]Account{
-			"a": {Server: "beadhub", APIKey: "aw_sk_a", StableID: "did:claw:abc123"},
+			"a": {Server: "aweb", APIKey: "aw_sk_a", StableID: "did:aw:abc123"},
 		},
 		DefaultAccount: "a",
 	}
@@ -276,85 +276,8 @@ func TestResolveStableID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if sel.StableID != "did:claw:abc123" {
-		t.Fatalf("StableID=%q, want %q", sel.StableID, "did:claw:abc123")
-	}
-}
-
-func TestResolveClawDIDRegistryURL(t *testing.T) {
-	t.Parallel()
-
-	global := &GlobalConfig{
-		Servers: map[string]Server{
-			"beadhub": {URL: "http://localhost:8000"},
-		},
-		Accounts: map[string]Account{
-			"a": {Server: "beadhub", APIKey: "aw_sk_a"},
-		},
-		DefaultAccount:     "a",
-		ClawDIDRegistryURL: "https://my-registry.example",
-	}
-
-	sel, err := Resolve(global, ResolveOptions{AccountName: "a"})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if sel.ClawDIDRegistryURL != "https://my-registry.example" {
-		t.Fatalf("ClawDIDRegistryURL=%q, want %q", sel.ClawDIDRegistryURL, "https://my-registry.example")
-	}
-}
-
-func TestResolveClawDIDRegistryURLFromEnv(t *testing.T) {
-	// Not parallel: t.Setenv mutates process env, would race with parallel tests
-	// that rely on CLAWDID_REGISTRY_URL being unset.
-	t.Setenv("CLAWDID_REGISTRY_URL", "https://custom.registry.example")
-	t.Setenv("AWEB_URL", "")
-	t.Setenv("AWEB_API_KEY", "")
-	t.Setenv("AWEB_ACCOUNT", "")
-
-	global := &GlobalConfig{
-		Servers: map[string]Server{
-			"beadhub": {URL: "http://localhost:8000"},
-		},
-		Accounts: map[string]Account{
-			"a": {Server: "beadhub", APIKey: "aw_sk_a"},
-		},
-		DefaultAccount: "a",
-	}
-
-	sel, err := Resolve(global, ResolveOptions{AccountName: "a"})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if sel.ClawDIDRegistryURL != "https://custom.registry.example" {
-		t.Fatalf("ClawDIDRegistryURL=%q, want %q", sel.ClawDIDRegistryURL, "https://custom.registry.example")
-	}
-}
-
-func TestResolveClawDIDRegistryURLDefault(t *testing.T) {
-	t.Parallel()
-
-	if os.Getenv("CLAWDID_REGISTRY_URL") != "" {
-		t.Skip("test requires CLAWDID_REGISTRY_URL to be unset")
-	}
-
-	// No ClawDIDRegistryURL in config → should get default.
-	global := &GlobalConfig{
-		Servers: map[string]Server{
-			"beadhub": {URL: "http://localhost:8000"},
-		},
-		Accounts: map[string]Account{
-			"a": {Server: "beadhub", APIKey: "aw_sk_a"},
-		},
-		DefaultAccount: "a",
-	}
-
-	sel, err := Resolve(global, ResolveOptions{AccountName: "a"})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if sel.ClawDIDRegistryURL != "https://api.clawdid.ai" {
-		t.Fatalf("ClawDIDRegistryURL=%q, want default", sel.ClawDIDRegistryURL)
+	if sel.StableID != "did:aw:abc123" {
+		t.Fatalf("StableID=%q, want %q", sel.StableID, "did:aw:abc123")
 	}
 }
 
