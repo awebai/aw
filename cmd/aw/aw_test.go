@@ -5600,6 +5600,193 @@ func TestAwInitNamespaceStoresInConfig(t *testing.T) {
 	}
 }
 
+func TestAwInitHostedProjectKeyAutoCloudWithoutNamespace(t *testing.T) {
+	t.Parallel()
+
+	var bootstrapAuth string
+	var bootstrapBody map[string]any
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/agents/bootstrap":
+			bootstrapAuth = r.Header.Get("Authorization")
+			if err := json.NewDecoder(r.Body).Decode(&bootstrapBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"org_id":       "org-1",
+				"org_slug":     "livepub",
+				"org_name":     "Live Publication",
+				"project_id":   "proj-1",
+				"project_slug": "live-publication-project",
+				"project_name": "Live Publication Project",
+				"server_url":   "http://localhost:9999",
+				"api_key":      "aw_sk_new",
+				"agent_id":     "agent-new",
+				"alias":        "coordinator",
+				"created":      true,
+				"did":          "did:key:z6MkrE2V7wKtsQxC3YGHc6Uf2a8Kz1JkP8Y5Gm23Nfej4m9b",
+				"stable_id":    "did:aw:livepubstableid12345678901234567",
+				"custody":      "self",
+				"lifetime":     "persistent",
+			})
+		case "/v1/agents/suggest-alias-prefix":
+			t.Fatalf("unexpected alias suggestion request for hosted bootstrap without namespace")
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "init",
+		"--server-url", server.URL,
+		"--alias", "coordinator",
+		"--write-context=false",
+	)
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=aw_sk_project",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	if bootstrapAuth != "Bearer aw_sk_project" {
+		t.Fatalf("Authorization=%q, want Bearer aw_sk_project", bootstrapAuth)
+	}
+	if got := bootstrapBody["namespace_slug"]; got != nil && got != "" {
+		t.Fatalf("namespace_slug=%v, want empty for inferred owner namespace", got)
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Accounts map[string]map[string]any `yaml:"accounts"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(data))
+	}
+	var found bool
+	for name, acct := range cfg.Accounts {
+		if acct["api_key"] == "aw_sk_new" {
+			found = true
+			if acct["namespace_slug"] != "livepub" {
+				t.Fatalf("accounts.%s.namespace_slug=%v, want livepub", name, acct["namespace_slug"])
+			}
+			if acct["agent_alias"] != "coordinator" {
+				t.Fatalf("accounts.%s.agent_alias=%v, want coordinator", name, acct["agent_alias"])
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no account with api_key=aw_sk_new in config:\n%s", string(data))
+	}
+}
+
+func TestAwInitCloudPrefersExplicitEnvProjectKeyOverConfigToken(t *testing.T) {
+	t.Parallel()
+
+	var bootstrapAuth string
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/agents/bootstrap":
+			bootstrapAuth = r.Header.Get("Authorization")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"org_id":       "org-1",
+				"org_slug":     "livepub",
+				"org_name":     "Live Publication",
+				"project_id":   "proj-1",
+				"project_slug": "live-publication-project",
+				"project_name": "Live Publication Project",
+				"server_url":   "http://localhost:9999",
+				"api_key":      "aw_sk_new",
+				"agent_id":     "agent-new",
+				"alias":        "coordinator",
+				"created":      true,
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	config := strings.TrimSpace(`
+servers:
+  local:
+    url: ` + server.URL + `
+accounts:
+  old-cloud:
+    server: local
+    api_key: stale_jwt_token
+default_account: old-cloud
+`) + "\n"
+	if err := os.WriteFile(cfgPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "init",
+		"--server-url", server.URL,
+		"--cloud",
+		"--alias", "coordinator",
+		"--write-context=false",
+	)
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=aw_sk_project",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	if bootstrapAuth != "Bearer aw_sk_project" {
+		t.Fatalf("Authorization=%q, want Bearer aw_sk_project", bootstrapAuth)
+	}
+}
+
 func TestAwMailSendSignsWithIdentity(t *testing.T) {
 	t.Parallel()
 

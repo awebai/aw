@@ -73,6 +73,27 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if !initCloudMode {
+		if v := strings.TrimSpace(initCloudToken); v != "" {
+			initCloudMode = true
+		} else if v := strings.TrimSpace(os.Getenv("AWEB_CLOUD_TOKEN")); v != "" {
+			initCloudMode = true
+		} else if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); v != "" {
+			if !strings.HasPrefix(v, "aw_sk_") {
+				initCloudMode = true
+			} else if strings.TrimSpace(initNamespaceSlug) == "" &&
+				strings.TrimSpace(os.Getenv("AWEB_NAMESPACE")) == "" &&
+				strings.TrimSpace(os.Getenv("AWEB_PROJECT_SLUG")) == "" &&
+				strings.TrimSpace(os.Getenv("AWEB_PROJECT")) == "" &&
+				strings.TrimSpace(initTargetNamespace) == "" {
+				// Hosted setup commands provide a project API key but no namespace.
+				// In that case, bootstrap through Cloud and let the server infer the
+				// owner/project namespace instead of prompting locally.
+				initCloudMode = true
+			}
+		}
+	}
+
 	nsSlug := initNamespaceSlug
 	if strings.TrimSpace(nsSlug) == "" {
 		nsSlug = strings.TrimSpace(os.Getenv("AWEB_NAMESPACE"))
@@ -85,7 +106,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		nsSlug = strings.TrimSpace(os.Getenv("AWEB_PROJECT"))
 	}
 
-	if strings.TrimSpace(nsSlug) == "" {
+	if strings.TrimSpace(nsSlug) == "" && !initCloudMode {
 		if isTTY() {
 			wd, _ := os.Getwd()
 			suggested := sanitizeSlug(filepath.Base(wd))
@@ -138,16 +159,6 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if !aliasExplicit {
 		alias = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
 		aliasExplicit = alias != ""
-	}
-
-	if !initCloudMode {
-		if v := strings.TrimSpace(initCloudToken); v != "" {
-			initCloudMode = true
-		} else if v := strings.TrimSpace(os.Getenv("AWEB_CLOUD_TOKEN")); v != "" {
-			initCloudMode = true
-		} else if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); v != "" && !strings.HasPrefix(v, "aw_sk_") {
-			initCloudMode = true
-		}
 	}
 
 	// When using an existing API key for cloud bootstrap, --alias is required
@@ -253,7 +264,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	accountName := strings.TrimSpace(accountFlag)
 	if accountName == "" {
-		accountName = deriveAccountName(serverName, nsSlug, resp.Alias)
+		accountNamespace := strings.TrimSpace(resp.NamespaceSlug)
+		if accountNamespace == "" {
+			accountNamespace = strings.TrimSpace(resp.ProjectSlug)
+		}
+		if accountNamespace == "" {
+			accountNamespace = nsSlug
+		}
+		accountName = deriveAccountName(serverName, accountNamespace, resp.Alias)
 	}
 
 	namespaceSlug := strings.TrimSpace(resp.NamespaceSlug)
@@ -503,7 +521,7 @@ func resolveCloudToken(baseURL, serverName string, global *awconfig.GlobalConfig
 	if v := strings.TrimSpace(os.Getenv("AWEB_CLOUD_TOKEN")); v != "" {
 		return v
 	}
-	if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); v != "" && !strings.HasPrefix(v, "aw_sk_") {
+	if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); v != "" {
 		return v
 	}
 	if global == nil {
@@ -582,11 +600,6 @@ func resolveCloudToken(baseURL, serverName string, global *awconfig.GlobalConfig
 		if token != "" && strings.HasPrefix(token, "aw_sk_") {
 			return token
 		}
-	}
-
-	// Last resort: AWEB_API_KEY with aw_sk_ prefix (skipped earlier in favor of JWT tokens).
-	if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); v != "" && strings.HasPrefix(v, "aw_sk_") {
-		return v
 	}
 
 	return ""
