@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+var runSeparator = strings.Repeat("─", 40)
+
 type presenterState struct {
 	lastWasText              bool
 	lastWasStructured        bool

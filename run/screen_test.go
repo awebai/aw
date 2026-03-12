@@ -37,6 +37,7 @@ func TestStyleScreenLineCategories(t *testing.T) {
 		{line: "done  2.1s", want: "done"},
 		{line: "info: session", want: "info"},
 		{line: "type /wait, /autofeed off, /stop", want: "hint"},
+		{line: "────────────────────────────────────────", want: "separator"},
 		{line: "plain text", want: "plain"},
 	}
 

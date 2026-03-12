@@ -478,6 +478,66 @@ func TestAutoCompactDoesNotCountTowardMaxRuns(t *testing.T) {
 	}
 }
 
+func TestRunSeparatorAppearsBetweenRuns(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(ClaudeProvider{}, &out)
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
+		return nil
+	}
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	loop.Dispatch = &fakeDispatcher{
+		decisions: []DispatchDecision{
+			{MissionPrompt: "first", WaitSeconds: 0},
+			{MissionPrompt: "second", WaitSeconds: 0},
+		},
+	}
+
+	err := loop.Run(context.Background(), LoopOptions{MaxRuns: 2})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, runSeparator) {
+		t.Fatalf("expected run separator between runs, got:\n%s", output)
+	}
+	firstDoneIdx := strings.Index(output, "done")
+	separatorIdx := strings.Index(output, runSeparator)
+	secondRunIdx := strings.Index(output, "run #2")
+	if separatorIdx <= firstDoneIdx {
+		t.Fatalf("separator should appear after first run's done line")
+	}
+	if separatorIdx >= secondRunIdx {
+		t.Fatalf("separator should appear before second run header")
+	}
+}
+
+func TestNoSeparatorBeforeFirstRun(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(ClaudeProvider{}, &out)
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
+		return nil
+	}
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	loop.Dispatch = &fakeDispatcher{
+		decisions: []DispatchDecision{
+			{MissionPrompt: "first", WaitSeconds: 0},
+		},
+	}
+
+	err := loop.Run(context.Background(), LoopOptions{MaxRuns: 1})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, runSeparator) {
+		t.Fatalf("expected no separator before first run, got:\n%s", output)
+	}
+}
+
 func TestLoopFallsBackToTimedCyclesWhenWakeStreamUnavailable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/events/stream") {

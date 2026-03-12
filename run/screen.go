@@ -73,6 +73,7 @@ type screenModel struct {
 
 type screenStyles struct {
 	runHeader lipgloss.Style
+	separator lipgloss.Style
 	tool      lipgloss.Style
 	result    lipgloss.Style
 	done      lipgloss.Style
@@ -413,8 +414,9 @@ func newScreenModel(
 func newScreenStyles() screenStyles {
 	return screenStyles{
 		runHeader: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "24", Dark: "12"}).Bold(true),
+		separator: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "250", Dark: "238"}),
 		tool:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "130", Dark: "214"}).Bold(true),
-		result:    lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "23", Dark: "14"}),
+		result:    lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "247", Dark: "242"}),
 		done:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "28", Dark: "10"}).Bold(true),
 		info:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "8"}),
 		status: lipgloss.NewStyle().
@@ -801,6 +803,8 @@ func styleScreenLine(line string, styles screenStyles) string {
 	switch screenLineStyleKind(line) {
 	case "run_header":
 		return styles.runHeader.Render(line)
+	case "separator":
+		return styles.separator.Render(line)
 	case "tool":
 		return styleScreenToolLine(line, styles)
 	case "result":
@@ -836,6 +840,8 @@ func styleScreenToolClosingParen(line string, styles screenStyles) string {
 func screenLineStyleKind(line string) string {
 	trimmed := strings.TrimSpace(line)
 	switch {
+	case strings.HasPrefix(trimmed, "────"):
+		return "separator"
 	case strings.HasPrefix(trimmed, "run #"):
 		return "run_header"
 	case strings.HasPrefix(trimmed, "- ") && strings.Contains(trimmed, "("):

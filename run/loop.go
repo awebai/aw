@@ -242,6 +242,10 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 		return err
 	}
 
+	if followUpRun {
+		l.printf("\n%s\n", runSeparator)
+	}
+
 	if display == "/compact" {
 		st.RunLabel = fmt.Sprintf("compact %d", st.CompactRuns)
 		l.printf("\ncompact #%d  %s\n\n", st.CompactRuns, l.Now().Format("15:04:05"))
