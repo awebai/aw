@@ -1,6 +1,9 @@
 package run
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 func IdentityPromptLabel(projectSlug string, canonicalOrigin string, repoOrigin string, alias string) string {
 	return DefaultInputPromptLabel
@@ -42,6 +45,24 @@ func ComposeStatusLine(identity string, transient string) string {
 		return identity
 	}
 	return identity + " · " + transient
+}
+
+func formatRunStatus(st *state) string {
+	if st == nil || st.RunLabel == "" {
+		return ""
+	}
+	var parts []string
+	parts = append(parts, st.RunLabel)
+	if st.HasRunUsage && st.LastRunUsage.ContextWindowSize > 0 {
+		parts = append(parts, fmt.Sprintf("ctx %.0f%%", st.LastRunUsage.ContextPct()))
+	}
+	if st.CumulativeCostUSD > 0 {
+		parts = append(parts, fmt.Sprintf("$%.2f", st.CumulativeCostUSD))
+	}
+	if st.Autofeed {
+		parts = append(parts, "autofeed")
+	}
+	return strings.Join(parts, " · ")
 }
 
 func ShortRepoName(canonicalOrigin string, repoOrigin string) string {

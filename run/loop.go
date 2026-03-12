@@ -34,6 +34,8 @@ type Loop struct {
 type state struct {
 	Run                int
 	CompactRuns        int
+	RunLabel           string
+	CumulativeCostUSD  float64
 	SessionID          string
 	RanOnce            bool
 	RunInterrupted     bool
@@ -241,11 +243,18 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 	}
 
 	if display == "/compact" {
+		st.RunLabel = fmt.Sprintf("compact %d", st.CompactRuns)
 		l.printf("\ncompact #%d  %s\n\n", st.CompactRuns, l.Now().Format("15:04:05"))
 	} else {
+		if opts.MaxRuns > 0 {
+			st.RunLabel = fmt.Sprintf("run %d/%d", st.Run, opts.MaxRuns)
+		} else {
+			st.RunLabel = fmt.Sprintf("run %d", st.Run)
+		}
 		l.printf("\nrun #%d  %s  >  %s\n\n", st.Run, l.Now().Format("15:04:05"), truncateText(display, 80))
 		l.println(formatProviderMode(l.Provider, buildOpts))
 	}
+	l.setStatusLine(formatRunStatus(st))
 	l.renderInputPrompt(st)
 
 	presenter := &presenterState{}
@@ -265,6 +274,7 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 	for {
 		select {
 		case err := <-errCh:
+			st.RunLabel = ""
 			l.drainPendingControlEvents(st, true)
 			st.RanOnce = true
 			if st.RunInterrupted {
@@ -399,9 +409,18 @@ func (l *Loop) handleOutputLine(line string, presenter *presenterState, st *stat
 			*observedSessionID = sid
 		}
 	}
+	statusChanged := false
 	if event != nil && event.Usage != nil {
 		st.LastRunUsage = *event.Usage
 		st.HasRunUsage = true
+		statusChanged = true
+	}
+	if event != nil && event.CostUSD != nil {
+		st.CumulativeCostUSD += *event.CostUSD
+		statusChanged = true
+	}
+	if statusChanged {
+		l.setStatusLine(formatRunStatus(st))
 	}
 	switch event.Type {
 	case EventText:

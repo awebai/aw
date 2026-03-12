@@ -305,6 +305,66 @@ func TestLoopBasePromptDoesNotAutoRerunWithoutWake(t *testing.T) {
 	}
 }
 
+func TestFormatRunStatusShowsRunNumber(t *testing.T) {
+	st := &state{RunLabel: "run 3"}
+	got := formatRunStatus(st)
+	if got != "run 3" {
+		t.Fatalf("expected 'run 3', got %q", got)
+	}
+}
+
+func TestFormatRunStatusShowsMaxRuns(t *testing.T) {
+	st := &state{RunLabel: "run 2/5"}
+	got := formatRunStatus(st)
+	if got != "run 2/5" {
+		t.Fatalf("expected 'run 2/5', got %q", got)
+	}
+}
+
+func TestFormatRunStatusShowsContextAndCost(t *testing.T) {
+	st := &state{
+		RunLabel: "run 1",
+		HasRunUsage: true,
+		LastRunUsage: UsageStats{
+			InputTokens:       45000,
+			ContextWindowSize: 100000,
+		},
+		CumulativeCostUSD: 0.05,
+		Autofeed:          true,
+	}
+	got := formatRunStatus(st)
+	want := "run 1 · ctx 45% · $0.05 · autofeed"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestHandleOutputLineAccumulatesCost(t *testing.T) {
+	cost := 0.05
+	provider := &fakeProvider{
+		event: &Event{
+			Type:    EventDone,
+			CostUSD: &cost,
+			Session: "sess-1",
+		},
+	}
+	var out bytes.Buffer
+	loop := NewLoop(provider, &out)
+	st := &state{RunLabel: "run 1"}
+	presenter := &presenterState{}
+	sid := ""
+
+	loop.handleOutputLine("event1", presenter, st, &sid)
+	if st.CumulativeCostUSD != 0.05 {
+		t.Fatalf("expected 0.05, got %f", st.CumulativeCostUSD)
+	}
+
+	loop.handleOutputLine("event2", presenter, st, &sid)
+	if st.CumulativeCostUSD != 0.10 {
+		t.Fatalf("expected 0.10, got %f", st.CumulativeCostUSD)
+	}
+}
+
 func TestAutoCompactShowsDistinctLabel(t *testing.T) {
 	var out bytes.Buffer
 	provider := fakeProvider{
