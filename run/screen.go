@@ -515,7 +515,19 @@ func (m screenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.SetValue("")
 			m.syncLayout()
 			return m, nil
-		case tea.KeyPgUp, tea.KeyPgDown, tea.KeyUp, tea.KeyDown, tea.KeyHome, tea.KeyEnd:
+		case tea.KeyPgUp, tea.KeyPgDown:
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(typed)
+			return m, cmd
+		case tea.KeyUp, tea.KeyDown:
+			if m.input.Value() != "" {
+				// Navigate within textarea when it has content
+			} else {
+				var cmd tea.Cmd
+				m.viewport, cmd = m.viewport.Update(typed)
+				return m, cmd
+			}
+		case tea.KeyHome, tea.KeyEnd:
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(typed)
 			return m, cmd

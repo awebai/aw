@@ -224,6 +224,90 @@ func TestScreenViewKeepsFirstWrappedInputLineVisibleDuringTyping(t *testing.T) {
 	}
 }
 
+func TestArrowUpNavigatesTextareaWhenInputHasContent(t *testing.T) {
+	// Fill viewport with enough lines to be scrollable
+	lines := make([]string, 50)
+	for i := range lines {
+		lines[i] = "output line"
+	}
+	model := newScreenModel(
+		screenSnapshot{
+			Lines:       lines,
+			InputLine:   ">> ",
+			PromptLabel: ">> ",
+		},
+		nil, nil, nil, nil, nil, nil,
+	)
+	model.width = 40
+	model.height = 10
+	model.syncLayout()
+	model.viewport.GotoBottom()
+
+	// Put multi-line content in textarea
+	model.input.SetValue("line1\nline2")
+	model.input.CursorEnd()
+	model.syncLayout()
+
+	// Press Up — should move cursor within textarea, not scroll viewport
+	viewportYBefore := model.viewport.YOffset
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	model = updated.(screenModel)
+
+	// Viewport should not have scrolled
+	if model.viewport.YOffset != viewportYBefore {
+		t.Fatalf("expected viewport to stay put when textarea has content, but YOffset changed from %d to %d", viewportYBefore, model.viewport.YOffset)
+	}
+}
+
+func TestArrowUpScrollsViewportWhenInputIsEmpty(t *testing.T) {
+	model := newScreenModel(
+		screenSnapshot{
+			Lines:       make([]string, 50), // enough to scroll
+			InputLine:   ">> ",
+			PromptLabel: ">> ",
+		},
+		nil, nil, nil, nil, nil, nil,
+	)
+	model.width = 40
+	model.height = 10
+	model.syncLayout()
+	model.viewport.GotoBottom()
+
+	viewportYBefore := model.viewport.YOffset
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	model = updated.(screenModel)
+
+	if model.viewport.YOffset >= viewportYBefore {
+		t.Fatalf("expected viewport to scroll up when input is empty, YOffset stayed at %d", viewportYBefore)
+	}
+}
+
+func TestArrowDownNavigatesTextareaWhenInputHasContent(t *testing.T) {
+	model := newScreenModel(
+		screenSnapshot{
+			Lines:       make([]string, 50),
+			InputLine:   ">> ",
+			PromptLabel: ">> ",
+		},
+		nil, nil, nil, nil, nil, nil,
+	)
+	model.width = 40
+	model.height = 10
+	model.syncLayout()
+
+	model.input.SetValue("line1\nline2")
+	model.input.CursorStart()
+	model.syncLayout()
+
+	viewportYBefore := model.viewport.YOffset
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(screenModel)
+
+	if model.viewport.YOffset != viewportYBefore {
+		t.Fatalf("expected viewport to stay put when textarea has content, but YOffset changed from %d to %d", viewportYBefore, model.viewport.YOffset)
+	}
+}
+
 func TestScreenExitConfirmationAcceptsYWithoutTypingIntoInput(t *testing.T) {
 	confirmed := false
 	model := newScreenModel(
