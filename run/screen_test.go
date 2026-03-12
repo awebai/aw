@@ -446,6 +446,71 @@ func TestArrowDownNavigatesTextareaWhenInputHasContent(t *testing.T) {
 	}
 }
 
+func TestViewportDoesNotAutoScrollWhenUserScrolledUp(t *testing.T) {
+	lines := make([]string, 50)
+	for i := range lines {
+		lines[i] = "output line"
+	}
+	model := newScreenModel(
+		screenSnapshot{
+			Lines:       lines,
+			PromptLabel: ">> ",
+		},
+		nil, nil, nil, nil, nil, nil,
+	)
+	model.width = 40
+	model.height = 10
+	model.syncLayout()
+	model.viewport.GotoBottom()
+
+	// Scroll up via PgUp
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	model = updated.(screenModel)
+	yAfterScroll := model.viewport.YOffset
+
+	if model.viewport.AtBottom() {
+		t.Fatal("expected viewport to not be at bottom after PgUp")
+	}
+
+	// Append new content — should NOT auto-scroll
+	updated, _ = model.Update(screenAppendTextMsg("new output line\n"))
+	model = updated.(screenModel)
+
+	if model.viewport.YOffset != yAfterScroll {
+		t.Fatalf("expected viewport to stay at %d when user scrolled up, but moved to %d", yAfterScroll, model.viewport.YOffset)
+	}
+}
+
+func TestViewportAutoScrollsWhenAtBottom(t *testing.T) {
+	lines := make([]string, 50)
+	for i := range lines {
+		lines[i] = "output line"
+	}
+	model := newScreenModel(
+		screenSnapshot{
+			Lines:       lines,
+			PromptLabel: ">> ",
+		},
+		nil, nil, nil, nil, nil, nil,
+	)
+	model.width = 40
+	model.height = 10
+	model.syncLayout()
+	model.viewport.GotoBottom()
+	yBefore := model.viewport.YOffset
+
+	// Append new content — should auto-scroll to stay at bottom
+	updated, _ := model.Update(screenAppendTextMsg("new output line\n"))
+	model = updated.(screenModel)
+
+	if model.viewport.YOffset <= yBefore {
+		t.Fatalf("expected viewport to scroll down when at bottom, YOffset stayed at %d", yBefore)
+	}
+	if !model.viewport.AtBottom() {
+		t.Fatal("expected viewport to be at bottom after auto-scroll")
+	}
+}
+
 func TestScreenExitConfirmationAcceptsYWithoutTypingIntoInput(t *testing.T) {
 	confirmed := false
 	model := newScreenModel(

@@ -437,8 +437,9 @@ func (m screenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncLayout()
 		return m, nil
 	case screenAppendTextMsg:
+		wasAtBottom := m.viewport.AtBottom()
 		appendScreenText(&m.lines, &m.current, string(typed))
-		m.syncViewport(true)
+		m.syncViewport(wasAtBottom)
 		return m, nil
 	case screenSetStatusMsg:
 		m.statusLine = string(typed)
