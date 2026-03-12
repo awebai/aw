@@ -268,6 +268,100 @@ func TestScreenViewKeepsFirstWrappedInputLineVisibleDuringTyping(t *testing.T) {
 	}
 }
 
+func TestTextareaGrowsOnSecondWrapWordBoundary(t *testing.T) {
+	model := newScreenModel(
+		screenSnapshot{
+			Lines:       []string{"output"},
+			PromptLabel: ">> ",
+		},
+		nil, nil, nil, nil, nil, nil,
+	)
+	model.width = 30
+	model.height = 20
+	model.syncLayout()
+
+	// Type words that will wrap at word boundaries.
+	// Available content width = 30 - 3 (">> ") = 27
+	// "hello world more " = 17 chars, fits on one line
+	for _, r := range "hello world " {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		model = updated.(screenModel)
+	}
+	heightAfterFirstWords := model.input.Height()
+
+	// Add words to cause a first wrap
+	for _, r := range "this is a longer sentence " {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		model = updated.(screenModel)
+	}
+	heightAfterFirstWrap := model.input.Height()
+	if heightAfterFirstWrap <= heightAfterFirstWords {
+		t.Fatalf("expected height to increase after first wrap: %d -> %d", heightAfterFirstWords, heightAfterFirstWrap)
+	}
+
+	// Add more words to cause a second wrap
+	for _, r := range "and even more words keep going " {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		model = updated.(screenModel)
+	}
+	heightAfterSecondWrap := model.input.Height()
+	if heightAfterSecondWrap <= heightAfterFirstWrap {
+		t.Fatalf("expected height to increase after second wrap: %d -> %d", heightAfterFirstWrap, heightAfterSecondWrap)
+	}
+
+	// Verify the first line of input (with prompt) is visible
+	inputView := model.input.View()
+	if !strings.Contains(inputView, ">> hello") {
+		t.Fatalf("expected first line of input visible after second wrap, got:\n%s", inputView)
+	}
+}
+
+func TestArrowUpMovesConsecutivelyInMultiLineTextarea(t *testing.T) {
+	model := newScreenModel(
+		screenSnapshot{
+			Lines:       make([]string, 50),
+			PromptLabel: ">> ",
+		},
+		nil, nil, nil, nil, nil, nil,
+	)
+	model.width = 40
+	model.height = 20
+	model.syncLayout()
+
+	// Set 3-line content with cursor at end (line 2)
+	model.input.SetValue("line0\nline1\nline2")
+	model.input.CursorEnd()
+	model.syncLayout()
+
+	line0 := model.input.Line()
+	t.Logf("before Up: line=%d", line0)
+
+	// First Up — cursor should move from line 2 to line 1
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	model = updated.(screenModel)
+
+	line1 := model.input.Line()
+	t.Logf("after 1st Up: line=%d", line1)
+
+	// Second Up — cursor should move from line 1 to line 0
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	model = updated.(screenModel)
+
+	line2 := model.input.Line()
+	t.Logf("after 2nd Up: line=%d", line2)
+
+	// Each Up should have moved to a different line
+	if line1 == line0 {
+		t.Fatalf("first Up didn't move: line stayed at %d", line0)
+	}
+	if line2 == line1 {
+		t.Fatalf("second Up didn't move: line stayed at %d", line1)
+	}
+	if line2 >= line1 {
+		t.Fatalf("second Up moved wrong direction: line went from %d to %d", line1, line2)
+	}
+}
+
 func TestArrowUpNavigatesTextareaWhenInputHasContent(t *testing.T) {
 	// Fill viewport with enough lines to be scrollable
 	lines := make([]string, 50)

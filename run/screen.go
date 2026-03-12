@@ -565,7 +565,7 @@ func (m *screenModel) syncLayout() {
 	}
 
 	m.input.SetWidth(m.width)
-	inputHeight := inputVisualHeight(m.promptLabel, m.input.Value(), m.width)
+	inputHeight := m.textareaVisualHeight()
 	maxInputHeight := max(1, m.height-screenFooterBaseLines-1)
 	if inputHeight > maxInputHeight {
 		inputHeight = maxInputHeight
@@ -580,6 +580,19 @@ func (m *screenModel) syncLayout() {
 	m.viewport.Width = m.width
 	m.viewport.Height = outputHeight
 	m.syncViewport(false)
+}
+
+// textareaVisualHeight returns the number of visual lines the textarea
+// content occupies using the textarea's own word-wrapping calculation.
+func (m *screenModel) textareaVisualHeight() int {
+	if m.input.Value() == "" {
+		return 1
+	}
+	height := m.input.LineInfo().Height
+	if height < 1 {
+		return 1
+	}
+	return height
 }
 
 func (m *screenModel) syncViewport(autoBottom bool) {
