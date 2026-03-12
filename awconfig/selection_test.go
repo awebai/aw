@@ -3,6 +3,8 @@ package awconfig
 import (
 	"os"
 	"testing"
+
+	"github.com/awebai/aw/awid"
 )
 
 func TestResolveExplicitAccountWins(t *testing.T) {
@@ -13,8 +15,8 @@ func TestResolveExplicitAccountWins(t *testing.T) {
 			"aweb": {URL: "http://localhost:8000"},
 		},
 		Accounts: map[string]Account{
-			"a": {Server: "aweb", APIKey: "aw_sk_a"},
-			"b": {Server: "aweb", APIKey: "aw_sk_b"},
+			"a": {Account: awid.Account{Server: "aweb", APIKey: "aw_sk_a"}},
+			"b": {Account: awid.Account{Server: "aweb", APIKey: "aw_sk_b"}},
 		},
 		DefaultAccount: "a",
 	}
@@ -43,8 +45,8 @@ func TestResolveServerUsesContextServerAccounts(t *testing.T) {
 			"aweb":  {URL: "https://app.aweb.ai"},
 		},
 		Accounts: map[string]Account{
-			"wt-local": {Server: "local", APIKey: "aw_sk_local"},
-			"wt-aweb":  {Server: "aweb", APIKey: "aw_sk_aweb"},
+			"wt-local": {Account: awid.Account{Server: "local", APIKey: "aw_sk_local"}},
+			"wt-aweb":  {Account: awid.Account{Server: "aweb", APIKey: "aw_sk_aweb"}},
 		},
 		DefaultAccount: "wt-aweb",
 	}
@@ -76,8 +78,8 @@ func TestResolvePrefersClientDefaultAccountInContext(t *testing.T) {
 			"aweb":  {URL: "https://app.aweb.ai"},
 		},
 		Accounts: map[string]Account{
-			"acct-local": {Server: "local", APIKey: "aw_sk_local"},
-			"acct-aweb":  {Server: "aweb", APIKey: "aw_sk_aweb"},
+			"acct-local": {Account: awid.Account{Server: "local", APIKey: "aw_sk_local"}},
+			"acct-aweb":  {Account: awid.Account{Server: "aweb", APIKey: "aw_sk_aweb"}},
 		},
 		DefaultAccount: "acct-aweb",
 	}
@@ -110,8 +112,8 @@ func TestResolvePrefersClientDefaultAccountInGlobalConfig(t *testing.T) {
 			"aweb":  {URL: "https://app.aweb.ai"},
 		},
 		Accounts: map[string]Account{
-			"acct-local": {Server: "local", APIKey: "aw_sk_local"},
-			"acct-aweb":  {Server: "aweb", APIKey: "aw_sk_aweb"},
+			"acct-local": {Account: awid.Account{Server: "local", APIKey: "aw_sk_local"}},
+			"acct-aweb":  {Account: awid.Account{Server: "aweb", APIKey: "aw_sk_aweb"}},
 		},
 		DefaultAccount: "acct-aweb",
 		ClientDefaultAccounts: map[string]string{
@@ -138,7 +140,7 @@ func TestResolveEnvOverrides(t *testing.T) {
 
 	global := &GlobalConfig{
 		Accounts: map[string]Account{
-			"a": {Server: "aweb", APIKey: "aw_sk_a"},
+			"a": {Account: awid.Account{Server: "aweb", APIKey: "aw_sk_a"}},
 		},
 		DefaultAccount: "a",
 	}
@@ -165,8 +167,8 @@ func TestResolveEnvAccount(t *testing.T) {
 			"aweb": {URL: "http://localhost:8000"},
 		},
 		Accounts: map[string]Account{
-			"a": {Server: "aweb", APIKey: "aw_sk_a"},
-			"b": {Server: "aweb", APIKey: "aw_sk_b"},
+			"a": {Account: awid.Account{Server: "aweb", APIKey: "aw_sk_a"}},
+			"b": {Account: awid.Account{Server: "aweb", APIKey: "aw_sk_b"}},
 		},
 		DefaultAccount: "a",
 	}
@@ -240,8 +242,8 @@ func TestResolveAccountByAgentAlias(t *testing.T) {
 			"prod": {URL: "https://app.aweb.ai"},
 		},
 		Accounts: map[string]Account{
-			"acct-prod__default__alice": {Server: "prod", APIKey: "aw_sk_alice", AgentAlias: "alice"},
-			"acct-prod__default__bob":   {Server: "prod", APIKey: "aw_sk_bob", AgentAlias: "bob"},
+			"acct-prod__default__alice": {Account: awid.Account{Server: "prod", APIKey: "aw_sk_alice", AgentAlias: "alice"}},
+			"acct-prod__default__bob":   {Account: awid.Account{Server: "prod", APIKey: "aw_sk_bob", AgentAlias: "bob"}},
 		},
 		DefaultAccount: "acct-prod__default__alice",
 	}
@@ -267,7 +269,7 @@ func TestResolveStableID(t *testing.T) {
 			"aweb": {URL: "http://localhost:8000"},
 		},
 		Accounts: map[string]Account{
-			"a": {Server: "aweb", APIKey: "aw_sk_a", StableID: "did:aw:abc123"},
+			"a": {Account: awid.Account{Server: "aweb", APIKey: "aw_sk_a", StableID: "did:aw:abc123"}},
 		},
 		DefaultAccount: "a",
 	}
@@ -290,8 +292,8 @@ func TestResolveAccountByAgentAliasAmbiguous(t *testing.T) {
 			"staging": {URL: "https://staging.aweb.ai"},
 		},
 		Accounts: map[string]Account{
-			"acct-prod":    {Server: "prod", APIKey: "aw_sk_1", AgentAlias: "alice"},
-			"acct-staging": {Server: "staging", APIKey: "aw_sk_2", AgentAlias: "alice"},
+			"acct-prod":    {Account: awid.Account{Server: "prod", APIKey: "aw_sk_1", AgentAlias: "alice"}},
+			"acct-staging": {Account: awid.Account{Server: "staging", APIKey: "aw_sk_2", AgentAlias: "alice"}},
 		},
 		DefaultAccount: "acct-prod",
 	}

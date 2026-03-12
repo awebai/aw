@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/awebai/aw/awid"
 )
 
 func TestLoadGlobalFromMissingFileReturnsEmpty(t *testing.T) {
@@ -36,10 +38,10 @@ func TestSaveGlobalToWrites0600(t *testing.T) {
 			"localhost:8000": {},
 		},
 		Accounts: map[string]Account{
-			"alice": {
+			"alice": {Account: awid.Account{
 				Server: "localhost:8000",
 				APIKey: "aw_sk_test",
-			},
+			}},
 		},
 		DefaultAccount: "alice",
 	}
@@ -65,7 +67,7 @@ func TestSaveGlobalToNoTempFileLeftBehind(t *testing.T) {
 
 	cfg := &GlobalConfig{
 		Accounts: map[string]Account{
-			"alice": {APIKey: "aw_sk_test"},
+			"alice": {Account: awid.Account{APIKey: "aw_sk_test"}},
 		},
 	}
 	if err := cfg.SaveGlobalTo(path); err != nil {
@@ -90,12 +92,12 @@ func TestAccountEmailFieldRoundTrips(t *testing.T) {
 	path := filepath.Join(tmp, "config.yaml")
 
 	if err := UpdateGlobalAt(path, func(cfg *GlobalConfig) error {
-		cfg.Accounts["alice"] = Account{
+		cfg.Accounts["alice"] = Account{Account: awid.Account{
 			Server:     "localhost:8000",
 			APIKey:     "aw_sk_test",
 			AgentAlias: "alice",
 			Email:      "alice@example.com",
-		}
+		}}
 		cfg.DefaultAccount = "alice"
 		return nil
 	}); err != nil {
@@ -122,7 +124,7 @@ func TestAccountIdentityFieldsRoundTrip(t *testing.T) {
 	path := filepath.Join(tmp, "config.yaml")
 
 	if err := UpdateGlobalAt(path, func(cfg *GlobalConfig) error {
-		cfg.Accounts["alice"] = Account{
+		cfg.Accounts["alice"] = Account{Account: awid.Account{
 			Server:     "localhost:8000",
 			APIKey:     "aw_sk_test",
 			AgentAlias: "alice",
@@ -130,7 +132,7 @@ func TestAccountIdentityFieldsRoundTrip(t *testing.T) {
 			SigningKey: "~/.config/aw/keys/mycompany-alice.signing.key",
 			Custody:    "self",
 			Lifetime:   "persistent",
-		}
+		}}
 		cfg.DefaultAccount = "alice"
 		return nil
 	}); err != nil {
@@ -168,7 +170,7 @@ func TestAccountIdentityFieldsOmittedWhenEmpty(t *testing.T) {
 	// Save without identity fields — they should be omitted from YAML.
 	cfg := &GlobalConfig{
 		Accounts: map[string]Account{
-			"alice": {Server: "localhost:8000", APIKey: "aw_sk_test"},
+			"alice": {Account: awid.Account{Server: "localhost:8000", APIKey: "aw_sk_test"}},
 		},
 		DefaultAccount: "alice",
 	}
@@ -196,7 +198,7 @@ func TestIdentityFieldsPropagateToSelection(t *testing.T) {
 			"prod": {URL: "https://app.aweb.ai"},
 		},
 		Accounts: map[string]Account{
-			"alice": {
+			"alice": {Account: awid.Account{
 				Server:     "prod",
 				APIKey:     "aw_sk_test",
 				AgentAlias: "alice",
@@ -204,7 +206,7 @@ func TestIdentityFieldsPropagateToSelection(t *testing.T) {
 				SigningKey: "/path/to/key",
 				Custody:    "self",
 				Lifetime:   "persistent",
-			},
+			}},
 		},
 		DefaultAccount: "alice",
 	}
@@ -234,7 +236,7 @@ func TestUpdateGlobalAtMergesAccounts(t *testing.T) {
 	path := filepath.Join(tmp, "config.yaml")
 
 	if err := UpdateGlobalAt(path, func(cfg *GlobalConfig) error {
-		cfg.Accounts["a"] = Account{Server: "localhost:8000", APIKey: "aw_sk_a"}
+		cfg.Accounts["a"] = Account{Account: awid.Account{Server: "localhost:8000", APIKey: "aw_sk_a"}}
 		cfg.DefaultAccount = "a"
 		return nil
 	}); err != nil {
@@ -242,7 +244,7 @@ func TestUpdateGlobalAtMergesAccounts(t *testing.T) {
 	}
 
 	if err := UpdateGlobalAt(path, func(cfg *GlobalConfig) error {
-		cfg.Accounts["b"] = Account{Server: "localhost:8000", APIKey: "aw_sk_b"}
+		cfg.Accounts["b"] = Account{Account: awid.Account{Server: "localhost:8000", APIKey: "aw_sk_b"}}
 		return nil
 	}); err != nil {
 		t.Fatalf("UpdateGlobalAt #2: %v", err)

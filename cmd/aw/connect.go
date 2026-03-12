@@ -143,7 +143,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 
 		cfg.Servers[serverName] = awconfig.Server{URL: baseURL}
 
-		cfg.Accounts[accountName] = awconfig.Account{
+		cfg.Accounts[accountName] = awconfig.Account{Account: awid.Account{
 			Server:        serverName,
 			APIKey:        apiKey,
 			AgentID:       agentID,
@@ -154,7 +154,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 			SigningKey:    signingKeyPath,
 			Custody:       custody,
 			Lifetime:      lifetime,
-		}
+		}}
 
 		if strings.TrimSpace(cfg.DefaultAccount) == "" || connectSetDefault {
 			cfg.DefaultAccount = accountName
@@ -196,7 +196,7 @@ func provisionIdentity(
 	keysDir, namespaceSlug, alias string,
 ) (did, signingKeyPath, stableID, custody, lifetime string, err error) {
 	address := deriveAgentAddress(namespaceSlug, "", alias)
-	signingKeyPath = awconfig.SigningKeyPath(keysDir, address)
+	signingKeyPath = awid.SigningKeyPath(keysDir, address)
 
 	// Reuse existing key if one is already on disk for this address,
 	// to avoid overwriting a valid key before we know whether the server
@@ -204,20 +204,20 @@ func provisionIdentity(
 	var pub ed25519.PublicKey
 	var priv ed25519.PrivateKey
 	generatedNewKey := false
-	existingPriv, loadErr := awconfig.LoadSigningKey(signingKeyPath)
+	existingPriv, loadErr := awid.LoadSigningKey(signingKeyPath)
 	if loadErr == nil {
 		priv = existingPriv
 		pub = priv.Public().(ed25519.PublicKey)
 	} else {
 		var genErr error
-		pub, priv, genErr = awconfig.GenerateKeypair()
+		pub, priv, genErr = awid.GenerateKeypair()
 		if genErr != nil {
 			return "", "", "", "", "", genErr
 		}
 		// Persist the keypair to disk BEFORE claiming on the server.
 		// If claim succeeds but disk write fails later, the key would be
 		// unrecoverable. An unused key file on disk is harmless.
-		if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+		if err := awid.SaveKeypair(keysDir, address, pub, priv); err != nil {
 			return "", "", "", "", "", err
 		}
 		generatedNewKey = true
@@ -297,8 +297,8 @@ func recoverIdentity409WithStableID(
 	}
 
 	// Fast path: check expected key location.
-	expectedPath := awconfig.SigningKeyPath(keysDir, address)
-	priv, loadErr := awconfig.LoadSigningKey(expectedPath)
+	expectedPath := awid.SigningKeyPath(keysDir, address)
+	priv, loadErr := awid.LoadSigningKey(expectedPath)
 	if loadErr == nil {
 		loadedPub := priv.Public().(ed25519.PublicKey)
 		if loadedPub.Equal(serverPub) {
@@ -308,7 +308,7 @@ func recoverIdentity409WithStableID(
 	}
 
 	// Slow path: scan all keys (including rotated/).
-	foundPath, err := awconfig.ScanKeysForPublicKey(keysDir, serverPub)
+	foundPath, err := awid.ScanKeysForPublicKey(keysDir, serverPub)
 	if err != nil {
 		return "", "", "", "", "", fmt.Errorf("identity already set on server; error scanning local keys: %w", err)
 	}

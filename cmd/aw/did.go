@@ -68,7 +68,7 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 	oldDID := c.DID()
 
 	// Generate new keypair.
-	newPub, newPriv, err := awconfig.GenerateKeypair()
+	newPub, newPriv, err := awid.GenerateKeypair()
 	if err != nil {
 		return err
 	}
@@ -96,13 +96,13 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 	keysDir := awconfig.KeysDir(configPath)
 	address := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
 
-	if err := awconfig.ArchiveKey(keysDir, oldDID, oldPub, oldPriv); err != nil {
+	if err := awid.ArchiveKey(keysDir, oldDID, oldPub, oldPriv); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to archive old key: %v\n", err)
 	}
-	if err := awconfig.SaveKeypair(keysDir, address, newPub, newPriv); err != nil {
+	if err := awid.SaveKeypair(keysDir, address, newPub, newPriv); err != nil {
 		return fmt.Errorf("save new keypair: %w", err)
 	}
-	keyPath := awconfig.SigningKeyPath(keysDir, address)
+	keyPath := awid.SigningKeyPath(keysDir, address)
 	if err := updateAccountIdentity(sel.AccountName, newDID, awid.CustodySelf, keyPath); err != nil {
 		return err
 	}
@@ -118,7 +118,7 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 // The server holds the old key and signs the rotation on behalf.
 func runCustodialGraduation(sel *awconfig.Selection) error {
 	// Generate new keypair locally.
-	newPub, newPriv, err := awconfig.GenerateKeypair()
+	newPub, newPriv, err := awid.GenerateKeypair()
 	if err != nil {
 		return err
 	}
@@ -150,12 +150,12 @@ func runCustodialGraduation(sel *awconfig.Selection) error {
 	}
 	keysDir := awconfig.KeysDir(configPath)
 	address := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
-	if err := awconfig.SaveKeypair(keysDir, address, newPub, newPriv); err != nil {
+	if err := awid.SaveKeypair(keysDir, address, newPub, newPriv); err != nil {
 		return fmt.Errorf("save new keypair: %w", err)
 	}
 
 	// Update config.
-	keyPath := awconfig.SigningKeyPath(keysDir, address)
+	keyPath := awid.SigningKeyPath(keysDir, address)
 	if err := updateAccountIdentity(sel.AccountName, newDID, awid.CustodySelf, keyPath); err != nil {
 		return err
 	}

@@ -1,4 +1,4 @@
-package awconfig
+package awid
 
 import (
 	"crypto/ed25519"
@@ -250,9 +250,9 @@ func TestKeyFilePath(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := addressToFileBase(tc.address)
+			got := addressToKeyFileBase(tc.address)
 			if got != tc.want {
-				t.Fatalf("addressToFileBase(%q)=%q, want %q", tc.address, got, tc.want)
+				t.Fatalf("addressToKeyFileBase(%q)=%q, want %q", tc.address, got, tc.want)
 			}
 		})
 	}

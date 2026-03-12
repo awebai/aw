@@ -219,7 +219,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// Generate Ed25519 keypair for self-custodial identity.
 	// Keypair generated once; reused on alias-retry so the DID stays
 	// consistent with the registered key.
-	pub, priv, err := awconfig.GenerateKeypair()
+	pub, priv, err := awid.GenerateKeypair()
 	if err != nil {
 		return err
 	}
@@ -289,12 +289,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	keysDir := awconfig.KeysDir(cfgPath)
-	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
+	signingKeyPath := awid.SigningKeyPath(keysDir, address)
 
 	// Save keypair to disk BEFORE writing config. If config is written but
 	// the key save fails, the agent would be bricked (config pointing to a
 	// nonexistent key). An orphaned key file on disk is harmless.
-	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+	if err := awid.SaveKeypair(keysDir, address, pub, priv); err != nil {
 		return err
 	}
 
@@ -311,7 +311,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 			if _, ok := cfg.Servers[serverName]; !ok || strings.TrimSpace(cfg.Servers[serverName].URL) == "" {
 				cfg.Servers[serverName] = awconfig.Server{URL: baseURL}
 			}
-			cfg.Accounts[accountName] = awconfig.Account{
+			cfg.Accounts[accountName] = awconfig.Account{Account: awid.Account{
 				Server:        serverName,
 				APIKey:        resp.APIKey,
 				AgentID:       resp.AgentID,
@@ -322,7 +322,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 				SigningKey:    signingKeyPath,
 				Custody:       resp.Custody,
 				Lifetime:      resp.Lifetime,
-			}
+			}}
 			if strings.TrimSpace(cfg.DefaultAccount) == "" || initSetDefault {
 				cfg.DefaultAccount = accountName
 			}

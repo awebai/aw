@@ -95,7 +95,7 @@ func runRegister(cmd *cobra.Command, args []string) error {
 	}
 
 	// Generate Ed25519 keypair and compute DID for self-custodial registration.
-	pub, priv, err := awconfig.GenerateKeypair()
+	pub, priv, err := awid.GenerateKeypair()
 	if err != nil {
 		return err
 	}
@@ -182,12 +182,12 @@ func saveNewRegistration(
 		return err
 	}
 	keysDir := awconfig.KeysDir(cfgPath)
-	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
+	signingKeyPath := awid.SigningKeyPath(keysDir, address)
 
 	// Save keypair to disk BEFORE writing config. If config is written but
 	// the key save fails, the agent would be bricked (config pointing to a
 	// nonexistent key). An orphaned key file on disk is harmless.
-	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+	if err := awid.SaveKeypair(keysDir, address, pub, priv); err != nil {
 		return err
 	}
 
@@ -207,7 +207,7 @@ func saveNewRegistration(
 			if _, ok := cfg.Servers[serverName]; !ok || strings.TrimSpace(cfg.Servers[serverName].URL) == "" {
 				cfg.Servers[serverName] = awconfig.Server{URL: baseURL}
 			}
-			cfg.Accounts[accountName] = awconfig.Account{
+			cfg.Accounts[accountName] = awconfig.Account{Account: awid.Account{
 				Server:        serverName,
 				APIKey:        resp.APIKey,
 				AgentID:       resp.AgentID,
@@ -219,7 +219,7 @@ func saveNewRegistration(
 				SigningKey:    signingKeyPath,
 				Custody:       resp.Custody,
 				Lifetime:      resp.Lifetime,
-			}
+			}}
 			if strings.TrimSpace(cfg.DefaultAccount) == "" || registerSetDefault {
 				cfg.DefaultAccount = accountName
 			}
@@ -318,7 +318,7 @@ func printRegisterSummary(resp *awid.RegisterResponse, accountName, serverName s
 func runRegisterWithCode(baseURL, serverName, email, username, alias, code string) error {
 	nsSlug := strings.TrimSpace(registerNamespace)
 
-	pub, priv, err := awconfig.GenerateKeypair()
+	pub, priv, err := awid.GenerateKeypair()
 	if err != nil {
 		return err
 	}
@@ -486,7 +486,7 @@ func verifyAndBootstrap(
 		Custody:   awid.CustodySelf,
 		Lifetime:  awid.LifetimePersistent,
 	})
-	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
+	signingKeyPath := awid.SigningKeyPath(keysDir, address)
 	custody := awid.CustodySelf
 	lifetime := awid.LifetimePersistent
 	stableID := strings.TrimSpace(vresp.StableID)
@@ -521,7 +521,7 @@ func verifyAndBootstrap(
 	// the recovered key is already on disk, and writing our freshly-generated
 	// (never-registered) key would overwrite it.
 	if !recovered {
-		if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+		if err := awid.SaveKeypair(keysDir, address, pub, priv); err != nil {
 			return err
 		}
 	}
@@ -541,7 +541,7 @@ func verifyAndBootstrap(
 			if _, ok := cfg.Servers[serverName]; !ok || strings.TrimSpace(cfg.Servers[serverName].URL) == "" {
 				cfg.Servers[serverName] = awconfig.Server{URL: baseURL}
 			}
-			cfg.Accounts[accountName] = awconfig.Account{
+			cfg.Accounts[accountName] = awconfig.Account{Account: awid.Account{
 				Server:        serverName,
 				APIKey:        vresp.APIKey,
 				AgentID:       vresp.AgentID,
@@ -553,7 +553,7 @@ func verifyAndBootstrap(
 				SigningKey:    signingKeyPath,
 				Custody:       custody,
 				Lifetime:      lifetime,
-			}
+			}}
 			if strings.TrimSpace(cfg.DefaultAccount) == "" || registerSetDefault {
 				cfg.DefaultAccount = accountName
 			}

@@ -4452,7 +4452,7 @@ func TestAwVerifyRecoversIdentityOn409(t *testing.T) {
 	t.Parallel()
 
 	// Pre-create a keypair that the server will report as the agent's identity.
-	pub, priv, err := awconfig.GenerateKeypair()
+	pub, priv, err := awid.GenerateKeypair()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4513,7 +4513,7 @@ func TestAwVerifyRecoversIdentityOn409(t *testing.T) {
 	if err := os.MkdirAll(keysDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := awconfig.SaveKeypair(keysDir, "myco/researcher", pub, priv); err != nil {
+	if err := awid.SaveKeypair(keysDir, "myco/researcher", pub, priv); err != nil {
 		t.Fatal(err)
 	}
 
@@ -4587,7 +4587,7 @@ func TestAwVerify409CleansUpOrphanKey(t *testing.T) {
 	// Pre-create the "server's" keypair but do NOT save it to the keys dir.
 	// verify will generate its own key, hit 409, delete the orphan, then
 	// recoverIdentity409 will fail (no matching key) and exit 1.
-	pub, _, err := awconfig.GenerateKeypair()
+	pub, _, err := awid.GenerateKeypair()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5851,10 +5851,10 @@ func TestAwMailSendSignsWithIdentity(t *testing.T) {
 
 	// Save the signing key to disk.
 	address := "myco/agent"
-	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+	if err := awid.SaveKeypair(keysDir, address, pub, priv); err != nil {
 		t.Fatal(err)
 	}
-	keyPath := awconfig.SigningKeyPath(keysDir, address)
+	keyPath := awid.SigningKeyPath(keysDir, address)
 
 	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
 servers:
@@ -5996,10 +5996,10 @@ func TestAwMailSendSignsWithIdentityNamespace(t *testing.T) {
 	// namespace_slug still determines the external address, but same-project
 	// local mail signs plain local names.
 	address := "acme/bot"
-	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+	if err := awid.SaveKeypair(keysDir, address, pub, priv); err != nil {
 		t.Fatal(err)
 	}
-	keyPath := awconfig.SigningKeyPath(keysDir, address)
+	keyPath := awid.SigningKeyPath(keysDir, address)
 
 	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
 servers:
@@ -6274,8 +6274,8 @@ func TestAwConnectPreservesExistingIdentity(t *testing.T) {
 	did := awid.ComputeDIDKey(pub)
 	keysDir := filepath.Join(tmp, "keys")
 	_ = os.MkdirAll(keysDir, 0o700)
-	_ = awconfig.SaveKeypair(keysDir, "myco/alice", pub, priv)
-	keyPath := awconfig.SigningKeyPath(keysDir, "myco/alice")
+	_ = awid.SaveKeypair(keysDir, "myco/alice", pub, priv)
+	keyPath := awid.SigningKeyPath(keysDir, "myco/alice")
 
 	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
 servers:
@@ -6441,7 +6441,7 @@ func TestAwConnectIdentityAlreadySetNoLocalKey(t *testing.T) {
 	// but do NOT save it to the test's keysDir — simulating key loss.
 	// provisionIdentity will generate and save a different key, which won't
 	// match the server's DID, triggering the "no matching key" error.
-	pub, _, err := awconfig.GenerateKeypair()
+	pub, _, err := awid.GenerateKeypair()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6529,7 +6529,7 @@ func TestAwConnectRecoverWith409AndLocalKey(t *testing.T) {
 	t.Parallel()
 
 	// Pre-create a keypair that the server will report as the agent's identity.
-	pub, priv, err := awconfig.GenerateKeypair()
+	pub, priv, err := awid.GenerateKeypair()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6597,7 +6597,7 @@ func TestAwConnectRecoverWith409AndLocalKey(t *testing.T) {
 	if err := os.MkdirAll(keysDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := awconfig.SaveKeypair(keysDir, "myco/alice", pub, priv); err != nil {
+	if err := awid.SaveKeypair(keysDir, "myco/alice", pub, priv); err != nil {
 		t.Fatal(err)
 	}
 
@@ -7119,14 +7119,14 @@ func TestAwResetRemoteWipeKeys(t *testing.T) {
 	if err := os.MkdirAll(keysDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	oldPub, oldPriv, err := awconfig.GenerateKeypair()
+	oldPub, oldPriv, err := awid.GenerateKeypair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := awconfig.SaveKeypair(keysDir, "myco/alice", oldPub, oldPriv); err != nil {
+	if err := awid.SaveKeypair(keysDir, "myco/alice", oldPub, oldPriv); err != nil {
 		t.Fatal(err)
 	}
-	oldKeyPath := awconfig.SigningKeyPath(keysDir, "myco/alice")
+	oldKeyPath := awid.SigningKeyPath(keysDir, "myco/alice")
 
 	// Verify old files exist.
 	if _, err := os.Stat(oldKeyPath); err != nil {
@@ -7168,12 +7168,12 @@ default_account: test-acct
 	// With the same address, SaveKeypair overwrites the old key in-place.
 	// --wipe-keys is a no-op here since sel.SigningKey == signingKeyPath.
 	// Verify the key file exists with new content.
-	newKeyPath := awconfig.SigningKeyPath(keysDir, "myco/alice")
+	newKeyPath := awid.SigningKeyPath(keysDir, "myco/alice")
 	if _, err := os.Stat(newKeyPath); err != nil {
 		t.Fatalf("new key not created: %v", err)
 	}
 	// Verify the key on disk differs from the old one.
-	newPriv, err := awconfig.LoadSigningKey(newKeyPath)
+	newPriv, err := awid.LoadSigningKey(newKeyPath)
 	if err != nil {
 		t.Fatal(err)
 	}

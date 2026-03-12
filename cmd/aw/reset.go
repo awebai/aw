@@ -129,7 +129,7 @@ func runResetRemote() error {
 	// Generate and persist the new keypair BEFORE touching the server.
 	// If the server reset succeeds but disk write failed, the agent would
 	// be bricked. A stale key file on disk is harmless.
-	pub, priv, err := awconfig.GenerateKeypair()
+	pub, priv, err := awid.GenerateKeypair()
 	if err != nil {
 		return err
 	}
@@ -179,10 +179,10 @@ func runResetRemote() error {
 	}
 
 	address := deriveAgentAddress(namespaceSlug, sel.DefaultProject, alias)
-	if err := awconfig.SaveKeypair(keysDir, address, pub, priv); err != nil {
+	if err := awid.SaveKeypair(keysDir, address, pub, priv); err != nil {
 		return err
 	}
-	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
+	signingKeyPath := awid.SigningKeyPath(keysDir, address)
 
 	// Clear the server identity.
 	_, err = client.ResetIdentity(ctx, &awid.ResetIdentityRequest{Confirm: true})

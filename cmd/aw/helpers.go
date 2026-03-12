@@ -67,7 +67,7 @@ func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Se
 
 	var c *aweb.Client
 	if sel.SigningKey != "" && sel.DID != "" {
-		priv, err := awconfig.LoadSigningKey(sel.SigningKey)
+		priv, err := awid.LoadSigningKey(sel.SigningKey)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to load signing key: %w", err)
 		}

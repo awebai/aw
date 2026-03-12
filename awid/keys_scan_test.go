@@ -1,4 +1,4 @@
-package awconfig
+package awid
 
 import (
 	"crypto/ed25519"

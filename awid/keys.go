@@ -1,4 +1,4 @@
-package awconfig
+package awid
 
 import (
 	"crypto/ed25519"
@@ -22,7 +22,7 @@ func GenerateKeypair() (ed25519.PublicKey, ed25519.PrivateKey, error) {
 // SaveKeypair writes a keypair to keysDir as PEM files named by agent address.
 // Private key: 0600. Public key: 0644.
 func SaveKeypair(keysDir, address string, pub ed25519.PublicKey, priv ed25519.PrivateKey) error {
-	base := addressToFileBase(address)
+	base := addressToKeyFileBase(address)
 	keyPath := filepath.Join(keysDir, base+".signing.key")
 	pubPath := filepath.Join(keysDir, base+".signing.pub")
 
@@ -78,7 +78,7 @@ func ArchiveKey(keysDir, oldDID string, pub ed25519.PublicKey, priv ed25519.Priv
 		return fmt.Errorf("create rotated dir: %w", err)
 	}
 
-	base := didToFileBase(oldDID)
+	base := didToKeyFileBase(oldDID)
 	keyPath := filepath.Join(rotatedDir, base+".key")
 	pubPath := filepath.Join(rotatedDir, base+".pub")
 
@@ -112,17 +112,17 @@ func writePublicKey(path string, pub ed25519.PublicKey) error {
 
 // SigningKeyPath returns the path to an agent's signing key file.
 func SigningKeyPath(keysDir, address string) string {
-	return filepath.Join(keysDir, addressToFileBase(address)+".signing.key")
+	return filepath.Join(keysDir, addressToKeyFileBase(address)+".signing.key")
 }
 
-// addressToFileBase converts an agent address (e.g. "mycompany/researcher")
+// addressToKeyFileBase converts an agent address (e.g. "mycompany/researcher")
 // to a filesystem-safe base name (e.g. "mycompany-researcher").
-func addressToFileBase(address string) string {
+func addressToKeyFileBase(address string) string {
 	return strings.ReplaceAll(address, "/", "-")
 }
 
-// didToFileBase converts a DID string to a filesystem-safe base name
+// didToKeyFileBase converts a DID string to a filesystem-safe base name
 // by replacing colons with dashes.
-func didToFileBase(did string) string {
+func didToKeyFileBase(did string) string {
 	return strings.ReplaceAll(did, ":", "-")
 }

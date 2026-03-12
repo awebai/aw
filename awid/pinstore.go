@@ -3,7 +3,6 @@ package awid
 import (
 	"errors"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -89,15 +88,7 @@ func (ps *PinStore) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	defer os.Remove(tmp)
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return atomicWriteFile(path, data)
 }
 
 // CheckPin checks whether a DID matches the stored pin for an address.

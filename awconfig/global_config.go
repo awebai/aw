@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/awebai/aw/awid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,18 +23,8 @@ type Server struct {
 }
 
 type Account struct {
-	Server         string `yaml:"server,omitempty"`
-	APIKey         string `yaml:"api_key,omitempty"`
+	awid.Account   `yaml:",inline"`
 	DefaultProject string `yaml:"default_project,omitempty"`
-	AgentID        string `yaml:"agent_id,omitempty"`
-	AgentAlias     string `yaml:"agent_alias,omitempty"`
-	Email          string `yaml:"email,omitempty"`
-	NamespaceSlug  string `yaml:"namespace_slug,omitempty"`
-	DID            string `yaml:"did,omitempty"`
-	StableID       string `yaml:"stable_id,omitempty"`
-	SigningKey     string `yaml:"signing_key,omitempty"`
-	Custody        string `yaml:"custody,omitempty"`
-	Lifetime       string `yaml:"lifetime,omitempty"`
 }
 
 func DefaultGlobalConfigPath() (string, error) {

@@ -175,7 +175,7 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) e
 
 	if sel != nil && sel.DID != "" && sel.SigningKey != "" {
 		// Config already has identity fields; load the existing key.
-		loadedPriv, loadErr := awconfig.LoadSigningKey(sel.SigningKey)
+		loadedPriv, loadErr := awid.LoadSigningKey(sel.SigningKey)
 		if loadErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not load signing key %s: %v\n", sel.SigningKey, loadErr)
 			return nil
@@ -199,19 +199,19 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) e
 		}
 
 		address := deriveAgentAddress(nsSlug, "", alias)
-		signingKeyPath = awconfig.SigningKeyPath(keysDir, address)
+		signingKeyPath = awid.SigningKeyPath(keysDir, address)
 
 		// Reuse existing key on disk if present.
-		existingPriv, loadErr := awconfig.LoadSigningKey(signingKeyPath)
+		existingPriv, loadErr := awid.LoadSigningKey(signingKeyPath)
 		if loadErr == nil {
 			pub = existingPriv.Public().(ed25519.PublicKey)
 		} else {
-			genPub, genPriv, genErr := awconfig.GenerateKeypair()
+			genPub, genPriv, genErr := awid.GenerateKeypair()
 			if genErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: keypair generation failed: %v\n", genErr)
 				return nil
 			}
-			if err := awconfig.SaveKeypair(keysDir, address, genPub, genPriv); err != nil {
+			if err := awid.SaveKeypair(keysDir, address, genPub, genPriv); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not save keypair: %v\n", err)
 				return nil
 			}
