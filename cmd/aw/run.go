@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -127,11 +128,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	inputPromptLabel := awrun.IdentityPromptLabel(sel.NamespaceSlug, "", "", sel.AgentAlias)
+	repoSlug := runDetectRepoSlug(workingDir)
+	statusIdentity := awrun.StatusIdentity(runProviderName, sel.NamespaceSlug, repoSlug, sel.AgentAlias)
+
 	screen := runNewScreenController(cmd.InOrStdin(), cmd.OutOrStdout())
-	if screen != nil {
-		screen.SetPromptLabel(inputPromptLabel)
-	}
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 	defer stop()
@@ -139,7 +139,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	loop := runNewLoop(provider, cmd.OutOrStdout())
 	loop.WakeStream = runNewWakeStream(client)
 	loop.Control = screen
-	loop.InputPromptLabel = inputPromptLabel
+	loop.StatusIdentity = statusIdentity
 
 	opts := awrun.LoopOptions{
 		InitialPrompt:       initialPrompt,
@@ -161,6 +161,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	return err
+}
+
+func runDetectRepoSlug(dir string) string {
+	cmd := exec.Command("git", "-C", dir, "remote", "get-url", "origin")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return awrun.ShortRepoName(strings.TrimSpace(string(out)), "")
 }
 
 func effectiveRunDir() (string, error) {

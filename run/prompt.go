@@ -3,16 +3,45 @@ package run
 import "strings"
 
 func IdentityPromptLabel(projectSlug string, canonicalOrigin string, repoOrigin string, alias string) string {
+	return DefaultInputPromptLabel
+}
+
+func StatusIdentity(provider string, projectSlug string, repoSlug string, alias string) string {
+	provider = strings.TrimSpace(provider)
 	projectSlug = strings.TrimSpace(projectSlug)
-	shortRepo := ShortRepoName(canonicalOrigin, repoOrigin)
+	repoSlug = strings.TrimSpace(repoSlug)
 	alias = strings.TrimSpace(alias)
-	if projectSlug == "" || alias == "" {
-		return DefaultInputPromptLabel
+
+	var parts []string
+	if projectSlug != "" {
+		parts = append(parts, projectSlug)
 	}
-	if shortRepo == "" {
-		return projectSlug + ":" + alias + "> "
+	if repoSlug != "" {
+		parts = append(parts, repoSlug)
 	}
-	return projectSlug + ":" + shortRepo + ":" + alias + "> "
+	if alias != "" {
+		parts = append(parts, alias)
+	}
+	identity := strings.Join(parts, ":")
+	if provider != "" && identity != "" {
+		return provider + "@" + identity
+	}
+	if provider != "" {
+		return ""
+	}
+	return identity
+}
+
+func ComposeStatusLine(identity string, transient string) string {
+	identity = strings.TrimSpace(identity)
+	transient = strings.TrimSpace(transient)
+	if identity == "" {
+		return transient
+	}
+	if transient == "" {
+		return identity
+	}
+	return identity + " · " + transient
 }
 
 func ShortRepoName(canonicalOrigin string, repoOrigin string) string {

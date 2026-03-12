@@ -74,7 +74,7 @@ type Event struct {
 
 type ControlEventType string
 
-const DefaultInputPromptLabel = "input> "
+const DefaultInputPromptLabel = ">> "
 
 const (
 	ControlTypingStarted ControlEventType = "typing_started"

@@ -78,10 +78,54 @@ func TestScreenControllerSetInputLineKeepsLeadingSpace(t *testing.T) {
 	}
 }
 
-func TestIdentityPromptLabelUsesProjectRepoAndAlias(t *testing.T) {
+func TestIdentityPromptLabelReturnsShortPrompt(t *testing.T) {
 	got := IdentityPromptLabel("aweb", "github.com/awebai/aw", "", "rose")
-	if got != "aweb:aw:rose> " {
-		t.Fatalf("expected identity prompt label, got %q", got)
+	if got != ">> " {
+		t.Fatalf("expected short prompt label, got %q", got)
+	}
+}
+
+func TestComposeStatusLineShowsIdentityAlone(t *testing.T) {
+	got := ComposeStatusLine("claude@aweb:aw:rose", "")
+	if got != "claude@aweb:aw:rose" {
+		t.Fatalf("expected identity alone, got %q", got)
+	}
+}
+
+func TestComposeStatusLineAppendsTransientState(t *testing.T) {
+	got := ComposeStatusLine("claude@aweb:aw:rose", "next run in 12s")
+	if got != "claude@aweb:aw:rose · next run in 12s" {
+		t.Fatalf("expected composed status, got %q", got)
+	}
+}
+
+func TestComposeStatusLineShowsTransientAloneWhenNoIdentity(t *testing.T) {
+	got := ComposeStatusLine("", "paused")
+	if got != "paused" {
+		t.Fatalf("expected transient alone, got %q", got)
+	}
+}
+
+func TestStatusIdentityFormatsProviderAndIdentity(t *testing.T) {
+	cases := []struct {
+		provider string
+		project  string
+		repo     string
+		alias    string
+		want     string
+	}{
+		{"claude", "aweb", "aw", "rose", "claude@aweb:aw:rose"},
+		{"codex", "aweb", "", "rose", "codex@aweb:rose"},
+		{"claude", "", "", "rose", "claude@rose"},
+		{"claude", "aweb", "aw", "", "claude@aweb:aw"},
+		{"", "aweb", "aw", "rose", "aweb:aw:rose"},
+		{"", "", "", "", ""},
+	}
+	for _, tc := range cases {
+		got := StatusIdentity(tc.provider, tc.project, tc.repo, tc.alias)
+		if got != tc.want {
+			t.Fatalf("StatusIdentity(%q,%q,%q,%q) = %q, want %q", tc.provider, tc.project, tc.repo, tc.alias, got, tc.want)
+		}
 	}
 }
 

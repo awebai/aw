@@ -163,8 +163,8 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 	if capturedLoop == nil {
 		t.Fatal("expected loop to be constructed")
 	}
-	if capturedLoop.InputPromptLabel != "team:rose> " {
-		t.Fatalf("prompt label=%q", capturedLoop.InputPromptLabel)
+	if capturedLoop.StatusIdentity != "claude@team:rose" {
+		t.Fatalf("status identity=%q", capturedLoop.StatusIdentity)
 	}
 	if capturedOpts.InitialPrompt != "finish the migration" {
 		t.Fatalf("initial prompt=%q", capturedOpts.InitialPrompt)

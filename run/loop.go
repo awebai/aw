@@ -26,6 +26,7 @@ type Loop struct {
 	Dispatch          Dispatcher
 	Now               func() time.Time
 	InputPromptLabel  string
+	StatusIdentity    string
 
 	writeMu sync.Mutex
 }
@@ -854,7 +855,7 @@ func (l *Loop) promptLabel() string {
 func (l *Loop) renderIdleLine(label string, remaining int, st *state) {
 	line := fmt.Sprintf("%s in %ds", label, remaining)
 	if screen := l.screen(); screen != nil {
-		screen.SetStatusLine(line)
+		screen.SetStatusLine(ComposeStatusLine(l.StatusIdentity, line))
 		l.renderInputPrompt(st)
 		return
 	}
@@ -984,13 +985,17 @@ func (l *Loop) waitForExitConfirmation(ctx context.Context, st *state) error {
 
 func (l *Loop) setStatusLine(text string) {
 	if screen := l.screen(); screen != nil {
-		screen.SetStatusLine(text)
+		screen.SetStatusLine(ComposeStatusLine(l.StatusIdentity, text))
 	}
 }
 
 func (l *Loop) clearStatusLine() {
 	if screen := l.screen(); screen != nil {
-		screen.ClearStatusLine()
+		if strings.TrimSpace(l.StatusIdentity) != "" {
+			screen.SetStatusLine(l.StatusIdentity)
+		} else {
+			screen.ClearStatusLine()
+		}
 	}
 }
 
