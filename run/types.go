@@ -89,8 +89,10 @@ const (
 	ControlStreamError   ControlEventType = "stream_error"
 	ControlInterrupt     ControlEventType = "interrupt"
 	ControlExitPrompt    ControlEventType = "exit_prompt"
-	ControlExitConfirm   ControlEventType = "exit_confirm"
-	ControlExitCancel    ControlEventType = "exit_cancel"
+	ControlExitConfirm    ControlEventType = "exit_confirm"
+	ControlExitCancel     ControlEventType = "exit_cancel"
+	ControlHelp           ControlEventType = "help"
+	ControlUnknownCommand ControlEventType = "unknown_command"
 )
 
 type ControlEvent struct {

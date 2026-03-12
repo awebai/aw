@@ -21,7 +21,12 @@ func ParseControlSubmission(text string) ControlEvent {
 		return ControlEvent{Type: ControlAutofeedOn}
 	case "/autofeed off":
 		return ControlEvent{Type: ControlAutofeedOff}
+	case "/help":
+		return ControlEvent{Type: ControlHelp}
 	default:
+		if strings.HasPrefix(text, "/") {
+			return ControlEvent{Type: ControlUnknownCommand, Text: text}
+		}
 		return ControlEvent{Type: ControlPrompt, Text: text}
 	}
 }

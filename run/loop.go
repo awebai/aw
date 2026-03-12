@@ -56,6 +56,14 @@ const (
 	pausedNoticeText = "paused. use /resume, /quit, or type a prompt to continue."
 	pausedStatusText = "paused: /resume, /quit, or type a prompt"
 	exitStatusText   = "exit aw run? [y/N]"
+	helpText         = `available commands:
+  /wait           pause after the current run
+  /resume         resume from a pause
+  /stop           stop the current run and pause
+  /autofeed on    enable autofeed (work events wake the agent)
+  /autofeed off   disable autofeed
+  /quit           exit aw run
+  /help           show this help`
 )
 
 func NewLoop(provider Provider, out io.Writer) *Loop {
@@ -237,7 +245,6 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 	} else {
 		l.printf("\nrun #%d  %s  >  %s\n\n", st.Run, l.Now().Format("15:04:05"), truncateText(display, 80))
 		l.println(formatProviderMode(l.Provider, buildOpts))
-		l.println("type /wait, /autofeed off, /stop, /quit, or start typing to queue a prompt.")
 	}
 	l.renderInputPrompt(st)
 
@@ -707,6 +714,14 @@ func (l *Loop) controlEvents() <-chan ControlEvent {
 
 func (l *Loop) applyControlEvent(event ControlEvent, st *state, activeRun bool, cancel context.CancelFunc) {
 	switch event.Type {
+	case ControlHelp:
+		l.println(helpText)
+		l.renderInputPrompt(st)
+		return
+	case ControlUnknownCommand:
+		l.printf("unknown command: %s — type /help for available commands\n", event.Text)
+		l.renderInputPrompt(st)
+		return
 	case ControlExitConfirm:
 		l.confirmExit(st, activeRun, cancel)
 		return
