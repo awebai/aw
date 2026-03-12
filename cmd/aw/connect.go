@@ -10,6 +10,7 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
 	"github.com/spf13/cobra"
 )
@@ -222,18 +223,18 @@ func provisionIdentity(
 		generatedNewKey = true
 	}
 
-	did = aweb.ComputeDIDKey(pub)
+	did = awid.ComputeDIDKey(pub)
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
 	// Claim identity on the aweb server.
-	resp, claimErr := client.ClaimIdentity(ctx, &aweb.ClaimIdentityRequest{
+	resp, claimErr := client.ClaimIdentity(ctx, &awid.ClaimIdentityRequest{
 		DID:       did,
 		PublicKey: pubKeyB64,
 		Custody:   "self",
 		Lifetime:  "persistent",
 	})
 	if claimErr != nil {
-		code, ok := aweb.HTTPStatusCode(claimErr)
+		code, ok := awid.HTTPStatusCode(claimErr)
 		if ok && code == 409 {
 			// Remove orphan key if we just generated it — it doesn't match
 			// the server's identity and would be confusing on disk.
@@ -284,13 +285,13 @@ func recoverIdentity409WithStableID(
 	client *aweb.Client,
 	keysDir, address string,
 ) (did, signingKeyPath, stableID, custody, lifetime string, err error) {
-	resolver := &aweb.ServerResolver{Client: client}
+	resolver := &awid.ServerResolver{Client: client.Client}
 	identity, err := resolver.Resolve(ctx, address)
 	if err != nil {
 		return "", "", "", "", "", fmt.Errorf("identity already set on server, and could not resolve %s to recover: %w\nRun 'aw reset --remote --confirm' to clear the server identity and re-provision.", address, err)
 	}
 
-	serverPub, err := aweb.ExtractPublicKey(identity.DID)
+	serverPub, err := awid.ExtractPublicKey(identity.DID)
 	if err != nil {
 		return "", "", "", "", "", fmt.Errorf("identity already set on server with invalid DID %q: %w", identity.DID, err)
 	}

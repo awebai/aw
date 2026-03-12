@@ -8,6 +8,7 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
 	"github.com/spf13/cobra"
 )
@@ -49,7 +50,7 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 
 	// Custodial graduation: no local signing key, server signs on behalf.
 	if rotateKeySelfCustody {
-		if sel.Custody == aweb.CustodySelf {
+		if sel.Custody == awid.CustodySelf {
 			return fmt.Errorf("account %q is already self-custody", sel.AccountName)
 		}
 		return runCustodialGraduation(sel)
@@ -71,15 +72,15 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	newDID := aweb.ComputeDIDKey(newPub)
+	newDID := awid.ComputeDIDKey(newPub)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	resp, err := c.RotateKey(ctx, &aweb.RotateKeyRequest{
+	resp, err := c.RotateKey(ctx, &awid.RotateKeyRequest{
 		NewDID:       newDID,
 		NewPublicKey: newPub,
-		Custody:      aweb.CustodySelf,
+		Custody:      awid.CustodySelf,
 	})
 	if err != nil {
 		return err
@@ -102,7 +103,7 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("save new keypair: %w", err)
 	}
 	keyPath := awconfig.SigningKeyPath(keysDir, address)
-	if err := updateAccountIdentity(sel.AccountName, newDID, aweb.CustodySelf, keyPath); err != nil {
+	if err := updateAccountIdentity(sel.AccountName, newDID, awid.CustodySelf, keyPath); err != nil {
 		return err
 	}
 
@@ -121,7 +122,7 @@ func runCustodialGraduation(sel *awconfig.Selection) error {
 	if err != nil {
 		return err
 	}
-	newDID := aweb.ComputeDIDKey(newPub)
+	newDID := awid.ComputeDIDKey(newPub)
 
 	// Use a regular API-key client (no local signing key).
 	c, err := aweb.NewWithAPIKey(sel.BaseURL, sel.APIKey)
@@ -133,10 +134,10 @@ func runCustodialGraduation(sel *awconfig.Selection) error {
 	defer cancel()
 
 	// PUT with no rotation_signature — server signs on behalf.
-	resp, err := c.RotateKeyCustodial(ctx, &aweb.RotateKeyCustodialRequest{
+	resp, err := c.RotateKeyCustodial(ctx, &awid.RotateKeyCustodialRequest{
 		NewDID:       newDID,
 		NewPublicKey: newPub,
-		Custody:      aweb.CustodySelf,
+		Custody:      awid.CustodySelf,
 	})
 	if err != nil {
 		return err
@@ -155,7 +156,7 @@ func runCustodialGraduation(sel *awconfig.Selection) error {
 
 	// Update config.
 	keyPath := awconfig.SigningKeyPath(keysDir, address)
-	if err := updateAccountIdentity(sel.AccountName, newDID, aweb.CustodySelf, keyPath); err != nil {
+	if err := updateAccountIdentity(sel.AccountName, newDID, awid.CustodySelf, keyPath); err != nil {
 		return err
 	}
 

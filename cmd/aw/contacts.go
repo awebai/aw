@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
@@ -49,7 +49,7 @@ var contactsAddCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		resp, err := client.CreateContact(ctx, &aweb.ContactCreateRequest{
+		resp, err := client.CreateContact(ctx, &awid.ContactCreateRequest{
 			ContactAddress: args[0],
 			Label:          contactsAddLabel,
 		})

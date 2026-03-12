@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
 	"gopkg.in/yaml.v3"
 )
@@ -4456,7 +4456,7 @@ func TestAwVerifyRecoversIdentityOn409(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverDID := aweb.ComputeDIDKey(pub)
+	serverDID := awid.ComputeDIDKey(pub)
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -4591,7 +4591,7 @@ func TestAwVerify409CleansUpOrphanKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverDID := aweb.ComputeDIDKey(pub)
+	serverDID := awid.ComputeDIDKey(pub)
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -5794,14 +5794,14 @@ func TestAwMailSendSignsWithIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	did := aweb.ComputeDIDKey(pub)
+	did := awid.ComputeDIDKey(pub)
 
 	// Generate a recipient key so the resolver can return a DID.
 	recipientPub, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	recipientDID := aweb.ComputeDIDKey(recipientPub)
+	recipientDID := awid.ComputeDIDKey(recipientPub)
 
 	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5910,7 +5910,7 @@ default_account: acct
 	if v, ok := gotBody["from_stable_id"].(string); ok {
 		fromStableID = v
 	}
-	env := &aweb.MessageEnvelope{
+	env := &awid.MessageEnvelope{
 		From:         "agent",
 		FromDID:      did,
 		To:           "monitor",
@@ -5922,11 +5922,11 @@ default_account: acct
 		FromStableID: fromStableID,
 		Signature:    sig,
 	}
-	status, verifyErr := aweb.VerifyMessage(env)
+	status, verifyErr := awid.VerifyMessage(env)
 	if verifyErr != nil {
 		t.Fatalf("VerifyMessage: %v", verifyErr)
 	}
-	if status != aweb.Verified {
+	if status != awid.Verified {
 		t.Fatalf("status=%s, want verified", status)
 	}
 }
@@ -5938,14 +5938,14 @@ func TestAwMailSendSignsWithIdentityNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	did := aweb.ComputeDIDKey(pub)
+	did := awid.ComputeDIDKey(pub)
 
 	// Generate a recipient key so the resolver can return a DID.
 	recipientPub, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	recipientDID := aweb.ComputeDIDKey(recipientPub)
+	recipientDID := awid.ComputeDIDKey(recipientPub)
 
 	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6052,7 +6052,7 @@ default_account: acct
 	if v, ok := gotBody["from_stable_id"].(string); ok {
 		fromStableID = v
 	}
-	env := &aweb.MessageEnvelope{
+	env := &awid.MessageEnvelope{
 		From:         "bot",
 		FromDID:      did,
 		To:           "monitor",
@@ -6064,11 +6064,11 @@ default_account: acct
 		FromStableID: fromStableID,
 		Signature:    sig,
 	}
-	status, verifyErr := aweb.VerifyMessage(env)
+	status, verifyErr := awid.VerifyMessage(env)
 	if verifyErr != nil {
 		t.Fatalf("VerifyMessage: %v", verifyErr)
 	}
-	if status != aweb.Verified {
+	if status != awid.Verified {
 		t.Fatalf("status=%s, want verified", status)
 	}
 }
@@ -6271,7 +6271,7 @@ func TestAwConnectPreservesExistingIdentity(t *testing.T) {
 
 	// Pre-populate config with existing identity.
 	pub, priv, _ := ed25519.GenerateKey(nil)
-	did := aweb.ComputeDIDKey(pub)
+	did := awid.ComputeDIDKey(pub)
 	keysDir := filepath.Join(tmp, "keys")
 	_ = os.MkdirAll(keysDir, 0o700)
 	_ = awconfig.SaveKeypair(keysDir, "myco/alice", pub, priv)
@@ -6445,7 +6445,7 @@ func TestAwConnectIdentityAlreadySetNoLocalKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverDID := aweb.ComputeDIDKey(pub)
+	serverDID := awid.ComputeDIDKey(pub)
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -6533,8 +6533,8 @@ func TestAwConnectRecoverWith409AndLocalKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverDID := aweb.ComputeDIDKey(pub)
-	serverStableID := aweb.ComputeStableID(pub)
+	serverDID := awid.ComputeDIDKey(pub)
+	serverStableID := awid.ComputeStableID(pub)
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

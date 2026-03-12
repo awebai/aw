@@ -39,7 +39,7 @@ var (
 	runNewProvider         = awrun.NewProvider
 	runNewLoop             = awrun.NewLoop
 	runExecuteLoop         = func(loop *awrun.Loop, ctx context.Context, opts awrun.LoopOptions) error { return loop.Run(ctx, opts) }
-	runNewWakeStream       = func(client *aweb.Client) awrun.WakeStream { return awrun.NewClientWakeStream(client) }
+	runNewWakeStream       = func(client *aweb.Client) awrun.WakeStream { return awrun.NewClientWakeStream(client.Client) }
 	runNewScreenController = awrun.NewScreenController
 	runResolveClientForDir = resolveClientSelectionForDir
 	runGetwd               = os.Getwd

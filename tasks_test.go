@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/awebai/aw/awid"
 )
 
 func TestTaskCreate(t *testing.T) {
@@ -403,7 +405,7 @@ func TestTaskAddDepCycleReturns422(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	code, ok := HTTPStatusCode(err)
+	code, ok := awid.HTTPStatusCode(err)
 	if !ok || code != 422 {
 		t.Fatalf("expected 422, got ok=%v code=%d err=%v", ok, code, err)
 	}

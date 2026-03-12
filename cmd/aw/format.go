@@ -7,19 +7,20 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/chat"
 )
 
 // formatVerificationTag returns a warning string for non-verified messages.
 // Returns empty string for verified or unset status.
 // ALL CAPS for active security failures; lowercase for informational (no signature present).
-func formatVerificationTag(status aweb.VerificationStatus) string {
+func formatVerificationTag(status awid.VerificationStatus) string {
 	switch status {
-	case aweb.Failed:
+	case awid.Failed:
 		return " [VERIFICATION FAILED]"
-	case aweb.IdentityMismatch:
+	case awid.IdentityMismatch:
 		return " [IDENTITY MISMATCH]"
-	case aweb.Unverified:
+	case awid.Unverified:
 		return " [unverified]"
 	default:
 		return ""
@@ -89,7 +90,7 @@ func formatIntrospect(v any) string {
 
 
 func formatMailInbox(v any) string {
-	resp := v.(*aweb.InboxResponse)
+	resp := v.(*awid.InboxResponse)
 	if len(resp.Messages) == 0 {
 		return "No messages.\n"
 	}
@@ -107,7 +108,7 @@ func formatMailInbox(v any) string {
 }
 
 func formatMailAck(v any) string {
-	resp := v.(*aweb.AckResponse)
+	resp := v.(*awid.AckResponse)
 	return fmt.Sprintf("Acknowledged %s\n", resp.MessageID)
 }
 
@@ -337,7 +338,7 @@ func formatAgentsList(v any) string {
 		sb.WriteString(fmt.Sprintf("Namespace: %s\n\n", out.NamespaceSlug))
 	}
 
-	var online, offline []aweb.AgentView
+	var online, offline []awid.AgentView
 	for _, agent := range resp.Agents {
 		if agent.Online {
 			online = append(online, agent)
@@ -440,7 +441,7 @@ func formatLockList(v any) string {
 // --- contacts ---
 
 func formatContactsList(v any) string {
-	resp := v.(*aweb.ContactListResponse)
+	resp := v.(*awid.ContactListResponse)
 	if len(resp.Contacts) == 0 {
 		return "No contacts.\n"
 	}
@@ -456,7 +457,7 @@ func formatContactsList(v any) string {
 }
 
 func formatContactAdd(v any) string {
-	resp := v.(*aweb.ContactCreateResponse)
+	resp := v.(*awid.ContactCreateResponse)
 	return fmt.Sprintf("Added contact %s\n", resp.ContactAddress)
 }
 
@@ -474,12 +475,12 @@ func formatNamespace(v any) string {
 // --- network ---
 
 func formatPublish(v any) string {
-	resp := v.(*aweb.NetworkPublishResponse)
+	resp := v.(*awid.NetworkPublishResponse)
 	return fmt.Sprintf("Published %s\n", resp.Alias)
 }
 
 func formatDirectoryGet(v any) string {
-	resp := v.(*aweb.NetworkDirectoryAgent)
+	resp := v.(*awid.NetworkDirectoryAgent)
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Agent:        %s/%s\n", resp.OrgSlug, resp.Alias))
 	if resp.Description != "" {
@@ -492,7 +493,7 @@ func formatDirectoryGet(v any) string {
 }
 
 func formatDirectorySearch(v any) string {
-	resp := v.(*aweb.NetworkDirectoryResponse)
+	resp := v.(*awid.NetworkDirectoryResponse)
 	if len(resp.Agents) == 0 {
 		return "No agents found.\n"
 	}

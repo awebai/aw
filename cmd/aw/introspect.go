@@ -4,13 +4,13 @@ import (
 	"context"
 	"time"
 
-	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
 // introspectOutput combines the server's introspect response with local identity fields.
 type introspectOutput struct {
-	aweb.IntrospectResponse
+	awid.IntrospectResponse
 	DID      string `json:"did,omitempty"`
 	Custody  string `json:"custody,omitempty"`
 	Lifetime string `json:"lifetime,omitempty"`

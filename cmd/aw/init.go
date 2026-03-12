@@ -12,6 +12,7 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
 	"github.com/spf13/cobra"
 )
@@ -222,24 +223,24 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	did := aweb.ComputeDIDKey(pub)
+	did := awid.ComputeDIDKey(pub)
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
-	req := &aweb.InitRequest{
+	req := &awid.InitRequest{
 		ProjectSlug: nsSlug,
 		ProjectName: nsName,
 		HumanName:   humanName,
 		AgentType:   agentType,
 		DID:         did,
 		PublicKey:   pubKeyB64,
-		Custody:     aweb.CustodySelf,
-		Lifetime:    aweb.LifetimePersistent,
+		Custody:     awid.CustodySelf,
+		Lifetime:    awid.LifetimePersistent,
 	}
 	if strings.TrimSpace(alias) != "" {
 		req.Alias = &alias
 	}
 
-	var resp *aweb.InitResponse
+	var resp *awid.InitResponse
 	if initCloudMode {
 		resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req, strings.TrimSpace(initTargetNamespace))
 	} else {
@@ -368,7 +369,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func printInitSummary(resp *aweb.InitResponse, accountName, serverName string, attachResult *contextAttachResult) {
+func printInitSummary(resp *awid.InitResponse, accountName, serverName string, attachResult *contextAttachResult) {
 	if resp == nil {
 		return
 	}
@@ -400,9 +401,9 @@ func bootstrapViaCloud(
 	baseURL string,
 	serverName string,
 	global *awconfig.GlobalConfig,
-	req *aweb.InitRequest,
+	req *awid.InitRequest,
 	namespaceSlug string,
-) (*aweb.InitResponse, error) {
+) (*awid.InitResponse, error) {
 	token := resolveCloudToken(baseURL, serverName, global)
 	if strings.TrimSpace(token) == "" {
 		return nil, fmt.Errorf("hosted Cloud bootstrap requires --cloud-token, AWEB_CLOUD_TOKEN, or an existing aw_sk_ key in config")
@@ -418,7 +419,7 @@ func bootstrapViaCloud(
 		return nil, err
 	}
 
-	cloudReq := &aweb.CloudBootstrapAgentRequest{
+	cloudReq := &awid.CloudBootstrapAgentRequest{
 		Alias:         req.Alias,
 		HumanName:     req.HumanName,
 		AgentType:     req.AgentType,
@@ -438,7 +439,7 @@ func bootstrapViaCloud(
 		return nil, fmt.Errorf("cloud bootstrap failed: missing api_key in response")
 	}
 
-	return &aweb.InitResponse{
+	return &awid.InitResponse{
 		Status:        "ok",
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 		ProjectID:     cloudResp.ProjectID,

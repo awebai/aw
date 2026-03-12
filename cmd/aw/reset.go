@@ -11,6 +11,7 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
 	"github.com/spf13/cobra"
 )
@@ -133,7 +134,7 @@ func runResetRemote() error {
 		return err
 	}
 
-	did := aweb.ComputeDIDKey(pub)
+	did := awid.ComputeDIDKey(pub)
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -184,14 +185,14 @@ func runResetRemote() error {
 	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
 
 	// Clear the server identity.
-	_, err = client.ResetIdentity(ctx, &aweb.ResetIdentityRequest{Confirm: true})
+	_, err = client.ResetIdentity(ctx, &awid.ResetIdentityRequest{Confirm: true})
 	if err != nil {
 		return fmt.Errorf("server identity reset failed: %w", err)
 	}
 	fmt.Fprintln(os.Stderr, "Server identity cleared.")
 
 	// Claim the new identity.
-	claimResp, err := client.ClaimIdentity(ctx, &aweb.ClaimIdentityRequest{
+	claimResp, err := client.ClaimIdentity(ctx, &awid.ClaimIdentityRequest{
 		DID:       did,
 		PublicKey: pubKeyB64,
 		Custody:   "self",
@@ -217,7 +218,7 @@ func runResetRemote() error {
 
 	stableID := strings.TrimSpace(claimResp.StableID)
 	if stableID == "" {
-		stableID = aweb.ComputeStableID(pub)
+		stableID = awid.ComputeStableID(pub)
 	}
 
 	// Update config. Always clear the old stable ID since the old identity

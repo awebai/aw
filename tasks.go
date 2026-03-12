@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/awebai/aw/awid"
 )
 
 // Task types
@@ -123,7 +125,7 @@ func (e *TaskHeldError) Error() string {
 
 func (c *Client) TaskCreate(ctx context.Context, req *TaskCreateRequest) (*Task, error) {
 	var out Task
-	if err := c.post(ctx, "/v1/tasks", req, &out); err != nil {
+	if err := c.Post(ctx, "/v1/tasks", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -153,7 +155,7 @@ func (c *Client) TaskList(ctx context.Context, params TaskListParams) (*TaskList
 		sep = "&"
 	}
 	var out TaskListResponse
-	if err := c.get(ctx, path, &out); err != nil {
+	if err := c.Get(ctx, path, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -161,7 +163,7 @@ func (c *Client) TaskList(ctx context.Context, params TaskListParams) (*TaskList
 
 func (c *Client) TaskListReady(ctx context.Context) (*TaskListResponse, error) {
 	var out TaskListResponse
-	if err := c.get(ctx, "/v1/tasks/ready", &out); err != nil {
+	if err := c.Get(ctx, "/v1/tasks/ready", &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -169,7 +171,7 @@ func (c *Client) TaskListReady(ctx context.Context) (*TaskListResponse, error) {
 
 func (c *Client) TaskListBlocked(ctx context.Context) (*TaskListResponse, error) {
 	var out TaskListResponse
-	if err := c.get(ctx, "/v1/tasks/blocked", &out); err != nil {
+	if err := c.Get(ctx, "/v1/tasks/blocked", &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -177,7 +179,7 @@ func (c *Client) TaskListBlocked(ctx context.Context) (*TaskListResponse, error)
 
 func (c *Client) TaskGet(ctx context.Context, ref string) (*Task, error) {
 	var out Task
-	if err := c.get(ctx, "/v1/tasks/"+urlPathEscape(ref), &out); err != nil {
+	if err := c.Get(ctx, "/v1/tasks/"+urlPathEscape(ref), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -188,13 +190,13 @@ func (c *Client) TaskGet(ctx context.Context, ref string) (*Task, error) {
 // returned as a *TaskHeldError. When closing a parent task, the response
 // may include AutoClosed listing cascade-closed children.
 func (c *Client) TaskUpdate(ctx context.Context, ref string, req *TaskUpdateRequest) (*TaskUpdateResponse, error) {
-	resp, err := c.doRaw(ctx, http.MethodPatch, "/v1/tasks/"+urlPathEscape(ref), "application/json", req)
+	resp, err := c.DoRaw(ctx, http.MethodPatch, "/v1/tasks/"+urlPathEscape(ref), "application/json", req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	limited := io.LimitReader(resp.Body, maxResponseSize)
+	limited := io.LimitReader(resp.Body, awid.MaxResponseSize)
 	data, err := io.ReadAll(limited)
 	if err != nil {
 		return nil, err
@@ -205,10 +207,10 @@ func (c *Client) TaskUpdate(ctx context.Context, ref string, req *TaskUpdateRequ
 		if err := json.Unmarshal(data, &held); err == nil {
 			return nil, &held
 		}
-		return nil, &apiError{StatusCode: resp.StatusCode, Body: string(data)}
+		return nil, &awid.APIError{StatusCode: resp.StatusCode, Body: string(data)}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &apiError{StatusCode: resp.StatusCode, Body: string(data)}
+		return nil, &awid.APIError{StatusCode: resp.StatusCode, Body: string(data)}
 	}
 
 	var out TaskUpdateResponse
@@ -219,16 +221,16 @@ func (c *Client) TaskUpdate(ctx context.Context, ref string, req *TaskUpdateRequ
 }
 
 func (c *Client) TaskDelete(ctx context.Context, ref string) error {
-	return c.delete(ctx, "/v1/tasks/"+urlPathEscape(ref))
+	return c.Delete(ctx, "/v1/tasks/"+urlPathEscape(ref))
 }
 
 // TaskAddDep adds a dependency. Returns 422 if this would create a cycle.
 func (c *Client) TaskAddDep(ctx context.Context, ref string, req *TaskAddDepRequest) error {
-	return c.post(ctx, "/v1/tasks/"+urlPathEscape(ref)+"/deps", req, nil)
+	return c.Post(ctx, "/v1/tasks/"+urlPathEscape(ref)+"/deps", req, nil)
 }
 
 func (c *Client) TaskRemoveDep(ctx context.Context, ref string, depRef string) error {
-	return c.delete(ctx, "/v1/tasks/"+urlPathEscape(ref)+"/deps/"+urlPathEscape(depRef))
+	return c.Delete(ctx, "/v1/tasks/"+urlPathEscape(ref)+"/deps/"+urlPathEscape(depRef))
 }
 
 // Comments
@@ -253,7 +255,7 @@ type TaskCommentListResponse struct {
 
 func (c *Client) TaskCommentCreate(ctx context.Context, ref string, req *TaskCommentCreateRequest) (*TaskComment, error) {
 	var out TaskComment
-	if err := c.post(ctx, "/v1/tasks/"+urlPathEscape(ref)+"/comments", req, &out); err != nil {
+	if err := c.Post(ctx, "/v1/tasks/"+urlPathEscape(ref)+"/comments", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -261,7 +263,7 @@ func (c *Client) TaskCommentCreate(ctx context.Context, ref string, req *TaskCom
 
 func (c *Client) TaskCommentList(ctx context.Context, ref string) (*TaskCommentListResponse, error) {
 	var out TaskCommentListResponse
-	if err := c.get(ctx, "/v1/tasks/"+urlPathEscape(ref)+"/comments", &out); err != nil {
+	if err := c.Get(ctx, "/v1/tasks/"+urlPathEscape(ref)+"/comments", &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

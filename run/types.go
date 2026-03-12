@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	aweb "github.com/awebai/aw"
+	awid "github.com/awebai/aw/awid"
 )
 
 type UsageStats struct {
@@ -138,7 +138,7 @@ type Dispatcher interface {
 }
 
 type WakeStream interface {
-	Stream(ctx context.Context, deadline time.Time) (<-chan aweb.AgentEvent, <-chan error)
+	Stream(ctx context.Context, deadline time.Time) (<-chan awid.AgentEvent, <-chan error)
 }
 
 type CommandRunner func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error

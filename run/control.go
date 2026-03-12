@@ -3,7 +3,7 @@ package run
 import (
 	"strings"
 
-	aweb "github.com/awebai/aw"
+	awid "github.com/awebai/aw/awid"
 )
 
 func ParseControlSubmission(text string) ControlEvent {
@@ -59,15 +59,15 @@ func InputValueFromLine(line string, promptLabel string) string {
 	return line
 }
 
-func ControlEventFromAgentEvent(evt aweb.AgentEvent) (ControlEvent, bool) {
+func ControlEventFromAgentEvent(evt awid.AgentEvent) (ControlEvent, bool) {
 	switch evt.Type {
-	case aweb.AgentEventControlPause:
+	case awid.AgentEventControlPause:
 		return ControlEvent{Type: ControlWait}, true
-	case aweb.AgentEventControlResume:
+	case awid.AgentEventControlResume:
 		return ControlEvent{Type: ControlResume}, true
-	case aweb.AgentEventControlInterrupt:
+	case awid.AgentEventControlInterrupt:
 		return ControlEvent{Type: ControlStop}, true
-	case aweb.AgentEventError:
+	case awid.AgentEventError:
 		return ControlEvent{Type: ControlStreamError, Text: strings.TrimSpace(evt.Text)}, true
 	default:
 		return ControlEvent{}, false

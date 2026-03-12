@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	aweb "github.com/awebai/aw"
+	awid "github.com/awebai/aw/awid"
 )
 
 type Loop struct {
@@ -357,7 +357,7 @@ func (l *Loop) startWakeControlRelay(ctx context.Context) <-chan ControlEvent {
 						return
 					case relay <- control:
 					}
-					if evt.Type == aweb.AgentEventError {
+					if evt.Type == awid.AgentEventError {
 						streamOpen = false
 					}
 				case err, ok := <-errs:
@@ -574,41 +574,41 @@ func (l *Loop) waitForWorkEvents(ctx context.Context, waitSeconds int, st *state
 }
 
 func isUnsupportedWakeStreamError(err error) bool {
-	code, ok := aweb.HTTPStatusCode(err)
+	code, ok := awid.HTTPStatusCode(err)
 	return ok && code == 404
 }
 
-func (l *Loop) shouldWakeForEvent(evt aweb.AgentEvent, st *state) bool {
+func (l *Loop) shouldWakeForEvent(evt awid.AgentEvent, st *state) bool {
 	switch evt.Type {
-	case aweb.AgentEventConnected:
+	case awid.AgentEventConnected:
 		return false
-	case aweb.AgentEventMailMessage, aweb.AgentEventChatMessage:
+	case awid.AgentEventMailMessage, awid.AgentEventChatMessage:
 		return true
-	case aweb.AgentEventWorkAvailable, aweb.AgentEventClaimUpdate, aweb.AgentEventClaimRemoved:
+	case awid.AgentEventWorkAvailable, awid.AgentEventClaimUpdate, awid.AgentEventClaimRemoved:
 		return st != nil && st.Autofeed
-	case aweb.AgentEventControlPause, aweb.AgentEventControlResume, aweb.AgentEventControlInterrupt:
+	case awid.AgentEventControlPause, awid.AgentEventControlResume, awid.AgentEventControlInterrupt:
 		return true
-	case aweb.AgentEventError:
+	case awid.AgentEventError:
 		return true
 	default:
 		return false
 	}
 }
 
-func (l *Loop) handleImmediateWakeEvent(ctx context.Context, evt aweb.AgentEvent, st *state) bool {
+func (l *Loop) handleImmediateWakeEvent(ctx context.Context, evt awid.AgentEvent, st *state) bool {
 	switch evt.Type {
-	case aweb.AgentEventControlPause, aweb.AgentEventControlInterrupt:
+	case awid.AgentEventControlPause, awid.AgentEventControlInterrupt:
 		st.Paused = true
 		st.PauseAfterRun = false
 		st.PauseNoticeShown = true
 		l.println(pausedNoticeText)
 		_ = l.waitWhilePaused(ctx, st)
 		return true
-	case aweb.AgentEventControlResume:
+	case awid.AgentEventControlResume:
 		st.Paused = false
 		st.PauseNoticeShown = false
 		return true
-	case aweb.AgentEventError:
+	case awid.AgentEventError:
 		if text := strings.TrimSpace(evt.Text); text != "" {
 			l.printf("info: event stream error: %s\n", text)
 		} else {

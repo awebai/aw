@@ -12,6 +12,7 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
 	"github.com/spf13/cobra"
 )
@@ -98,10 +99,10 @@ func runRegister(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	did := aweb.ComputeDIDKey(pub)
+	did := awid.ComputeDIDKey(pub)
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
-	req := &aweb.RegisterRequest{
+	req := &awid.RegisterRequest{
 		Email:     email,
 		Username:  &username,
 		Handle:    &username,
@@ -109,8 +110,8 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		HumanName: strings.TrimSpace(registerHumanName),
 		DID:       did,
 		PublicKey: pubKeyB64,
-		Custody:   aweb.CustodySelf,
-		Lifetime:  aweb.LifetimePersistent,
+		Custody:   awid.CustodySelf,
+		Lifetime:  awid.LifetimePersistent,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -124,11 +125,11 @@ func runRegister(cmd *cobra.Command, args []string) error {
 	resp, err := client.Register(ctx, req)
 	if err != nil {
 		// Check for existing-account 409 before other error handling.
-		if existing := aweb.ParseExistingAccount(err); existing != nil {
+		if existing := awid.ParseExistingAccount(err); existing != nil {
 			return handleExistingAccount(ctx, client, existing, baseURL, serverName, email, alias, pub, priv, did)
 		}
 
-		code, isHTTP := aweb.HTTPStatusCode(err)
+		code, isHTTP := awid.HTTPStatusCode(err)
 		if !isHTTP {
 			return err
 		}
@@ -136,7 +137,7 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		case 404:
 			return fmt.Errorf("this server does not support CLI registration; visit %s to create an account", serverURL)
 		case 409:
-			body, _ := aweb.HTTPErrorBody(err)
+			body, _ := awid.HTTPErrorBody(err)
 			return formatConflictError(body)
 		case 429:
 			return fmt.Errorf("rate limited; please try again later")
@@ -159,7 +160,7 @@ func runRegister(cmd *cobra.Command, args []string) error {
 // saveNewRegistration persists credentials from a successful new-user registration.
 func saveNewRegistration(
 	ctx context.Context,
-	resp *aweb.RegisterResponse,
+	resp *awid.RegisterResponse,
 	baseURL, serverName, email, username, alias string,
 	pub, priv []byte,
 	did string,
@@ -192,7 +193,7 @@ func saveNewRegistration(
 
 	stableID := strings.TrimSpace(resp.StableID)
 	if stableID == "" {
-		stableID = aweb.ComputeStableID(ed25519.PublicKey(pub))
+		stableID = awid.ComputeStableID(ed25519.PublicKey(pub))
 	}
 
 	if registerSaveConfig {
@@ -264,7 +265,7 @@ func saveNewRegistration(
 			if line != "" {
 				vctx, vcancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer vcancel()
-				vresp, verr := client.VerifyCode(vctx, &aweb.VerifyCodeRequest{
+				vresp, verr := client.VerifyCode(vctx, &awid.VerifyCodeRequest{
 					Email: email,
 					Code:  line,
 				})
@@ -284,7 +285,7 @@ func saveNewRegistration(
 	return nil
 }
 
-func printRegisterSummary(resp *aweb.RegisterResponse, accountName, serverName string, attachResult *contextAttachResult) {
+func printRegisterSummary(resp *awid.RegisterResponse, accountName, serverName string, attachResult *contextAttachResult) {
 	if resp == nil {
 		return
 	}
@@ -321,7 +322,7 @@ func runRegisterWithCode(baseURL, serverName, email, username, alias, code strin
 	if err != nil {
 		return err
 	}
-	did := aweb.ComputeDIDKey(pub)
+	did := awid.ComputeDIDKey(pub)
 
 	client, err := aweb.New(baseURL)
 	if err != nil {
@@ -343,7 +344,7 @@ func runRegisterWithCode(baseURL, serverName, email, username, alias, code strin
 func handleExistingAccount(
 	_ context.Context,
 	client *aweb.Client,
-	existing *aweb.ExistingAccountInfo,
+	existing *awid.ExistingAccountInfo,
 	baseURL, serverName, email, alias string,
 	pub, priv []byte,
 	did string,
@@ -412,19 +413,19 @@ func verifyAndBootstrap(
 	pub, priv []byte,
 	did string,
 	handlePtr *string,
-	knownNamespaces []aweb.Namespace,
+	knownNamespaces []awid.Namespace,
 ) error {
 	vctx, vcancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer vcancel()
 
-	vresp, verr := client.VerifyCode(vctx, &aweb.VerifyCodeRequest{
+	vresp, verr := client.VerifyCode(vctx, &awid.VerifyCodeRequest{
 		Email:         email,
 		Code:          code,
 		Alias:         alias,
 		NamespaceSlug: nsSlug,
 	})
 	if verr != nil {
-		vcode, ok := aweb.HTTPStatusCode(verr)
+		vcode, ok := awid.HTTPStatusCode(verr)
 		if ok && vcode == 403 {
 			msg := fmt.Sprintf("you don't have access to namespace %q", nsSlug)
 			if len(knownNamespaces) > 0 {
@@ -437,7 +438,7 @@ func verifyAndBootstrap(
 			return usageError("%s", msg)
 		}
 		if ok && vcode == 400 {
-			body, _ := aweb.HTTPErrorBody(verr)
+			body, _ := awid.HTTPErrorBody(verr)
 			return formatVerifyError(body)
 		}
 		return verr
@@ -479,19 +480,19 @@ func verifyAndBootstrap(
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 	claimCtx, claimCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer claimCancel()
-	claimResp, claimErr := authClient.ClaimIdentity(claimCtx, &aweb.ClaimIdentityRequest{
+	claimResp, claimErr := authClient.ClaimIdentity(claimCtx, &awid.ClaimIdentityRequest{
 		DID:       did,
 		PublicKey: pubKeyB64,
-		Custody:   aweb.CustodySelf,
-		Lifetime:  aweb.LifetimePersistent,
+		Custody:   awid.CustodySelf,
+		Lifetime:  awid.LifetimePersistent,
 	})
 	signingKeyPath := awconfig.SigningKeyPath(keysDir, address)
-	custody := aweb.CustodySelf
-	lifetime := aweb.LifetimePersistent
+	custody := awid.CustodySelf
+	lifetime := awid.LifetimePersistent
 	stableID := strings.TrimSpace(vresp.StableID)
 	recovered := false
 	if claimErr != nil {
-		claimCode, ok := aweb.HTTPStatusCode(claimErr)
+		claimCode, ok := awid.HTTPStatusCode(claimErr)
 		if ok && claimCode == 409 {
 			var recoveredCustody, recoveredLifetime, recoveredStableID string
 			var recoveryErr error
@@ -526,7 +527,7 @@ func verifyAndBootstrap(
 	}
 
 	if stableID == "" {
-		stableID = aweb.ComputeStableID(ed25519.PublicKey(pub))
+		stableID = awid.ComputeStableID(ed25519.PublicKey(pub))
 	}
 
 	if registerSaveConfig {
@@ -592,7 +593,7 @@ func verifyAndBootstrap(
 }
 
 // promptNamespaceChoice displays a numbered list and prompts for selection.
-func promptNamespaceChoice(namespaces []aweb.Namespace) (string, error) {
+func promptNamespaceChoice(namespaces []awid.Namespace) (string, error) {
 	fmt.Fprintln(os.Stderr, "Available namespaces:")
 	for i, ns := range namespaces {
 		fmt.Fprintf(os.Stderr, "  [%d] %s (%s)\n", i+1, ns.Slug, ns.Tier)

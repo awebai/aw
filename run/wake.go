@@ -6,11 +6,11 @@ import (
 	"io"
 	"time"
 
-	aweb "github.com/awebai/aw"
+	awid "github.com/awebai/aw/awid"
 )
 
 type AgentEventSource interface {
-	Next() (*aweb.AgentEvent, error)
+	Next() (*awid.AgentEvent, error)
 	Close() error
 }
 
@@ -23,7 +23,7 @@ type ClientWakeStream struct {
 	MaxRetryDelay time.Duration
 }
 
-func NewClientWakeStream(client *aweb.Client) *ClientWakeStream {
+func NewClientWakeStream(client *awid.Client) *ClientWakeStream {
 	return &ClientWakeStream{
 		Open: func(ctx context.Context, deadline time.Time) (AgentEventSource, error) {
 			return client.EventStream(ctx, deadline)
@@ -31,8 +31,8 @@ func NewClientWakeStream(client *aweb.Client) *ClientWakeStream {
 	}
 }
 
-func (s *ClientWakeStream) Stream(ctx context.Context, deadline time.Time) (<-chan aweb.AgentEvent, <-chan error) {
-	events := make(chan aweb.AgentEvent, 32)
+func (s *ClientWakeStream) Stream(ctx context.Context, deadline time.Time) (<-chan awid.AgentEvent, <-chan error) {
+	events := make(chan awid.AgentEvent, 32)
 	errs := make(chan error, 1)
 
 	go func() {
@@ -50,7 +50,7 @@ var errStreamClosedEarly = errors.New("aweb: event stream closed before deadline
 
 const deadlineGrace = 100 * time.Millisecond
 
-func (s *ClientWakeStream) stream(ctx context.Context, deadline time.Time, events chan<- aweb.AgentEvent) error {
+func (s *ClientWakeStream) stream(ctx context.Context, deadline time.Time, events chan<- awid.AgentEvent) error {
 	if s == nil || s.Open == nil {
 		return errors.New("aweb/run: wake stream opener is nil")
 	}
@@ -77,7 +77,7 @@ func (s *ClientWakeStream) stream(ctx context.Context, deadline time.Time, event
 
 		stream, err := s.Open(ctx, deadline)
 		if err != nil {
-			if code, ok := aweb.HTTPStatusCode(err); ok && code >= 400 && code < 500 {
+			if code, ok := awid.HTTPStatusCode(err); ok && code >= 400 && code < 500 {
 				return err
 			}
 			if !sleepForRetry(ctx, nowFn, deadline, delay) {
@@ -114,7 +114,7 @@ func (s *ClientWakeStream) stream(ctx context.Context, deadline time.Time, event
 	}
 }
 
-func (s *ClientWakeStream) forwardEvents(ctx context.Context, nowFn func() time.Time, deadline time.Time, stream AgentEventSource, events chan<- aweb.AgentEvent) error {
+func (s *ClientWakeStream) forwardEvents(ctx context.Context, nowFn func() time.Time, deadline time.Time, stream AgentEventSource, events chan<- awid.AgentEvent) error {
 	for {
 		ev, err := stream.Next()
 		if err != nil {

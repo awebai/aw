@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	aweb "github.com/awebai/aw"
+	awid "github.com/awebai/aw/awid"
 )
 
 func TestClientWakeStreamRetriesEarlyEOF(t *testing.T) {
@@ -33,7 +33,7 @@ func TestClientWakeStreamRetriesEarlyEOF(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client, err := aweb.New(server.URL)
+	client, err := awid.New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestClientWakeStreamRetriesEarlyEOF(t *testing.T) {
 			if !ok {
 				continue
 			}
-			if evt.Type != aweb.AgentEventChatMessage || evt.FromAlias != "mia" {
+			if evt.Type != awid.AgentEventChatMessage || evt.FromAlias != "mia" {
 				t.Fatalf("unexpected event: %#v", evt)
 			}
 			cancel()
@@ -86,7 +86,7 @@ func TestClientWakeStreamRetriesTransientOpenError(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client, err := aweb.New(server.URL)
+	client, err := awid.New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestClientWakeStreamRetriesTransientOpenError(t *testing.T) {
 			if !ok {
 				continue
 			}
-			if evt.Type != aweb.AgentEventConnected || evt.AgentID != "a1" {
+			if evt.Type != awid.AgentEventConnected || evt.AgentID != "a1" {
 				t.Fatalf("unexpected event: %#v", evt)
 			}
 			cancel()
@@ -132,7 +132,7 @@ func TestClientWakeStreamFailsFastOnClientError(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client, err := aweb.NewWithAPIKey(server.URL, "aw_sk_test")
+	client, err := awid.NewWithAPIKey(server.URL, "aw_sk_test")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
@@ -44,7 +44,7 @@ var publishCmd = &cobra.Command{
 			}
 		}
 
-		resp, err := c.NetworkPublishAgent(ctx, &aweb.NetworkPublishRequest{
+		resp, err := c.NetworkPublishAgent(ctx, &awid.NetworkPublishRequest{
 			AgentID:      agentID,
 			Capabilities: caps,
 			Description:  publishDescription,
@@ -115,7 +115,7 @@ var directoryCmd = &cobra.Command{
 		}
 
 		if len(args) == 1 {
-			addr := aweb.ParseNetworkAddress(args[0])
+			addr := awid.ParseNetworkAddress(args[0])
 			if !addr.IsNetwork {
 				return usageError("Directory lookup requires org-slug/alias format, got: %q", args[0])
 			}
@@ -127,7 +127,7 @@ var directoryCmd = &cobra.Command{
 			return nil
 		}
 
-		resp, err := c.NetworkDirectorySearch(ctx, aweb.NetworkDirectoryParams{
+		resp, err := c.NetworkDirectorySearch(ctx, awid.NetworkDirectoryParams{
 			Capability: directoryCapability,
 			OrgSlug:    directoryOrgSlug,
 			Query:      directoryQuery,

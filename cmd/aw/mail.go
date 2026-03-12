@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
@@ -50,7 +50,7 @@ var mailSendCmd = &cobra.Command{
 			if handle == "" {
 				return fmt.Errorf("empty handle: use @username")
 			}
-			resp, err := c.SendDM(ctx, &aweb.DMRequest{
+			resp, err := c.SendDM(ctx, &awid.DMRequest{
 				ToHandle: handle,
 				Subject:  mailSendSubject,
 				Body:     mailSendBody,
@@ -77,9 +77,9 @@ var mailSendCmd = &cobra.Command{
 			return nil
 		}
 
-		addr := aweb.ParseNetworkAddress(mailSendToAlias)
+		addr := awid.ParseNetworkAddress(mailSendToAlias)
 		if addr.IsNetwork {
-			resp, err := c.NetworkSendMail(ctx, &aweb.NetworkMailRequest{
+			resp, err := c.NetworkSendMail(ctx, &awid.NetworkMailRequest{
 				ToAddress: addr.String(),
 				Subject:   mailSendSubject,
 				Body:      mailSendBody,
@@ -110,12 +110,12 @@ var mailSendCmd = &cobra.Command{
 		if target == "" {
 			target = mailSendToAgentID
 		}
-		resp, err := c.SendMessage(ctx, &aweb.SendMessageRequest{
+		resp, err := c.SendMessage(ctx, &awid.SendMessageRequest{
 			ToAgentID: mailSendToAgentID,
 			ToAlias:   mailSendToAlias,
 			Subject:   mailSendSubject,
 			Body:      mailSendBody,
-			Priority:  aweb.MessagePriority(mailSendPriority),
+			Priority:  awid.MessagePriority(mailSendPriority),
 		})
 		if err != nil {
 			return err
@@ -157,7 +157,7 @@ var mailInboxCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		resp, err := c.Inbox(ctx, aweb.InboxParams{
+		resp, err := c.Inbox(ctx, awid.InboxParams{
 			UnreadOnly: mailInboxUnreadOnly,
 			Limit:      mailInboxLimit,
 		})

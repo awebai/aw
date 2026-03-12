@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+
+	"github.com/awebai/aw/awid"
 )
 
 type ReservationAcquireRequest struct {
@@ -42,13 +44,13 @@ func (e *ReservationHeldError) Error() string {
 }
 
 func (c *Client) ReservationAcquire(ctx context.Context, req *ReservationAcquireRequest) (*ReservationAcquireResponse, error) {
-	resp, err := c.doRaw(ctx, http.MethodPost, "/v1/reservations", "application/json", req)
+	resp, err := c.DoRaw(ctx, http.MethodPost, "/v1/reservations", "application/json", req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	limited := io.LimitReader(resp.Body, maxResponseSize)
+	limited := io.LimitReader(resp.Body, awid.MaxResponseSize)
 	data, err := io.ReadAll(limited)
 	if err != nil {
 		return nil, err
@@ -59,10 +61,10 @@ func (c *Client) ReservationAcquire(ctx context.Context, req *ReservationAcquire
 		if err := json.Unmarshal(data, &held); err == nil {
 			return nil, &held
 		}
-		return nil, &apiError{StatusCode: resp.StatusCode, Body: string(data)}
+		return nil, &awid.APIError{StatusCode: resp.StatusCode, Body: string(data)}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &apiError{StatusCode: resp.StatusCode, Body: string(data)}
+		return nil, &awid.APIError{StatusCode: resp.StatusCode, Body: string(data)}
 	}
 
 	var out ReservationAcquireResponse
@@ -85,7 +87,7 @@ type ReservationRenewResponse struct {
 
 func (c *Client) ReservationRenew(ctx context.Context, req *ReservationRenewRequest) (*ReservationRenewResponse, error) {
 	var out ReservationRenewResponse
-	if err := c.post(ctx, "/v1/reservations/renew", req, &out); err != nil {
+	if err := c.Post(ctx, "/v1/reservations/renew", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -102,7 +104,7 @@ type ReservationReleaseResponse struct {
 
 func (c *Client) ReservationRelease(ctx context.Context, req *ReservationReleaseRequest) (*ReservationReleaseResponse, error) {
 	var out ReservationReleaseResponse
-	if err := c.post(ctx, "/v1/reservations/release", req, &out); err != nil {
+	if err := c.Post(ctx, "/v1/reservations/release", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -134,7 +136,7 @@ type ReservationRevokeResponse struct {
 // ReservationRevoke force-releases reservations, optionally filtered by prefix.
 func (c *Client) ReservationRevoke(ctx context.Context, req *ReservationRevokeRequest) (*ReservationRevokeResponse, error) {
 	var out ReservationRevokeResponse
-	if err := c.post(ctx, "/v1/reservations/revoke", req, &out); err != nil {
+	if err := c.Post(ctx, "/v1/reservations/revoke", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -146,7 +148,7 @@ func (c *Client) ReservationList(ctx context.Context, prefix string) (*Reservati
 		path += "?prefix=" + urlQueryEscape(prefix)
 	}
 	var out ReservationListResponse
-	if err := c.get(ctx, path, &out); err != nil {
+	if err := c.Get(ctx, path, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

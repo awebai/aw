@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	aweb "github.com/awebai/aw"
+	awid "github.com/awebai/aw/awid"
 )
 
 //go:embed vectors/*.json
@@ -57,12 +57,12 @@ func TestMessageSigningVectors(t *testing.T) {
 			key := ed25519.NewKeyFromSeed(seed)
 
 			// Verify did:key matches seed.
-			got := aweb.ComputeDIDKey(key.Public().(ed25519.PublicKey))
+			got := awid.ComputeDIDKey(key.Public().(ed25519.PublicKey))
 			if got != v.SigningDIDKey {
 				t.Fatalf("ComputeDIDKey: got %s, want %s", got, v.SigningDIDKey)
 			}
 
-			env := &aweb.MessageEnvelope{
+			env := &awid.MessageEnvelope{
 				From:         v.Message.From,
 				FromDID:      v.Message.FromDID,
 				To:           v.Message.To,
@@ -77,13 +77,13 @@ func TestMessageSigningVectors(t *testing.T) {
 			}
 
 			// Test canonical payload matches expected.
-			canonical := aweb.CanonicalJSON(env)
+			canonical := awid.CanonicalJSON(env)
 			if canonical != v.CanonicalPayload {
 				t.Errorf("CanonicalJSON:\n  got:  %s\n  want: %s", canonical, v.CanonicalPayload)
 			}
 
 			// Test signing produces expected signature.
-			sig, err := aweb.SignMessage(key, env)
+			sig, err := awid.SignMessage(key, env)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -94,12 +94,12 @@ func TestMessageSigningVectors(t *testing.T) {
 			// Test verification succeeds.
 			env.Signature = v.SignatureB64
 			env.SigningKeyID = v.SigningDIDKey
-			status, verifyErr := aweb.VerifyMessage(env)
+			status, verifyErr := awid.VerifyMessage(env)
 			if verifyErr != nil {
 				t.Errorf("VerifyMessage error: %v", verifyErr)
 			}
-			if status != aweb.Verified {
-				t.Errorf("VerifyMessage: got %s, want %s", status, aweb.Verified)
+			if status != awid.Verified {
+				t.Errorf("VerifyMessage: got %s, want %s", status, awid.Verified)
 			}
 		})
 	}
@@ -127,7 +127,7 @@ func TestStableIDVectors(t *testing.T) {
 
 	for _, v := range vectors {
 		t.Run(v.Name, func(t *testing.T) {
-			pub, err := aweb.ExtractPublicKey(v.DIDKey)
+			pub, err := awid.ExtractPublicKey(v.DIDKey)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -137,7 +137,7 @@ func TestStableIDVectors(t *testing.T) {
 				t.Errorf("public key hex: got %s, want %s", hex.EncodeToString(pub), v.PublicKeyHex)
 			}
 
-			gotAW := aweb.ComputeStableID(pub)
+			gotAW := awid.ComputeStableID(pub)
 			if gotAW != v.StableIDAW {
 				t.Errorf("ComputeStableID: got %s, want %s", gotAW, v.StableIDAW)
 			}
@@ -176,19 +176,19 @@ func TestRotationAnnouncementVectors(t *testing.T) {
 	for _, v := range vectors {
 		t.Run(v.Name, func(t *testing.T) {
 			for i, link := range v.Links {
-				oldPub, err := aweb.ExtractPublicKey(link.OldDIDKey)
+				oldPub, err := awid.ExtractPublicKey(link.OldDIDKey)
 				if err != nil {
 					t.Fatalf("link %d: ExtractPublicKey: %v", i, err)
 				}
 
 				// Verify canonical payload matches expected.
-				gotCanonical := aweb.CanonicalRotationJSON(link.OldDIDKey, link.NewDIDKey, link.Timestamp)
+				gotCanonical := awid.CanonicalRotationJSON(link.OldDIDKey, link.NewDIDKey, link.Timestamp)
 				if gotCanonical != link.CanonicalPayload {
 					t.Errorf("link %d: CanonicalRotationJSON:\n  got:  %s\n  want: %s", i, gotCanonical, link.CanonicalPayload)
 				}
 
 				// Verify rotation signature.
-				ok, err := aweb.VerifyRotationSignature(oldPub, link.OldDIDKey, link.NewDIDKey, link.Timestamp, link.SignatureB64)
+				ok, err := awid.VerifyRotationSignature(oldPub, link.OldDIDKey, link.NewDIDKey, link.Timestamp, link.SignatureB64)
 				if err != nil {
 					t.Fatalf("link %d: VerifyRotationSignature: %v", i, err)
 				}
@@ -202,7 +202,7 @@ func TestRotationAnnouncementVectors(t *testing.T) {
 					t.Fatal(err)
 				}
 				key := ed25519.NewKeyFromSeed(seed)
-				sig, err := aweb.SignRotation(key, link.OldDIDKey, link.NewDIDKey, link.Timestamp)
+				sig, err := awid.SignRotation(key, link.OldDIDKey, link.NewDIDKey, link.Timestamp)
 				if err != nil {
 					t.Fatalf("link %d: SignRotation: %v", i, err)
 				}

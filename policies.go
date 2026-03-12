@@ -43,7 +43,7 @@ func (c *Client) ActivePolicy(ctx context.Context, params ActivePolicyParams) (*
 	}
 	path += sep + "only_selected=" + boolString(params.OnlySelected)
 	var out ActivePolicyResponse
-	if err := c.get(ctx, path, &out); err != nil {
+	if err := c.Get(ctx, path, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

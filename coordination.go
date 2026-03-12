@@ -62,7 +62,7 @@ func (c *Client) CoordinationStatus(ctx context.Context, workspaceID string) (*C
 		path += "?workspace_id=" + urlQueryEscape(workspaceID)
 	}
 	var out CoordinationStatusResponse
-	if err := c.get(ctx, path, &out); err != nil {
+	if err := c.Get(ctx, path, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

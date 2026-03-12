@@ -8,6 +8,7 @@ import (
 
 	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/chat"
 	"github.com/spf13/cobra"
 )
@@ -27,53 +28,53 @@ func chatSend(ctx context.Context, toAlias, message string, opts chat.SendOption
 	if err != nil {
 		return nil, nil, err
 	}
-	addr := aweb.ParseNetworkAddress(toAlias)
+	addr := awid.ParseNetworkAddress(toAlias)
 	if addr.IsNetwork {
-		r, err := chat.SendNetwork(ctx, c, sel.AgentAlias, []string{addr.String()}, message, opts, chatStderrCallback)
+		r, err := chat.SendNetwork(ctx, c.Client, sel.AgentAlias, []string{addr.String()}, message, opts, chatStderrCallback)
 		return r, sel, err
 	}
-	r, err := chat.Send(ctx, c, sel.AgentAlias, []string{toAlias}, message, opts, chatStderrCallback)
+	r, err := chat.Send(ctx, c.Client, sel.AgentAlias, []string{toAlias}, message, opts, chatStderrCallback)
 	return r, sel, err
 }
 
 func chatOpen(ctx context.Context, c *aweb.Client, alias string) (*chat.OpenResult, error) {
-	addr := aweb.ParseNetworkAddress(alias)
+	addr := awid.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.OpenNetwork(ctx, c, addr.String())
+		return chat.OpenNetwork(ctx, c.Client, addr.String())
 	}
-	return chat.Open(ctx, c, alias)
+	return chat.Open(ctx, c.Client, alias)
 }
 
 func chatHistory(ctx context.Context, c *aweb.Client, alias string) (*chat.HistoryResult, error) {
-	addr := aweb.ParseNetworkAddress(alias)
+	addr := awid.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.HistoryNetwork(ctx, c, addr.String())
+		return chat.HistoryNetwork(ctx, c.Client, addr.String())
 	}
-	return chat.History(ctx, c, alias)
+	return chat.History(ctx, c.Client, alias)
 }
 
 func chatExtendWait(ctx context.Context, c *aweb.Client, alias, message string) (*chat.ExtendWaitResult, error) {
-	addr := aweb.ParseNetworkAddress(alias)
+	addr := awid.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.ExtendWaitNetwork(ctx, c, addr.String(), message)
+		return chat.ExtendWaitNetwork(ctx, c.Client, addr.String(), message)
 	}
-	return chat.ExtendWait(ctx, c, alias, message)
+	return chat.ExtendWait(ctx, c.Client, alias, message)
 }
 
 func chatListen(ctx context.Context, c *aweb.Client, alias string, waitSeconds int) (*chat.SendResult, error) {
-	addr := aweb.ParseNetworkAddress(alias)
+	addr := awid.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.ListenNetwork(ctx, c, addr.String(), waitSeconds, chatStderrCallback)
+		return chat.ListenNetwork(ctx, c.Client, addr.String(), waitSeconds, chatStderrCallback)
 	}
-	return chat.Listen(ctx, c, alias, waitSeconds, chatStderrCallback)
+	return chat.Listen(ctx, c.Client, alias, waitSeconds, chatStderrCallback)
 }
 
 func chatShowPending(ctx context.Context, c *aweb.Client, alias string) (*chat.SendResult, error) {
-	addr := aweb.ParseNetworkAddress(alias)
+	addr := awid.ParseNetworkAddress(alias)
 	if addr.IsNetwork {
-		return chat.ShowPendingNetwork(ctx, c, addr.String())
+		return chat.ShowPendingNetwork(ctx, c.Client, addr.String())
 	}
-	return chat.ShowPending(ctx, c, alias)
+	return chat.ShowPending(ctx, c.Client, alias)
 }
 
 // logChatEvent logs a single chat event to the communication log.
@@ -203,7 +204,7 @@ var chatPendingCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		result, err := chat.Pending(ctx, c)
+		result, err := chat.Pending(ctx, c.Client)
 		if err != nil {
 			return err
 		}

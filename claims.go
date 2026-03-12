@@ -28,7 +28,7 @@ func (c *Client) ClaimsList(ctx context.Context, workspaceID string, limit int) 
 		path += sep + "limit=" + itoa(limit)
 	}
 	var out ClaimsResponse
-	if err := c.get(ctx, path, &out); err != nil {
+	if err := c.Get(ctx, path, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	aweb "github.com/awebai/aw"
+	awid "github.com/awebai/aw/awid"
 )
 
 type fakeInputController struct {
@@ -27,18 +27,18 @@ func (f *fakeInputController) Events() <-chan ControlEvent { return f.events }
 func (f *fakeInputController) HasPendingInput() bool       { return false }
 
 type fakeWakeStream struct {
-	events chan aweb.AgentEvent
+	events chan awid.AgentEvent
 	errs   chan error
 }
 
 func newFakeWakeStream() *fakeWakeStream {
 	return &fakeWakeStream{
-		events: make(chan aweb.AgentEvent, 32),
+		events: make(chan awid.AgentEvent, 32),
 		errs:   make(chan error, 1),
 	}
 }
 
-func (f *fakeWakeStream) Stream(context.Context, time.Time) (<-chan aweb.AgentEvent, <-chan error) {
+func (f *fakeWakeStream) Stream(context.Context, time.Time) (<-chan awid.AgentEvent, <-chan error) {
 	return f.events, f.errs
 }
 
@@ -159,7 +159,7 @@ func TestLoopWaitForWorkWakesOnChatMessage(t *testing.T) {
 	}()
 
 	time.Sleep(20 * time.Millisecond)
-	stream.events <- aweb.AgentEvent{Type: aweb.AgentEventChatMessage, FromAlias: "mia"}
+	stream.events <- awid.AgentEvent{Type: awid.AgentEventChatMessage, FromAlias: "mia"}
 
 	if err := <-done; err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -179,7 +179,7 @@ func TestLoopWaitForWorkWakesOnEventStreamError(t *testing.T) {
 	}()
 
 	time.Sleep(20 * time.Millisecond)
-	stream.events <- aweb.AgentEvent{Type: aweb.AgentEventError, Text: "wake failed"}
+	stream.events <- awid.AgentEvent{Type: awid.AgentEventError, Text: "wake failed"}
 
 	if err := <-done; err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -195,7 +195,7 @@ func TestStartWakeControlRelayRelaysEventStreamError(t *testing.T) {
 	loop.WakeStream = stream
 	relay := loop.startWakeControlRelay(context.Background())
 
-	stream.events <- aweb.AgentEvent{Type: aweb.AgentEventError, Text: "stream broke"}
+	stream.events <- awid.AgentEvent{Type: awid.AgentEventError, Text: "stream broke"}
 
 	select {
 	case event := <-relay:
@@ -535,7 +535,7 @@ func TestLoopFallsBackToTimedCyclesWhenWakeStreamUnavailable(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client, err := aweb.New(server.URL)
+	client, err := awid.New(server.URL)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}

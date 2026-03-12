@@ -93,7 +93,7 @@ type WorkspaceTeamParams struct {
 
 func (c *Client) WorkspaceRegister(ctx context.Context, req *WorkspaceRegisterRequest) (*WorkspaceRegisterResponse, error) {
 	var out WorkspaceRegisterResponse
-	if err := c.post(ctx, "/v1/workspaces/register", req, &out); err != nil {
+	if err := c.Post(ctx, "/v1/workspaces/register", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -101,7 +101,7 @@ func (c *Client) WorkspaceRegister(ctx context.Context, req *WorkspaceRegisterRe
 
 func (c *Client) WorkspaceAttach(ctx context.Context, req *WorkspaceAttachRequest) (*WorkspaceAttachResponse, error) {
 	var out WorkspaceAttachResponse
-	if err := c.post(ctx, "/v1/workspaces/attach", req, &out); err != nil {
+	if err := c.Post(ctx, "/v1/workspaces/attach", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -129,7 +129,7 @@ func (c *Client) WorkspaceTeam(ctx context.Context, params WorkspaceTeamParams) 
 		path += "&limit=" + itoa(params.Limit)
 	}
 	var out WorkspaceListResponse
-	if err := c.get(ctx, path, &out); err != nil {
+	if err := c.Get(ctx, path, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

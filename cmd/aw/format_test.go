@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/chat"
 )
 
@@ -21,13 +21,13 @@ func TestFormatChatSendUsesReplyMessageTagsNotReadReceipt(t *testing.T) {
 			{
 				Type:               "read_receipt",
 				ReaderAlias:        "merlin",
-				VerificationStatus: aweb.Unverified,
+				VerificationStatus: awid.Unverified,
 			},
 			{
 				Type:               "message",
 				FromAgent:          "juan/merlin",
 				Body:               "hello",
-				VerificationStatus: aweb.Failed,
+				VerificationStatus: awid.Failed,
 			},
 		},
 	}

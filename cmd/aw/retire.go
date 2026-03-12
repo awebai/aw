@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
@@ -48,7 +48,7 @@ func runAgentRetire(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	// Resolve successor to get their DID, address, and agent_id.
-	resolver := &aweb.ServerResolver{Client: c}
+	resolver := &awid.ServerResolver{Client: c.Client}
 	successorIdentity, err := resolver.Resolve(ctx, retireSuccessor)
 	if err != nil {
 		return fmt.Errorf("resolve successor %q: %w", retireSuccessor, err)
@@ -60,7 +60,7 @@ func runAgentRetire(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("successor %q has no DID", retireSuccessor)
 	}
 
-	resp, err := c.RetireAgent(ctx, &aweb.RetireAgentRequest{
+	resp, err := c.RetireAgent(ctx, &awid.RetireAgentRequest{
 		SuccessorAgentID: successorIdentity.AgentID,
 		SuccessorDID:     successorIdentity.DID,
 		SuccessorAddress: successorIdentity.Address,

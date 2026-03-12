@@ -15,6 +15,7 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
 	"github.com/joho/godotenv"
 )
@@ -79,7 +80,7 @@ func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Se
 		if sel.StableID != "" {
 			c.SetStableID(sel.StableID)
 		}
-		c.SetResolver(&aweb.ServerResolver{Client: c})
+		c.SetResolver(&awid.ServerResolver{Client: c.Client})
 
 		// Load TOFU pin store for sender identity verification.
 		cfgPath, err := defaultGlobalPath()
@@ -87,10 +88,10 @@ func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Se
 			return nil, nil, err
 		}
 		pinPath := filepath.Join(filepath.Dir(cfgPath), "known_agents.yaml")
-		ps, err := aweb.LoadPinStore(pinPath)
+		ps, err := awid.LoadPinStore(pinPath)
 		if err != nil {
 			debugLog("load pin store: %v", err)
-			ps = aweb.NewPinStore()
+			ps = awid.NewPinStore()
 		}
 		c.SetPinStore(ps, pinPath)
 	} else {
@@ -258,7 +259,7 @@ func configureBaseURLFallback(c *aweb.Client, sel *awconfig.Selection, baseURL s
 		},
 	}
 	c.SetHTTPClient(&http.Client{
-		Timeout: aweb.DefaultTimeout,
+		Timeout: awid.DefaultTimeout,
 		Transport: &baseURLFallbackTransport{
 			base:  http.DefaultTransport,
 			state: state,
@@ -741,11 +742,11 @@ func ttlRemainingSeconds(expiresAt string, now time.Time) int {
 // checkVerificationRequired detects EMAIL_VERIFICATION_REQUIRED 403 errors
 // and returns a user-friendly message. Returns "" for non-matching errors.
 func checkVerificationRequired(err error) string {
-	statusCode, ok := aweb.HTTPStatusCode(err)
+	statusCode, ok := awid.HTTPStatusCode(err)
 	if !ok || statusCode != 403 {
 		return ""
 	}
-	body, ok := aweb.HTTPErrorBody(err)
+	body, ok := awid.HTTPErrorBody(err)
 	if !ok {
 		return ""
 	}
@@ -773,7 +774,7 @@ func checkVerificationRequired(err error) string {
 // is "aweb: http 404: ..." which looks like a broken endpoint. This rewrites it
 // to mention the target address.
 func networkError(err error, target string) error {
-	code, ok := aweb.HTTPStatusCode(err)
+	code, ok := awid.HTTPStatusCode(err)
 	if ok && code == 404 {
 		return fmt.Errorf("agent not found: %s", target)
 	}

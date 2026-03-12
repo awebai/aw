@@ -12,7 +12,7 @@ type ProjectResponse struct {
 // GetCurrentProject returns the project associated with the current auth context.
 func (c *Client) GetCurrentProject(ctx context.Context) (*ProjectResponse, error) {
 	var out ProjectResponse
-	if err := c.get(ctx, "/v1/projects/current", &out); err != nil {
+	if err := c.Get(ctx, "/v1/projects/current", &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

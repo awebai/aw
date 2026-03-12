@@ -6,19 +6,20 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
 	"github.com/spf13/cobra"
 )
 
 // agentsListOutput wraps the server response with local config fields for display.
 type agentsListOutput struct {
-	*aweb.ListAgentsResponse
+	*awid.ListAgentsResponse
 	NamespaceSlug string `json:"namespace_slug,omitempty"`
 }
 
 // agentPatchOutput wraps the server response with the agent's alias for display.
 type agentPatchOutput struct {
-	*aweb.PatchAgentResponse
+	*awid.PatchAgentResponse
 	Alias string `json:"alias,omitempty"`
 }
 
@@ -108,7 +109,7 @@ var agentAccessModeCmd = &cobra.Command{
 			return fmt.Errorf("invalid access mode: %s (must be \"open\" or \"contacts_only\")", mode)
 		}
 
-		resp, err := client.PatchAgent(ctx, agentID, &aweb.PatchAgentRequest{
+		resp, err := client.PatchAgent(ctx, agentID, &awid.PatchAgentRequest{
 			AccessMode: mode,
 		})
 		if err != nil {
@@ -162,7 +163,7 @@ var agentPrivacyCmd = &cobra.Command{
 			return fmt.Errorf("invalid privacy: %s (must be \"public\" or \"private\")", privacy)
 		}
 
-		resp, err := client.PatchAgent(ctx, agentID, &aweb.PatchAgentRequest{
+		resp, err := client.PatchAgent(ctx, agentID, &awid.PatchAgentRequest{
 			Privacy: privacy,
 		})
 		if err != nil {

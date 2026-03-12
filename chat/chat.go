@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	aweb "github.com/awebai/aw"
+	awid "github.com/awebai/aw/awid"
 )
 
 const DefaultWait = 120 // Default wait timeout in seconds for replies
@@ -27,7 +27,7 @@ const MaxSendTimeout = 16 * time.Minute
 
 // sseResult wraps an SSE event or error for channel-based processing.
 type sseResult struct {
-	event *aweb.SSEEvent
+	event *awid.SSEEvent
 	err   error
 }
 
@@ -35,7 +35,7 @@ type sseResult struct {
 // Returns the event channel and a cleanup function. The cleanup function closes the
 // stream, signals the goroutine to stop, and blocks until it has exited.
 // The caller must call cleanup to avoid goroutine leaks.
-func streamToChannel(ctx context.Context, stream *aweb.SSEStream) (<-chan sseResult, func()) {
+func streamToChannel(ctx context.Context, stream *awid.SSEStream) (<-chan sseResult, func()) {
 	ch := make(chan sseResult, 10)
 	stopCtx, stopCancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -67,7 +67,7 @@ func streamToChannel(ctx context.Context, stream *aweb.SSEStream) (<-chan sseRes
 }
 
 // parseSSEEvent converts an SSE event to a chat Event.
-func parseSSEEvent(sseEvent *aweb.SSEEvent) Event {
+func parseSSEEvent(sseEvent *awid.SSEEvent) Event {
 	ev := Event{
 		Type: sseEvent.Event,
 	}
@@ -146,7 +146,7 @@ func parseSSEEvent(sseEvent *aweb.SSEEvent) Event {
 		ev.IsContact = &v
 	}
 	if raData, ok := data["rotation_announcement"].(map[string]any); ok {
-		ev.RotationAnnouncement = &aweb.RotationAnnouncement{}
+		ev.RotationAnnouncement = &awid.RotationAnnouncement{}
 		if v, ok := raData["old_did"].(string); ok {
 			ev.RotationAnnouncement.OldDID = v
 		}
@@ -166,7 +166,7 @@ func parseSSEEvent(sseEvent *aweb.SSEEvent) Event {
 	if ev.FromAddress != "" {
 		from = ev.FromAddress
 	}
-	env := &aweb.MessageEnvelope{
+	env := &awid.MessageEnvelope{
 		From:         from,
 		FromDID:      ev.FromDID,
 		To:           ev.ToAddress,
@@ -181,14 +181,14 @@ func parseSSEEvent(sseEvent *aweb.SSEEvent) Event {
 		SigningKeyID: ev.SigningKeyID,
 	}
 	// Error is encoded in VerificationStatus; discard it.
-	ev.VerificationStatus, _ = aweb.VerifyMessage(env)
+	ev.VerificationStatus, _ = awid.VerifyMessage(env)
 
 	return ev
 }
 
 // findSession finds the session ID for a conversation with targetAlias.
 // Checks pending first (captures sender_waiting), falls back to listing sessions.
-func findSession(ctx context.Context, client *aweb.Client, targetAlias string) (sessionID string, senderWaiting bool, err error) {
+func findSession(ctx context.Context, client *awid.Client, targetAlias string) (sessionID string, senderWaiting bool, err error) {
 	pendingResp, err := client.ChatPending(ctx)
 	if err != nil {
 		return "", false, fmt.Errorf("getting pending chats: %w", err)
@@ -240,7 +240,7 @@ func findSession(ctx context.Context, client *aweb.Client, targetAlias string) (
 
 // findNetworkSession finds the session ID for a network conversation with targetAddress.
 // Checks network pending conversations. No fallback to list-sessions (endpoint not available for network).
-func findNetworkSession(ctx context.Context, client *aweb.Client, targetAddress string) (sessionID string, senderWaiting bool, err error) {
+func findNetworkSession(ctx context.Context, client *awid.Client, targetAddress string) (sessionID string, senderWaiting bool, err error) {
 	pendingResp, err := client.NetworkChatPending(ctx)
 	if err != nil {
 		return "", false, fmt.Errorf("getting network pending chats: %w", err)
@@ -269,7 +269,7 @@ func findNetworkSession(ctx context.Context, client *aweb.Client, targetAddress 
 }
 
 // buildMessages converts ChatMessage slice to Event slice.
-func buildMessages(messages []aweb.ChatMessage) []Event {
+func buildMessages(messages []awid.ChatMessage) []Event {
 	events := make([]Event, len(messages))
 	for i, m := range messages {
 		events[i] = Event{
@@ -297,7 +297,7 @@ func buildMessages(messages []aweb.ChatMessage) []Event {
 
 // streamOpener opens an SSE stream for a chat session.
 // after controls replay: non-nil replays messages after that timestamp; nil skips replay.
-type streamOpener func(ctx context.Context, sessionID string, deadline time.Time, after *time.Time) (*aweb.SSEStream, error)
+type streamOpener func(ctx context.Context, sessionID string, deadline time.Time, after *time.Time) (*awid.SSEStream, error)
 
 // messageAcceptor decides how to handle a received message event during the wait loop.
 //
@@ -309,7 +309,7 @@ type messageAcceptor func(ev Event) (accept, skip bool)
 // waitForMessage opens an SSE stream and waits for a message matching the acceptor.
 // Handles read receipts, extend-wait messages, and wait extensions.
 // after controls SSE replay: non-nil replays messages after that timestamp; nil skips replay.
-func waitForMessage(ctx context.Context, client *aweb.Client, openStream streamOpener, sessionID string, waitSeconds int, after *time.Time, callback StatusCallback, accept messageAcceptor) (*SendResult, error) {
+func waitForMessage(ctx context.Context, client *awid.Client, openStream streamOpener, sessionID string, waitSeconds int, after *time.Time, callback StatusCallback, accept messageAcceptor) (*SendResult, error) {
 	result := &SendResult{
 		SessionID: sessionID,
 		Status:    "timeout",
@@ -450,9 +450,9 @@ type sendResponse struct {
 //   - opts.Wait == 0: send, return immediately
 //   - opts.StartConversation: ignore targets_left, use 5min wait unless WaitExplicit
 //   - default: send, if all targets in targets_left → skip wait; else wait opts.Wait seconds
-func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []string, message string, opts SendOptions, callback StatusCallback) (*SendResult, error) {
+func Send(ctx context.Context, client *awid.Client, myAlias string, targets []string, message string, opts SendOptions, callback StatusCallback) (*SendResult, error) {
 	sentAt := time.Now()
-	createResp, err := client.ChatCreateSession(ctx, &aweb.ChatCreateSessionRequest{
+	createResp, err := client.ChatCreateSession(ctx, &awid.ChatCreateSessionRequest{
 		ToAliases: targets,
 		Message:   message,
 		Leaving:   opts.Leaving,
@@ -471,9 +471,9 @@ func Send(ctx context.Context, client *aweb.Client, myAlias string, targets []st
 
 // SendNetwork sends a message via the network (cross-org) endpoint and optionally waits for a reply.
 // Uses the same wait semantics as Send but routes through /v1/network/chat.
-func SendNetwork(ctx context.Context, client *aweb.Client, myAlias string, targets []string, message string, opts SendOptions, callback StatusCallback) (*SendResult, error) {
+func SendNetwork(ctx context.Context, client *awid.Client, myAlias string, targets []string, message string, opts SendOptions, callback StatusCallback) (*SendResult, error) {
 	sentAt := time.Now()
-	createResp, err := client.NetworkCreateChat(ctx, &aweb.NetworkChatCreateRequest{
+	createResp, err := client.NetworkCreateChat(ctx, &awid.NetworkChatCreateRequest{
 		ToAddresses: targets,
 		Message:     message,
 		Leaving:     opts.Leaving,
@@ -491,7 +491,7 @@ func SendNetwork(ctx context.Context, client *aweb.Client, myAlias string, targe
 }
 
 // sendCommon handles the post-send wait logic shared by Send and SendNetwork.
-func sendCommon(ctx context.Context, client *aweb.Client, openStream streamOpener, resp sendResponse, myAlias string, targets []string, message string, opts SendOptions, after *time.Time, callback StatusCallback) (*SendResult, error) {
+func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpener, resp sendResponse, myAlias string, targets []string, message string, opts SendOptions, after *time.Time, callback StatusCallback) (*SendResult, error) {
 	result := &SendResult{
 		SessionID:   resp.SessionID,
 		Status:      "sent",
@@ -589,7 +589,7 @@ func sendCommon(ctx context.Context, client *aweb.Client, openStream streamOpene
 
 // Listen waits for a message in an existing conversation without sending.
 // Returns on any message in the session (not filtered by sender).
-func Listen(ctx context.Context, client *aweb.Client, targetAlias string, waitSeconds int, callback StatusCallback) (*SendResult, error) {
+func Listen(ctx context.Context, client *awid.Client, targetAlias string, waitSeconds int, callback StatusCallback) (*SendResult, error) {
 	sessionID, _, err := findSession(ctx, client, targetAlias)
 	if err != nil {
 		return nil, err
@@ -607,13 +607,13 @@ func Listen(ctx context.Context, client *aweb.Client, targetAlias string, waitSe
 }
 
 // Open fetches unread messages for a conversation and marks them as read.
-func Open(ctx context.Context, client *aweb.Client, targetAlias string) (*OpenResult, error) {
+func Open(ctx context.Context, client *awid.Client, targetAlias string) (*OpenResult, error) {
 	sessionID, senderWaiting, err := findSession(ctx, client, targetAlias)
 	if err != nil {
 		return nil, err
 	}
 
-	messagesResp, err := client.ChatHistory(ctx, aweb.ChatHistoryParams{
+	messagesResp, err := client.ChatHistory(ctx, awid.ChatHistoryParams{
 		SessionID:  sessionID,
 		UnreadOnly: true,
 		Limit:      1000,
@@ -635,7 +635,7 @@ func Open(ctx context.Context, client *aweb.Client, targetAlias string) (*OpenRe
 	}
 
 	lastMessageID := messagesResp.Messages[len(messagesResp.Messages)-1].MessageID
-	_, err = client.ChatMarkRead(ctx, sessionID, &aweb.ChatMarkReadRequest{
+	_, err = client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
 		UpToMessageID: lastMessageID,
 	})
 	if err == nil {
@@ -646,13 +646,13 @@ func Open(ctx context.Context, client *aweb.Client, targetAlias string) (*OpenRe
 }
 
 // History fetches all messages in a conversation.
-func History(ctx context.Context, client *aweb.Client, targetAlias string) (*HistoryResult, error) {
+func History(ctx context.Context, client *awid.Client, targetAlias string) (*HistoryResult, error) {
 	sessionID, _, err := findSession(ctx, client, targetAlias)
 	if err != nil {
 		return nil, err
 	}
 
-	messagesResp, err := client.ChatHistory(ctx, aweb.ChatHistoryParams{
+	messagesResp, err := client.ChatHistory(ctx, awid.ChatHistoryParams{
 		SessionID: sessionID,
 		Limit:     1000,
 	})
@@ -667,7 +667,7 @@ func History(ctx context.Context, client *aweb.Client, targetAlias string) (*His
 }
 
 // Pending lists conversations with unread messages (both local and network).
-func Pending(ctx context.Context, client *aweb.Client) (*PendingResult, error) {
+func Pending(ctx context.Context, client *awid.Client) (*PendingResult, error) {
 	resp, err := client.ChatPending(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("getting pending chats: %w", err)
@@ -725,13 +725,13 @@ func Pending(ctx context.Context, client *aweb.Client) (*PendingResult, error) {
 }
 
 // ExtendWait sends an extend-wait message requesting more time to reply.
-func ExtendWait(ctx context.Context, client *aweb.Client, targetAlias string, message string) (*ExtendWaitResult, error) {
+func ExtendWait(ctx context.Context, client *awid.Client, targetAlias string, message string) (*ExtendWaitResult, error) {
 	sessionID, _, err := findSession(ctx, client, targetAlias)
 	if err != nil {
 		return nil, err
 	}
 
-	msgResp, err := client.ChatSendMessage(ctx, sessionID, &aweb.ChatSendMessageRequest{
+	msgResp, err := client.ChatSendMessage(ctx, sessionID, &awid.ChatSendMessageRequest{
 		Body:       message,
 		ExtendWait: true,
 	})
@@ -748,7 +748,7 @@ func ExtendWait(ctx context.Context, client *aweb.Client, targetAlias string, me
 }
 
 // ShowPending shows the pending conversation with a specific agent.
-func ShowPending(ctx context.Context, client *aweb.Client, targetAlias string) (*SendResult, error) {
+func ShowPending(ctx context.Context, client *awid.Client, targetAlias string) (*SendResult, error) {
 	pendingResp, err := client.ChatPending(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("getting pending chats: %w", err)
@@ -783,7 +783,7 @@ func ShowPending(ctx context.Context, client *aweb.Client, targetAlias string) (
 // These mirror the OSS functions above but route through network endpoints.
 
 // ListenNetwork waits for a message in a network conversation without sending.
-func ListenNetwork(ctx context.Context, client *aweb.Client, targetAddress string, waitSeconds int, callback StatusCallback) (*SendResult, error) {
+func ListenNetwork(ctx context.Context, client *awid.Client, targetAddress string, waitSeconds int, callback StatusCallback) (*SendResult, error) {
 	sessionID, _, err := findNetworkSession(ctx, client, targetAddress)
 	if err != nil {
 		return nil, err
@@ -801,13 +801,13 @@ func ListenNetwork(ctx context.Context, client *aweb.Client, targetAddress strin
 }
 
 // OpenNetwork fetches unread messages for a network conversation and marks them as read.
-func OpenNetwork(ctx context.Context, client *aweb.Client, targetAddress string) (*OpenResult, error) {
+func OpenNetwork(ctx context.Context, client *awid.Client, targetAddress string) (*OpenResult, error) {
 	sessionID, senderWaiting, err := findNetworkSession(ctx, client, targetAddress)
 	if err != nil {
 		return nil, err
 	}
 
-	messagesResp, err := client.NetworkChatHistory(ctx, aweb.ChatHistoryParams{
+	messagesResp, err := client.NetworkChatHistory(ctx, awid.ChatHistoryParams{
 		SessionID:  sessionID,
 		UnreadOnly: true,
 		Limit:      1000,
@@ -829,7 +829,7 @@ func OpenNetwork(ctx context.Context, client *aweb.Client, targetAddress string)
 	}
 
 	lastMessageID := messagesResp.Messages[len(messagesResp.Messages)-1].MessageID
-	_, err = client.NetworkChatMarkRead(ctx, sessionID, &aweb.NetworkChatMarkReadRequest{
+	_, err = client.NetworkChatMarkRead(ctx, sessionID, &awid.NetworkChatMarkReadRequest{
 		UpToMessageID: lastMessageID,
 	})
 	if err == nil {
@@ -840,13 +840,13 @@ func OpenNetwork(ctx context.Context, client *aweb.Client, targetAddress string)
 }
 
 // HistoryNetwork fetches all messages in a network conversation.
-func HistoryNetwork(ctx context.Context, client *aweb.Client, targetAddress string) (*HistoryResult, error) {
+func HistoryNetwork(ctx context.Context, client *awid.Client, targetAddress string) (*HistoryResult, error) {
 	sessionID, _, err := findNetworkSession(ctx, client, targetAddress)
 	if err != nil {
 		return nil, err
 	}
 
-	messagesResp, err := client.NetworkChatHistory(ctx, aweb.ChatHistoryParams{
+	messagesResp, err := client.NetworkChatHistory(ctx, awid.ChatHistoryParams{
 		SessionID: sessionID,
 		Limit:     1000,
 	})
@@ -861,13 +861,13 @@ func HistoryNetwork(ctx context.Context, client *aweb.Client, targetAddress stri
 }
 
 // ExtendWaitNetwork sends an extend-wait message in a network conversation.
-func ExtendWaitNetwork(ctx context.Context, client *aweb.Client, targetAddress string, message string) (*ExtendWaitResult, error) {
+func ExtendWaitNetwork(ctx context.Context, client *awid.Client, targetAddress string, message string) (*ExtendWaitResult, error) {
 	sessionID, _, err := findNetworkSession(ctx, client, targetAddress)
 	if err != nil {
 		return nil, err
 	}
 
-	msgResp, err := client.NetworkChatSendMessage(ctx, sessionID, &aweb.NetworkChatSendMessageRequest{
+	msgResp, err := client.NetworkChatSendMessage(ctx, sessionID, &awid.NetworkChatSendMessageRequest{
 		Body:       message,
 		ExtendWait: true,
 	})
@@ -884,7 +884,7 @@ func ExtendWaitNetwork(ctx context.Context, client *aweb.Client, targetAddress s
 }
 
 // ShowPendingNetwork shows the pending network conversation with a specific agent.
-func ShowPendingNetwork(ctx context.Context, client *aweb.Client, targetAddress string) (*SendResult, error) {
+func ShowPendingNetwork(ctx context.Context, client *awid.Client, targetAddress string) (*SendResult, error) {
 	pendingResp, err := client.NetworkChatPending(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("getting network pending chats: %w", err)

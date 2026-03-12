@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 )
 
 // mockHandler dispatches requests to registered handlers by exact method+path match.
@@ -36,9 +36,9 @@ func newMockServer(handlers map[string]http.HandlerFunc) *httptest.Server {
 	return httptest.NewServer(&mockHandler{handlers: handlers})
 }
 
-func mustClient(t *testing.T, url string) *aweb.Client {
+func mustClient(t *testing.T, url string) *awid.Client {
 	t.Helper()
-	c, err := aweb.New(url)
+	c, err := awid.New(url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,8 +55,8 @@ func TestPending(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{
-				Pending: []aweb.ChatPendingItem{
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
 					{SessionID: "s1", Participants: []string{"alice", "bob"}, LastMessage: "hi", LastFrom: "bob", UnreadCount: 1},
 				},
 				MessagesWaiting: 2,
@@ -85,16 +85,16 @@ func TestPendingIncludesNetworkChats(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{
-				Pending: []aweb.ChatPendingItem{
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
 					{SessionID: "local-1", Participants: []string{"alice", "bob"}, LastMessage: "hi", LastFrom: "bob", UnreadCount: 1},
 				},
 				MessagesWaiting: 1,
 			})
 		},
 		"GET /v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.NetworkChatPendingResponse{
-				Pending: []aweb.NetworkChatPendingItem{
+			jsonResponse(w, awid.NetworkChatPendingResponse{
+				Pending: []awid.NetworkChatPendingItem{
 					{SessionID: "net-1", Participants: []string{"myorg/me", "acme/bot"}, LastMessage: "hello", LastFrom: "acme/bot", UnreadCount: 2},
 				},
 				MessagesWaiting: 2,
@@ -132,16 +132,16 @@ func TestPendingDeduplicatesOverlappingSessions(t *testing.T) {
 	// Some servers return the same session in both local and network pending.
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{
-				Pending: []aweb.ChatPendingItem{
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
 					{SessionID: "shared-1", Participants: []string{"myorg/me", "acme/bot"}, UnreadCount: 3},
 				},
 				MessagesWaiting: 3,
 			})
 		},
 		"GET /v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.NetworkChatPendingResponse{
-				Pending: []aweb.NetworkChatPendingItem{
+			jsonResponse(w, awid.NetworkChatPendingResponse{
+				Pending: []awid.NetworkChatPendingItem{
 					{SessionID: "shared-1", Participants: []string{"myorg/me", "acme/bot"}, UnreadCount: 3},
 				},
 				MessagesWaiting: 3,
@@ -167,8 +167,8 @@ func TestPendingGracefulWithoutNetwork(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{
-				Pending: []aweb.ChatPendingItem{
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
 					{SessionID: "s1", Participants: []string{"alice", "bob"}, UnreadCount: 1},
 				},
 				MessagesWaiting: 1,
@@ -198,19 +198,19 @@ func TestExtendWait(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{
-				Pending: []aweb.ChatPendingItem{
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
 					{SessionID: "s1", Participants: []string{"alice", "bob"}},
 				},
 			})
 		},
 		"POST /v1/chat/sessions/s1/messages": func(w http.ResponseWriter, r *http.Request) {
-			var req aweb.ChatSendMessageRequest
+			var req awid.ChatSendMessageRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			if !req.ExtendWait {
 				t.Error("expected extend_wait=true")
 			}
-			jsonResponse(w, aweb.ChatSendMessageResponse{
+			jsonResponse(w, awid.ChatSendMessageResponse{
 				MessageID:          "msg-1",
 				Delivered:          true,
 				ExtendsWaitSeconds: 300,
@@ -236,27 +236,27 @@ func TestOpen(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{
-				Pending: []aweb.ChatPendingItem{
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
 					{SessionID: "s1", Participants: []string{"alice", "bob"}, SenderWaiting: true},
 				},
 			})
 		},
 		"GET /v1/chat/sessions/s1/messages": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatHistoryResponse{
-				Messages: []aweb.ChatMessage{
+			jsonResponse(w, awid.ChatHistoryResponse{
+				Messages: []awid.ChatMessage{
 					{MessageID: "m1", FromAgent: "bob", Body: "hello", Timestamp: "2025-01-01T00:00:00Z"},
 					{MessageID: "m2", FromAgent: "bob", Body: "are you there?", Timestamp: "2025-01-01T00:00:01Z"},
 				},
 			})
 		},
 		"POST /v1/chat/sessions/s1/read": func(w http.ResponseWriter, r *http.Request) {
-			var req aweb.ChatMarkReadRequest
+			var req awid.ChatMarkReadRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			if req.UpToMessageID != "m2" {
 				t.Errorf("up_to_message_id=%s", req.UpToMessageID)
 			}
-			jsonResponse(w, aweb.ChatMarkReadResponse{
+			jsonResponse(w, awid.ChatMarkReadResponse{
 				Success:        true,
 				MessagesMarked: 2,
 			})
@@ -287,17 +287,17 @@ func TestOpenFallbackToListSessions(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{Pending: []aweb.ChatPendingItem{}})
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
 		},
 		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatListSessionsResponse{
-				Sessions: []aweb.ChatSessionItem{
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
 					{SessionID: "s2", Participants: []string{"alice", "bob"}, CreatedAt: "2025-01-01T00:00:00Z"},
 				},
 			})
 		},
 		"GET /v1/chat/sessions/s2/messages": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatHistoryResponse{Messages: []aweb.ChatMessage{}})
+			jsonResponse(w, awid.ChatHistoryResponse{Messages: []awid.ChatMessage{}})
 		},
 	})
 	t.Cleanup(server.Close)
@@ -319,15 +319,15 @@ func TestHistory(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{
-				Pending: []aweb.ChatPendingItem{
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
 					{SessionID: "s1", Participants: []string{"alice", "bob"}},
 				},
 			})
 		},
 		"GET /v1/chat/sessions/s1/messages": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatHistoryResponse{
-				Messages: []aweb.ChatMessage{
+			jsonResponse(w, awid.ChatHistoryResponse{
+				Messages: []awid.ChatMessage{
 					{MessageID: "m1", FromAgent: "alice", Body: "hello", Timestamp: "2025-01-01T00:00:00Z"},
 					{MessageID: "m2", FromAgent: "bob", Body: "hi!", Timestamp: "2025-01-01T00:00:01Z"},
 				},
@@ -353,8 +353,8 @@ func TestShowPending(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{
-				Pending: []aweb.ChatPendingItem{
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
 					{SessionID: "s1", Participants: []string{"alice", "bob"}, LastMessage: "help!", LastFrom: "bob", SenderWaiting: true},
 				},
 			})
@@ -382,12 +382,12 @@ func TestSendWithLeaving(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, r *http.Request) {
-			var req aweb.ChatCreateSessionRequest
+			var req awid.ChatCreateSessionRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			if !req.Leaving {
 				t.Error("expected leaving=true")
 			}
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID: "s1", MessageID: "m1",
 				SSEURL: "/v1/chat/sessions/s1/stream",
 			})
@@ -409,7 +409,7 @@ func TestSendNoWait(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID: "s1", MessageID: "m1",
 				SSEURL: "/v1/chat/sessions/s1/stream",
 			})
@@ -431,7 +431,7 @@ func TestSendTargetsLeft(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID:   "s1",
 				MessageID:   "m1",
 				SSEURL:      "/v1/chat/sessions/s1/stream",
@@ -457,7 +457,7 @@ func TestSendWithReply(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID: "s1",
 				MessageID: sentMsgID,
 				SSEURL:    "/v1/chat/sessions/s1/stream",
@@ -507,7 +507,7 @@ func TestSendWithTimeout(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID: "s1",
 				MessageID: sentMsgID,
 				SSEURL:    "/v1/chat/sessions/s1/stream",
@@ -555,7 +555,7 @@ func TestSendWithExtendWaitReceived(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID: "s1",
 				MessageID: sentMsgID,
 				SSEURL:    "/v1/chat/sessions/s1/stream",
@@ -638,7 +638,7 @@ func TestSendWithReadReceipt(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID: "s1",
 				MessageID: sentMsgID,
 				SSEURL:    "/v1/chat/sessions/s1/stream",
@@ -716,7 +716,7 @@ func TestSendStreamDeadlineExceedsWait(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID: "s1",
 				MessageID: sentMsgID,
 				SSEURL:    "/v1/chat/sessions/s1/stream",
@@ -793,11 +793,11 @@ func TestFindSessionFallback(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{Pending: []aweb.ChatPendingItem{}})
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
 		},
 		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatListSessionsResponse{
-				Sessions: []aweb.ChatSessionItem{
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
 					{SessionID: "s-fallback", Participants: []string{"alice", "bob"}},
 				},
 			})
@@ -822,10 +822,10 @@ func TestFindSessionNotFound(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{Pending: []aweb.ChatPendingItem{}})
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
 		},
 		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatListSessionsResponse{Sessions: []aweb.ChatSessionItem{}})
+			jsonResponse(w, awid.ChatListSessionsResponse{Sessions: []awid.ChatSessionItem{}})
 		},
 	})
 	t.Cleanup(server.Close)
@@ -844,12 +844,12 @@ func TestParseSSEEvent(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		event aweb.SSEEvent
+		event awid.SSEEvent
 		check func(t *testing.T, ev Event)
 	}{
 		{
 			name: "message event",
-			event: aweb.SSEEvent{
+			event: awid.SSEEvent{
 				Event: "message",
 				Data:  `{"session_id":"s1","message_id":"m1","from_agent":"bob","body":"hello","sender_leaving":false,"hang_on":false,"extends_wait_seconds":0}`,
 			},
@@ -867,7 +867,7 @@ func TestParseSSEEvent(t *testing.T) {
 		},
 		{
 			name: "read receipt event",
-			event: aweb.SSEEvent{
+			event: awid.SSEEvent{
 				Event: "read_receipt",
 				Data:  `{"type":"read_receipt","reader_alias":"bob","extends_wait_seconds":60}`,
 			},
@@ -885,7 +885,7 @@ func TestParseSSEEvent(t *testing.T) {
 		},
 		{
 			name: "extend wait event",
-			event: aweb.SSEEvent{
+			event: awid.SSEEvent{
 				Event: "message",
 				Data:  `{"type":"message","from_agent":"bob","body":"thinking...","hang_on":true,"extends_wait_seconds":300}`,
 			},
@@ -900,7 +900,7 @@ func TestParseSSEEvent(t *testing.T) {
 		},
 		{
 			name: "from fallback",
-			event: aweb.SSEEvent{
+			event: awid.SSEEvent{
 				Event: "message",
 				Data:  `{"from":"bob","body":"legacy"}`,
 			},
@@ -912,7 +912,7 @@ func TestParseSSEEvent(t *testing.T) {
 		},
 		{
 			name: "invalid JSON",
-			event: aweb.SSEEvent{
+			event: awid.SSEEvent{
 				Event: "message",
 				Data:  "not json",
 			},
@@ -939,7 +939,7 @@ func TestStreamToChannelCleansUpOnCancel(t *testing.T) {
 	t.Parallel()
 
 	pr, pw := io.Pipe()
-	stream := aweb.NewSSEStream(pr)
+	stream := awid.NewSSEStream(pr)
 	defer pw.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -967,7 +967,7 @@ func TestStreamToChannelCleansUpWhileBlockedOnNext(t *testing.T) {
 	t.Parallel()
 
 	pr, pw := io.Pipe()
-	stream := aweb.NewSSEStream(pr)
+	stream := awid.NewSSEStream(pr)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	events, cleanup := streamToChannel(ctx, stream)
@@ -998,7 +998,7 @@ func TestStreamToChannelCleansUpWhenBufferFull(t *testing.T) {
 	t.Parallel()
 
 	pr, pw := io.Pipe()
-	stream := aweb.NewSSEStream(pr)
+	stream := awid.NewSSEStream(pr)
 
 	// Write enough events to fill the channel buffer (capacity 10).
 	go func() {
@@ -1041,7 +1041,7 @@ func TestSendStartConversationRespectsExplicitWait(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID: "s1",
 				MessageID: sentMsgID,
 				SSEURL:    "/v1/chat/sessions/s1/stream",
@@ -1096,7 +1096,7 @@ func TestSendStartConversationUpgradesWhenNotExplicit(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID: "s1",
 				MessageID: sentMsgID,
 				SSEURL:    "/v1/chat/sessions/s1/stream",
@@ -1142,8 +1142,8 @@ func TestListen(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{
-				Pending: []aweb.ChatPendingItem{
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
 					{SessionID: "s1", Participants: []string{"alice", "bob"}, SenderWaiting: true},
 				},
 			})
@@ -1187,8 +1187,8 @@ func TestListenTimeout(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{
-				Pending: []aweb.ChatPendingItem{
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
 					{SessionID: "s1", Participants: []string{"alice", "bob"}},
 				},
 			})
@@ -1227,10 +1227,10 @@ func TestListenNoSession(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{Pending: []aweb.ChatPendingItem{}})
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
 		},
 		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatListSessionsResponse{Sessions: []aweb.ChatSessionItem{}})
+			jsonResponse(w, awid.ChatListSessionsResponse{Sessions: []awid.ChatSessionItem{}})
 		},
 	})
 	t.Cleanup(server.Close)
@@ -1251,8 +1251,8 @@ func TestListenWithExtendWait(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{
-				Pending: []aweb.ChatPendingItem{
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
 					{SessionID: "s1", Participants: []string{"alice", "bob"}},
 				},
 			})
@@ -1327,7 +1327,7 @@ func TestExtendWaitWithoutExtensionFiresOneCallback(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID: "s1",
 				MessageID: sentMsgID,
 				SSEURL:    "/v1/chat/sessions/s1/stream",
@@ -1397,8 +1397,8 @@ func TestListenReturnsAnyMessage(t *testing.T) {
 	// should return when charlie sends a message (not filtered by target).
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{
-				Pending: []aweb.ChatPendingItem{
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
 					{SessionID: "s1", Participants: []string{"alice", "bob", "charlie"}},
 				},
 			})
@@ -1440,8 +1440,8 @@ func TestFindSessionPrefersSmallestPending(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{
-				Pending: []aweb.ChatPendingItem{
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
 					{SessionID: "s-group", Participants: []string{"alice", "bob", "charlie"}},
 					{SessionID: "s-pair", Participants: []string{"alice", "bob"}},
 				},
@@ -1464,11 +1464,11 @@ func TestFindSessionPrefersSmallestFallback(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{Pending: []aweb.ChatPendingItem{}})
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
 		},
 		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatListSessionsResponse{
-				Sessions: []aweb.ChatSessionItem{
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
 					{SessionID: "s-group", Participants: []string{"alice", "bob", "charlie"}},
 					{SessionID: "s-pair", Participants: []string{"alice", "bob"}},
 				},
@@ -1489,7 +1489,7 @@ func TestFindSessionPrefersSmallestFallback(t *testing.T) {
 func TestParseSSEEventSenderWaiting(t *testing.T) {
 	t.Parallel()
 
-	ev := parseSSEEvent(&aweb.SSEEvent{
+	ev := parseSSEEvent(&awid.SSEEvent{
 		Event: "message",
 		Data:  `{"type":"message","from_agent":"bob","body":"hello","sender_waiting":true}`,
 	})
@@ -1498,7 +1498,7 @@ func TestParseSSEEventSenderWaiting(t *testing.T) {
 	}
 
 	// false when absent
-	ev2 := parseSSEEvent(&aweb.SSEEvent{
+	ev2 := parseSSEEvent(&awid.SSEEvent{
 		Event: "message",
 		Data:  `{"type":"message","from_agent":"bob","body":"hello"}`,
 	})
@@ -1514,7 +1514,7 @@ func TestSendNetworkWithReply(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 			"POST /v1/network/chat": func(w http.ResponseWriter, _ *http.Request) {
-				jsonResponse(w, aweb.NetworkChatCreateResponse{
+				jsonResponse(w, awid.NetworkChatCreateResponse{
 					SessionID:        "ns1",
 					MessageID:        sentMsgID,
 					Participants:     []string{"myorg/me", "acme/bot"},
@@ -1573,10 +1573,10 @@ func TestSendNetworkWithLeaving(t *testing.T) {
 	var gotLeaving bool
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/network/chat": func(w http.ResponseWriter, r *http.Request) {
-			var req aweb.NetworkChatCreateRequest
+			var req awid.NetworkChatCreateRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			gotLeaving = req.Leaving
-			jsonResponse(w, aweb.NetworkChatCreateResponse{
+			jsonResponse(w, awid.NetworkChatCreateResponse{
 				SessionID: "ns1",
 				MessageID: "net-msg-1",
 				SSEURL:    "/v1/network/chat/ns1/stream",
@@ -1603,7 +1603,7 @@ func TestSendNetworkNoWait(t *testing.T) {
 	sseHit := false
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/network/chat": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.NetworkChatCreateResponse{
+			jsonResponse(w, awid.NetworkChatCreateResponse{
 				SessionID: "ns1",
 				MessageID: "net-msg-1",
 				SSEURL:    "/v1/network/chat/ns1/stream",
@@ -1635,7 +1635,7 @@ func TestSendPropagatesSenderWaitingFromReply(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID: "s1",
 				MessageID: sentMsgID,
 				SSEURL:    "/v1/chat/sessions/s1/stream",
@@ -1684,8 +1684,8 @@ func TestListenNetwork(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.NetworkChatPendingResponse{
-				Pending: []aweb.NetworkChatPendingItem{
+			jsonResponse(w, awid.NetworkChatPendingResponse{
+				Pending: []awid.NetworkChatPendingItem{
 					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}, SenderWaiting: true},
 				},
 			})
@@ -1728,26 +1728,26 @@ func TestOpenNetwork(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.NetworkChatPendingResponse{
-				Pending: []aweb.NetworkChatPendingItem{
+			jsonResponse(w, awid.NetworkChatPendingResponse{
+				Pending: []awid.NetworkChatPendingItem{
 					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}, SenderWaiting: true},
 				},
 			})
 		},
 		"GET /v1/network/chat/ns1/messages": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatHistoryResponse{
-				Messages: []aweb.ChatMessage{
+			jsonResponse(w, awid.ChatHistoryResponse{
+				Messages: []awid.ChatMessage{
 					{MessageID: "m1", FromAgent: "acme/bot", Body: "network msg", Timestamp: "2025-01-01T00:00:00Z"},
 				},
 			})
 		},
 		"POST /v1/network/chat/ns1/read": func(w http.ResponseWriter, r *http.Request) {
-			var req aweb.NetworkChatMarkReadRequest
+			var req awid.NetworkChatMarkReadRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			if req.UpToMessageID != "m1" {
 				t.Errorf("up_to_message_id=%s", req.UpToMessageID)
 			}
-			jsonResponse(w, aweb.NetworkChatMarkReadResponse{Success: true, MessagesMarked: 1})
+			jsonResponse(w, awid.NetworkChatMarkReadResponse{Success: true, MessagesMarked: 1})
 		},
 	})
 	t.Cleanup(server.Close)
@@ -1775,15 +1775,15 @@ func TestHistoryNetwork(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.NetworkChatPendingResponse{
-				Pending: []aweb.NetworkChatPendingItem{
+			jsonResponse(w, awid.NetworkChatPendingResponse{
+				Pending: []awid.NetworkChatPendingItem{
 					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}},
 				},
 			})
 		},
 		"GET /v1/network/chat/ns1/messages": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatHistoryResponse{
-				Messages: []aweb.ChatMessage{
+			jsonResponse(w, awid.ChatHistoryResponse{
+				Messages: []awid.ChatMessage{
 					{MessageID: "m1", FromAgent: "myorg/me", Body: "hello", Timestamp: "2025-01-01T00:00:00Z"},
 					{MessageID: "m2", FromAgent: "acme/bot", Body: "hi!", Timestamp: "2025-01-01T00:00:01Z"},
 				},
@@ -1809,19 +1809,19 @@ func TestExtendWaitNetwork(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.NetworkChatPendingResponse{
-				Pending: []aweb.NetworkChatPendingItem{
+			jsonResponse(w, awid.NetworkChatPendingResponse{
+				Pending: []awid.NetworkChatPendingItem{
 					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}},
 				},
 			})
 		},
 		"POST /v1/network/chat/ns1/messages": func(w http.ResponseWriter, r *http.Request) {
-			var req aweb.NetworkChatSendMessageRequest
+			var req awid.NetworkChatSendMessageRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			if !req.ExtendWait {
 				t.Error("expected extend_wait=true")
 			}
-			jsonResponse(w, aweb.NetworkChatSendMessageResponse{
+			jsonResponse(w, awid.NetworkChatSendMessageResponse{
 				MessageID: "msg-1", Delivered: true, ExtendsWaitSeconds: 300,
 			})
 		},
@@ -1845,8 +1845,8 @@ func TestShowPendingNetwork(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/network/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.NetworkChatPendingResponse{
-				Pending: []aweb.NetworkChatPendingItem{
+			jsonResponse(w, awid.NetworkChatPendingResponse{
+				Pending: []awid.NetworkChatPendingItem{
 					{SessionID: "ns1", Participants: []string{"myorg/me", "acme/bot"}, LastMessage: "help!", LastFrom: "acme/bot", SenderWaiting: true},
 				},
 			})
@@ -1879,7 +1879,7 @@ func TestSendPassesAfterParam(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID: "s1",
 				MessageID: sentMsgID,
 			})
@@ -1932,8 +1932,8 @@ func TestListenNoAfterParam(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatPendingResponse{
-				Pending: []aweb.ChatPendingItem{
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
 					{SessionID: "s1", Participants: []string{"alice", "bob"}},
 				},
 			})
@@ -1973,7 +1973,7 @@ func TestSendSkippedEventsNotInResult(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID: "s1",
 				MessageID: sentMsgID,
 			})
@@ -2034,7 +2034,7 @@ func TestSendAfterParameterUsesSecondPrecision(t *testing.T) {
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, aweb.ChatCreateSessionResponse{
+			jsonResponse(w, awid.ChatCreateSessionResponse{
 				SessionID: "s1",
 				MessageID: sentMsgID,
 			})
@@ -2094,23 +2094,23 @@ func TestParseSSEEventIdentityFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	did := aweb.ComputeDIDKey(pub)
+	did := awid.ComputeDIDKey(pub)
 
-	env := &aweb.MessageEnvelope{
+	env := &awid.MessageEnvelope{
 		From:    "alice",
 		FromDID: did,
 		Type:    "chat",
 		Body:    "signed hello",
 	}
 	env.Timestamp = "2026-01-01T00:00:00Z"
-	sig, err := aweb.SignMessage(priv, env)
+	sig, err := awid.SignMessage(priv, env)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	data := fmt.Sprintf(`{"from_agent":"alice","body":"signed hello","from_did":%q,"signature":%q,"signing_key_id":%q,"timestamp":"2026-01-01T00:00:00Z"}`, did, sig, did)
 
-	ev := parseSSEEvent(&aweb.SSEEvent{
+	ev := parseSSEEvent(&awid.SSEEvent{
 		Event: "message",
 		Data:  data,
 	})
@@ -2124,7 +2124,7 @@ func TestParseSSEEventIdentityFields(t *testing.T) {
 	if ev.SigningKeyID != did {
 		t.Fatalf("signing_key_id=%s", ev.SigningKeyID)
 	}
-	if ev.VerificationStatus != aweb.Verified {
+	if ev.VerificationStatus != awid.Verified {
 		t.Fatalf("verification_status=%s", ev.VerificationStatus)
 	}
 }
@@ -2132,7 +2132,7 @@ func TestParseSSEEventIdentityFields(t *testing.T) {
 func TestParseSSEEventNoIdentityUnverified(t *testing.T) {
 	t.Parallel()
 
-	ev := parseSSEEvent(&aweb.SSEEvent{
+	ev := parseSSEEvent(&awid.SSEEvent{
 		Event: "message",
 		Data:  `{"from_agent":"bob","body":"unsigned hello"}`,
 	})
@@ -2140,8 +2140,8 @@ func TestParseSSEEventNoIdentityUnverified(t *testing.T) {
 	if ev.FromDID != "" {
 		t.Fatalf("from_did=%s", ev.FromDID)
 	}
-	if ev.VerificationStatus != aweb.Unverified {
-		t.Fatalf("verification_status=%s, want %s", ev.VerificationStatus, aweb.Unverified)
+	if ev.VerificationStatus != awid.Unverified {
+		t.Fatalf("verification_status=%s, want %s", ev.VerificationStatus, awid.Unverified)
 	}
 }
 
@@ -2152,17 +2152,17 @@ func TestParseSSEEventUsesFromAddressForVerification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	did := aweb.ComputeDIDKey(pub)
+	did := awid.ComputeDIDKey(pub)
 
 	// Sign with full address.
-	env := &aweb.MessageEnvelope{
+	env := &awid.MessageEnvelope{
 		From:      "myco/alice",
 		FromDID:   did,
 		Type:      "chat",
 		Body:      "signed hello",
 		Timestamp: "2026-01-01T00:00:00Z",
 	}
-	sig, err := aweb.SignMessage(priv, env)
+	sig, err := awid.SignMessage(priv, env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2170,7 +2170,7 @@ func TestParseSSEEventUsesFromAddressForVerification(t *testing.T) {
 	// SSE data has from_agent="alice" (alias-only) but from_address="myco/alice".
 	data := fmt.Sprintf(`{"from_agent":"alice","from_address":"myco/alice","body":"signed hello","from_did":%q,"signature":%q,"signing_key_id":%q,"timestamp":"2026-01-01T00:00:00Z"}`, did, sig, did)
 
-	ev := parseSSEEvent(&aweb.SSEEvent{
+	ev := parseSSEEvent(&awid.SSEEvent{
 		Event: "message",
 		Data:  data,
 	})
@@ -2179,7 +2179,7 @@ func TestParseSSEEventUsesFromAddressForVerification(t *testing.T) {
 		t.Fatalf("from_address=%q, want myco/alice", ev.FromAddress)
 	}
 	// Verification should succeed because From in envelope uses from_address.
-	if ev.VerificationStatus != aweb.Verified {
+	if ev.VerificationStatus != awid.Verified {
 		t.Fatalf("verification_status=%s, want verified (from_address should be used)", ev.VerificationStatus)
 	}
 }
@@ -2188,21 +2188,21 @@ func TestParseSSEEventWiresIsContact(t *testing.T) {
 	t.Parallel()
 
 	data := `{"from_agent":"alice","body":"hi","timestamp":"2025-01-01T00:00:00Z","is_contact":true}`
-	ev := parseSSEEvent(&aweb.SSEEvent{Event: "message", Data: data})
+	ev := parseSSEEvent(&awid.SSEEvent{Event: "message", Data: data})
 	if ev.IsContact == nil || !*ev.IsContact {
 		t.Fatalf("IsContact=%v, want ptr to true", ev.IsContact)
 	}
 
 	// false case
 	data2 := `{"from_agent":"bob","body":"hey","timestamp":"2025-01-01T00:00:00Z","is_contact":false}`
-	ev2 := parseSSEEvent(&aweb.SSEEvent{Event: "message", Data: data2})
+	ev2 := parseSSEEvent(&awid.SSEEvent{Event: "message", Data: data2})
 	if ev2.IsContact == nil || *ev2.IsContact {
 		t.Fatalf("IsContact=%v, want ptr to false", ev2.IsContact)
 	}
 
 	// absent case
 	data3 := `{"from_agent":"carol","body":"yo","timestamp":"2025-01-01T00:00:00Z"}`
-	ev3 := parseSSEEvent(&aweb.SSEEvent{Event: "message", Data: data3})
+	ev3 := parseSSEEvent(&awid.SSEEvent{Event: "message", Data: data3})
 	if ev3.IsContact != nil {
 		t.Fatalf("IsContact=%v, want nil", ev3.IsContact)
 	}
@@ -2212,7 +2212,7 @@ func TestBuildMessagesWiresIsContact(t *testing.T) {
 	t.Parallel()
 
 	yes := true
-	msgs := []aweb.ChatMessage{
+	msgs := []awid.ChatMessage{
 		{MessageID: "m1", FromAgent: "alice", Body: "hi", IsContact: &yes},
 		{MessageID: "m2", FromAgent: "bob", Body: "hey", IsContact: nil},
 	}

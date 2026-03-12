@@ -11,6 +11,7 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
 	"github.com/spf13/cobra"
 )
@@ -101,18 +102,18 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	resp, err := client.VerifyCode(ctx, &aweb.VerifyCodeRequest{
+	resp, err := client.VerifyCode(ctx, &awid.VerifyCodeRequest{
 		Email: email,
 		Code:  code,
 	})
 	if err != nil {
-		statusCode, isHTTP := aweb.HTTPStatusCode(err)
+		statusCode, isHTTP := awid.HTTPStatusCode(err)
 		if !isHTTP {
 			return err
 		}
 		switch statusCode {
 		case 400:
-			body, _ := aweb.HTTPErrorBody(err)
+			body, _ := awid.HTTPErrorBody(err)
 			return formatVerifyError(body)
 		case 404:
 			return fmt.Errorf("no pending verification found for %s", email)
@@ -168,8 +169,8 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) e
 	var pub ed25519.PublicKey
 	var did, signingKeyPath string
 	var needConfigUpdate bool
-	custody := aweb.CustodySelf
-	lifetime := aweb.LifetimePersistent
+	custody := awid.CustodySelf
+	lifetime := awid.LifetimePersistent
 	generatedNewKey := false
 
 	if sel != nil && sel.DID != "" && sel.SigningKey != "" {
@@ -217,7 +218,7 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) e
 			pub = genPub
 			generatedNewKey = true
 		}
-		did = aweb.ComputeDIDKey(pub)
+		did = awid.ComputeDIDKey(pub)
 		needConfigUpdate = true
 	}
 
@@ -231,14 +232,14 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) e
 	claimCtx, claimCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer claimCancel()
 
-	_, claimErr := authClient.ClaimIdentity(claimCtx, &aweb.ClaimIdentityRequest{
+	_, claimErr := authClient.ClaimIdentity(claimCtx, &awid.ClaimIdentityRequest{
 		DID:       did,
 		PublicKey: pubKeyB64,
-		Custody:   aweb.CustodySelf,
-		Lifetime:  aweb.LifetimePersistent,
+		Custody:   awid.CustodySelf,
+		Lifetime:  awid.LifetimePersistent,
 	})
 	if claimErr != nil {
-		claimCode, ok := aweb.HTTPStatusCode(claimErr)
+		claimCode, ok := awid.HTTPStatusCode(claimErr)
 		if ok && claimCode == 409 {
 			var address string
 			if sel != nil {

@@ -3,7 +3,7 @@
 
 package chat
 
-import aweb "github.com/awebai/aw"
+import awid "github.com/awebai/aw/awid"
 
 // Event represents an event received during chat (message or read receipt).
 type Event struct {
@@ -31,8 +31,8 @@ type Event struct {
 	ToStableID         string `json:"to_stable_id,omitempty"`
 	Signature              string                    `json:"signature,omitempty"`
 	SigningKeyID           string                    `json:"signing_key_id,omitempty"`
-	RotationAnnouncement   *aweb.RotationAnnouncement `json:"rotation_announcement,omitempty"`
-	VerificationStatus     aweb.VerificationStatus    `json:"verification_status,omitempty"`
+	RotationAnnouncement   *awid.RotationAnnouncement `json:"rotation_announcement,omitempty"`
+	VerificationStatus     awid.VerificationStatus    `json:"verification_status,omitempty"`
 	IsContact              *bool                      `json:"is_contact,omitempty"`
 }
 
