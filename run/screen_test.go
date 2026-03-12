@@ -161,31 +161,39 @@ func TestWrapScreenLineKeepsToolArgIndent(t *testing.T) {
 	}
 }
 
-func TestScreenViewAddsBottomBreathingSpace(t *testing.T) {
+func TestScreenViewShowsDividerAboveInputAndStatusBelow(t *testing.T) {
 	model := newScreenModel(
 		screenSnapshot{
 			Lines:       []string{"line 1"},
 			StatusLine:  "next run in 6s",
-			InputLine:   "aw:repo:rose> hello",
-			PromptLabel: "aw:repo:rose> ",
+			InputLine:   ">> hello",
+			PromptLabel: ">> ",
 		},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
+		nil, nil, nil, nil, nil, nil,
 	)
 	model.width = 40
 	model.height = 10
 	model.syncLayout()
 
 	view := model.View()
-	if !strings.Contains(view, "\n\n next run in 6s") {
-		t.Fatalf("expected blank line before status line, got %q", view)
+	dividerIdx := strings.Index(view, "────")
+	inputIdx := strings.Index(view, ">> hello")
+	statusIdx := strings.Index(view, "next run in 6s")
+
+	if dividerIdx < 0 {
+		t.Fatalf("expected divider in view, got %q", view)
 	}
-	if !strings.Contains(view, "next run in 6s") || !strings.Contains(view, "\n\naw:repo:rose> hello") {
-		t.Fatalf("expected blank line between status and input, got %q", view)
+	if inputIdx < 0 {
+		t.Fatalf("expected input in view, got %q", view)
+	}
+	if statusIdx < 0 {
+		t.Fatalf("expected status in view, got %q", view)
+	}
+	if dividerIdx >= inputIdx {
+		t.Fatalf("expected divider before input")
+	}
+	if inputIdx >= statusIdx {
+		t.Fatalf("expected input before status")
 	}
 }
 
@@ -218,7 +226,7 @@ func TestScreenViewGrowsInputFooterWhenInputWraps(t *testing.T) {
 	if model.input.Height() < 2 {
 		t.Fatalf("expected multi-line input height, got %d", model.input.Height())
 	}
-	if model.viewport.Height >= 6 {
+	if model.viewport.Height >= 7 {
 		t.Fatalf("expected viewport to shrink for wrapped input, got %d", model.viewport.Height)
 	}
 

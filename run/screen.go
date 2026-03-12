@@ -82,7 +82,7 @@ type screenStyles struct {
 	hint      lipgloss.Style
 }
 
-const screenFooterBaseLines = 3
+const screenFooterBaseLines = 2
 
 func NewScreenController(in io.Reader, out io.Writer) *ScreenController {
 	inputFile, ok := in.(*os.File)
@@ -414,7 +414,7 @@ func newScreenModel(
 func newScreenStyles() screenStyles {
 	return screenStyles{
 		runHeader: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "24", Dark: "12"}).Bold(true),
-		separator: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "250", Dark: "238"}),
+		separator: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "247", Dark: "245"}),
 		tool:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "130", Dark: "214"}).Bold(true),
 		result:    lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "247", Dark: "242"}),
 		done:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "28", Dark: "10"}).Bold(true),
@@ -558,8 +558,9 @@ func (m screenModel) View() string {
 		return ""
 	}
 
+	divider := m.styles.separator.Render(strings.Repeat("─", m.width))
 	status := m.styles.status.Width(m.width).Render(m.statusText())
-	return m.viewport.View() + "\n\n" + status + "\n\n" + m.input.View()
+	return m.viewport.View() + "\n" + divider + "\n" + m.input.View() + "\n" + status
 }
 
 func (m *screenModel) syncLayout() {
