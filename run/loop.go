@@ -33,6 +33,7 @@ type Loop struct {
 
 type state struct {
 	Run                int
+	CompactRuns        int
 	SessionID          string
 	RanOnce            bool
 	RunInterrupted     bool
@@ -231,9 +232,13 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 		return err
 	}
 
-	l.printf("\nrun #%d  %s  >  %s\n\n", st.Run, l.Now().Format("15:04:05"), truncateText(display, 80))
-	l.println(formatProviderMode(l.Provider, buildOpts))
-	l.println("type /wait, /autofeed off, /stop, /quit, or start typing to queue a prompt.")
+	if display == "/compact" {
+		l.printf("\ncompact #%d  %s\n\n", st.CompactRuns, l.Now().Format("15:04:05"))
+	} else {
+		l.printf("\nrun #%d  %s  >  %s\n\n", st.Run, l.Now().Format("15:04:05"), truncateText(display, 80))
+		l.println(formatProviderMode(l.Provider, buildOpts))
+		l.println("type /wait, /autofeed off, /stop, /quit, or start typing to queue a prompt.")
+	}
 	l.renderInputPrompt(st)
 
 	presenter := &presenterState{}
@@ -298,7 +303,8 @@ func (l *Loop) maybeAutoCompact(ctx context.Context, opts LoopOptions, st *state
 	if pct <= float64(opts.CompactThresholdPct) {
 		return false, nil
 	}
-	l.printf("\ninfo: context %.1f%% exceeds %d%%; running /compact\n", pct, opts.CompactThresholdPct)
+	st.CompactRuns++
+	l.printf("\ninfo: context %.1f%% exceeds %d%%; running compact\n", pct, opts.CompactThresholdPct)
 	if err := l.runOnce(ctx, opts, st, "/compact", "/compact"); err != nil {
 		return false, err
 	}

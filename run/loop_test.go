@@ -305,6 +305,95 @@ func TestLoopBasePromptDoesNotAutoRerunWithoutWake(t *testing.T) {
 	}
 }
 
+func TestAutoCompactShowsDistinctLabel(t *testing.T) {
+	var out bytes.Buffer
+	provider := fakeProvider{
+		event: &Event{
+			Type:    EventDone,
+			Session: "sess-42",
+			Usage: &UsageStats{
+				InputTokens:       90000,
+				ContextWindowSize: 100000,
+			},
+		},
+	}
+	loop := NewLoop(provider, &out)
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		onLine("done")
+		return nil
+	}
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	loop.Dispatch = &fakeDispatcher{
+		decisions: []DispatchDecision{
+			{MissionPrompt: "work", WaitSeconds: 0},
+		},
+	}
+
+	err := loop.Run(context.Background(), LoopOptions{
+		MaxRuns:             1,
+		CompactThresholdPct: 80,
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "compact #1") {
+		t.Fatalf("expected compact to show 'compact #1', got %q", output)
+	}
+	if strings.Count(output, "run #1") != 1 {
+		t.Fatalf("expected exactly one 'run #1' (not duplicated by compact), got %q", output)
+	}
+}
+
+func TestAutoCompactDoesNotCountTowardMaxRuns(t *testing.T) {
+	var out bytes.Buffer
+	realRunCount := 0
+	compactRunCount := 0
+	provider := fakeProvider{
+		event: &Event{
+			Type:    EventDone,
+			Session: "sess-42",
+			Usage: &UsageStats{
+				InputTokens:       90000,
+				ContextWindowSize: 100000,
+			},
+		},
+	}
+	loop := NewLoop(provider, &out)
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		if len(argv) > 1 && argv[1] == "/compact" {
+			compactRunCount++
+		} else {
+			realRunCount++
+		}
+		onLine("done")
+		return nil
+	}
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	loop.Dispatch = &fakeDispatcher{
+		decisions: []DispatchDecision{
+			{MissionPrompt: "work", WaitSeconds: 0},
+			{MissionPrompt: "work", WaitSeconds: 0},
+		},
+	}
+
+	err := loop.Run(context.Background(), LoopOptions{
+		MaxRuns:             2,
+		CompactThresholdPct: 80,
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if realRunCount != 2 {
+		t.Fatalf("expected 2 real runs, got %d", realRunCount)
+	}
+	if compactRunCount != 2 {
+		t.Fatalf("expected 2 compact runs (one after each real run), got %d", compactRunCount)
+	}
+}
+
 func TestLoopFallsBackToTimedCyclesWhenWakeStreamUnavailable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/events/stream") {
