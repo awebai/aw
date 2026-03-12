@@ -803,6 +803,9 @@ func (l *Loop) applyControlEvent(event ControlEvent, st *state, activeRun bool, 
 		}
 		if activeRun {
 			l.printf("\nqueued prompt override: %s\n", truncateText(st.NextPrompt, 80))
+			if st.RunLabel != "" {
+				l.setStatusLine(formatRunStatus(st))
+			}
 		}
 		l.renderInputPrompt(st)
 	case ControlWait:

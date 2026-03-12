@@ -62,6 +62,9 @@ func formatRunStatus(st *state) string {
 	if st.Autofeed {
 		parts = append(parts, "autofeed")
 	}
+	if strings.TrimSpace(st.NextPrompt) != "" {
+		parts = append(parts, "queued")
+	}
 	return strings.Join(parts, " · ")
 }
 

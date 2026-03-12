@@ -339,6 +339,30 @@ func TestFormatRunStatusShowsContextAndCost(t *testing.T) {
 	}
 }
 
+func TestFormatRunStatusShowsQueuedWhenPromptPending(t *testing.T) {
+	st := &state{
+		RunLabel:   "run 1",
+		NextPrompt: "fix the bug",
+	}
+	got := formatRunStatus(st)
+	if !strings.Contains(got, "queued") {
+		t.Fatalf("expected 'queued' indicator, got %q", got)
+	}
+	if !strings.HasPrefix(got, "run 1") {
+		t.Fatalf("expected to start with 'run 1', got %q", got)
+	}
+}
+
+func TestFormatRunStatusOmitsQueuedWhenNoPromptPending(t *testing.T) {
+	st := &state{
+		RunLabel: "run 1",
+	}
+	got := formatRunStatus(st)
+	if strings.Contains(got, "queued") {
+		t.Fatalf("expected no 'queued' indicator without pending prompt, got %q", got)
+	}
+}
+
 func TestHandleOutputLineAccumulatesCost(t *testing.T) {
 	cost := 0.05
 	provider := &fakeProvider{
