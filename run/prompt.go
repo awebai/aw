@@ -52,7 +52,6 @@ func formatRunStatus(st *state) string {
 		return ""
 	}
 	var parts []string
-	parts = append(parts, st.RunLabel)
 	if st.HasRunUsage && st.LastRunUsage.ContextWindowSize > 0 {
 		parts = append(parts, fmt.Sprintf("ctx %.0f%%", st.LastRunUsage.ContextPct()))
 	}

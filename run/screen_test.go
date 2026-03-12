@@ -31,7 +31,7 @@ func TestStyleScreenLineCategories(t *testing.T) {
 		line string
 		want string
 	}{
-		{line: "run #1  12:00:00  >  prompt", want: "run_header"},
+		{line: "> fix the bug", want: "prompt"},
 		{line: `- Bash("go test ./... 2>&1")`, want: "tool"},
 		{line: "  -> ok", want: "result"},
 		{line: "done  2.1s", want: "done"},

@@ -72,7 +72,7 @@ type screenModel struct {
 }
 
 type screenStyles struct {
-	runHeader lipgloss.Style
+	prompt lipgloss.Style
 	separator lipgloss.Style
 	tool      lipgloss.Style
 	result    lipgloss.Style
@@ -413,7 +413,7 @@ func newScreenModel(
 
 func newScreenStyles() screenStyles {
 	return screenStyles{
-		runHeader: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "24", Dark: "12"}).Bold(true),
+		prompt: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "24", Dark: "12"}).Bold(true),
 		separator: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "247", Dark: "245"}),
 		tool:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "130", Dark: "214"}).Bold(true),
 		result:    lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "247", Dark: "242"}),
@@ -802,8 +802,8 @@ func leadingWhitespace(s string) string {
 
 func styleScreenLine(line string, styles screenStyles) string {
 	switch screenLineStyleKind(line) {
-	case "run_header":
-		return styles.runHeader.Render(line)
+	case "prompt":
+		return styles.prompt.Render(line)
 	case "separator":
 		return styles.separator.Render(line)
 	case "tool":
@@ -843,8 +843,8 @@ func screenLineStyleKind(line string) string {
 	switch {
 	case strings.HasPrefix(trimmed, "────"):
 		return "separator"
-	case strings.HasPrefix(trimmed, "run #"):
-		return "run_header"
+	case strings.HasPrefix(trimmed, "> "):
+		return "prompt"
 	case strings.HasPrefix(trimmed, "- ") && strings.Contains(trimmed, "("):
 		return "tool"
 	case strings.HasPrefix(trimmed, "->") || strings.HasPrefix(trimmed, "  ->"):

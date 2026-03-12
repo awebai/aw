@@ -305,19 +305,11 @@ func TestLoopBasePromptDoesNotAutoRerunWithoutWake(t *testing.T) {
 	}
 }
 
-func TestFormatRunStatusShowsRunNumber(t *testing.T) {
+func TestFormatRunStatusOmitsRunLabel(t *testing.T) {
 	st := &state{RunLabel: "run 3"}
 	got := formatRunStatus(st)
-	if got != "run 3" {
-		t.Fatalf("expected 'run 3', got %q", got)
-	}
-}
-
-func TestFormatRunStatusShowsMaxRuns(t *testing.T) {
-	st := &state{RunLabel: "run 2/5"}
-	got := formatRunStatus(st)
-	if got != "run 2/5" {
-		t.Fatalf("expected 'run 2/5', got %q", got)
+	if got != "" {
+		t.Fatalf("expected empty status with only run label, got %q", got)
 	}
 }
 
@@ -333,7 +325,7 @@ func TestFormatRunStatusShowsContextAndCost(t *testing.T) {
 		Autofeed:          true,
 	}
 	got := formatRunStatus(st)
-	want := "run 1 · ctx 45% · $0.05 · autofeed"
+	want := "ctx 45% · $0.05 · autofeed"
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}
@@ -345,18 +337,13 @@ func TestFormatRunStatusShowsQueuedWhenPromptPending(t *testing.T) {
 		NextPrompt: "fix the bug",
 	}
 	got := formatRunStatus(st)
-	if !strings.Contains(got, "queued") {
-		t.Fatalf("expected 'queued' indicator, got %q", got)
-	}
-	if !strings.HasPrefix(got, "run 1") {
-		t.Fatalf("expected to start with 'run 1', got %q", got)
+	if got != "queued" {
+		t.Fatalf("expected 'queued', got %q", got)
 	}
 }
 
 func TestFormatRunStatusOmitsQueuedWhenNoPromptPending(t *testing.T) {
-	st := &state{
-		RunLabel: "run 1",
-	}
+	st := &state{RunLabel: "run 1"}
 	got := formatRunStatus(st)
 	if strings.Contains(got, "queued") {
 		t.Fatalf("expected no 'queued' indicator without pending prompt, got %q", got)
@@ -422,11 +409,11 @@ func TestAutoCompactShowsDistinctLabel(t *testing.T) {
 	}
 
 	output := out.String()
-	if !strings.Contains(output, "compact #1") {
-		t.Fatalf("expected compact to show 'compact #1', got %q", output)
+	if !strings.Contains(output, "info: compacting context") {
+		t.Fatalf("expected compact info line, got %q", output)
 	}
-	if strings.Count(output, "run #1") != 1 {
-		t.Fatalf("expected exactly one 'run #1' (not duplicated by compact), got %q", output)
+	if strings.Count(output, "> work") != 1 {
+		t.Fatalf("expected exactly one '> work' prompt (not duplicated by compact), got %q", output)
 	}
 }
 
@@ -502,14 +489,14 @@ func TestRunSeparatorAppearsBetweenRuns(t *testing.T) {
 	if !strings.Contains(output, runSeparator) {
 		t.Fatalf("expected run separator between runs, got:\n%s", output)
 	}
-	firstDoneIdx := strings.Index(output, "done")
+	firstPromptIdx := strings.Index(output, "> first")
 	separatorIdx := strings.Index(output, runSeparator)
-	secondRunIdx := strings.Index(output, "run #2")
-	if separatorIdx <= firstDoneIdx {
-		t.Fatalf("separator should appear after first run's done line")
+	secondPromptIdx := strings.Index(output, "> second")
+	if separatorIdx <= firstPromptIdx {
+		t.Fatalf("separator should appear after first prompt")
 	}
-	if separatorIdx >= secondRunIdx {
-		t.Fatalf("separator should appear before second run header")
+	if separatorIdx >= secondPromptIdx {
+		t.Fatalf("separator should appear before second prompt")
 	}
 }
 

@@ -247,16 +247,11 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 	}
 
 	if display == "/compact" {
-		st.RunLabel = fmt.Sprintf("compact %d", st.CompactRuns)
-		l.printf("\ncompact #%d  %s\n\n", st.CompactRuns, l.Now().Format("15:04:05"))
+		st.RunLabel = "compact"
+		l.printf("\ninfo: compacting context\n\n")
 	} else {
-		if opts.MaxRuns > 0 {
-			st.RunLabel = fmt.Sprintf("run %d/%d", st.Run, opts.MaxRuns)
-		} else {
-			st.RunLabel = fmt.Sprintf("run %d", st.Run)
-		}
-		l.printf("\nrun #%d  %s  >  %s\n\n", st.Run, l.Now().Format("15:04:05"), truncateText(display, 80))
-		l.println(formatProviderMode(l.Provider, buildOpts))
+		st.RunLabel = "active"
+		l.printf("\n> %s\n\n", truncateText(display, 80))
 	}
 	l.setStatusLine(formatRunStatus(st))
 	l.renderInputPrompt(st)
@@ -450,20 +445,15 @@ func (l *Loop) handleOutputLine(line string, presenter *presenterState, st *stat
 		}
 		presenter.lastWasStructured = true
 	case EventDone:
-		st.StructuredOut = true
 		if event.IsError && strings.TrimSpace(event.Text) != "" {
 			st.LastRunError = strings.TrimSpace(event.Text)
+			st.StructuredOut = true
+			l.runPresenterEnsureStructuredSpacing(presenter)
+			l.printf("%s\n", formatDone(event))
+			presenter.lastWasStructured = true
 		}
-		l.runPresenterEnsureStructuredSpacing(presenter)
-		l.printf("%s\n", formatDone(event))
-		presenter.lastWasStructured = true
 	case EventSystem:
-		st.StructuredOut = true
-		l.runPresenterEnsureStructuredSpacing(presenter)
-		if text := strings.TrimSpace(event.Text); text != "" {
-			l.printf("info: %s\n", text)
-		}
-		presenter.lastWasStructured = true
+		// System info suppressed from display
 	}
 	l.renderInputPrompt(st)
 }
@@ -1098,20 +1088,6 @@ func displayPrompt(missionPrompt string, cyclePrompt string) string {
 		return cyclePrompt
 	}
 	return strings.TrimSpace(missionPrompt)
-}
-
-func formatProviderMode(provider Provider, opts BuildOptions) string {
-	name := "provider"
-	if provider != nil && strings.TrimSpace(provider.Name()) != "" {
-		name = provider.Name()
-	}
-	if strings.TrimSpace(opts.SessionID) != "" {
-		return fmt.Sprintf("info: provider %s mode=resume session=%s", name, truncateText(opts.SessionID, 24))
-	}
-	if opts.ContinueSession {
-		return fmt.Sprintf("info: provider %s mode=continue-last", name)
-	}
-	return fmt.Sprintf("info: provider %s mode=fresh", name)
 }
 
 func SleepWithContext(ctx context.Context, d time.Duration) error {
