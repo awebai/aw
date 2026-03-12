@@ -226,7 +226,7 @@ func TestScreenViewGrowsInputFooterWhenInputWraps(t *testing.T) {
 	if model.input.Height() < 2 {
 		t.Fatalf("expected multi-line input height, got %d", model.input.Height())
 	}
-	if model.viewport.Height >= 7 {
+	if model.viewport.Height >= 6 {
 		t.Fatalf("expected viewport to shrink for wrapped input, got %d", model.viewport.Height)
 	}
 

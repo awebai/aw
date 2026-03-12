@@ -82,7 +82,7 @@ type screenStyles struct {
 	hint      lipgloss.Style
 }
 
-const screenFooterBaseLines = 2
+const screenFooterBaseLines = 3
 
 func NewScreenController(in io.Reader, out io.Writer) *ScreenController {
 	inputFile, ok := in.(*os.File)
@@ -560,7 +560,7 @@ func (m screenModel) View() string {
 
 	divider := m.styles.separator.Render(strings.Repeat("─", m.width))
 	status := m.styles.status.Width(m.width).Render(m.statusText())
-	return m.viewport.View() + "\n" + divider + "\n" + m.input.View() + "\n" + status
+	return m.viewport.View() + "\n" + divider + "\n" + m.input.View() + "\n\n" + status
 }
 
 func (m *screenModel) syncLayout() {
