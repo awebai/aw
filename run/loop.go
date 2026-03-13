@@ -20,6 +20,7 @@ type Loop struct {
 	Runner            CommandRunner
 	Sleep             SleepFunc
 	WakeStream        WakeStream
+	WakeFilter        awid.WakeFilter
 	ServiceSupervisor ServiceSupervisor
 	Out               io.Writer
 	Control           InputController
@@ -28,7 +29,9 @@ type Loop struct {
 	InputPromptLabel  string
 	StatusIdentity    string
 
-	writeMu sync.Mutex
+	writeMu    sync.Mutex
+	eventQueue []awid.AgentEvent
+	eqMu       sync.Mutex
 }
 
 type state struct {
@@ -49,6 +52,7 @@ type state struct {
 	PendingInput       bool
 	InputBuffer        string
 	StructuredOut      bool
+	LastWakeEvent      *awid.AgentEvent
 	LastRunError       string
 	LastRunUsage       UsageStats
 	HasRunUsage        bool
@@ -200,7 +204,7 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 		return DispatchDecision{MissionPrompt: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
 	}
 	if l.Dispatch != nil {
-		decision, err := l.Dispatch.Next(ctx, st.Autofeed)
+		decision, err := l.Dispatch.Next(ctx, st.Autofeed, st.LastWakeEvent)
 		if err != nil {
 			l.printf("info: dispatch failed: %v\n", err)
 			l.println("info: waiting for dispatch recovery before starting a run.")
@@ -348,14 +352,15 @@ func (l *Loop) startWakeControlRelay(ctx context.Context) <-chan ControlEvent {
 						}
 						continue
 					}
-					control, ok := ControlEventFromAgentEvent(evt)
-					if !ok {
-						continue
-					}
-					select {
-					case <-ctx.Done():
-						return
-					case relay <- control:
+					control, isControl := ControlEventFromAgentEvent(evt)
+					if isControl {
+						select {
+						case <-ctx.Done():
+							return
+						case relay <- control:
+						}
+					} else if l.shouldWakeForEvent(evt, nil) {
+						l.queueWakeEvent(evt)
 					}
 					if evt.Type == awid.AgentEventError {
 						streamOpen = false
@@ -520,6 +525,19 @@ func (l *Loop) waitForWorkEvents(ctx context.Context, waitSeconds int, st *state
 		return nil
 	}
 
+	// Drain events queued during the previous run before opening a new stream.
+	if queued := l.drainEventQueue(); len(queued) > 0 {
+		for _, evt := range queued {
+			if l.shouldWakeForEvent(evt, st) {
+				evtCopy := evt
+				st.LastWakeEvent = &evtCopy
+				if l.handleImmediateWakeEvent(ctx, evt, st) {
+					return nil
+				}
+			}
+		}
+	}
+
 	deadline := l.Now().Add(time.Duration(waitSeconds) * time.Second)
 	events, errs := l.WakeStream.Stream(ctx, deadline)
 	for {
@@ -546,6 +564,8 @@ func (l *Loop) waitForWorkEvents(ctx context.Context, waitSeconds int, st *state
 			if !l.shouldWakeForEvent(evt, st) {
 				continue
 			}
+			evtCopy := evt
+			st.LastWakeEvent = &evtCopy
 			if l.handleImmediateWakeEvent(ctx, evt, st) {
 				return nil
 			}
@@ -579,20 +599,12 @@ func isUnsupportedWakeStreamError(err error) bool {
 }
 
 func (l *Loop) shouldWakeForEvent(evt awid.AgentEvent, st *state) bool {
-	switch evt.Type {
-	case awid.AgentEventConnected:
-		return false
-	case awid.AgentEventMailMessage, awid.AgentEventChatMessage:
-		return true
-	case awid.AgentEventWorkAvailable, awid.AgentEventClaimUpdate, awid.AgentEventClaimRemoved:
-		return st != nil && st.Autofeed
-	case awid.AgentEventControlPause, awid.AgentEventControlResume, awid.AgentEventControlInterrupt:
-		return true
-	case awid.AgentEventError:
-		return true
-	default:
-		return false
+	filter := l.WakeFilter
+	if filter == nil {
+		filter = awid.DefaultWakeFilter
 	}
+	autofeed := st != nil && st.Autofeed
+	return filter(evt, autofeed)
 }
 
 func (l *Loop) handleImmediateWakeEvent(ctx context.Context, evt awid.AgentEvent, st *state) bool {
@@ -1145,4 +1157,21 @@ func RealCommandRunner(ctx context.Context, dir string, argv []string, onLine fu
 		return err
 	}
 	return nil
+}
+
+func (l *Loop) queueWakeEvent(evt awid.AgentEvent) {
+	l.eqMu.Lock()
+	defer l.eqMu.Unlock()
+	l.eventQueue = append(l.eventQueue, evt)
+}
+
+func (l *Loop) drainEventQueue() []awid.AgentEvent {
+	l.eqMu.Lock()
+	defer l.eqMu.Unlock()
+	if len(l.eventQueue) == 0 {
+		return nil
+	}
+	queued := l.eventQueue
+	l.eventQueue = nil
+	return queued
 }

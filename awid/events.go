@@ -62,7 +62,9 @@ func (s *AgentEventStream) Close() error {
 }
 
 // Next reads the next typed agent event, skipping unknown event names.
-func (s *AgentEventStream) Next() (*AgentEvent, error) {
+// The ctx parameter is accepted for EventSource interface conformance;
+// cancellation is handled by the underlying HTTP response body context.
+func (s *AgentEventStream) Next(_ context.Context) (*AgentEvent, error) {
 	if s == nil || s.sse == nil {
 		return nil, fmt.Errorf("aweb: agent event stream is nil")
 	}

@@ -134,7 +134,7 @@ type DispatchDecision struct {
 }
 
 type Dispatcher interface {
-	Next(ctx context.Context, autofeed bool) (DispatchDecision, error)
+	Next(ctx context.Context, autofeed bool, wakeEvent *awid.AgentEvent) (DispatchDecision, error)
 }
 
 type WakeStream interface {

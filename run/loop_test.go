@@ -47,7 +47,7 @@ type fakeDispatcher struct {
 	index     int
 }
 
-func (d *fakeDispatcher) Next(context.Context, bool) (DispatchDecision, error) {
+func (d *fakeDispatcher) Next(_ context.Context, _ bool, _ *awid.AgentEvent) (DispatchDecision, error) {
 	if d.index >= len(d.decisions) {
 		return DispatchDecision{}, errors.New("no dispatch decision available")
 	}

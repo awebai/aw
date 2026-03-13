@@ -9,12 +9,7 @@ import (
 	awid "github.com/awebai/aw/awid"
 )
 
-type AgentEventSource interface {
-	Next() (*awid.AgentEvent, error)
-	Close() error
-}
-
-type EventStreamOpener func(ctx context.Context, deadline time.Time) (AgentEventSource, error)
+type EventStreamOpener func(ctx context.Context, deadline time.Time) (awid.EventSource, error)
 
 type ClientWakeStream struct {
 	Open          EventStreamOpener
@@ -25,7 +20,7 @@ type ClientWakeStream struct {
 
 func NewClientWakeStream(client *awid.Client) *ClientWakeStream {
 	return &ClientWakeStream{
-		Open: func(ctx context.Context, deadline time.Time) (AgentEventSource, error) {
+		Open: func(ctx context.Context, deadline time.Time) (awid.EventSource, error) {
 			return client.EventStream(ctx, deadline)
 		},
 	}
@@ -114,9 +109,9 @@ func (s *ClientWakeStream) stream(ctx context.Context, deadline time.Time, event
 	}
 }
 
-func (s *ClientWakeStream) forwardEvents(ctx context.Context, nowFn func() time.Time, deadline time.Time, stream AgentEventSource, events chan<- awid.AgentEvent) error {
+func (s *ClientWakeStream) forwardEvents(ctx context.Context, nowFn func() time.Time, deadline time.Time, stream awid.EventSource, events chan<- awid.AgentEvent) error {
 	for {
-		ev, err := stream.Next()
+		ev, err := stream.Next(ctx)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if deadlineReached(nowFn, deadline) {

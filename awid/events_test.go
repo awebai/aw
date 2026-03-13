@@ -163,7 +163,7 @@ func TestEventStreamRequestsEventStream(t *testing.T) {
 		t.Fatalf("deadline=%v want %v", capturedTime, wantDeadline)
 	}
 
-	ev, err := stream.Next()
+	ev, err := stream.Next(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestEventStreamSkipsUnknownEventsAndSurfacesErrorEvent(t *testing.T) {
 	}
 	defer stream.Close()
 
-	ev, err := stream.Next()
+	ev, err := stream.Next(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestAgentEventStreamNextNilStream(t *testing.T) {
 	t.Parallel()
 
 	var stream *AgentEventStream
-	_, err := stream.Next()
+	_, err := stream.Next(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "nil") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -263,14 +263,14 @@ func TestEventStreamReturnsEOFOnCleanClose(t *testing.T) {
 	}
 	defer stream.Close()
 
-	ev, err := stream.Next()
+	ev, err := stream.Next(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ev.Type != AgentEventConnected {
 		t.Fatalf("event=%q", ev.Type)
 	}
-	_, err = stream.Next()
+	_, err = stream.Next(context.Background())
 	if err != io.EOF {
 		t.Fatalf("expected io.EOF, got %v", err)
 	}

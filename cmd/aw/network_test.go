@@ -260,7 +260,7 @@ default_account: acct
 	}
 	t.Cleanup(func() { _ = stream.Close() })
 
-	event, err := stream.Next()
+	event, err := stream.Next(ctx)
 	if err != nil {
 		t.Fatalf("Next: %v", err)
 	}
