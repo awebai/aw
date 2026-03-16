@@ -342,13 +342,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 	var attachResult *contextAttachResult
 	if initWriteContext {
 		authClient, err := aweb.NewWithAPIKey(baseURL, resp.APIKey)
-		if err != nil {
-			return err
-		}
-		workingDir, _ := os.Getwd()
-		attachResult, err = autoAttachContext(workingDir, authClient)
-		if err != nil {
-			return err
+		if err == nil {
+			workingDir, _ := os.Getwd()
+			attachResult, err = autoAttachContext(workingDir, authClient)
+			if err != nil {
+				debugLog("workspace attach: %v", err)
+				fmt.Fprintf(os.Stderr, "Warning: could not attach workspace context (coordination may not be available on this server)\n")
+			}
 		}
 	}
 

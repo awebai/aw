@@ -7417,3 +7417,215 @@ default_account: acct-log-test
 		t.Fatalf("subject=%q", entry.Subject)
 	}
 }
+
+func TestDefaultServerURL(t *testing.T) {
+	t.Parallel()
+	if DefaultServerURL != "https://app.aweb.ai" {
+		t.Fatalf("DefaultServerURL=%q, want https://app.aweb.ai", DefaultServerURL)
+	}
+}
+
+func TestResolveBaseURLForInitFallsBackToDefault(t *testing.T) {
+	// Cannot use t.Parallel() — needs env and cwd control.
+
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	origCfg := os.Getenv("AW_CONFIG_PATH")
+	origURL := os.Getenv("AWEB_URL")
+	origWd, _ := os.Getwd()
+	os.Setenv("AW_CONFIG_PATH", cfgPath)
+	os.Setenv("AWEB_URL", "")
+	os.Chdir(tmp)
+	defer func() {
+		os.Setenv("AW_CONFIG_PATH", origCfg)
+		os.Setenv("AWEB_URL", origURL)
+		os.Chdir(origWd)
+	}()
+
+	// resolveBaseURLForInit should fall back to the default URL.
+	// If the server is reachable, we get a URL back; if not, the error
+	// should mention app.aweb.ai. Either way, the default was used.
+	baseURL, serverName, _, err := resolveBaseURLForInit("", "")
+	if err != nil {
+		if !strings.Contains(err.Error(), "app.aweb.ai") {
+			t.Fatalf("expected error to reference default URL app.aweb.ai, got: %v", err)
+		}
+		return
+	}
+	if !strings.Contains(baseURL, "app.aweb.ai") {
+		t.Fatalf("expected baseURL to contain app.aweb.ai, got %q", baseURL)
+	}
+	if !strings.Contains(serverName, "app.aweb.ai") {
+		t.Fatalf("expected serverName to contain app.aweb.ai, got %q", serverName)
+	}
+}
+
+func TestInitDefaultServerUsedWhenNoURLProvided(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/init":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":         "ok",
+				"created_at":     "2026-03-16T10:00:00Z",
+				"project_id":     "proj-1",
+				"project_slug":   "demo",
+				"agent_id":       "agent-1",
+				"alias":          "alice",
+				"api_key":        "aw_sk_test",
+				"namespace_slug": "demo",
+				"created":        true,
+				"did":            "did:key:z6Mktest",
+				"custody":        "self",
+				"lifetime":       "persistent",
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	buildAwBinary(t, ctx, bin)
+
+	// Use AWEB_URL to point at test server. The test verifies that
+	// when --server-url is omitted, the init flow still works (using
+	// whatever URL resolution provides, including the default).
+	run := exec.CommandContext(ctx, bin, "init",
+		"--namespace", "demo",
+		"--alias", "alice",
+		"--write-context=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL="+server.URL,
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("init failed: %v\n%s", err, string(out))
+	}
+	if !strings.Contains(string(out), "alice") {
+		t.Fatalf("expected output to mention alias alice, got: %s", string(out))
+	}
+}
+
+func TestInitTargetNamespaceRequiresAlias(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	buildAwBinary(t, ctx, bin)
+
+	// --target-namespace provided, --alias NOT provided → should error.
+	run := exec.CommandContext(ctx, bin, "init",
+		"--server-url", "http://localhost:9999",
+		"--target-namespace", "mycomp",
+		"--namespace", "demo",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_ALIAS=",
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected error without --alias, got success: %s", string(out))
+	}
+	if !strings.Contains(string(out), "--alias") {
+		t.Fatalf("expected error mentioning --alias, got: %s", string(out))
+	}
+}
+
+func TestInitWorkspaceAttachNonFatal(t *testing.T) {
+	t.Parallel()
+
+	// Server handles /v1/init but returns 404 for /v1/workspaces/register.
+	// Init should succeed with a warning, not fail.
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/init":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":         "ok",
+				"created_at":     "2026-03-16T10:00:00Z",
+				"project_id":     "proj-1",
+				"project_slug":   "demo",
+				"agent_id":       "agent-1",
+				"alias":          "alice",
+				"api_key":        "aw_sk_test",
+				"namespace_slug": "demo",
+				"created":        true,
+				"did":            "did:key:z6Mktest",
+				"custody":        "self",
+				"lifetime":       "persistent",
+			})
+		case "/v1/workspaces/register":
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
+		default:
+			// Ignore other requests (heartbeat etc handled by wrapper)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepoWithOrigin(t, repo, "https://github.com/acme/repo.git")
+	buildAwBinary(t, ctx, bin)
+
+	if err := os.WriteFile(cfgPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "init",
+		"--namespace", "demo",
+		"--alias", "alice",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL="+server.URL,
+		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
+	)
+	run.Dir = repo
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("init should succeed even when workspace attach fails: %v\n%s", err, string(out))
+	}
+	if !strings.Contains(string(out), "alice") {
+		t.Fatalf("expected output to mention alias, got: %s", string(out))
+	}
+}

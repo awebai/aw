@@ -20,6 +20,10 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// DefaultServerURL is the public aweb instance used when no server URL is
+// configured via flags, environment, or local config.
+const DefaultServerURL = "https://app.aweb.ai"
+
 func loadDotenvBestEffort() {
 	// Best effort: load from current working directory.
 	_ = godotenv.Load()
@@ -495,7 +499,7 @@ func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName
 		}
 	}
 	if baseURL == "" {
-		return "", "", nil, fmt.Errorf("no server selected (pass --server-url, set AWEB_URL, or configure a default account in your aw config)")
+		baseURL = DefaultServerURL
 	}
 	if serverName == "" {
 		derived, derr := awconfig.DeriveServerNameFromURL(baseURL)
