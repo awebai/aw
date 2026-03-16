@@ -7629,3 +7629,65 @@ func TestInitWorkspaceAttachNonFatal(t *testing.T) {
 		t.Fatalf("expected output to mention alias, got: %s", string(out))
 	}
 }
+
+func TestMCPConfig(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  prod:
+    url: https://app.aweb.ai
+accounts:
+  acct:
+    server: prod
+    api_key: aw_sk_testkey123
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	buildAwBinary(t, ctx, bin)
+
+	run := exec.CommandContext(ctx, bin, "mcp-config")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("mcp-config failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+
+	servers, ok := got["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mcpServers key, got: %s", string(out))
+	}
+	aweb, ok := servers["aweb"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mcpServers.aweb key, got: %s", string(out))
+	}
+	if aweb["url"] != "https://app.aweb.ai/mcp" {
+		t.Fatalf("url=%v", aweb["url"])
+	}
+	headers, ok := aweb["headers"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected headers key, got: %s", string(out))
+	}
+	if headers["Authorization"] != "Bearer aw_sk_testkey123" {
+		t.Fatalf("Authorization=%v", headers["Authorization"])
+	}
+}
