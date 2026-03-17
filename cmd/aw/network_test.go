@@ -316,14 +316,14 @@ func TestResolveWorkingBaseURLContextHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestMailSendNetworkAddressRoutesToCloudEndpoint(t *testing.T) {
+func TestMailSendNetworkAddressUsesUnifiedEndpoint(t *testing.T) {
 	t.Parallel()
 
 	var gotPath string
 	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/network/mail":
+		case "/api/v1/messages":
 			gotPath = r.URL.Path
 			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 				t.Fatalf("decode: %v", err)
@@ -332,8 +332,6 @@ func TestMailSendNetworkAddressRoutesToCloudEndpoint(t *testing.T) {
 				"message_id":   "net-msg-1",
 				"status":       "sent",
 				"delivered_at": "2026-02-06T00:00:00Z",
-				"from_address": "myorg/me",
-				"to_address":   "acme/researcher",
 			})
 		case "/api/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -378,11 +376,11 @@ default_account: acct
 		t.Fatalf("run: %v\n%s", err, out)
 	}
 
-	if gotPath != "/api/v1/network/mail" {
+	if gotPath != "/api/v1/messages" {
 		t.Fatalf("path=%s", gotPath)
 	}
-	if gotBody["to_address"] != "acme/researcher" {
-		t.Fatalf("to_address=%v", gotBody["to_address"])
+	if gotBody["to_alias"] != "acme/researcher" {
+		t.Fatalf("to_alias=%v", gotBody["to_alias"])
 	}
 	if gotBody["body"] != "hello network" {
 		t.Fatalf("body=%v", gotBody["body"])
@@ -620,7 +618,7 @@ func TestMailSendNetworkTarget404ShowsAgentNotFound(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/network/mail":
+		case "/api/v1/messages":
 			w.WriteHeader(http.StatusNotFound)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"detail": "Target not found",

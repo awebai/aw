@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/awebai/aw/awid"
@@ -18,19 +17,18 @@ var mailCmd = &cobra.Command{
 // mail send
 
 var (
-	mailSendToAgentID string
-	mailSendToAlias   string
-	mailSendSubject   string
-	mailSendBody      string
-	mailSendPriority  string
+	mailSendToAlias  string
+	mailSendSubject  string
+	mailSendBody     string
+	mailSendPriority string
 )
 
 var mailSendCmd = &cobra.Command{
 	Use:   "send",
 	Short: "Send a message to another agent",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if mailSendToAgentID == "" && mailSendToAlias == "" {
-			return usageError("missing required flag: --to-alias or --to-agent-id")
+		if mailSendToAlias == "" {
+			return usageError("missing required flag: --to-alias")
 		}
 		if mailSendBody == "" {
 			return usageError("missing required flag: --body")
@@ -43,97 +41,31 @@ var mailSendCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		logsDir := defaultLogsDir()
 
-		if strings.HasPrefix(mailSendToAlias, "@") {
-			handle := strings.TrimPrefix(mailSendToAlias, "@")
-			if handle == "" {
-				return fmt.Errorf("empty handle: use @username")
-			}
-			resp, err := c.SendDM(ctx, &awid.DMRequest{
-				ToHandle: handle,
-				Subject:  mailSendSubject,
-				Body:     mailSendBody,
-				Priority: mailSendPriority,
-			})
-			if err != nil {
-				return networkError(err, mailSendToAlias)
-			}
-			appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
-				Dir:       "send",
-				Channel:   "dm",
-				MessageID: resp.MessageID,
-				From:      deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias),
-				To:        "@" + handle,
-				Subject:   mailSendSubject,
-				Body:      mailSendBody,
-			})
-			if jsonFlag {
-				printJSON(resp)
-			} else {
-				fmt.Printf("Sent DM to %s (message_id=%s)\n", mailSendToAlias, resp.MessageID)
-			}
-			return nil
-		}
-
-		addr := awid.ParseNetworkAddress(mailSendToAlias)
-		if addr.IsNetwork {
-			resp, err := c.NetworkSendMail(ctx, &awid.NetworkMailRequest{
-				ToAddress: addr.String(),
-				Subject:   mailSendSubject,
-				Body:      mailSendBody,
-				Priority:  mailSendPriority,
-			})
-			if err != nil {
-				return networkError(err, addr.String())
-			}
-			appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
-				Dir:       "send",
-				Channel:   "mail",
-				MessageID: resp.MessageID,
-				From:      resp.FromAddress,
-				To:        resp.ToAddress,
-				Subject:   mailSendSubject,
-				Body:      mailSendBody,
-			})
-			if jsonFlag {
-				printJSON(resp)
-			} else {
-				fmt.Printf("Sent mail to %s (message_id=%s)\n", addr.String(), resp.MessageID)
-			}
-			return nil
-		}
-
-		target := mailSendToAlias
-		if target == "" {
-			target = mailSendToAgentID
-		}
 		resp, err := c.SendMessage(ctx, &awid.SendMessageRequest{
-			ToAgentID: mailSendToAgentID,
-			ToAlias:   mailSendToAlias,
-			Subject:   mailSendSubject,
-			Body:      mailSendBody,
-			Priority:  awid.MessagePriority(mailSendPriority),
+			ToAlias:  mailSendToAlias,
+			Subject:  mailSendSubject,
+			Body:     mailSendBody,
+			Priority: awid.MessagePriority(mailSendPriority),
 		})
 		if err != nil {
-			return err
+			return networkError(err, mailSendToAlias)
 		}
+		logsDir := defaultLogsDir()
 		appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 			Dir:       "send",
 			Channel:   "mail",
 			MessageID: resp.MessageID,
 			From:      deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias),
-			To:        target,
+			To:        mailSendToAlias,
 			Subject:   mailSendSubject,
 			Body:      mailSendBody,
 		})
 		if jsonFlag {
 			printJSON(resp)
 		} else {
-			fmt.Printf("Sent mail to %s (message_id=%s)\n", target, resp.MessageID)
+			fmt.Printf("Sent mail to %s (message_id=%s)\n", mailSendToAlias, resp.MessageID)
 		}
 		return nil
 	},
@@ -222,8 +154,7 @@ var mailAckCmd = &cobra.Command{
 }
 
 func init() {
-	mailSendCmd.Flags().StringVar(&mailSendToAgentID, "to-agent-id", "", "Recipient agent_id")
-	mailSendCmd.Flags().StringVar(&mailSendToAlias, "to-alias", "", "Recipient alias")
+	mailSendCmd.Flags().StringVar(&mailSendToAlias, "to-alias", "", "Recipient address")
 	mailSendCmd.Flags().StringVar(&mailSendSubject, "subject", "", "Subject")
 	mailSendCmd.Flags().StringVar(&mailSendBody, "body", "", "Body")
 	mailSendCmd.Flags().StringVar(&mailSendPriority, "priority", "normal", "Priority: low|normal|high|urgent")

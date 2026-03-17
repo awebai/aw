@@ -1460,46 +1460,6 @@ func TestNetworkSendMailSignsWhenIdentitySet(t *testing.T) {
 	}
 }
 
-func TestSendDMSignsWhenIdentitySet(t *testing.T) {
-	t.Parallel()
-
-	pub, priv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	did := ComputeDIDKey(pub)
-
-	var gotBody map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"message_id":   "msg-1",
-			"status":       "delivered",
-			"delivered_at": "2026-02-22T00:00:00Z",
-		})
-	}))
-	t.Cleanup(server.Close)
-
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = c.SendDM(context.Background(), &DMRequest{
-		ToHandle: "juanre",
-		Body:     "hello",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if gotBody["from_did"] != did {
-		t.Fatalf("from_did=%v", gotBody["from_did"])
-	}
-	if gotBody["signature"] == nil || gotBody["signature"] == "" {
-		t.Fatal("signature missing")
-	}
-}
-
 func TestChatCreateSessionSignsWhenIdentitySet(t *testing.T) {
 	t.Parallel()
 
