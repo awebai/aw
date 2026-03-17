@@ -7754,16 +7754,16 @@ default_account: local-alice
 	if len(servers) != 2 {
 		t.Fatalf("expected 2 mcpServers entries, got %d: %s", len(servers), string(out))
 	}
-	local, ok := servers["local"].(map[string]any)
+	local, ok := servers["local-alice"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected mcpServers.local, got: %s", string(out))
+		t.Fatalf("expected mcpServers.local-alice, got: %s", string(out))
 	}
 	if local["url"] != "http://localhost:8000/mcp" {
 		t.Fatalf("local url=%v", local["url"])
 	}
-	prod, ok := servers["prod"].(map[string]any)
+	prod, ok := servers["prod-alice"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected mcpServers.prod, got: %s", string(out))
+		t.Fatalf("expected mcpServers.prod-alice, got: %s", string(out))
 	}
 	if prod["url"] != "https://app.aweb.ai/mcp" {
 		t.Fatalf("prod url=%v", prod["url"])

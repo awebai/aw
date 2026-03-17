@@ -60,12 +60,7 @@ func mcpConfigAllAccounts() error {
 		}
 		baseURL := strings.TrimRight(srv.URL, "/")
 
-		// Use the server name as the MCP server key for clarity.
-		key := acct.Server
-		if key == "" {
-			key = acctName
-		}
-		servers[key] = map[string]any{
+		servers[acctName] = map[string]any{
 			"url": baseURL + "/mcp",
 			"headers": map[string]string{
 				"Authorization": "Bearer " + acct.APIKey,
