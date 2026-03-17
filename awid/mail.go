@@ -25,10 +25,11 @@ type SendMessageRequest struct {
 	FromDID      string          `json:"from_did,omitempty"`
 	ToDID        string          `json:"to_did,omitempty"`
 	FromStableID string          `json:"from_stable_id,omitempty"`
-	Signature    string          `json:"signature,omitempty"`
-	SigningKeyID string          `json:"signing_key_id,omitempty"`
-	Timestamp    string          `json:"timestamp,omitempty"`
-	MessageID    string          `json:"message_id,omitempty"`
+	Signature     string          `json:"signature,omitempty"`
+	SigningKeyID  string          `json:"signing_key_id,omitempty"`
+	Timestamp     string          `json:"timestamp,omitempty"`
+	MessageID     string          `json:"message_id,omitempty"`
+	SignedPayload string          `json:"signed_payload,omitempty"`
 }
 
 type SendMessageResponse struct {
@@ -77,6 +78,7 @@ func (c *Client) SendMessage(ctx context.Context, req *SendMessageRequest) (*Sen
 	payload.SigningKeyID = sf.SigningKeyID
 	payload.Timestamp = sf.Timestamp
 	payload.MessageID = sf.MessageID
+	payload.SignedPayload = sf.SignedPayload
 
 	var out SendMessageResponse
 	if err := c.Post(ctx, "/v1/messages", &payload, &out); err != nil {
@@ -104,6 +106,7 @@ type InboxMessage struct {
 	ToStableID           string                `json:"to_stable_id,omitempty"`
 	Signature            string                `json:"signature,omitempty"`
 	SigningKeyID         string                `json:"signing_key_id,omitempty"`
+	SignedPayload        string                `json:"signed_payload,omitempty"`
 	RotationAnnouncement *RotationAnnouncement `json:"rotation_announcement,omitempty"`
 	VerificationStatus   VerificationStatus    `json:"verification_status,omitempty"`
 	IsContact            *bool                 `json:"is_contact,omitempty"`
@@ -139,27 +142,30 @@ func (c *Client) Inbox(ctx context.Context, p InboxParams) (*InboxResponse, erro
 		if m.FromAddress != "" {
 			from = m.FromAddress
 		}
-		to := m.ToAlias
-		if m.ToAddress != "" {
-			to = m.ToAddress
+		if m.SignedPayload != "" {
+			m.VerificationStatus, _ = VerifySignedPayload(m.SignedPayload, m.Signature, m.FromDID)
+		} else {
+			to := m.ToAlias
+			if m.ToAddress != "" {
+				to = m.ToAddress
+			}
+			env := &MessageEnvelope{
+				From:         from,
+				FromDID:      m.FromDID,
+				To:           to,
+				ToDID:        m.ToDID,
+				Type:         "mail",
+				Subject:      m.Subject,
+				Body:         m.Body,
+				Timestamp:    m.CreatedAt,
+				FromStableID: m.FromStableID,
+				ToStableID:   m.ToStableID,
+				MessageID:    m.MessageID,
+				Signature:    m.Signature,
+				SigningKeyID: m.SigningKeyID,
+			}
+			m.VerificationStatus, _ = VerifyMessage(env)
 		}
-		env := &MessageEnvelope{
-			From:         from,
-			FromDID:      m.FromDID,
-			To:           to,
-			ToDID:        m.ToDID,
-			Type:         "mail",
-			Subject:      m.Subject,
-			Body:         m.Body,
-			Timestamp:    m.CreatedAt,
-			FromStableID: m.FromStableID,
-			ToStableID:   m.ToStableID,
-			MessageID:    m.MessageID,
-			Signature:    m.Signature,
-			SigningKeyID: m.SigningKeyID,
-		}
-		// Error is encoded in VerificationStatus; discard it.
-		m.VerificationStatus, _ = VerifyMessage(env)
 		m.VerificationStatus = c.checkRecipientBinding(m.VerificationStatus, m.ToDID)
 		m.VerificationStatus = c.CheckTOFUPin(ctx, m.VerificationStatus, from, m.FromDID, m.FromStableID, m.RotationAnnouncement)
 	}

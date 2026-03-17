@@ -94,6 +94,34 @@ func VerifyMessage(env *MessageEnvelope) (VerificationStatus, error) {
 	return Verified, nil
 }
 
+// VerifySignedPayload verifies a signature against a pre-computed canonical
+// payload string. Use this when the server returns signed_payload alongside
+// the message, avoiding reconstruction from display fields.
+func VerifySignedPayload(signedPayload, signatureB64, fromDID string) (VerificationStatus, error) {
+	if fromDID == "" || signatureB64 == "" || signedPayload == "" {
+		return Unverified, nil
+	}
+
+	if !strings.HasPrefix(fromDID, "did:key:z") {
+		return Unverified, nil
+	}
+	pub, err := ExtractPublicKey(fromDID)
+	if err != nil {
+		return Failed, fmt.Errorf("extract public key from from_did: %w", err)
+	}
+
+	sig, err := base64.RawStdEncoding.DecodeString(signatureB64)
+	if err != nil {
+		return Failed, fmt.Errorf("decode signature: %w", err)
+	}
+
+	if !ed25519.Verify(pub, []byte(signedPayload), sig) {
+		return Failed, nil
+	}
+
+	return Verified, nil
+}
+
 // CanonicalJSON builds the canonical JSON payload for message signing.
 // Fields are sorted lexicographically, no whitespace, minimal escaping.
 // Optional fields (from_stable_id, message_id, to_stable_id) are omitted when empty.

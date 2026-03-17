@@ -90,10 +90,11 @@ type ChatCreateSessionRequest struct {
 	FromDID      string   `json:"from_did,omitempty"`
 	ToDID        string   `json:"to_did,omitempty"`
 	FromStableID string   `json:"from_stable_id,omitempty"`
-	Signature    string   `json:"signature,omitempty"`
-	SigningKeyID string   `json:"signing_key_id,omitempty"`
-	Timestamp    string   `json:"timestamp,omitempty"`
-	MessageID    string   `json:"message_id,omitempty"`
+	Signature     string   `json:"signature,omitempty"`
+	SigningKeyID  string   `json:"signing_key_id,omitempty"`
+	Timestamp     string   `json:"timestamp,omitempty"`
+	MessageID     string   `json:"message_id,omitempty"`
+	SignedPayload string   `json:"signed_payload,omitempty"`
 }
 
 type ChatCreateSessionResponse struct {
@@ -153,6 +154,7 @@ func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRe
 	payload.SigningKeyID = sf.SigningKeyID
 	payload.Timestamp = sf.Timestamp
 	payload.MessageID = sf.MessageID
+	payload.SignedPayload = sf.SignedPayload
 
 	var out ChatCreateSessionResponse
 	if err := c.Post(ctx, "/v1/chat/sessions", &payload, &out); err != nil {
@@ -203,6 +205,7 @@ type ChatMessage struct {
 	ToStableID           string                `json:"to_stable_id,omitempty"`
 	Signature            string                `json:"signature,omitempty"`
 	SigningKeyID         string                `json:"signing_key_id,omitempty"`
+	SignedPayload        string                `json:"signed_payload,omitempty"`
 	RotationAnnouncement *RotationAnnouncement `json:"rotation_announcement,omitempty"`
 	VerificationStatus   VerificationStatus    `json:"verification_status,omitempty"`
 	IsContact            *bool                 `json:"is_contact,omitempty"`
@@ -235,26 +238,29 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 		if m.FromAddress != "" {
 			from = m.FromAddress
 		}
-		to := ""
-		if m.ToAddress != "" {
-			to = m.ToAddress
+		if m.SignedPayload != "" {
+			m.VerificationStatus, _ = VerifySignedPayload(m.SignedPayload, m.Signature, m.FromDID)
+		} else {
+			to := ""
+			if m.ToAddress != "" {
+				to = m.ToAddress
+			}
+			env := &MessageEnvelope{
+				From:         from,
+				FromDID:      m.FromDID,
+				To:           to,
+				ToDID:        m.ToDID,
+				Type:         "chat",
+				Body:         m.Body,
+				Timestamp:    m.Timestamp,
+				FromStableID: m.FromStableID,
+				ToStableID:   m.ToStableID,
+				MessageID:    m.MessageID,
+				Signature:    m.Signature,
+				SigningKeyID: m.SigningKeyID,
+			}
+			m.VerificationStatus, _ = VerifyMessage(env)
 		}
-		env := &MessageEnvelope{
-			From:         from,
-			FromDID:      m.FromDID,
-			To:           to,
-			ToDID:        m.ToDID,
-			Type:         "chat",
-			Body:         m.Body,
-			Timestamp:    m.Timestamp,
-			FromStableID: m.FromStableID,
-			ToStableID:   m.ToStableID,
-			MessageID:    m.MessageID,
-			Signature:    m.Signature,
-			SigningKeyID: m.SigningKeyID,
-		}
-		// Error is encoded in VerificationStatus; discard it.
-		m.VerificationStatus, _ = VerifyMessage(env)
 		m.VerificationStatus = c.CheckTOFUPin(ctx, m.VerificationStatus, from, m.FromDID, m.FromStableID, m.RotationAnnouncement)
 	}
 	return &out, nil
@@ -320,15 +326,16 @@ func (c *Client) ChatStream(ctx context.Context, sessionID string, deadline time
 
 // ChatSendMessage sends a message in an existing chat session.
 type ChatSendMessageRequest struct {
-	Body         string `json:"body"`
-	ExtendWait   bool   `json:"hang_on,omitempty"`
-	FromDID      string `json:"from_did,omitempty"`
-	ToDID        string `json:"to_did,omitempty"`
-	FromStableID string `json:"from_stable_id,omitempty"`
-	Signature    string `json:"signature,omitempty"`
-	SigningKeyID string `json:"signing_key_id,omitempty"`
-	Timestamp    string `json:"timestamp,omitempty"`
-	MessageID    string `json:"message_id,omitempty"`
+	Body          string `json:"body"`
+	ExtendWait    bool   `json:"hang_on,omitempty"`
+	FromDID       string `json:"from_did,omitempty"`
+	ToDID         string `json:"to_did,omitempty"`
+	FromStableID  string `json:"from_stable_id,omitempty"`
+	Signature     string `json:"signature,omitempty"`
+	SigningKeyID  string `json:"signing_key_id,omitempty"`
+	Timestamp     string `json:"timestamp,omitempty"`
+	MessageID     string `json:"message_id,omitempty"`
+	SignedPayload string `json:"signed_payload,omitempty"`
 }
 
 type ChatSendMessageResponse struct {
@@ -375,6 +382,7 @@ func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *Cha
 	payload.SigningKeyID = sf.SigningKeyID
 	payload.Timestamp = sf.Timestamp
 	payload.MessageID = sf.MessageID
+	payload.SignedPayload = sf.SignedPayload
 
 	var out ChatSendMessageResponse
 	if err := c.Post(ctx, "/v1/chat/sessions/"+urlPathEscape(sessionID)+"/messages", &payload, &out); err != nil {

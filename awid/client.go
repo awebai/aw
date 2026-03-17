@@ -19,13 +19,14 @@ import (
 // signedFields holds the identity fields attached to outgoing messages
 // when the client has a signing key.
 type signedFields struct {
-	FromDID      string
-	ToDID        string
-	FromStableID string
-	Signature    string
-	SigningKeyID string
-	Timestamp    string
-	MessageID    string
+	FromDID       string
+	ToDID         string
+	FromStableID  string
+	Signature     string
+	SigningKeyID  string
+	Timestamp     string
+	MessageID     string
+	SignedPayload string
 }
 
 // signEnvelope signs a MessageEnvelope and returns the fields to embed
@@ -60,13 +61,14 @@ func (c *Client) signEnvelope(ctx context.Context, env *MessageEnvelope) (signed
 		return signedFields{}, fmt.Errorf("sign message: %w", err)
 	}
 	return signedFields{
-		FromDID:      c.did,
-		ToDID:        env.ToDID,
-		FromStableID: c.stableID,
-		Signature:    sig,
-		SigningKeyID: c.did,
-		Timestamp:    env.Timestamp,
-		MessageID:    env.MessageID,
+		FromDID:       c.did,
+		ToDID:         env.ToDID,
+		FromStableID:  c.stableID,
+		Signature:     sig,
+		SigningKeyID:  c.did,
+		Timestamp:     env.Timestamp,
+		MessageID:     env.MessageID,
+		SignedPayload: CanonicalJSON(env),
 	}, nil
 }
 

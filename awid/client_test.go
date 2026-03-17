@@ -1164,6 +1164,61 @@ func TestSendMessageSignsWhenIdentitySet(t *testing.T) {
 	}
 }
 
+// TestSendMessageIncludesSignedPayload verifies that self-custodial messages
+// include the signed_payload field, and that verification succeeds using it
+// even when from_address differs from the signed from.
+func TestSendMessageIncludesSignedPayload(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-03-17T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myteam.aweb.ai/alice")
+	_, err = c.SendMessage(context.Background(), &SendMessageRequest{
+		ToAlias: "myteam.aweb.ai/bob",
+		Subject: "hello",
+		Body:    "world",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// signed_payload must be present in the request body.
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing or empty in request body")
+	}
+
+	// Verify using signed_payload directly — even though from_address
+	// would be different (server would return "alice" not "myteam.aweb.ai/alice").
+	sig := gotBody["signature"].(string)
+	status, err := VerifySignedPayload(sp, sig, did)
+	if err != nil {
+		t.Fatalf("VerifySignedPayload: %v", err)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
 // TestSendMessageSignsCanonicalToForPlainAlias verifies that same-project local
 // mail signs plain local names rather than external namespace addresses.
 func TestSendMessageSignsCanonicalToForPlainAlias(t *testing.T) {
