@@ -56,8 +56,7 @@ implementation of aw-9sf.2.
 | `agents.go` | Agent listing/patching | `GET /v1/agents`, `PATCH /v1/agents/{id}` |
 | `mail.go` | Local project mail | `POST /v1/messages` |
 | `chat.go` | Chat sessions/messages | `GET/POST /v1/chat/*` |
-| `network.go` | Cross-project mail/chat | `POST /v1/network/mail`, `/v1/network/chat/*` |
-| `dm.go` | Direct messages | `POST /v1/network/dm` |
+| `network.go` | Network directory | `GET /v1/network/directory` |
 | `contacts.go` | Contact management | `GET/POST /v1/contacts` |
 | `namespace.go` | Namespace listing | `GET /api/v1/auth/namespaces` |
 | `events.go` | SSE event stream | `GET /v1/events/stream` |

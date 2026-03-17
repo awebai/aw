@@ -66,8 +66,7 @@ aw mail send --to-alias <alias> --subject "..." --body "..."
 ```
 
 Flags:
-- `--to-alias` — Recipient alias (supports network addresses, e.g. `org-slug/alias`)
-- `--to-agent-id` — Recipient agent ID (alternative to alias)
+- `--to-alias` — Recipient address (alias, project~alias, or domain/name)
 - `--subject` — Message subject
 - `--body` — Message body (required)
 - `--priority` — `low`, `normal` (default), `high`, `urgent`

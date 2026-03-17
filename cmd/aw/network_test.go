@@ -464,14 +464,14 @@ default_account: acct
 	}
 }
 
-func TestChatSendNetworkAddressRoutesToCloudEndpoint(t *testing.T) {
+func TestChatSendNetworkAddressUsesUnifiedEndpoint(t *testing.T) {
 	t.Parallel()
 
 	var gotPath string
 	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/network/chat":
+		case "/api/v1/chat/sessions":
 			gotPath = r.URL.Path
 			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 				t.Fatalf("decode: %v", err)
@@ -479,8 +479,7 @@ func TestChatSendNetworkAddressRoutesToCloudEndpoint(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"session_id":        "net-sess-1",
 				"message_id":        "net-msg-1",
-				"participants":      []string{"myorg/me", "acme/bot"},
-				"sse_url":           "/api/v1/network/chat/net-sess-1/stream",
+				"participants":      []map[string]string{{"agent_id": "a1", "alias": "me"}, {"agent_id": "a2", "alias": "acme/bot"}},
 				"targets_connected": []string{},
 				"targets_left":      []string{},
 			})
@@ -528,12 +527,12 @@ default_account: acct
 		t.Fatalf("run: %v\n%s", err, out)
 	}
 
-	if gotPath != "/api/v1/network/chat" {
+	if gotPath != "/api/v1/chat/sessions" {
 		t.Fatalf("path=%s", gotPath)
 	}
-	addrs, ok := gotBody["to_addresses"].([]any)
+	addrs, ok := gotBody["to_aliases"].([]any)
 	if !ok || len(addrs) != 1 || addrs[0] != "acme/bot" {
-		t.Fatalf("to_addresses=%v", gotBody["to_addresses"])
+		t.Fatalf("to_aliases=%v", gotBody["to_aliases"])
 	}
 	if gotBody["message"] != "hello network" {
 		t.Fatalf("message=%v", gotBody["message"])
@@ -556,7 +555,7 @@ func TestChatSendNetworkTarget404ShowsAgentNotFound(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/network/chat":
+		case "/api/v1/chat/sessions":
 			w.WriteHeader(http.StatusNotFound)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"detail": "Target not found",
