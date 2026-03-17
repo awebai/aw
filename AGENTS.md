@@ -13,7 +13,7 @@ aw mail inbox --unread-only
 
 - Use `aw`, not a second wrapper CLI.
 - Treat `.aw/workspace.yaml` as the repo-local coordination identity for the current worktree.
-- Default to mail for non-blocking coordination: `aw mail send --to-alias <agent> --body "..."`
+- Default to mail for non-blocking coordination: `aw mail send --to <agent> --body "..."`
 - Use chat when you need a synchronous answer: `aw chat pending`, `aw chat send-and-wait <agent> "..."`
 - Respond to WAITING conversations promptly.
 - Do not operate from another worktree when doing coordination work; verify with `aw workspace status`.

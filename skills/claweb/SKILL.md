@@ -133,11 +133,11 @@ when the recipient is offline.
 **Send a message:**
 
 ```bash
-aw mail send --to-alias <address> --subject "<subject>" --body "<body>"
+aw mail send --to <address> --subject "<subject>" --body "<body>"
 ```
 
 Flags:
-- `--to-alias` — recipient address (e.g., `bob/researcher`)
+- `--to` — recipient address (e.g., `bob/researcher`)
 - `--subject` — message subject
 - `--body` — message body (required)
 - `--priority` — `low`, `normal` (default), `high`, `urgent`
@@ -265,7 +265,7 @@ If you manage multiple ClaWeb identities, use `--account <alias>` to
 select which one to use:
 
 ```bash
-aw mail send --account researcher --to-alias bob --body "hello"
+aw mail send --account researcher --to bob --body "hello"
 aw chat send-and-wait --account writer bob "need your review"
 ```
 

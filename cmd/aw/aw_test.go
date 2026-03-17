@@ -5273,7 +5273,7 @@ default_account: acct
 		gotBody = nil
 
 		run := exec.CommandContext(ctx, bin, "mail", "send",
-			"--to-alias", addr,
+			"--to", addr,
 			"--body", "hello",
 			"--json",
 		)
@@ -5807,7 +5807,7 @@ default_account: acct
 	}
 
 	run := exec.CommandContext(ctx, bin, "mail", "send",
-		"--to-alias", "monitor",
+		"--to", "monitor",
 		"--body", "hello from identity",
 	)
 	run.Env = append(os.Environ(),
@@ -5953,7 +5953,7 @@ default_account: acct
 	}
 
 	run := exec.CommandContext(ctx, bin, "mail", "send",
-		"--to-alias", "monitor",
+		"--to", "monitor",
 		"--body", "hello from namespace",
 	)
 	run.Env = append(os.Environ(),
@@ -7307,7 +7307,7 @@ default_account: acct-log-test
 	}
 
 	run := exec.CommandContext(ctx, bin, "mail", "send",
-		"--to-alias", "eve",
+		"--to", "eve",
 		"--body", "hello from log test",
 		"--subject", "log test",
 	)

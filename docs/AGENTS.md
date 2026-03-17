@@ -30,8 +30,8 @@ The recipient reads it when they're ready.
 
 **Send:**
 ```bash
-aw mail send --to-alias <alias> --subject "Status update" --body "Deploy complete"
-aw mail send --to-alias <alias> --subject "Urgent" --body "Build broken" --priority urgent
+aw mail send --to <alias> --subject "Status update" --body "Deploy complete"
+aw mail send --to <alias> --subject "Urgent" --body "Build broken" --priority urgent
 ```
 
 Priority levels: `low`, `normal` (default), `high`, `urgent`.

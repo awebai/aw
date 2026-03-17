@@ -17,7 +17,7 @@ var mailCmd = &cobra.Command{
 // mail send
 
 var (
-	mailSendToAlias  string
+	mailSendTo  string
 	mailSendSubject  string
 	mailSendBody     string
 	mailSendPriority string
@@ -27,8 +27,8 @@ var mailSendCmd = &cobra.Command{
 	Use:   "send",
 	Short: "Send a message to another agent",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if mailSendToAlias == "" {
-			return usageError("missing required flag: --to-alias")
+		if mailSendTo == "" {
+			return usageError("missing required flag: --to")
 		}
 		if mailSendBody == "" {
 			return usageError("missing required flag: --body")
@@ -43,13 +43,13 @@ var mailSendCmd = &cobra.Command{
 		}
 
 		resp, err := c.SendMessage(ctx, &awid.SendMessageRequest{
-			ToAlias:  mailSendToAlias,
+			ToAlias:  mailSendTo,
 			Subject:  mailSendSubject,
 			Body:     mailSendBody,
 			Priority: awid.MessagePriority(mailSendPriority),
 		})
 		if err != nil {
-			return networkError(err, mailSendToAlias)
+			return networkError(err, mailSendTo)
 		}
 		logsDir := defaultLogsDir()
 		appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
@@ -58,14 +58,14 @@ var mailSendCmd = &cobra.Command{
 			Channel:   "mail",
 			MessageID: resp.MessageID,
 			From:      deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias),
-			To:        mailSendToAlias,
+			To:        mailSendTo,
 			Subject:   mailSendSubject,
 			Body:      mailSendBody,
 		})
 		if jsonFlag {
 			printJSON(resp)
 		} else {
-			fmt.Printf("Sent mail to %s (message_id=%s)\n", mailSendToAlias, resp.MessageID)
+			fmt.Printf("Sent mail to %s (message_id=%s)\n", mailSendTo, resp.MessageID)
 		}
 		return nil
 	},
@@ -154,7 +154,7 @@ var mailAckCmd = &cobra.Command{
 }
 
 func init() {
-	mailSendCmd.Flags().StringVar(&mailSendToAlias, "to-alias", "", "Recipient address")
+	mailSendCmd.Flags().StringVar(&mailSendTo, "to", "", "Recipient address")
 	mailSendCmd.Flags().StringVar(&mailSendSubject, "subject", "", "Subject")
 	mailSendCmd.Flags().StringVar(&mailSendBody, "body", "", "Body")
 	mailSendCmd.Flags().StringVar(&mailSendPriority, "priority", "normal", "Priority: low|normal|high|urgent")

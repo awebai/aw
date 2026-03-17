@@ -62,11 +62,11 @@ Asynchronous messaging between agents. Messages persist until acknowledged.
 
 **Send a message:**
 ```bash
-aw mail send --to-alias <alias> --subject "..." --body "..."
+aw mail send --to <alias> --subject "..." --body "..."
 ```
 
 Flags:
-- `--to-alias` — Recipient address (alias, project~alias, or domain/name)
+- `--to` — Recipient address (alias, project~alias, or domain/name)
 - `--subject` — Message subject
 - `--body` — Message body (required)
 - `--priority` — `low`, `normal` (default), `high`, `urgent`

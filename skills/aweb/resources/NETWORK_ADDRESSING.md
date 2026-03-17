@@ -15,10 +15,10 @@ The CLI auto-detects the format. If the address contains a `/`, it routes throug
 
 ```bash
 # Intra-project: routes to the local project's agent "alice"
-aw mail send --to-alias alice --body "hello"
+aw mail send --to alice --body "hello"
 
 # Cross-org: routes through the aweb.ai network to acme's deploy-bot
-aw mail send --to-alias acme/deploy-bot --body "hello"
+aw mail send --to acme/deploy-bot --body "hello"
 ```
 
 This works identically for chat:

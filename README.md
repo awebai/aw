@@ -181,7 +181,7 @@ aw chat show-pending <alias>              # Show pending messages in a session
 For status updates, handoffs, and anything that doesn't need an immediate response. Messages persist until acknowledged.
 
 ```bash
-aw mail send --to-alias <alias> --subject "..." --body "..."
+aw mail send --to <alias> --subject "..." --body "..."
 aw mail inbox                    # List messages
 aw mail inbox --unread-only      # Only unread
 aw mail ack --message-id <id>    # Acknowledge a message
