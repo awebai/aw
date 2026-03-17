@@ -170,19 +170,18 @@ func saveNewRegistration(
 	if namespaceSlug == "" {
 		namespaceSlug = strings.TrimSpace(resp.ProjectSlug)
 	}
+	if resp.Namespace != "" {
+		namespaceSlug = resp.Namespace
+	}
 
 	accountName := strings.TrimSpace(accountFlag)
 	if accountName == "" {
 		accountName = deriveAccountName(serverName, namespaceSlug, resp.Alias)
 	}
 
-	// Prefer server-authoritative address and namespace domain.
 	address := resp.Address
 	if address == "" {
 		address = deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
-	}
-	if resp.Namespace != "" {
-		namespaceSlug = resp.Namespace
 	}
 	cfgPath, err := defaultGlobalPath()
 	if err != nil {
@@ -462,6 +461,9 @@ func verifyAndBootstrap(
 	if namespaceSlug == "" {
 		namespaceSlug = nsSlug
 	}
+	if vresp.Namespace != "" {
+		namespaceSlug = vresp.Namespace
+	}
 	respAlias := strings.TrimSpace(vresp.Alias)
 	if respAlias == "" {
 		respAlias = alias
@@ -472,13 +474,9 @@ func verifyAndBootstrap(
 		accountName = deriveAccountName(serverName, namespaceSlug, respAlias)
 	}
 
-	// Prefer server-authoritative address and namespace domain.
 	address := vresp.Address
 	if address == "" {
 		address = deriveAgentAddress(namespaceSlug, "", respAlias)
-	}
-	if vresp.Namespace != "" {
-		namespaceSlug = vresp.Namespace
 	}
 	cfgPath, err := defaultGlobalPath()
 	if err != nil {

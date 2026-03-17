@@ -115,7 +115,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	if existingDID == "" || existingSigningKey == "" {
 		var provErr error
 		identityDID, signingKeyPath, stableID, custody, lifetime, provErr = provisionIdentity(
-			ctx, client, keysDir, namespaceSlug, alias,
+			ctx, client, keysDir, namespaceSlug, alias, resp.Address,
 		)
 		if provErr != nil {
 			return provErr
@@ -197,9 +197,12 @@ func runConnect(cmd *cobra.Command, args []string) error {
 func provisionIdentity(
 	ctx context.Context,
 	client *aweb.Client,
-	keysDir, namespaceSlug, alias string,
+	keysDir, namespaceSlug, alias, authoritativeAddress string,
 ) (did, signingKeyPath, stableID, custody, lifetime string, err error) {
-	address := deriveAgentAddress(namespaceSlug, "", alias)
+	address := authoritativeAddress
+	if address == "" {
+		address = deriveAgentAddress(namespaceSlug, "", alias)
+	}
 	signingKeyPath = awid.SigningKeyPath(keysDir, address)
 
 	// Reuse existing key if one is already on disk for this address,
