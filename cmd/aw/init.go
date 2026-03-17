@@ -263,18 +263,6 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	accountName := strings.TrimSpace(accountFlag)
-	if accountName == "" {
-		accountNamespace := strings.TrimSpace(resp.NamespaceSlug)
-		if accountNamespace == "" {
-			accountNamespace = strings.TrimSpace(resp.ProjectSlug)
-		}
-		if accountNamespace == "" {
-			accountNamespace = nsSlug
-		}
-		accountName = deriveAccountName(serverName, accountNamespace, resp.Alias)
-	}
-
 	namespaceSlug := strings.TrimSpace(resp.NamespaceSlug)
 	if namespaceSlug == "" {
 		namespaceSlug = strings.TrimSpace(resp.ProjectSlug)
@@ -282,14 +270,20 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if namespaceSlug == "" {
 		namespaceSlug = nsSlug
 	}
+	// Prefer server-authoritative namespace domain.
+	if resp.Namespace != "" {
+		namespaceSlug = resp.Namespace
+	}
 
-	// Prefer server-authoritative address and namespace domain.
+	accountName := strings.TrimSpace(accountFlag)
+	if accountName == "" {
+		accountName = deriveAccountName(serverName, namespaceSlug, resp.Alias)
+	}
+
+	// Prefer server-authoritative address.
 	address := resp.Address
 	if address == "" {
 		address = deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
-	}
-	if resp.Namespace != "" {
-		namespaceSlug = resp.Namespace
 	}
 	cfgPath, err := defaultGlobalPath()
 	if err != nil {
