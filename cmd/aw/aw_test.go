@@ -7699,3 +7699,73 @@ default_account: acct
 		t.Fatalf("Authorization=%v", headers["Authorization"])
 	}
 }
+
+func TestMCPConfigAll(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: http://localhost:8000
+  prod:
+    url: https://app.aweb.ai
+accounts:
+  local-alice:
+    server: local
+    api_key: aw_sk_local
+  prod-alice:
+    server: prod
+    api_key: aw_sk_prod
+default_account: local-alice
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	buildAwBinary(t, ctx, bin)
+
+	run := exec.CommandContext(ctx, bin, "mcp-config", "--all")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("mcp-config --all failed: %v\n%s", err, string(out))
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+
+	servers, ok := got["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mcpServers key, got: %s", string(out))
+	}
+	if len(servers) != 2 {
+		t.Fatalf("expected 2 mcpServers entries, got %d: %s", len(servers), string(out))
+	}
+	local, ok := servers["local"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mcpServers.local, got: %s", string(out))
+	}
+	if local["url"] != "http://localhost:8000/mcp" {
+		t.Fatalf("local url=%v", local["url"])
+	}
+	prod, ok := servers["prod"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mcpServers.prod, got: %s", string(out))
+	}
+	if prod["url"] != "https://app.aweb.ai/mcp" {
+		t.Fatalf("prod url=%v", prod["url"])
+	}
+}

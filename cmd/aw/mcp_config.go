@@ -5,13 +5,20 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/awebai/aw/awconfig"
 	"github.com/spf13/cobra"
 )
+
+var mcpConfigAll bool
 
 var mcpConfigCmd = &cobra.Command{
 	Use:   "mcp-config",
 	Short: "Output MCP server configuration for the current agent",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if mcpConfigAll {
+			return mcpConfigAllAccounts()
+		}
+
 		sel, err := resolveSelectionForDir("")
 		if err != nil {
 			return err
@@ -39,6 +46,47 @@ var mcpConfigCmd = &cobra.Command{
 	},
 }
 
+func mcpConfigAllAccounts() error {
+	global, err := awconfig.LoadGlobal()
+	if err != nil {
+		return err
+	}
+
+	servers := map[string]any{}
+	for acctName, acct := range global.Accounts {
+		srv, ok := global.Servers[acct.Server]
+		if !ok || strings.TrimSpace(srv.URL) == "" {
+			continue
+		}
+		baseURL := strings.TrimRight(srv.URL, "/")
+
+		// Use the server name as the MCP server key for clarity.
+		key := acct.Server
+		if key == "" {
+			key = acctName
+		}
+		servers[key] = map[string]any{
+			"url": baseURL + "/mcp",
+			"headers": map[string]string{
+				"Authorization": "Bearer " + acct.APIKey,
+			},
+		}
+	}
+
+	if len(servers) == 0 {
+		return fmt.Errorf("no accounts with valid server URLs found in config")
+	}
+
+	cfg := map[string]any{"mcpServers": servers}
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	fmt.Println(string(out))
+	return nil
+}
+
 func init() {
+	mcpConfigCmd.Flags().BoolVar(&mcpConfigAll, "all", false, "Output config for all accounts")
 	rootCmd.AddCommand(mcpConfigCmd)
 }
