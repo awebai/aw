@@ -283,7 +283,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 		namespaceSlug = nsSlug
 	}
 
-	address := deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
+	// Prefer server-authoritative address and namespace domain.
+	address := resp.Address
+	if address == "" {
+		address = deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
+	}
+	if resp.Namespace != "" {
+		namespaceSlug = resp.Namespace
+	}
 	cfgPath, err := defaultGlobalPath()
 	if err != nil {
 		return err

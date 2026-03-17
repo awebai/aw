@@ -1259,6 +1259,82 @@ func TestAwInitWritesConfig(t *testing.T) {
 	}
 }
 
+func TestAwInitStoresFullDomainAddress(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_slug": "myteam",
+				"project_id":   nil,
+				"name_prefix":  "deploy-bot",
+			})
+		case "/v1/init":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":         "ok",
+				"created_at":     "now",
+				"project_id":     "proj-1",
+				"project_slug":   "myteam",
+				"agent_id":       "agent-1",
+				"alias":          "deploy-bot",
+				"api_key":        "aw_sk_test",
+				"namespace_slug": "myteam",
+				"namespace":      "myteam.aweb.ai",
+				"address":        "myteam.aweb.ai/deploy-bot",
+				"created":        true,
+			})
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	buildAwBinary(t, ctx, bin)
+
+	run := exec.CommandContext(ctx, bin, "init",
+		"--namespace", "myteam",
+		"--server-name", "local",
+		"--server-url", server.URL,
+		"--account", "acct",
+		"--print-exports=false",
+		"--write-context=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("init failed: %v\n%s", err, string(out))
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg struct {
+		Accounts map[string]map[string]any `yaml:"accounts"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(data))
+	}
+	acct, ok := cfg.Accounts["acct"]
+	if !ok {
+		t.Fatalf("missing accounts.acct")
+	}
+	// The config should store the full domain from the server response,
+	// not the bare slug.
+	if acct["namespace_slug"] != "myteam.aweb.ai" {
+		t.Fatalf("namespace_slug=%v, want myteam.aweb.ai", acct["namespace_slug"])
+	}
+}
+
 func TestAwInitCloudModeRequiresCloudToken(t *testing.T) {
 	t.Parallel()
 

@@ -28,6 +28,8 @@ type InitResponse struct {
 	Alias         string `json:"alias"`
 	APIKey        string `json:"api_key"`
 	NamespaceSlug string `json:"namespace_slug,omitempty"`
+	Namespace     string `json:"namespace,omitempty"`
+	Address       string `json:"address,omitempty"`
 	Created       bool   `json:"created"`
 	DID           string `json:"did,omitempty"`
 	StableID      string `json:"stable_id,omitempty"`
