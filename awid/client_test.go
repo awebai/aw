@@ -1210,7 +1210,7 @@ func TestSendMessageIncludesSignedPayload(t *testing.T) {
 	// Verify using signed_payload directly — even though from_address
 	// would be different (server would return "alice" not "myteam.aweb.ai/alice").
 	sig := gotBody["signature"].(string)
-	status, err := VerifySignedPayload(sp, sig, did)
+	status, err := VerifySignedPayload(sp, sig, did, did)
 	if err != nil {
 		t.Fatalf("VerifySignedPayload: %v", err)
 	}

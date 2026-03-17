@@ -143,7 +143,7 @@ func (c *Client) Inbox(ctx context.Context, p InboxParams) (*InboxResponse, erro
 			from = m.FromAddress
 		}
 		if m.SignedPayload != "" {
-			m.VerificationStatus, _ = VerifySignedPayload(m.SignedPayload, m.Signature, m.FromDID)
+			m.VerificationStatus, _ = VerifySignedPayload(m.SignedPayload, m.Signature, m.FromDID, m.SigningKeyID)
 		} else {
 			to := m.ToAlias
 			if m.ToAddress != "" {

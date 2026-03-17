@@ -97,9 +97,13 @@ func VerifyMessage(env *MessageEnvelope) (VerificationStatus, error) {
 // VerifySignedPayload verifies a signature against a pre-computed canonical
 // payload string. Use this when the server returns signed_payload alongside
 // the message, avoiding reconstruction from display fields.
-func VerifySignedPayload(signedPayload, signatureB64, fromDID string) (VerificationStatus, error) {
+func VerifySignedPayload(signedPayload, signatureB64, fromDID, signingKeyID string) (VerificationStatus, error) {
 	if fromDID == "" || signatureB64 == "" || signedPayload == "" {
 		return Unverified, nil
+	}
+
+	if signingKeyID != "" && signingKeyID != fromDID {
+		return Failed, fmt.Errorf("signing_key_id %q does not match from_did %q", signingKeyID, fromDID)
 	}
 
 	if !strings.HasPrefix(fromDID, "did:key:z") {

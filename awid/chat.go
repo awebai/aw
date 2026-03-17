@@ -239,7 +239,7 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 			from = m.FromAddress
 		}
 		if m.SignedPayload != "" {
-			m.VerificationStatus, _ = VerifySignedPayload(m.SignedPayload, m.Signature, m.FromDID)
+			m.VerificationStatus, _ = VerifySignedPayload(m.SignedPayload, m.Signature, m.FromDID, m.SigningKeyID)
 		} else {
 			to := ""
 			if m.ToAddress != "" {
