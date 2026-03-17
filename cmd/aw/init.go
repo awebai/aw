@@ -455,6 +455,8 @@ func bootstrapViaCloud(
 		Alias:         cloudResp.Alias,
 		APIKey:        cloudResp.APIKey,
 		NamespaceSlug: cloudResp.OrgSlug,
+		Namespace:     cloudResp.Namespace,
+		Address:       cloudResp.Address,
 		Created:       cloudResp.Created,
 		DID:           cloudResp.DID,
 		StableID:      cloudResp.StableID,

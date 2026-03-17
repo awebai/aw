@@ -29,6 +29,8 @@ type CloudBootstrapAgentResponse struct {
 	AgentID           string `json:"agent_id"`
 	Alias             string `json:"alias"`
 	Created           bool   `json:"created"`
+	Namespace         string `json:"namespace,omitempty"`
+	Address           string `json:"address,omitempty"`
 	DID               string `json:"did,omitempty"`
 	StableID          string `json:"stable_id,omitempty"`
 	Custody           string `json:"custody,omitempty"`

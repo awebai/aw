@@ -176,7 +176,14 @@ func saveNewRegistration(
 		accountName = deriveAccountName(serverName, namespaceSlug, resp.Alias)
 	}
 
-	address := deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
+	// Prefer server-authoritative address and namespace domain.
+	address := resp.Address
+	if address == "" {
+		address = deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
+	}
+	if resp.Namespace != "" {
+		namespaceSlug = resp.Namespace
+	}
 	cfgPath, err := defaultGlobalPath()
 	if err != nil {
 		return err
@@ -465,7 +472,14 @@ func verifyAndBootstrap(
 		accountName = deriveAccountName(serverName, namespaceSlug, respAlias)
 	}
 
-	address := deriveAgentAddress(namespaceSlug, "", respAlias)
+	// Prefer server-authoritative address and namespace domain.
+	address := vresp.Address
+	if address == "" {
+		address = deriveAgentAddress(namespaceSlug, "", respAlias)
+	}
+	if vresp.Namespace != "" {
+		namespaceSlug = vresp.Namespace
+	}
 	cfgPath, err := defaultGlobalPath()
 	if err != nil {
 		return err

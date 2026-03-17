@@ -73,6 +73,10 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	if projErr == nil {
 		namespaceSlug = strings.TrimSpace(proj.Slug)
 	}
+	// Prefer server-authoritative namespace from introspect.
+	if ns := strings.TrimSpace(resp.NamespaceSlug); ns != "" {
+		namespaceSlug = ns
+	}
 
 	alias := strings.TrimSpace(resp.Alias)
 	agentID := strings.TrimSpace(resp.AgentID)

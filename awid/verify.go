@@ -24,6 +24,8 @@ type VerifyCodeResponse struct {
 	AgentID            string `json:"agent_id,omitempty"`
 	Alias              string `json:"alias,omitempty"`
 	NamespaceSlug      string `json:"namespace_slug,omitempty"`
+	Namespace          string `json:"namespace,omitempty"`
+	Address            string `json:"address,omitempty"`
 	StableID           string `json:"stable_id,omitempty"`
 }
 

@@ -33,6 +33,8 @@ type RegisterResponse struct {
 	ProjectName          string `json:"project_name"`
 	ServerURL            string `json:"server_url"`
 	NamespaceSlug        string `json:"namespace_slug,omitempty"`
+	Namespace            string `json:"namespace,omitempty"`
+	Address              string `json:"address,omitempty"`
 	VerificationRequired bool   `json:"verification_required"`
 	DID                  string `json:"did,omitempty"`
 	StableID             string `json:"stable_id,omitempty"`
