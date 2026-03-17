@@ -1414,52 +1414,6 @@ func TestSendMessageDoesNotMutateInput(t *testing.T) {
 	}
 }
 
-func TestNetworkSendMailSignsWhenIdentitySet(t *testing.T) {
-	t.Parallel()
-
-	pub, priv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	did := ComputeDIDKey(pub)
-
-	var gotBody map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"message_id":   "msg-1",
-			"status":       "delivered",
-			"delivered_at": "2026-02-22T00:00:00Z",
-			"from_address": "myco/agent",
-			"to_address":   "otherco/monitor",
-		})
-	}))
-	t.Cleanup(server.Close)
-
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = c.NetworkSendMail(context.Background(), &NetworkMailRequest{
-		ToAddress: "otherco/monitor",
-		Subject:   "update",
-		Body:      "status ok",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if gotBody["from_did"] != did {
-		t.Fatalf("from_did=%v", gotBody["from_did"])
-	}
-	if gotBody["signature"] == nil || gotBody["signature"] == "" {
-		t.Fatal("signature missing")
-	}
-	if gotBody["signing_key_id"] != did {
-		t.Fatalf("signing_key_id=%v", gotBody["signing_key_id"])
-	}
-}
-
 func TestChatCreateSessionSignsWhenIdentitySet(t *testing.T) {
 	t.Parallel()
 
@@ -1543,83 +1497,6 @@ func TestChatSendMessageSignsWhenIdentitySet(t *testing.T) {
 	}
 	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{
 		Body: "message in chat",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if gotBody["from_did"] != did {
-		t.Fatalf("from_did=%v", gotBody["from_did"])
-	}
-	if gotBody["signature"] == nil || gotBody["signature"] == "" {
-		t.Fatal("signature missing")
-	}
-}
-
-func TestNetworkCreateChatSignsWhenIdentitySet(t *testing.T) {
-	t.Parallel()
-
-	pub, priv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	did := ComputeDIDKey(pub)
-
-	var gotBody map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session_id": "sess-1",
-			"message_id": "msg-1",
-		})
-	}))
-	t.Cleanup(server.Close)
-
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = c.NetworkCreateChat(context.Background(), &NetworkChatCreateRequest{
-		ToAddresses: []string{"otherco/monitor"},
-		Message:     "hey there",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if gotBody["from_did"] != did {
-		t.Fatalf("from_did=%v", gotBody["from_did"])
-	}
-	if gotBody["signature"] == nil || gotBody["signature"] == "" {
-		t.Fatal("signature missing")
-	}
-}
-
-func TestNetworkChatSendMessageSignsWhenIdentitySet(t *testing.T) {
-	t.Parallel()
-
-	pub, priv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	did := ComputeDIDKey(pub)
-
-	var gotBody map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"message_id": "msg-1",
-			"delivered":  true,
-		})
-	}))
-	t.Cleanup(server.Close)
-
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = c.NetworkChatSendMessage(context.Background(), "sess-1", &NetworkChatSendMessageRequest{
-		Body: "network chat msg",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3254,61 +3131,6 @@ func TestChatHistoryUsesFromAddressForVerification(t *testing.T) {
 	msg := resp.Messages[0]
 	// Signed with from="myco/agent", so verification should succeed
 	// only if ChatHistory uses from_address (not from_agent="agent").
-	if msg.VerificationStatus != Verified {
-		t.Fatalf("VerificationStatus=%q, want verified (from_address should be used)", msg.VerificationStatus)
-	}
-}
-
-func TestNetworkChatHistoryUsesFromAddressForVerification(t *testing.T) {
-	t.Parallel()
-
-	pub, priv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	did := ComputeDIDKey(pub)
-
-	env := &MessageEnvelope{
-		From:      "myco/agent",
-		FromDID:   did,
-		Type:      "chat",
-		Body:      "network hello",
-		Timestamp: "2026-02-22T00:00:00Z",
-		MessageID: "msg-net-1",
-	}
-	sig, err := SignMessage(priv, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"messages": []map[string]any{{
-				"message_id":     "msg-net-1",
-				"from_agent":     "agent",
-				"from_address":   "myco/agent",
-				"body":           "network hello",
-				"timestamp":      "2026-02-22T00:00:00Z",
-				"from_did":       did,
-				"signature":      sig,
-				"signing_key_id": did,
-			}},
-		})
-	}))
-	t.Cleanup(server.Close)
-
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := c.NetworkChatHistory(context.Background(), ChatHistoryParams{SessionID: "net-sess-1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(resp.Messages) != 1 {
-		t.Fatalf("len=%d", len(resp.Messages))
-	}
-	msg := resp.Messages[0]
 	if msg.VerificationStatus != Verified {
 		t.Fatalf("VerificationStatus=%q, want verified (from_address should be used)", msg.VerificationStatus)
 	}

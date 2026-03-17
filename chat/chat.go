@@ -6,7 +6,6 @@ package chat
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -240,33 +239,6 @@ func findSession(ctx context.Context, client *awid.Client, targetAlias string) (
 
 // findNetworkSession finds the session ID for a network conversation with targetAddress.
 // Checks network pending conversations. No fallback to list-sessions (endpoint not available for network).
-func findNetworkSession(ctx context.Context, client *awid.Client, targetAddress string) (sessionID string, senderWaiting bool, err error) {
-	pendingResp, err := client.NetworkChatPending(ctx)
-	if err != nil {
-		return "", false, fmt.Errorf("getting network pending chats: %w", err)
-	}
-
-	var bestID string
-	var bestWaiting bool
-	bestSize := 0
-	for _, p := range pendingResp.Pending {
-		for _, participant := range p.Participants {
-			if participant == targetAddress {
-				if bestSize == 0 || len(p.Participants) < bestSize {
-					bestID = p.SessionID
-					bestWaiting = p.SenderWaiting
-					bestSize = len(p.Participants)
-				}
-				break
-			}
-		}
-	}
-	if bestID != "" {
-		return bestID, bestWaiting, nil
-	}
-
-	return "", false, fmt.Errorf("no conversation found with %s", targetAddress)
-}
 
 // buildMessages converts ChatMessage slice to Event slice.
 func buildMessages(messages []awid.ChatMessage) []Event {
@@ -469,26 +441,6 @@ func Send(ctx context.Context, client *awid.Client, myAlias string, targets []st
 	}, myAlias, targets, message, opts, &sentAt, callback)
 }
 
-// SendNetwork sends a message via the network (cross-org) endpoint and optionally waits for a reply.
-// Uses the same wait semantics as Send but routes through /v1/network/chat.
-func SendNetwork(ctx context.Context, client *awid.Client, myAlias string, targets []string, message string, opts SendOptions, callback StatusCallback) (*SendResult, error) {
-	sentAt := time.Now()
-	createResp, err := client.NetworkCreateChat(ctx, &awid.NetworkChatCreateRequest{
-		ToAddresses: targets,
-		Message:     message,
-		Leaving:     opts.Leaving,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("sending network message: %w", err)
-	}
-
-	return sendCommon(ctx, client, client.NetworkChatStream, sendResponse{
-		SessionID:        createResp.SessionID,
-		MessageID:        createResp.MessageID,
-		TargetsConnected: createResp.TargetsConnected,
-		TargetsLeft:      createResp.TargetsLeft,
-	}, myAlias, targets, message, opts, &sentAt, callback)
-}
 
 // sendCommon handles the post-send wait logic shared by Send and SendNetwork.
 func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpener, resp sendResponse, myAlias string, targets []string, message string, opts SendOptions, after *time.Time, callback StatusCallback) (*SendResult, error) {
@@ -666,20 +618,18 @@ func History(ctx context.Context, client *awid.Client, targetAlias string) (*His
 	}, nil
 }
 
-// Pending lists conversations with unread messages (both local and network).
+// Pending lists conversations with unread messages.
 func Pending(ctx context.Context, client *awid.Client) (*PendingResult, error) {
 	resp, err := client.ChatPending(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("getting pending chats: %w", err)
 	}
 
-	seen := map[string]struct{}{}
 	result := &PendingResult{
 		Pending:         make([]PendingConversation, 0, len(resp.Pending)),
 		MessagesWaiting: resp.MessagesWaiting,
 	}
 	for _, p := range resp.Pending {
-		seen[p.SessionID] = struct{}{}
 		result.Pending = append(result.Pending, PendingConversation{
 			SessionID:            p.SessionID,
 			Participants:         p.Participants,
@@ -690,35 +640,6 @@ func Pending(ctx context.Context, client *awid.Client) (*PendingResult, error) {
 			SenderWaiting:        p.SenderWaiting,
 			TimeRemainingSeconds: p.TimeRemainingSeconds,
 		})
-	}
-
-	netResp, err := client.NetworkChatPending(ctx)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
-		}
-		// Server doesn't support network chats — skip gracefully.
-	}
-	if err == nil {
-		netExtra := netResp.MessagesWaiting
-		for _, p := range netResp.Pending {
-			if _, dup := seen[p.SessionID]; dup {
-				netExtra -= p.UnreadCount
-				continue
-			}
-			seen[p.SessionID] = struct{}{}
-			result.Pending = append(result.Pending, PendingConversation{
-				SessionID:            p.SessionID,
-				Participants:         p.Participants,
-				LastMessage:          p.LastMessage,
-				LastFrom:             p.LastFrom,
-				UnreadCount:          p.UnreadCount,
-				LastActivity:         p.LastActivity,
-				SenderWaiting:        p.SenderWaiting,
-				TimeRemainingSeconds: p.TimeRemainingSeconds,
-			})
-		}
-		result.MessagesWaiting += netExtra
 	}
 
 	return result, nil
@@ -783,134 +704,3 @@ func ShowPending(ctx context.Context, client *awid.Client, targetAlias string) (
 // These mirror the OSS functions above but route through network endpoints.
 
 // ListenNetwork waits for a message in a network conversation without sending.
-func ListenNetwork(ctx context.Context, client *awid.Client, targetAddress string, waitSeconds int, callback StatusCallback) (*SendResult, error) {
-	sessionID, _, err := findNetworkSession(ctx, client, targetAddress)
-	if err != nil {
-		return nil, err
-	}
-
-	acceptAll := func(ev Event) (bool, bool) { return true, false }
-
-	result, err := waitForMessage(ctx, client, client.NetworkChatStream, sessionID, waitSeconds, nil, callback, acceptAll)
-	if err != nil {
-		return nil, err
-	}
-
-	result.TargetAgent = targetAddress
-	return result, nil
-}
-
-// OpenNetwork fetches unread messages for a network conversation and marks them as read.
-func OpenNetwork(ctx context.Context, client *awid.Client, targetAddress string) (*OpenResult, error) {
-	sessionID, senderWaiting, err := findNetworkSession(ctx, client, targetAddress)
-	if err != nil {
-		return nil, err
-	}
-
-	messagesResp, err := client.NetworkChatHistory(ctx, awid.ChatHistoryParams{
-		SessionID:  sessionID,
-		UnreadOnly: true,
-		Limit:      1000,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("getting unread messages: %w", err)
-	}
-
-	result := &OpenResult{
-		SessionID:     sessionID,
-		TargetAgent:   targetAddress,
-		Messages:      buildMessages(messagesResp.Messages),
-		SenderWaiting: senderWaiting,
-	}
-
-	if len(messagesResp.Messages) == 0 {
-		result.UnreadWasEmpty = true
-		return result, nil
-	}
-
-	lastMessageID := messagesResp.Messages[len(messagesResp.Messages)-1].MessageID
-	_, err = client.NetworkChatMarkRead(ctx, sessionID, &awid.NetworkChatMarkReadRequest{
-		UpToMessageID: lastMessageID,
-	})
-	if err == nil {
-		result.MarkedRead = len(messagesResp.Messages)
-	}
-
-	return result, nil
-}
-
-// HistoryNetwork fetches all messages in a network conversation.
-func HistoryNetwork(ctx context.Context, client *awid.Client, targetAddress string) (*HistoryResult, error) {
-	sessionID, _, err := findNetworkSession(ctx, client, targetAddress)
-	if err != nil {
-		return nil, err
-	}
-
-	messagesResp, err := client.NetworkChatHistory(ctx, awid.ChatHistoryParams{
-		SessionID: sessionID,
-		Limit:     1000,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("getting messages: %w", err)
-	}
-
-	return &HistoryResult{
-		SessionID: sessionID,
-		Messages:  buildMessages(messagesResp.Messages),
-	}, nil
-}
-
-// ExtendWaitNetwork sends an extend-wait message in a network conversation.
-func ExtendWaitNetwork(ctx context.Context, client *awid.Client, targetAddress string, message string) (*ExtendWaitResult, error) {
-	sessionID, _, err := findNetworkSession(ctx, client, targetAddress)
-	if err != nil {
-		return nil, err
-	}
-
-	msgResp, err := client.NetworkChatSendMessage(ctx, sessionID, &awid.NetworkChatSendMessageRequest{
-		Body:       message,
-		ExtendWait: true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("sending extend-wait message: %w", err)
-	}
-
-	return &ExtendWaitResult{
-		SessionID:          sessionID,
-		TargetAgent:        targetAddress,
-		Message:            message,
-		ExtendsWaitSeconds: msgResp.ExtendsWaitSeconds,
-	}, nil
-}
-
-// ShowPendingNetwork shows the pending network conversation with a specific agent.
-func ShowPendingNetwork(ctx context.Context, client *awid.Client, targetAddress string) (*SendResult, error) {
-	pendingResp, err := client.NetworkChatPending(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("getting network pending chats: %w", err)
-	}
-
-	for _, p := range pendingResp.Pending {
-		for _, participant := range p.Participants {
-			if participant == targetAddress {
-				return &SendResult{
-					SessionID:     p.SessionID,
-					Status:        "pending",
-					TargetAgent:   targetAddress,
-					Reply:         p.LastMessage,
-					SenderWaiting: p.SenderWaiting,
-					Events: []Event{
-						{
-							Type:      "message",
-							FromAgent: p.LastFrom,
-							Body:      p.LastMessage,
-							Timestamp: p.LastActivity,
-						},
-					},
-				}, nil
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("no pending conversation with %s", targetAddress)
-}
