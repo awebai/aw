@@ -863,3 +863,90 @@ func TestWaitForBusEventsDrainsQueueFromReadySignal(t *testing.T) {
 		t.Fatalf("expected carol mail wake, got %v", st.LastWakeEvent)
 	}
 }
+
+func TestRemoteResumeUnblocksPausedLoop(t *testing.T) {
+	// A remote control_resume sent while the loop is paused should
+	// unblock waitWhilePaused via the EventBus interrupts channel.
+	bus := newTestEventBus(
+		awid.AgentEvent{Type: awid.AgentEventControlResume},
+	)
+
+	var out bytes.Buffer
+	loop := NewLoop(ClaudeProvider{}, &out)
+	loop.EventBus = bus
+
+	st := &state{Paused: true, PauseAfterRun: true, PauseNoticeShown: true}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	bus.Start(ctx)
+	defer bus.Stop()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.waitWhilePaused(ctx, st)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waitWhilePaused returned error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out — remote resume did not unblock paused loop")
+	}
+
+	if st.Paused {
+		t.Fatal("expected Paused=false after remote resume")
+	}
+}
+
+func TestRemotePauseDuringIdleWait(t *testing.T) {
+	// A remote control_pause sent while idle (waitForBusEvents) should
+	// cause the loop to enter the paused state. We send pause then resume
+	// so waitWhilePaused unblocks and the function returns.
+	bus := newTestEventBus(
+		awid.AgentEvent{Type: awid.AgentEventControlPause},
+	)
+
+	var out bytes.Buffer
+	loop := NewLoop(ClaudeProvider{}, &out)
+	loop.EventBus = bus
+
+	st := &state{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	bus.Start(ctx)
+	defer bus.Stop()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.waitForBusEvents(ctx, 30, st)
+	}()
+
+	// Give the pause event time to be consumed, then send resume
+	// to unblock waitWhilePaused.
+	time.Sleep(200 * time.Millisecond)
+	bus.interrupts <- BusEvent{
+		Event:    awid.AgentEvent{Type: awid.AgentEventControlResume},
+		Priority: PriorityInterrupt,
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waitForBusEvents returned error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out — remote pause+resume did not complete during idle wait")
+	}
+
+	// After pause+resume, PauseAfterRun should have been set (pause)
+	// then cleared (resume).
+	if st.Paused {
+		t.Fatal("expected Paused=false after resume")
+	}
+}
