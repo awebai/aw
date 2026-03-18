@@ -950,3 +950,62 @@ func TestRemotePauseDuringIdleWait(t *testing.T) {
 		t.Fatal("expected Paused=false after resume")
 	}
 }
+
+func TestRemoteInterruptDuringIdleDoesNotLeakIntoNextRun(t *testing.T) {
+	bus := newTestEventBus(
+		awid.AgentEvent{Type: awid.AgentEventControlInterrupt},
+	)
+
+	var out bytes.Buffer
+	loop := NewLoop(fakeProvider{
+		event: &Event{Type: EventDone},
+	}, &out)
+	loop.EventBus = bus
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		onLine("done")
+		return nil
+	}
+
+	st := &state{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	bus.Start(ctx)
+	defer bus.Stop()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.waitForBusEvents(ctx, 30, st)
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	bus.interrupts <- BusEvent{
+		Event:    awid.AgentEvent{Type: awid.AgentEventControlResume},
+		Priority: PriorityInterrupt,
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waitForBusEvents returned error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for idle interrupt+resume")
+	}
+
+	if st.RunInterrupted {
+		t.Fatal("expected RunInterrupted=false after idle interrupt handling")
+	}
+
+	if err := loop.runOnce(context.Background(), LoopOptions{}, st, "review", "review"); err != nil {
+		t.Fatalf("runOnce returned error: %v", err)
+	}
+
+	if st.Paused {
+		t.Fatal("expected next run to finish without re-pausing")
+	}
+	if st.PauseAfterRun {
+		t.Fatal("expected PauseAfterRun=false after next run")
+	}
+}
