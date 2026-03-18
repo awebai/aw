@@ -137,10 +137,6 @@ type Dispatcher interface {
 	Next(ctx context.Context, autofeed bool, wakeEvent *awid.AgentEvent) (DispatchDecision, error)
 }
 
-type WakeStream interface {
-	Stream(ctx context.Context, deadline time.Time) (<-chan awid.AgentEvent, <-chan error)
-}
-
 type CommandRunner func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error
 
 type SleepFunc func(ctx context.Context, d time.Duration) error

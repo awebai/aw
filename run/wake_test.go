@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,7 +11,7 @@ import (
 	awid "github.com/awebai/aw/awid"
 )
 
-func TestClientWakeStreamRetriesEarlyEOF(t *testing.T) {
+func TestEventBusRetriesEarlyEOF(t *testing.T) {
 	t.Parallel()
 
 	var requests atomic.Int32
@@ -37,41 +36,33 @@ func TestClientWakeStreamRetriesEarlyEOF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wake := NewClientWakeStream(client)
-	wake.RetryDelay = 10 * time.Millisecond
-	wake.MaxRetryDelay = 20 * time.Millisecond
-
+	bus := NewEventBus(EventBusConfig{
+		Stream: NewEventStreamOpener(client),
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events, errs := wake.Stream(ctx, time.Now().Add(500*time.Millisecond))
+	bus.Start(ctx)
 
-	deadline := time.After(500 * time.Millisecond)
-	for {
-		select {
-		case evt, ok := <-events:
-			if !ok {
-				continue
-			}
-			if evt.Type != awid.AgentEventChatMessage || evt.FromAlias != "mia" {
-				t.Fatalf("unexpected event: %#v", evt)
-			}
-			cancel()
-			if requests.Load() < 2 {
-				t.Fatalf("expected at least 2 stream attempts, got %d", requests.Load())
-			}
-			return
-		case err, ok := <-errs:
-			if !ok || err == nil {
-				continue
-			}
-			t.Fatalf("unexpected error: %v", err)
-		case <-deadline:
-			t.Fatal("timed out waiting for event")
+	select {
+	case <-bus.Queue().Ready():
+		evt, ok := bus.Queue().Pop()
+		if !ok {
+			t.Fatal("expected queued event")
 		}
+		if evt.Event.Type != awid.AgentEventChatMessage || evt.Event.FromAlias != "mia" {
+			t.Fatalf("unexpected event: %#v", evt.Event)
+		}
+		if requests.Load() < 2 {
+			t.Fatalf("expected at least 2 stream attempts, got %d", requests.Load())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for event")
 	}
+	cancel()
+	bus.Stop()
 }
 
-func TestClientWakeStreamRetriesTransientOpenError(t *testing.T) {
+func TestEventBusRetriesTransientOpenError(t *testing.T) {
 	t.Parallel()
 
 	var requests atomic.Int32
@@ -82,7 +73,7 @@ func TestClientWakeStreamRetriesTransientOpenError(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("event: connected\ndata: {\"agent_id\":\"a1\",\"project_id\":\"p1\"}\n\n"))
+		_, _ = w.Write([]byte("event: mail_message\ndata: {\"message_id\":\"m2\",\"from_alias\":\"alice\",\"subject\":\"test\"}\n\n"))
 	}))
 	t.Cleanup(server.Close)
 
@@ -90,41 +81,33 @@ func TestClientWakeStreamRetriesTransientOpenError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wake := NewClientWakeStream(client)
-	wake.RetryDelay = 10 * time.Millisecond
-	wake.MaxRetryDelay = 20 * time.Millisecond
-
+	bus := NewEventBus(EventBusConfig{
+		Stream: NewEventStreamOpener(client),
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events, errs := wake.Stream(ctx, time.Now().Add(500*time.Millisecond))
+	bus.Start(ctx)
 
-	deadline := time.After(500 * time.Millisecond)
-	for {
-		select {
-		case evt, ok := <-events:
-			if !ok {
-				continue
-			}
-			if evt.Type != awid.AgentEventConnected || evt.AgentID != "a1" {
-				t.Fatalf("unexpected event: %#v", evt)
-			}
-			cancel()
-			if requests.Load() < 2 {
-				t.Fatalf("expected retry after transient failure, got %d requests", requests.Load())
-			}
-			return
-		case err, ok := <-errs:
-			if !ok || err == nil {
-				continue
-			}
-			t.Fatalf("unexpected error: %v", err)
-		case <-deadline:
-			t.Fatal("timed out waiting for event")
+	select {
+	case <-bus.Queue().Ready():
+		evt, ok := bus.Queue().Pop()
+		if !ok {
+			t.Fatal("expected queued event")
 		}
+		if evt.Event.Type != awid.AgentEventMailMessage || evt.Event.FromAlias != "alice" {
+			t.Fatalf("unexpected event: %#v", evt.Event)
+		}
+		if requests.Load() < 2 {
+			t.Fatalf("expected retry after transient failure, got %d requests", requests.Load())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for event")
 	}
+	cancel()
+	bus.Stop()
 }
 
-func TestClientWakeStreamFailsFastOnClientError(t *testing.T) {
+func TestEventBusFailsFastOnClientError(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -136,22 +119,24 @@ func TestClientWakeStreamFailsFastOnClientError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wake := NewClientWakeStream(client)
-	wake.RetryDelay = 10 * time.Millisecond
-	wake.MaxRetryDelay = 20 * time.Millisecond
-
+	bus := NewEventBus(EventBusConfig{
+		Stream: NewEventStreamOpener(client),
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events, errs := wake.Stream(ctx, time.Now().Add(500*time.Millisecond))
+	bus.Start(ctx)
 
+	// Should disconnect quickly on 401.
 	select {
-	case evt := <-events:
-		t.Fatalf("unexpected event: %#v", evt)
-	case err := <-errs:
-		if err == nil || !strings.Contains(err.Error(), "401") {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("timed out waiting for error")
+	case <-bus.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for bus to stop on 401")
 	}
+
+	if bus.State() != ConnDisconnected {
+		t.Fatalf("expected disconnected on 401, got %s", bus.State())
+	}
+
+	cancel()
+	bus.Stop()
 }

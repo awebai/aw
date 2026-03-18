@@ -19,8 +19,6 @@ type Loop struct {
 	Provider          Provider
 	Runner            CommandRunner
 	Sleep             SleepFunc
-	WakeStream        WakeStream
-	WakeFilter        awid.WakeFilter
 	EventBus          *EventBus
 	ServiceSupervisor ServiceSupervisor
 	Out               io.Writer
@@ -30,9 +28,7 @@ type Loop struct {
 	InputPromptLabel  string
 	StatusIdentity    string
 
-	writeMu    sync.Mutex
-	eventQueue []awid.AgentEvent
-	eqMu       sync.Mutex
+	writeMu sync.Mutex
 }
 
 type state struct {
@@ -218,8 +214,8 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 		return decision, nil
 	}
 	// Without an external dispatcher, run one cycle then rely on wake/control
-	// signals for subsequent cycles when wake streaming is available.
-	if st.Run > 0 && (l.WakeStream != nil || l.EventBus != nil) {
+	// signals for subsequent cycles when event streaming is available.
+	if st.Run > 0 && l.EventBus != nil {
 		return DispatchDecision{WaitSeconds: opts.WaitSeconds, Skip: true}, nil
 	}
 	return DispatchDecision{MissionPrompt: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
@@ -273,13 +269,9 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 
 	errCh := make(chan error, 1)
 
-	// Use EventBus interrupts when available, otherwise fall back to wake relay.
-	var wakeControls <-chan ControlEvent
 	var busInterrupts <-chan BusEvent
 	if l.EventBus != nil {
 		busInterrupts = l.EventBus.Interrupts()
-	} else {
-		wakeControls = l.startWakeControlRelay(runCtx)
 	}
 
 	go func() {
@@ -317,12 +309,6 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 			l.applyControlEvent(event, st, true, cancel)
 		case busEvt := <-busInterrupts:
 			l.applyBusInterrupt(busEvt, st, cancel)
-		case event, ok := <-wakeControls:
-			if !ok {
-				wakeControls = nil
-				continue
-			}
-			l.applyControlEvent(event, st, true, cancel)
 		case <-ctx.Done():
 			cancel()
 			st.StopRequested = true
@@ -347,60 +333,6 @@ func (l *Loop) maybeAutoCompact(ctx context.Context, opts LoopOptions, st *state
 	return true, nil
 }
 
-func (l *Loop) startWakeControlRelay(ctx context.Context) <-chan ControlEvent {
-	if l.WakeStream == nil {
-		return nil
-	}
-	relay := make(chan ControlEvent, 8)
-	go func() {
-		defer close(relay)
-		for ctx.Err() == nil {
-			deadline := l.Now().Add(5 * time.Minute)
-			events, errs := l.WakeStream.Stream(ctx, deadline)
-			streamOpen := true
-			for streamOpen && ctx.Err() == nil {
-				select {
-				case evt, ok := <-events:
-					if !ok {
-						events = nil
-						if errs == nil {
-							streamOpen = false
-						}
-						continue
-					}
-					control, isControl := ControlEventFromAgentEvent(evt)
-					if isControl {
-						select {
-						case <-ctx.Done():
-							return
-						case relay <- control:
-						}
-					} else if l.shouldWakeForEvent(evt, nil) {
-						l.queueWakeEvent(evt)
-					}
-					if evt.Type == awid.AgentEventError {
-						streamOpen = false
-					}
-				case err, ok := <-errs:
-					if !ok {
-						errs = nil
-						if events == nil {
-							streamOpen = false
-						}
-						continue
-					}
-					if err != nil && ctx.Err() == nil {
-						time.Sleep(500 * time.Millisecond)
-					}
-					streamOpen = false
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-	}()
-	return relay
-}
 
 func (l *Loop) drainPendingControlEvents(st *state, activeRun bool) {
 	for {
@@ -527,103 +459,7 @@ func (l *Loop) waitForWork(ctx context.Context, waitSeconds int, st *state) erro
 	if l.EventBus != nil {
 		return l.waitForBusEvents(ctx, waitSeconds, st)
 	}
-	if l.WakeStream != nil {
-		return l.waitForWorkEvents(ctx, waitSeconds, st)
-	}
 	return l.idleWithControlsLabel(ctx, waitSeconds, st, "waiting for work")
-}
-
-func (l *Loop) waitForWorkEvents(ctx context.Context, waitSeconds int, st *state) error {
-	if waitSeconds <= 0 {
-		return nil
-	}
-	if st.StopRequested {
-		return context.Canceled
-	}
-	if strings.TrimSpace(st.NextPrompt) != "" {
-		return nil
-	}
-
-	// Drain events queued during the previous run before opening a new stream.
-	if queued := l.drainEventQueue(); len(queued) > 0 {
-		for _, evt := range queued {
-			if l.shouldWakeForEvent(evt, st) {
-				evtCopy := evt
-				st.LastWakeEvent = &evtCopy
-				if l.handleImmediateWakeEvent(ctx, evt, st) {
-					return nil
-				}
-			}
-		}
-	}
-
-	deadline := l.Now().Add(time.Duration(waitSeconds) * time.Second)
-	events, errs := l.WakeStream.Stream(ctx, deadline)
-	for {
-		select {
-		case event := <-l.controlEvents():
-			l.applyControlEvent(event, st, false, nil)
-			if st.StopRequested {
-				return context.Canceled
-			}
-			if strings.TrimSpace(st.NextPrompt) != "" {
-				return nil
-			}
-			if st.Paused {
-				return l.waitWhilePaused(ctx, st)
-			}
-		case evt, ok := <-events:
-			if !ok {
-				events = nil
-				if errs == nil {
-					return nil
-				}
-				continue
-			}
-			if !l.shouldWakeForEvent(evt, st) {
-				continue
-			}
-			evtCopy := evt
-			st.LastWakeEvent = &evtCopy
-			if l.handleImmediateWakeEvent(ctx, evt, st) {
-				return nil
-			}
-		case err, ok := <-errs:
-			if !ok {
-				errs = nil
-				if events == nil {
-					return nil
-				}
-				continue
-			}
-			if err == nil || ctx.Err() != nil {
-				return nil
-			}
-			if isUnsupportedWakeStreamError(err) {
-				l.println(fmt.Sprintf("info: event stream unavailable; falling back to timed cycles (%v)", err))
-				l.WakeStream = nil
-				return nil
-			}
-			l.println(fmt.Sprintf("info: event stream failed: %v", err))
-			return l.idleWithControlsLabel(ctx, waitSeconds, st, "waiting for work")
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-}
-
-func isUnsupportedWakeStreamError(err error) bool {
-	code, ok := awid.HTTPStatusCode(err)
-	return ok && code == 404
-}
-
-func (l *Loop) shouldWakeForEvent(evt awid.AgentEvent, st *state) bool {
-	filter := l.WakeFilter
-	if filter == nil {
-		filter = awid.DefaultWakeFilter
-	}
-	autofeed := st != nil && st.Autofeed
-	return filter(evt, autofeed)
 }
 
 func (l *Loop) waitForBusEvents(ctx context.Context, waitSeconds int, st *state) error {
@@ -709,31 +545,6 @@ func (l *Loop) applyBusInterrupt(evt BusEvent, st *state, cancel context.CancelF
 	case awid.AgentEventControlPause:
 		st.PauseAfterRun = true
 		l.println("\nwill pause after this run.")
-	}
-}
-
-func (l *Loop) handleImmediateWakeEvent(ctx context.Context, evt awid.AgentEvent, st *state) bool {
-	switch evt.Type {
-	case awid.AgentEventControlPause, awid.AgentEventControlInterrupt:
-		st.Paused = true
-		st.PauseAfterRun = false
-		st.PauseNoticeShown = true
-		l.println(pausedNoticeText)
-		_ = l.waitWhilePaused(ctx, st)
-		return true
-	case awid.AgentEventControlResume:
-		st.Paused = false
-		st.PauseNoticeShown = false
-		return true
-	case awid.AgentEventError:
-		if text := strings.TrimSpace(evt.Text); text != "" {
-			l.printf("info: event stream error: %s\n", text)
-		} else {
-			l.println("info: event stream error")
-		}
-		return true
-	default:
-		return true
 	}
 }
 
@@ -1264,19 +1075,3 @@ func RealCommandRunner(ctx context.Context, dir string, argv []string, onLine fu
 	return nil
 }
 
-func (l *Loop) queueWakeEvent(evt awid.AgentEvent) {
-	l.eqMu.Lock()
-	defer l.eqMu.Unlock()
-	l.eventQueue = append(l.eventQueue, evt)
-}
-
-func (l *Loop) drainEventQueue() []awid.AgentEvent {
-	l.eqMu.Lock()
-	defer l.eqMu.Unlock()
-	if len(l.eventQueue) == 0 {
-		return nil
-	}
-	queued := l.eventQueue
-	l.eventQueue = nil
-	return queued
-}

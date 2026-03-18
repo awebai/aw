@@ -26,22 +26,6 @@ func (f *fakeInputController) Stop() error                 { return nil }
 func (f *fakeInputController) Events() <-chan ControlEvent { return f.events }
 func (f *fakeInputController) HasPendingInput() bool       { return false }
 
-type fakeWakeStream struct {
-	events chan awid.AgentEvent
-	errs   chan error
-}
-
-func newFakeWakeStream() *fakeWakeStream {
-	return &fakeWakeStream{
-		events: make(chan awid.AgentEvent, 32),
-		errs:   make(chan error, 1),
-	}
-}
-
-func (f *fakeWakeStream) Stream(context.Context, time.Time) (<-chan awid.AgentEvent, <-chan error) {
-	return f.events, f.errs
-}
-
 type fakeDispatcher struct {
 	decisions []DispatchDecision
 	index     int
@@ -149,65 +133,51 @@ func TestLoopMaintainsCodexSessionContinuity(t *testing.T) {
 }
 
 func TestLoopWaitForWorkWakesOnChatMessage(t *testing.T) {
-	stream := newFakeWakeStream()
+	bus := newTestEventBus(
+		awid.AgentEvent{Type: awid.AgentEventChatMessage, FromAlias: "mia"},
+	)
 	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
-	loop.WakeStream = stream
+	loop.EventBus = bus
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bus.Start(ctx)
 
 	done := make(chan error, 1)
 	go func() {
-		done <- loop.waitForWorkEvents(context.Background(), 30, &state{})
+		done <- loop.waitForBusEvents(ctx, 30, &state{})
 	}()
-
-	time.Sleep(20 * time.Millisecond)
-	stream.events <- awid.AgentEvent{Type: awid.AgentEventChatMessage, FromAlias: "mia"}
-
-	if err := <-done; err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-}
-
-func TestLoopWaitForWorkWakesOnEventStreamError(t *testing.T) {
-	stream := newFakeWakeStream()
-	var out bytes.Buffer
-	loop := NewLoop(ClaudeProvider{}, &out)
-	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
-	loop.WakeStream = stream
-
-	done := make(chan error, 1)
-	go func() {
-		done <- loop.waitForWorkEvents(context.Background(), 30, &state{})
-	}()
-
-	time.Sleep(20 * time.Millisecond)
-	stream.events <- awid.AgentEvent{Type: awid.AgentEventError, Text: "wake failed"}
-
-	if err := <-done; err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	if !strings.Contains(out.String(), "info: event stream error: wake failed") {
-		t.Fatalf("expected stream error to be printed, got %q", out.String())
-	}
-}
-
-func TestStartWakeControlRelayRelaysEventStreamError(t *testing.T) {
-	stream := newFakeWakeStream()
-	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
-	loop.WakeStream = stream
-	relay := loop.startWakeControlRelay(context.Background())
-
-	stream.events <- awid.AgentEvent{Type: awid.AgentEventError, Text: "stream broke"}
 
 	select {
-	case event := <-relay:
-		if event.Type != ControlStreamError {
-			t.Fatalf("expected %q, got %q", ControlStreamError, event.Type)
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waitForBusEvents returned error: %v", err)
 		}
-		if event.Text != "stream broke" {
-			t.Fatalf("expected relayed error text, got %q", event.Text)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for relayed stream error")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for wake on chat message")
 	}
+	cancel()
+	bus.Stop()
+}
+
+func TestEventBusDeliversInterruptDuringRun(t *testing.T) {
+	bus := newTestEventBus(
+		awid.AgentEvent{Type: awid.AgentEventControlInterrupt},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bus.Start(ctx)
+
+	select {
+	case evt := <-bus.Interrupts():
+		if evt.Event.Type != awid.AgentEventControlInterrupt {
+			t.Fatalf("expected control_interrupt, got %s", evt.Event.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for interrupt from bus")
+	}
+	cancel()
+	bus.Stop()
 }
 
 func TestLoopDoesNotSuppressBdhSpecificEchoText(t *testing.T) {
@@ -232,9 +202,9 @@ func TestLoopDoesNotSuppressBdhSpecificEchoText(t *testing.T) {
 }
 
 func TestLoopInitialPromptOnlyWaitsForWakeInsteadOfTimerExit(t *testing.T) {
-	stream := newFakeWakeStream()
+	bus := newTestEventBus()
 	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
-	loop.WakeStream = stream
+	loop.EventBus = bus
 	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
 	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
 		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
@@ -266,9 +236,9 @@ func TestLoopInitialPromptOnlyWaitsForWakeInsteadOfTimerExit(t *testing.T) {
 }
 
 func TestLoopBasePromptDoesNotAutoRerunWithoutWake(t *testing.T) {
-	stream := newFakeWakeStream()
+	bus := newTestEventBus()
 	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
-	loop.WakeStream = stream
+	loop.EventBus = bus
 	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
 	runCount := 0
 	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
@@ -525,7 +495,7 @@ func TestNoSeparatorBeforeFirstRun(t *testing.T) {
 	}
 }
 
-func TestLoopFallsBackToTimedCyclesWhenWakeStreamUnavailable(t *testing.T) {
+func TestEventBusDisconnectsWhenServerReturns404(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/events/stream") {
 			http.Error(w, `{"detail":"Not Found"}`, http.StatusNotFound)
@@ -540,9 +510,38 @@ func TestLoopFallsBackToTimedCyclesWhenWakeStreamUnavailable(t *testing.T) {
 		t.Fatalf("new client: %v", err)
 	}
 
+	bus := NewEventBus(EventBusConfig{
+		Stream: NewEventStreamOpener(client),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bus.Start(ctx)
+
+	// Wait for the bus goroutine to exit on 404.
+	select {
+	case <-bus.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for bus to disconnect on 404")
+	}
+
+	if bus.State() != ConnDisconnected {
+		t.Fatalf("expected disconnected, got %s", bus.State())
+	}
+	cancel()
+	bus.Stop()
+}
+
+func TestLoopContinuesViaTimeoutWhenBusDisconnected(t *testing.T) {
+	// EventBus that immediately disconnects (404).
+	bus := NewEventBus(EventBusConfig{
+		Stream: func(ctx context.Context, deadline time.Time) (awid.EventSource, error) {
+			return nil, &awid.APIError{StatusCode: 404, Body: "not found"}
+		},
+	})
+
 	var out bytes.Buffer
 	loop := NewLoop(ClaudeProvider{}, &out)
-	loop.WakeStream = NewClientWakeStream(client)
+	loop.EventBus = bus
 	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
 	runCount := 0
 	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
@@ -550,9 +549,14 @@ func TestLoopFallsBackToTimedCyclesWhenWakeStreamUnavailable(t *testing.T) {
 		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
 		return nil
 	}
+	loop.Dispatch = &fakeDispatcher{
+		decisions: []DispatchDecision{
+			{MissionPrompt: "first", WaitSeconds: 1},
+			{MissionPrompt: "second", WaitSeconds: 1},
+		},
+	}
 
-	err = loop.Run(context.Background(), LoopOptions{
-		Prompt:      "persistent mission",
+	err := loop.Run(context.Background(), LoopOptions{
 		WaitSeconds: 1,
 		MaxRuns:     2,
 	})
@@ -560,10 +564,7 @@ func TestLoopFallsBackToTimedCyclesWhenWakeStreamUnavailable(t *testing.T) {
 		t.Fatalf("run returned error: %v", err)
 	}
 	if runCount != 2 {
-		t.Fatalf("expected fallback to timed second run, got %d runs", runCount)
-	}
-	if !strings.Contains(out.String(), "event stream unavailable; falling back to timed cycles") {
-		t.Fatalf("expected fallback notice, got output: %q", out.String())
+		t.Fatalf("expected 2 runs via timeout fallback, got %d", runCount)
 	}
 }
 

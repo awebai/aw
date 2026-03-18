@@ -72,7 +72,7 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 	oldResolveClient := runResolveClientForDir
 	oldNewLoop := runNewLoop
 	oldExecuteLoop := runExecuteLoop
-	oldNewWake := runNewWakeStream
+	oldNewEventBus := runNewEventBus
 	oldNewScreen := runNewScreenController
 	t.Cleanup(func() {
 		runLoadUserConfig = oldLoad
@@ -81,7 +81,7 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 		runResolveClientForDir = oldResolveClient
 		runNewLoop = oldNewLoop
 		runExecuteLoop = oldExecuteLoop
-		runNewWakeStream = oldNewWake
+		runNewEventBus = oldNewEventBus
 		runNewScreenController = oldNewScreen
 		initRunCommandVars()
 	})
@@ -119,9 +119,9 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 		}
 		return &aweb.Client{}, &awconfig.Selection{NamespaceSlug: "team", AgentAlias: "rose"}, nil
 	}
-	runNewWakeStream = func(client *aweb.Client) awrun.WakeStream {
+	runNewEventBus = func(client *aweb.Client) *awrun.EventBus {
 		if client == nil {
-			t.Fatal("expected client for wake stream")
+			t.Fatal("expected client for event bus")
 		}
 		return nil
 	}

@@ -39,7 +39,11 @@ var (
 	runNewProvider         = awrun.NewProvider
 	runNewLoop             = awrun.NewLoop
 	runExecuteLoop         = func(loop *awrun.Loop, ctx context.Context, opts awrun.LoopOptions) error { return loop.Run(ctx, opts) }
-	runNewWakeStream       = func(client *aweb.Client) awrun.WakeStream { return awrun.NewClientWakeStream(client.Client) }
+	runNewEventBus = func(client *aweb.Client) *awrun.EventBus {
+		return awrun.NewEventBus(awrun.EventBusConfig{
+			Stream: awrun.NewEventStreamOpener(client.Client),
+		})
+	}
 	runNewScreenController = awrun.NewScreenController
 	runResolveClientForDir = resolveClientSelectionForDir
 	runGetwd               = os.Getwd
@@ -137,7 +141,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	defer stop()
 
 	loop := runNewLoop(provider, cmd.OutOrStdout())
-	loop.WakeStream = runNewWakeStream(client)
+	loop.EventBus = runNewEventBus(client)
 	loop.Control = screen
 	loop.StatusIdentity = statusIdentity
 
