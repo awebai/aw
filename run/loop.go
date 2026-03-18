@@ -512,6 +512,19 @@ func (l *Loop) waitForBusEvents(ctx context.Context, waitSeconds int, st *state)
 					return l.processWakeEvent(ctx, evt, st)
 				}
 			}
+		case busEvt := <-bus.Interrupts():
+			l.applyBusInterrupt(busEvt, st, nil)
+			if st.StopRequested {
+				return context.Canceled
+			}
+			// During idle wait there is no active run, so PauseAfterRun
+			// should take effect immediately.
+			if st.PauseAfterRun && !st.Paused {
+				st.Paused = true
+			}
+			if st.Paused {
+				return l.waitWhilePaused(ctx, st)
+			}
 		case event := <-l.controlEvents():
 			l.applyControlEvent(event, st, false, nil)
 			if st.StopRequested {
@@ -544,8 +557,9 @@ func (l *Loop) processWakeEvent(ctx context.Context, evt BusEvent, st *state) er
 	return nil
 }
 
-// applyBusInterrupt handles an interrupt-priority event from the EventBus
-// during an active run.
+// applyBusInterrupt handles an interrupt-priority event from the EventBus.
+// Called from runOnce (active run), waitForBusEvents (idle), and
+// waitWhilePaused. cancel is non-nil only during an active run.
 func (l *Loop) applyBusInterrupt(evt BusEvent, st *state, cancel context.CancelFunc) {
 	switch evt.Event.Type {
 	case awid.AgentEventControlInterrupt:
@@ -571,6 +585,11 @@ func (l *Loop) applyBusInterrupt(evt BusEvent, st *state, cancel context.CancelF
 }
 
 func (l *Loop) waitWhilePaused(ctx context.Context, st *state) error {
+	var busInterrupts <-chan BusEvent
+	if l.EventBus != nil {
+		busInterrupts = l.EventBus.Interrupts()
+	}
+
 	for {
 		if st.StopRequested {
 			return context.Canceled
@@ -588,6 +607,8 @@ func (l *Loop) waitWhilePaused(ctx context.Context, st *state) error {
 			return nil
 		}
 		select {
+		case busEvt := <-busInterrupts:
+			l.applyBusInterrupt(busEvt, st, nil)
 		case event := <-l.controlEvents():
 			l.applyControlEvent(event, st, false, nil)
 			if st.StopRequested {
@@ -600,9 +621,6 @@ func (l *Loop) waitWhilePaused(ctx context.Context, st *state) error {
 			}
 			if strings.TrimSpace(st.NextPrompt) != "" {
 				st.Paused = false
-				return nil
-			}
-			if !st.Paused {
 				return nil
 			}
 		case <-ctx.Done():
