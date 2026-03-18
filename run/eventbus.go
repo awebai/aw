@@ -142,7 +142,6 @@ func (q *PriorityQueue) Ready() <-chan struct{} {
 // (for deferred events).
 type EventBus struct {
 	stream EventStreamOpener
-	filter awid.WakeFilter
 	now    func() time.Time
 
 	interrupts chan BusEvent
@@ -158,23 +157,17 @@ type EventBus struct {
 // EventBusConfig holds construction parameters for an EventBus.
 type EventBusConfig struct {
 	Stream        EventStreamOpener
-	Filter        awid.WakeFilter
 	Now           func() time.Time
 	OnStateChange func(ConnectionState)
 }
 
 func NewEventBus(cfg EventBusConfig) *EventBus {
-	filter := cfg.Filter
-	if filter == nil {
-		filter = awid.DefaultWakeFilter
-	}
 	nowFn := cfg.Now
 	if nowFn == nil {
 		nowFn = time.Now
 	}
 	b := &EventBus{
 		stream:        cfg.Stream,
-		filter:        filter,
 		now:           nowFn,
 		interrupts:    make(chan BusEvent, 8),
 		queue:         NewPriorityQueue(),
@@ -192,10 +185,12 @@ func (b *EventBus) Start(ctx context.Context) {
 }
 
 // Stop closes the SSE connection and waits for the goroutine to exit.
+// Safe to call even if Start was never called.
 func (b *EventBus) Stop() {
-	if b.cancel != nil {
-		b.cancel()
+	if b.cancel == nil {
+		return
 	}
+	b.cancel()
 	<-b.done
 }
 

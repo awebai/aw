@@ -459,6 +459,9 @@ func (l *Loop) waitForNextCycle(ctx context.Context, waitSeconds int, st *state)
 		}
 		return l.waitWhilePaused(ctx, st)
 	}
+	if l.EventBus != nil {
+		return l.waitForBusEvents(ctx, waitSeconds, st)
+	}
 	return l.idleWithControls(ctx, waitSeconds, st)
 }
 
@@ -482,9 +485,15 @@ func (l *Loop) waitForBusEvents(ctx context.Context, waitSeconds int, st *state)
 
 	bus := l.EventBus
 
-	// Drain anything already queued.
-	if evt, ok := bus.Queue().Pop(); ok {
-		return l.processWakeEvent(ctx, evt, st)
+	// Drain anything already queued, respecting the autofeed filter.
+	for {
+		evt, ok := bus.Queue().Pop()
+		if !ok {
+			break
+		}
+		if l.shouldWakeForBusEvent(evt, st) {
+			return l.processWakeEvent(ctx, evt, st)
+		}
 	}
 
 	remaining := time.Duration(waitSeconds) * time.Second

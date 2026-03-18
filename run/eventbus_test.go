@@ -410,6 +410,25 @@ func TestEventBusInjectAutofeed(t *testing.T) {
 	}
 }
 
+func TestEventBusStopWithoutStartDoesNotDeadlock(t *testing.T) {
+	bus := NewEventBus(EventBusConfig{
+		Stream: func(ctx context.Context, deadline time.Time) (awid.EventSource, error) {
+			return nil, errors.New("should not be called")
+		},
+	})
+	// Stop without Start should return immediately.
+	done := make(chan struct{})
+	go func() {
+		bus.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stop() deadlocked without Start()")
+	}
+}
+
 func TestPriorityQueueAutofeedIsLowestPriority(t *testing.T) {
 	q := NewPriorityQueue()
 	q.Push(BusEvent{Priority: PriorityAutofeed, Event: awid.AgentEvent{Type: "autofeed"}})

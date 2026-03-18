@@ -733,3 +733,26 @@ func TestLoopEventBusBasePromptWaitsForEvents(t *testing.T) {
 		t.Fatalf("expected context canceled, got %v", err)
 	}
 }
+
+func TestWaitForBusEventsSkipsCoordinationWithoutAutofeed(t *testing.T) {
+	// Pre-queue a coordination event, then a communication event.
+	bus := newTestEventBus()
+	bus.queue.Push(BusEvent{Priority: PriorityCoordination, Event: awid.AgentEvent{Type: awid.AgentEventWorkAvailable, TaskID: "t1"}})
+	bus.queue.Push(BusEvent{Priority: PriorityCommunication, Event: awid.AgentEvent{Type: awid.AgentEventMailMessage, FromAlias: "alice"}})
+
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.EventBus = bus
+
+	// Autofeed OFF — coordination should be skipped, mail should wake.
+	st := &state{Autofeed: false}
+	err := loop.waitForBusEvents(context.Background(), 30, st)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if st.LastWakeEvent == nil {
+		t.Fatal("expected LastWakeEvent to be set")
+	}
+	if st.LastWakeEvent.Type != awid.AgentEventMailMessage {
+		t.Fatalf("expected mail message wake (skipping coordination), got %s", st.LastWakeEvent.Type)
+	}
+}
