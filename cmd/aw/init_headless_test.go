@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -326,5 +327,100 @@ func TestAwInitSelfHostedStillUsesV1Init(t *testing.T) {
 
 	if gotPath != "/v1/init" {
 		t.Fatalf("expected /v1/init, got path=%q", gotPath)
+	}
+}
+
+func TestAwInitHeadlessWithAPIMount(t *testing.T) {
+	t.Parallel()
+
+	// Server where the aweb API is mounted at /api. resolveWorkingBaseURL
+	// will resolve to server.URL+"/api". The headless endpoint must not
+	// double the /api prefix.
+	var gotPath string
+
+	// Use raw httptest.Server to avoid the newLocalHTTPServer heartbeat
+	// wrapper that responds on /v1/agents/heartbeat (we need the root
+	// heartbeat to 404 so the resolver picks /api as the base).
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/agents/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/api/v1/agents/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	})
+	mux.HandleFunc("/api/v1/bootstrap/headless-agent", func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"org_id":       "org-1",
+			"org_slug":     "myteam",
+			"project_id":   "proj-1",
+			"project_slug": "default",
+			"namespace":    "myteam.aweb.ai",
+			"agent_id":     "agent-1",
+			"alias":        "deploy-bot",
+			"address":      "myteam.aweb.ai/deploy-bot",
+			"api_key":      "aw_sk_api_mount",
+			"did":          "did:key:z6MkTest4",
+			"stable_id":    "stable-4",
+			"custody":      "self",
+			"lifetime":     "persistent",
+			"created":      true,
+		})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// AWEB_URL will trigger resolveWorkingBaseURL which probes /api
+	// and resolves to server.URL+"/api".
+	run := exec.CommandContext(ctx, bin, "init",
+		"--namespace", "myteam",
+		"--alias", "deploy-bot",
+		"--json",
+		"--write-context=false",
+		"--print-exports=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL="+server.URL,
+		"AWEB_CLOUD_TOKEN=",
+		"AWEB_API_KEY=",
+		"AWEB_NAMESPACE=",
+		"AWEB_ALIAS=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	if gotPath != "/api/v1/bootstrap/headless-agent" {
+		t.Fatalf("expected /api/v1/bootstrap/headless-agent, got path=%q", gotPath)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(extractJSON(t, out), &resp); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if resp["api_key"] != "aw_sk_api_mount" {
+		t.Fatalf("api_key=%v", resp["api_key"])
 	}
 }
