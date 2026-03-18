@@ -573,9 +573,15 @@ func (l *Loop) applyBusInterrupt(evt BusEvent, st *state, cancel context.CancelF
 		st.PendingInput = false
 		st.InputBuffer = ""
 		st.Paused = true
-		st.PauseAfterRun = true
-		st.RunInterrupted = true
-		l.println("\nstopped current run. " + pausedNoticeText)
+		if cancel != nil {
+			st.PauseAfterRun = true
+			st.RunInterrupted = true
+			l.println("\nstopped current run. " + pausedNoticeText)
+		} else {
+			st.PauseAfterRun = false
+			st.RunInterrupted = false
+			l.println(pausedNoticeText)
+		}
 		st.PauseNoticeShown = true
 		if cancel != nil {
 			cancel()
@@ -1121,4 +1127,3 @@ func RealCommandRunner(ctx context.Context, dir string, argv []string, onLine fu
 	}
 	return nil
 }
-
