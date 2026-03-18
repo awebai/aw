@@ -149,6 +149,7 @@ type EventBus struct {
 
 	connState     atomic.Int32
 	onStateChange func(ConnectionState)
+	onError       func(awid.AgentEvent)
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -270,6 +271,9 @@ func (b *EventBus) consumeStream(ctx context.Context, source awid.EventSource) {
 			continue
 		}
 		if ev.Type == awid.AgentEventError {
+			if b.onError != nil {
+				b.onError(*ev)
+			}
 			continue
 		}
 
