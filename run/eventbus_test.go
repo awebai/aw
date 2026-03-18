@@ -458,3 +458,41 @@ func TestPriorityQueueAutofeedIsLowestPriority(t *testing.T) {
 		t.Fatalf("expected autofeed last, got %d", evt.Priority)
 	}
 }
+
+func TestEventBusCallsOnErrorForErrorEvents(t *testing.T) {
+	source := newFakeEventSource(
+		awid.AgentEvent{Type: awid.AgentEventError, Text: "server restarting"},
+	)
+	called := false
+	errCh := make(chan string, 1)
+
+	bus := NewEventBus(EventBusConfig{
+		Stream: func(ctx context.Context, deadline time.Time) (awid.EventSource, error) {
+			if called {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			called = true
+			return source, nil
+		},
+	})
+	bus.onError = func(ev awid.AgentEvent) {
+		errCh <- ev.Text
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bus.Start(ctx)
+
+	select {
+	case text := <-errCh:
+		if text != "server restarting" {
+			t.Fatalf("error text=%q, want 'server restarting'", text)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for OnError callback")
+	}
+
+	cancel()
+	bus.Stop()
+}
