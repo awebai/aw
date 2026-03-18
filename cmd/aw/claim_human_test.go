@@ -27,8 +27,13 @@ func TestAwClaimHuman(t *testing.T) {
 			gotAuth = r.Header.Get("Authorization")
 			_ = json.NewDecoder(r.Body).Decode(&gotBody)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":  "verification_sent",
-				"message": "Check your inbox for a verification email",
+				"status":       "verification_sent",
+				"message":      "Check your inbox",
+				"email":        "alice@example.com",
+				"org_id":       "org-1",
+				"org_slug":     "myteam",
+				"project_id":   "proj-1",
+				"project_slug": "default",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -95,6 +100,12 @@ default_account: acct
 	if resp["status"] != "verification_sent" {
 		t.Fatalf("status=%v", resp["status"])
 	}
+	if resp["org_slug"] != "myteam" {
+		t.Fatalf("org_slug=%v", resp["org_slug"])
+	}
+	if resp["email"] != "alice@example.com" {
+		t.Fatalf("email=%v", resp["email"])
+	}
 }
 
 func TestAwClaimHumanTextOutput(t *testing.T) {
@@ -105,7 +116,10 @@ func TestAwClaimHumanTextOutput(t *testing.T) {
 		case "/api/v1/claim-human":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":  "verification_sent",
-				"message": "Check your inbox for a verification email",
+				"message": "Check your inbox",
+				"email":   "alice@example.com",
+				"org_id":  "org-1",
+				"org_slug": "myteam",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -158,7 +172,144 @@ default_account: acct
 	}
 
 	output := strings.TrimSpace(string(out))
-	want := "Verification email sent to alice@example.com. Check your inbox for a verification email"
+	want := "Verification email sent to alice@example.com. Check your inbox to complete the claim."
+	if output != want {
+		t.Fatalf("output=%q, want %q", output, want)
+	}
+}
+
+func TestAwClaimHumanAttachedStatus(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/claim-human":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":   "attached",
+				"message":  "Human attached",
+				"email":    "alice@example.com",
+				"org_slug": "myteam",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	output := strings.TrimSpace(string(out))
+	want := "Human account attached to myteam. Dashboard access is now available."
+	if output != want {
+		t.Fatalf("output=%q, want %q", output, want)
+	}
+}
+
+func TestAwClaimHumanAlreadyAttachedStatus(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/claim-human":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":   "already_attached",
+				"message":  "Already attached",
+				"org_slug": "myteam",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	output := strings.TrimSpace(string(out))
+	want := "Human account is already attached to myteam."
 	if output != want {
 		t.Fatalf("output=%q, want %q", output, want)
 	}

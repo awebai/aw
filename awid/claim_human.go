@@ -14,8 +14,13 @@ type ClaimHumanRequest struct {
 
 // ClaimHumanResponse is returned by POST /api/v1/claim-human.
 type ClaimHumanResponse struct {
-	Status  string `json:"status"`
-	Message string `json:"message"`
+	Status      string `json:"status"`
+	Message     string `json:"message"`
+	Email       string `json:"email,omitempty"`
+	OrgID       string `json:"org_id,omitempty"`
+	OrgSlug     string `json:"org_slug,omitempty"`
+	ProjectID   string `json:"project_id,omitempty"`
+	ProjectSlug string `json:"project_slug,omitempty"`
 }
 
 // ClaimHuman initiates a human account claim for the current agent's org.

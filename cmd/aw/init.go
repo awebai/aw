@@ -413,10 +413,19 @@ func tryHeadlessOrInit(
 	if initReq.Alias != nil {
 		alias = *initReq.Alias
 	}
-	// Headless bootstrap requires alias. If alias is empty (e.g. retry
-	// after alias collision), fall back to /v1/init for server allocation.
+	// Headless bootstrap requires alias. Without one, fall back to
+	// /v1/init which supports server-allocated aliases. If that also
+	// fails (hosted servers may not expose /v1/init), surface an error
+	// asking the user to specify --alias explicitly.
 	if alias == "" {
-		return client.Init(ctx, initReq)
+		resp, initErr := client.Init(ctx, initReq)
+		if initErr == nil {
+			return resp, nil
+		}
+		if code, ok := awid.HTTPStatusCode(initErr); ok && code == 404 {
+			return nil, fmt.Errorf("server requires an alias; specify one with --alias")
+		}
+		return nil, initErr
 	}
 	headlessReq := &awid.HeadlessBootstrapRequest{
 		NamespaceSlug: initReq.ProjectSlug,
