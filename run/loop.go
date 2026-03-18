@@ -503,14 +503,15 @@ func (l *Loop) waitForBusEvents(ctx context.Context, waitSeconds int, st *state)
 	for {
 		select {
 		case <-bus.Queue().Ready():
-			evt, ok := bus.Queue().Pop()
-			if !ok {
-				continue
+			for {
+				evt, ok := bus.Queue().Pop()
+				if !ok {
+					break
+				}
+				if l.shouldWakeForBusEvent(evt, st) {
+					return l.processWakeEvent(ctx, evt, st)
+				}
 			}
-			if !l.shouldWakeForBusEvent(evt, st) {
-				continue
-			}
-			return l.processWakeEvent(ctx, evt, st)
 		case event := <-l.controlEvents():
 			l.applyControlEvent(event, st, false, nil)
 			if st.StopRequested {
@@ -561,6 +562,11 @@ func (l *Loop) applyBusInterrupt(evt BusEvent, st *state, cancel context.CancelF
 	case awid.AgentEventControlPause:
 		st.PauseAfterRun = true
 		l.println("\nwill pause after this run.")
+	case awid.AgentEventControlResume:
+		st.Paused = false
+		st.PauseNoticeShown = false
+		st.PauseAfterRun = false
+		l.renderInputPrompt(st)
 	}
 }
 

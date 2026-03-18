@@ -133,8 +133,18 @@ func TestClassifyCoordinationEvents(t *testing.T) {
 	}
 }
 
+func TestClassifyResumeAsInterrupt(t *testing.T) {
+	pri, ok := classifyAgentEvent(awid.AgentEvent{Type: awid.AgentEventControlResume})
+	if !ok {
+		t.Fatal("control_resume should be queued")
+	}
+	if pri != PriorityInterrupt {
+		t.Fatalf("control_resume should be interrupt priority, got %d", pri)
+	}
+}
+
 func TestClassifyInformationalEventsNotQueued(t *testing.T) {
-	for _, typ := range []awid.AgentEventType{awid.AgentEventConnected, awid.AgentEventControlResume, awid.AgentEventError} {
+	for _, typ := range []awid.AgentEventType{awid.AgentEventConnected, awid.AgentEventError} {
 		_, ok := classifyAgentEvent(awid.AgentEvent{Type: typ})
 		if ok {
 			t.Fatalf("%s should not be queued", typ)

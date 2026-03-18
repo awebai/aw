@@ -49,17 +49,17 @@ type BusEvent struct {
 
 // classifyAgentEvent assigns a priority to an agent event.
 // Returns the priority and whether the event should be queued at all.
-// Informational events (connected, error, control_resume) return false.
+// Informational events (connected, error) return false.
 func classifyAgentEvent(evt awid.AgentEvent) (EventPriority, bool) {
 	switch evt.Type {
-	case awid.AgentEventControlInterrupt, awid.AgentEventControlPause:
+	case awid.AgentEventControlInterrupt, awid.AgentEventControlPause, awid.AgentEventControlResume:
 		return PriorityInterrupt, true
 	case awid.AgentEventMailMessage, awid.AgentEventChatMessage:
 		return PriorityCommunication, true
 	case awid.AgentEventWorkAvailable, awid.AgentEventClaimUpdate, awid.AgentEventClaimRemoved:
 		return PriorityCoordination, true
 	default:
-		// connected, error, control_resume — informational, not queued
+		// connected, error — informational, not queued
 		return 0, false
 	}
 }
@@ -266,11 +266,6 @@ func (b *EventBus) consumeStream(ctx context.Context, source awid.EventSource) {
 			return
 		}
 
-		// Informational: control_resume is applied immediately as a state
-		// flag by the loop, not queued.
-		if ev.Type == awid.AgentEventControlResume {
-			continue
-		}
 		if ev.Type == awid.AgentEventConnected {
 			continue
 		}

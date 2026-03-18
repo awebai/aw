@@ -756,3 +756,110 @@ func TestWaitForBusEventsSkipsCoordinationWithoutAutofeed(t *testing.T) {
 		t.Fatalf("expected mail message wake (skipping coordination), got %s", st.LastWakeEvent.Type)
 	}
 }
+
+func TestApplyBusInterruptResumeClearsPause(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(ClaudeProvider{}, &out)
+	st := &state{
+		Paused:         true,
+		PauseAfterRun:  true,
+		PauseNoticeShown: true,
+	}
+
+	loop.applyBusInterrupt(BusEvent{
+		Event:    awid.AgentEvent{Type: awid.AgentEventControlResume},
+		Priority: PriorityInterrupt,
+	}, st, nil)
+
+	if st.Paused {
+		t.Fatal("expected Paused to be cleared")
+	}
+	if st.PauseAfterRun {
+		t.Fatal("expected PauseAfterRun to be cleared")
+	}
+	if st.PauseNoticeShown {
+		t.Fatal("expected PauseNoticeShown to be cleared")
+	}
+}
+
+func TestRemoteResumeDeliveredThroughBusInterrupts(t *testing.T) {
+	// Verify control_resume reaches the interrupts channel.
+	bus := newTestEventBus(
+		awid.AgentEvent{Type: awid.AgentEventControlResume},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bus.Start(ctx)
+
+	select {
+	case evt := <-bus.Interrupts():
+		if evt.Event.Type != awid.AgentEventControlResume {
+			t.Fatalf("expected control_resume, got %s", evt.Event.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for resume interrupt")
+	}
+	cancel()
+	bus.Stop()
+}
+
+func TestWaitForBusEventsDrainsQueueAfterReady(t *testing.T) {
+	// Simulate the bug: two events arrive close together.
+	// The first is filtered (coordination, no autofeed), the second should wake.
+	bus := newTestEventBus()
+
+	// Pre-push both events before waitForBusEvents is called.
+	// This simulates them arriving between Ready() checks.
+	bus.queue.Push(BusEvent{Priority: PriorityCoordination, Event: awid.AgentEvent{Type: awid.AgentEventWorkAvailable}})
+	bus.queue.Push(BusEvent{Priority: PriorityCommunication, Event: awid.AgentEvent{Type: awid.AgentEventMailMessage, FromAlias: "bob"}})
+
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.EventBus = bus
+
+	// The initial drain should skip coordination and find the mail.
+	st := &state{Autofeed: false}
+	err := loop.waitForBusEvents(context.Background(), 30, st)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if st.LastWakeEvent == nil || st.LastWakeEvent.Type != awid.AgentEventMailMessage {
+		t.Fatalf("expected mail wake, got %v", st.LastWakeEvent)
+	}
+}
+
+func TestWaitForBusEventsDrainsQueueFromReadySignal(t *testing.T) {
+	// Test the Ready() path (not the initial drain): coordination then mail
+	// arrive after waitForBusEvents enters the select loop.
+	bus := newTestEventBus()
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.EventBus = bus
+
+	st := &state{Autofeed: false}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.waitForBusEvents(ctx, 30, st)
+	}()
+
+	// Let the goroutine enter the select loop.
+	time.Sleep(50 * time.Millisecond)
+
+	// Push coordination first, then mail. Only one Ready() signal fires.
+	bus.queue.Push(BusEvent{Priority: PriorityCoordination, Event: awid.AgentEvent{Type: awid.AgentEventWorkAvailable}})
+	bus.queue.Push(BusEvent{Priority: PriorityCommunication, Event: awid.AgentEvent{Type: awid.AgentEventMailMessage, FromAlias: "carol"}})
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out — mail event stuck in queue after coordination was filtered")
+	}
+
+	if st.LastWakeEvent == nil || st.LastWakeEvent.FromAlias != "carol" {
+		t.Fatalf("expected carol mail wake, got %v", st.LastWakeEvent)
+	}
+}
