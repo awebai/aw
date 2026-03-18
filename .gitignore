@@ -12,6 +12,7 @@ coverage.out
 # IDE
 .idea/
 .vscode/
+.mcp.json
 
 # OS files
 .DS_Store
