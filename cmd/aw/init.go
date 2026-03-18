@@ -245,7 +245,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req, strings.TrimSpace(initTargetNamespace))
 	} else if initAPIKey == "" {
 		// No credentials: use anonymous headless bootstrap for hosted servers.
-		resp, err = tryHeadlessOrInit(ctx, bootstrapClient, req)
+		resp, err = tryHeadlessOrInit(ctx, bootstrapClient, req, baseURL)
 	} else {
 		resp, err = bootstrapClient.Init(ctx, req)
 	}
@@ -259,7 +259,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if initCloudMode {
 			resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req, strings.TrimSpace(initTargetNamespace))
 		} else if initAPIKey == "" {
-			resp, err = tryHeadlessOrInit(ctx, bootstrapClient, req)
+			resp, err = tryHeadlessOrInit(ctx, bootstrapClient, req, baseURL)
 		} else {
 			resp, err = bootstrapClient.Init(ctx, req)
 		}
@@ -404,10 +404,13 @@ func printInitSummary(resp *awid.InitResponse, accountName, serverName string, a
 
 // tryHeadlessOrInit attempts anonymous headless bootstrap first. If the
 // server does not support the endpoint (404), falls back to /v1/init.
+// baseURL is the resolved base URL (may end in /api); needed to construct
+// a separate client for /api/v1/... endpoints that expect the host root.
 func tryHeadlessOrInit(
 	ctx context.Context,
 	client *aweb.Client,
 	initReq *awid.InitRequest,
+	baseURL string,
 ) (*awid.InitResponse, error) {
 	alias := ""
 	if initReq.Alias != nil {
@@ -429,7 +432,19 @@ func tryHeadlessOrInit(
 		Lifetime:      initReq.Lifetime,
 	}
 
-	headlessResp, err := client.HeadlessBootstrap(ctx, headlessReq)
+	// The headless endpoint is at /api/v1/... which is relative to the
+	// host root, not to the resolved base URL. Strip any /api suffix
+	// to avoid doubling (e.g. host/api + /api/v1/... → host/api/api/...).
+	rootURL, err := cloudRootBaseURL(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL for headless bootstrap: %w", err)
+	}
+	headlessClient, err := aweb.New(rootURL)
+	if err != nil {
+		return nil, err
+	}
+
+	headlessResp, err := headlessClient.HeadlessBootstrap(ctx, headlessReq)
 	if err != nil {
 		// If the server doesn't support headless bootstrap, fall back to /v1/init.
 		if code, ok := awid.HTTPStatusCode(err); ok && code == 404 {
@@ -676,9 +691,7 @@ func cloudRootBaseURL(baseURL string) (string, error) {
 		return "", err
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/")
-	if u.Path == "/api" {
-		u.Path = ""
-	}
+	u.Path = strings.TrimSuffix(u.Path, "/api")
 	u.RawPath = ""
 	u.RawQuery = ""
 	u.Fragment = ""
