@@ -21,6 +21,7 @@ type Loop struct {
 	Sleep             SleepFunc
 	WakeStream        WakeStream
 	WakeFilter        awid.WakeFilter
+	EventBus          *EventBus
 	ServiceSupervisor ServiceSupervisor
 	Out               io.Writer
 	Control           InputController
@@ -123,6 +124,10 @@ func (l *Loop) Run(ctx context.Context, opts LoopOptions) error {
 		}
 		defer func() { _ = serviceSupervisor.Stop() }()
 	}
+	if l.EventBus != nil {
+		l.EventBus.Start(ctx)
+		defer l.EventBus.Stop()
+	}
 
 	for {
 		decision, err := l.nextPrompt(ctx, opts, state)
@@ -214,7 +219,7 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 	}
 	// Without an external dispatcher, run one cycle then rely on wake/control
 	// signals for subsequent cycles when wake streaming is available.
-	if st.Run > 0 && l.WakeStream != nil {
+	if st.Run > 0 && (l.WakeStream != nil || l.EventBus != nil) {
 		return DispatchDecision{WaitSeconds: opts.WaitSeconds, Skip: true}, nil
 	}
 	return DispatchDecision{MissionPrompt: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
@@ -267,7 +272,16 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 	defer cancel()
 
 	errCh := make(chan error, 1)
-	wakeControls := l.startWakeControlRelay(runCtx)
+
+	// Use EventBus interrupts when available, otherwise fall back to wake relay.
+	var wakeControls <-chan ControlEvent
+	var busInterrupts <-chan BusEvent
+	if l.EventBus != nil {
+		busInterrupts = l.EventBus.Interrupts()
+	} else {
+		wakeControls = l.startWakeControlRelay(runCtx)
+	}
+
 	go func() {
 		errCh <- l.Runner(runCtx, opts.WorkingDir, argv, func(line string) {
 			l.handleOutputLine(line, presenter, st, &observedSessionID)
@@ -301,6 +315,8 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 			return err
 		case event := <-l.controlEvents():
 			l.applyControlEvent(event, st, true, cancel)
+		case busEvt := <-busInterrupts:
+			l.applyBusInterrupt(busEvt, st, cancel)
 		case event, ok := <-wakeControls:
 			if !ok {
 				wakeControls = nil
@@ -508,6 +524,9 @@ func (l *Loop) waitForNextCycle(ctx context.Context, waitSeconds int, st *state)
 }
 
 func (l *Loop) waitForWork(ctx context.Context, waitSeconds int, st *state) error {
+	if l.EventBus != nil {
+		return l.waitForBusEvents(ctx, waitSeconds, st)
+	}
 	if l.WakeStream != nil {
 		return l.waitForWorkEvents(ctx, waitSeconds, st)
 	}
@@ -605,6 +624,92 @@ func (l *Loop) shouldWakeForEvent(evt awid.AgentEvent, st *state) bool {
 	}
 	autofeed := st != nil && st.Autofeed
 	return filter(evt, autofeed)
+}
+
+func (l *Loop) waitForBusEvents(ctx context.Context, waitSeconds int, st *state) error {
+	if waitSeconds <= 0 {
+		return nil
+	}
+	if st.StopRequested {
+		return context.Canceled
+	}
+	if strings.TrimSpace(st.NextPrompt) != "" {
+		return nil
+	}
+
+	bus := l.EventBus
+
+	// Drain anything already queued.
+	if evt, ok := bus.Queue().Pop(); ok {
+		return l.processWakeEvent(ctx, evt, st)
+	}
+
+	remaining := time.Duration(waitSeconds) * time.Second
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-bus.Queue().Ready():
+			evt, ok := bus.Queue().Pop()
+			if !ok {
+				continue
+			}
+			if !l.shouldWakeForBusEvent(evt, st) {
+				continue
+			}
+			return l.processWakeEvent(ctx, evt, st)
+		case event := <-l.controlEvents():
+			l.applyControlEvent(event, st, false, nil)
+			if st.StopRequested {
+				return context.Canceled
+			}
+			if strings.TrimSpace(st.NextPrompt) != "" {
+				return nil
+			}
+			if st.Paused {
+				return l.waitWhilePaused(ctx, st)
+			}
+		case <-timer.C:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (l *Loop) shouldWakeForBusEvent(evt BusEvent, st *state) bool {
+	autofeed := st != nil && st.Autofeed
+	if evt.Priority == PriorityCoordination && !autofeed {
+		return false
+	}
+	return true
+}
+
+func (l *Loop) processWakeEvent(ctx context.Context, evt BusEvent, st *state) error {
+	st.LastWakeEvent = &evt.Event
+	return nil
+}
+
+// applyBusInterrupt handles an interrupt-priority event from the EventBus
+// during an active run.
+func (l *Loop) applyBusInterrupt(evt BusEvent, st *state, cancel context.CancelFunc) {
+	switch evt.Event.Type {
+	case awid.AgentEventControlInterrupt:
+		st.PendingInput = false
+		st.InputBuffer = ""
+		st.Paused = true
+		st.PauseAfterRun = true
+		st.RunInterrupted = true
+		l.println("\nstopped current run. " + pausedNoticeText)
+		st.PauseNoticeShown = true
+		if cancel != nil {
+			cancel()
+		}
+	case awid.AgentEventControlPause:
+		st.PauseAfterRun = true
+		l.println("\nwill pause after this run.")
+	}
 }
 
 func (l *Loop) handleImmediateWakeEvent(ctx context.Context, evt awid.AgentEvent, st *state) bool {

@@ -566,3 +566,155 @@ func TestLoopFallsBackToTimedCyclesWhenWakeStreamUnavailable(t *testing.T) {
 		t.Fatalf("expected fallback notice, got output: %q", out.String())
 	}
 }
+
+// --- EventBus integration tests ---
+
+func newTestEventBus(events ...awid.AgentEvent) *EventBus {
+	source := newFakeEventSource(events...)
+	called := false
+	return NewEventBus(EventBusConfig{
+		Stream: func(ctx context.Context, deadline time.Time) (awid.EventSource, error) {
+			if called {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			called = true
+			return source, nil
+		},
+	})
+}
+
+func TestLoopEventBusWakesOnMailMessage(t *testing.T) {
+	bus := newTestEventBus(
+		awid.AgentEvent{Type: awid.AgentEventMailMessage, FromAlias: "alice"},
+	)
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.EventBus = bus
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.Run(ctx, LoopOptions{
+			InitialPrompt: "hello",
+			WaitSeconds:   30,
+		})
+	}()
+
+	// Wait for the bus event to wake the loop into a second run wait.
+	select {
+	case err := <-done:
+		t.Fatalf("loop exited unexpectedly: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	cancel()
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+}
+
+func TestLoopEventBusInterruptDuringRun(t *testing.T) {
+	bus := newTestEventBus(
+		awid.AgentEvent{Type: awid.AgentEventControlInterrupt},
+	)
+	var out bytes.Buffer
+	loop := NewLoop(ClaudeProvider{}, &out)
+	loop.EventBus = bus
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	runStarted := make(chan struct{})
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		close(runStarted)
+		// Block until context is cancelled by interrupt.
+		<-ctx.Done()
+		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
+		return ctx.Err()
+	}
+	controller := newFakeInputController()
+	loop.Control = controller
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.Run(ctx, LoopOptions{
+			InitialPrompt: "work",
+			WaitSeconds:   1,
+		})
+	}()
+
+	// Wait for run to start.
+	select {
+	case <-runStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for run to start")
+	}
+
+	// The interrupt should cancel the run and pause.
+	time.Sleep(200 * time.Millisecond)
+
+	// Send /resume to unpause, then cancel.
+	controller.events <- ControlEvent{Type: ControlQuit}
+	controller.events <- ControlEvent{Type: ControlExitConfirm}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected clean exit, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for loop to exit")
+	}
+
+	if !strings.Contains(out.String(), "stopped current run") {
+		t.Fatalf("expected interrupt notice, got %q", out.String())
+	}
+}
+
+func TestLoopEventBusBasePromptWaitsForEvents(t *testing.T) {
+	bus := newTestEventBus()
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.EventBus = bus
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	runCount := 0
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		runCount++
+		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.Run(ctx, LoopOptions{
+			Prompt:      "persistent mission",
+			WaitSeconds: 1,
+		})
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("loop exited unexpectedly: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if runCount != 1 {
+		t.Fatalf("expected exactly one run without wake events, got %d", runCount)
+	}
+
+	cancel()
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+}
