@@ -462,6 +462,8 @@ func TestAwInitRetriesWhenSuggestedAliasAlreadyExists(t *testing.T) {
 	var initCalls int
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/v1/bootstrap/headless-agent":
+			http.NotFound(w, r)
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_slug": "demo",
@@ -1150,6 +1152,8 @@ func TestAwInitWritesConfig(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/v1/bootstrap/headless-agent":
+			http.NotFound(w, r)
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_slug": "demo",
@@ -1264,6 +1268,8 @@ func TestAwInitStoresFullDomainAddress(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/v1/bootstrap/headless-agent":
+			http.NotFound(w, r)
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_slug": "myteam",
@@ -1544,6 +1550,8 @@ func TestAwInitAllowsCustomMountRoot(t *testing.T) {
 	var gotInitPath string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/custom/api/v1/bootstrap/headless-agent":
+			http.NotFound(w, r)
 		case "/custom/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		case "/custom/v1/init":
@@ -7477,6 +7485,8 @@ func TestInitDefaultServerUsedWhenNoURLProvided(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/v1/bootstrap/headless-agent":
+			http.NotFound(w, r)
 		case "/v1/init":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":         "ok",
@@ -7578,6 +7588,8 @@ func TestInitWorkspaceAttachNonFatal(t *testing.T) {
 	// Init should succeed with a warning, not fail.
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/v1/bootstrap/headless-agent":
+			http.NotFound(w, r)
 		case "/v1/init":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":         "ok",

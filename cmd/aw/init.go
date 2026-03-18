@@ -243,6 +243,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	var resp *awid.InitResponse
 	if initCloudMode {
 		resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req, strings.TrimSpace(initTargetNamespace))
+	} else if initAPIKey == "" {
+		// No credentials: use anonymous headless bootstrap for hosted servers.
+		resp, err = tryHeadlessOrInit(ctx, bootstrapClient, req)
 	} else {
 		resp, err = bootstrapClient.Init(ctx, req)
 	}
@@ -255,6 +258,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 		req.Alias = nil
 		if initCloudMode {
 			resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req, strings.TrimSpace(initTargetNamespace))
+		} else if initAPIKey == "" {
+			resp, err = tryHeadlessOrInit(ctx, bootstrapClient, req)
 		} else {
 			resp, err = bootstrapClient.Init(ctx, req)
 		}
@@ -395,6 +400,62 @@ func printInitSummary(resp *awid.InitResponse, accountName, serverName string, a
 	case "local_dir":
 		fmt.Println("Context:    attached local directory")
 	}
+}
+
+// tryHeadlessOrInit attempts anonymous headless bootstrap first. If the
+// server does not support the endpoint (404), falls back to /v1/init.
+func tryHeadlessOrInit(
+	ctx context.Context,
+	client *aweb.Client,
+	initReq *awid.InitRequest,
+) (*awid.InitResponse, error) {
+	alias := ""
+	if initReq.Alias != nil {
+		alias = *initReq.Alias
+	}
+	// Headless bootstrap requires alias. If alias is empty (e.g. retry
+	// after alias collision), fall back to /v1/init for server allocation.
+	if alias == "" {
+		return client.Init(ctx, initReq)
+	}
+	headlessReq := &awid.HeadlessBootstrapRequest{
+		NamespaceSlug: initReq.ProjectSlug,
+		Alias:         alias,
+		AgentType:     initReq.AgentType,
+		HumanName:     initReq.HumanName,
+		DID:           initReq.DID,
+		PublicKey:     initReq.PublicKey,
+		Custody:       initReq.Custody,
+		Lifetime:      initReq.Lifetime,
+	}
+
+	headlessResp, err := client.HeadlessBootstrap(ctx, headlessReq)
+	if err != nil {
+		// If the server doesn't support headless bootstrap, fall back to /v1/init.
+		if code, ok := awid.HTTPStatusCode(err); ok && code == 404 {
+			debugLog("headless bootstrap not supported (404), falling back to /v1/init")
+			return client.Init(ctx, initReq)
+		}
+		return nil, err
+	}
+
+	// Convert HeadlessBootstrapResponse to InitResponse for uniform handling.
+	return &awid.InitResponse{
+		Status:        "ok",
+		ProjectID:     headlessResp.ProjectID,
+		ProjectSlug:   headlessResp.ProjectSlug,
+		AgentID:       headlessResp.AgentID,
+		Alias:         headlessResp.Alias,
+		APIKey:        headlessResp.APIKey,
+		NamespaceSlug: headlessResp.OrgSlug,
+		Namespace:     headlessResp.Namespace,
+		Address:       headlessResp.Address,
+		Created:       headlessResp.Created,
+		DID:           headlessResp.DID,
+		StableID:      headlessResp.StableID,
+		Custody:       headlessResp.Custody,
+		Lifetime:      headlessResp.Lifetime,
+	}, nil
 }
 
 func bootstrapViaCloud(

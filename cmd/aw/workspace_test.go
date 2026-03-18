@@ -167,6 +167,8 @@ func TestAwInitAutoAttachesRepoContext(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/v1/bootstrap/headless-agent":
+			http.NotFound(w, r)
 		case "/v1/init":
 			if r.Method != http.MethodPost {
 				t.Fatalf("method=%s", r.Method)

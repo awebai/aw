@@ -1,0 +1,330 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/awebai/aw/awconfig"
+)
+
+func TestAwInitHeadlessBootstrapAgainstHosted(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	var gotBody map[string]any
+	var gotAuth string
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/bootstrap/headless-agent":
+			gotPath = r.URL.Path
+			gotAuth = r.Header.Get("Authorization")
+			if r.Method != http.MethodPost {
+				t.Fatalf("method=%s", r.Method)
+			}
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"org_id":       "org-1",
+				"org_slug":     "myteam",
+				"project_id":   "proj-1",
+				"project_slug": "default",
+				"namespace":    "myteam.aweb.ai",
+				"agent_id":     "agent-1",
+				"alias":        "deploy-bot",
+				"address":      "myteam.aweb.ai/deploy-bot",
+				"api_key":      "aw_sk_headless_test",
+				"did":          "did:key:z6MkTest",
+				"stable_id":    "stable-1",
+				"custody":      "self",
+				"lifetime":     "persistent",
+				"created":      true,
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// No config, no tokens, no API key — headless path.
+	run := exec.CommandContext(ctx, bin, "init",
+		"--namespace", "myteam",
+		"--alias", "deploy-bot",
+		"--json",
+		"--write-context=false",
+		"--print-exports=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AWEB_URL="+server.URL,
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_CLOUD_TOKEN=",
+		"AWEB_API_KEY=",
+		"AWEB_NAMESPACE=",
+		"AWEB_ALIAS=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	// Should have hit the headless endpoint.
+	if gotPath != "/api/v1/bootstrap/headless-agent" {
+		t.Fatalf("expected headless endpoint, got path=%q", gotPath)
+	}
+
+	// Should be unauthenticated.
+	if gotAuth != "" {
+		t.Fatalf("expected no auth header, got %q", gotAuth)
+	}
+
+	// Verify request body.
+	if gotBody["namespace_slug"] != "myteam" {
+		t.Fatalf("namespace_slug=%v", gotBody["namespace_slug"])
+	}
+	if gotBody["alias"] != "deploy-bot" {
+		t.Fatalf("alias=%v", gotBody["alias"])
+	}
+	if _, ok := gotBody["did"]; !ok {
+		t.Fatal("missing did in request")
+	}
+	if _, ok := gotBody["public_key"]; !ok {
+		t.Fatal("missing public_key in request")
+	}
+
+	// Verify JSON response.
+	var resp map[string]any
+	if err := json.Unmarshal(extractJSON(t, out), &resp); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if resp["alias"] != "deploy-bot" {
+		t.Fatalf("alias=%v", resp["alias"])
+	}
+	if resp["api_key"] != "aw_sk_headless_test" {
+		t.Fatalf("api_key=%v", resp["api_key"])
+	}
+
+	// Verify config was written.
+	cfgData, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg awconfig.GlobalConfig
+	if err := yaml.Unmarshal(cfgData, &cfg); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	// Should have an account with the headless API key.
+	found := false
+	for _, acct := range cfg.Accounts {
+		if acct.APIKey == "aw_sk_headless_test" {
+			found = true
+			if acct.AgentAlias != "deploy-bot" {
+				t.Fatalf("agent_alias=%q", acct.AgentAlias)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected account with headless API key in config:\n%s", string(cfgData))
+	}
+}
+
+func TestAwInitWithExistingKeySkipsHeadless(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	var gotAuth string
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/init":
+			gotPath = r.URL.Path
+			gotAuth = r.Header.Get("Authorization")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":       "ok",
+				"project_id":   "proj-1",
+				"project_slug": "default",
+				"agent_id":     "agent-2",
+				"alias":        "reviewer",
+				"api_key":      "aw_sk_new_agent",
+				"created":      true,
+				"did":          "did:key:z6MkTest2",
+				"custody":      "self",
+				"lifetime":     "persistent",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// Existing aw_sk_ key in config → should skip headless, use /v1/init with auth.
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  existing:
+    server: local
+    api_key: aw_sk_existing
+default_account: existing
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "init",
+		"--namespace", "myteam",
+		"--alias", "reviewer",
+		"--json",
+		"--write-context=false",
+		"--print-exports=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AWEB_URL="+server.URL,
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_CLOUD_TOKEN=",
+		"AWEB_API_KEY=",
+		"AWEB_NAMESPACE=",
+		"AWEB_ALIAS=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	// Should have used /v1/init, NOT headless.
+	if gotPath != "/v1/init" {
+		t.Fatalf("expected /v1/init, got path=%q", gotPath)
+	}
+	// Should be authenticated with the existing key.
+	if gotAuth != "Bearer aw_sk_existing" {
+		t.Fatalf("expected auth with existing key, got %q", gotAuth)
+	}
+}
+
+func TestAwInitSelfHostedStillUsesV1Init(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/bootstrap/headless-agent":
+			// Self-hosted server doesn't have this endpoint.
+			http.NotFound(w, r)
+		case "/v1/init":
+			gotPath = r.URL.Path
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":       "ok",
+				"project_id":   "proj-1",
+				"project_slug": "default",
+				"agent_id":     "agent-1",
+				"alias":        "deploy-bot",
+				"api_key":      "aw_sk_selfhost",
+				"created":      true,
+				"did":          "did:key:z6MkTest3",
+				"custody":      "self",
+				"lifetime":     "persistent",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// Explicit --server-url to non-hosted server, no config → self-hosted /v1/init.
+	run := exec.CommandContext(ctx, bin, "init",
+		"--server-url", server.URL,
+		"--namespace", "myteam",
+		"--alias", "deploy-bot",
+		"--json",
+		"--write-context=false",
+		"--print-exports=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_CLOUD_TOKEN=",
+		"AWEB_API_KEY=",
+		"AWEB_NAMESPACE=",
+		"AWEB_ALIAS=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	if gotPath != "/v1/init" {
+		t.Fatalf("expected /v1/init, got path=%q", gotPath)
+	}
+}
