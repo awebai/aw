@@ -53,6 +53,7 @@ type state struct {
 	LastRunError       string
 	LastRunUsage       UsageStats
 	HasRunUsage        bool
+	ConnState          ConnectionState
 }
 
 const (
@@ -121,6 +122,12 @@ func (l *Loop) Run(ctx context.Context, opts LoopOptions) error {
 		defer func() { _ = serviceSupervisor.Stop() }()
 	}
 	if l.EventBus != nil {
+		l.EventBus.onStateChange = func(cs ConnectionState) {
+			state.ConnState = cs
+			if state.RunLabel != "" {
+				l.setStatusLine(formatRunStatus(state))
+			}
+		}
 		l.EventBus.Start(ctx)
 		defer l.EventBus.Stop()
 	}

@@ -293,9 +293,23 @@ func TestFormatRunStatusShowsContextAndCost(t *testing.T) {
 		},
 		CumulativeCostUSD: 0.05,
 		Autofeed:          true,
+		ConnState:         ConnStreaming,
 	}
 	got := formatRunStatus(st)
-	want := "ctx 45% · $0.05 · autofeed"
+	want := "ctx 45% · $0.05 · autofeed · streaming"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestFormatRunStatusShowsReconnecting(t *testing.T) {
+	st := &state{
+		RunLabel:          "run 1",
+		CumulativeCostUSD: 0.05,
+		ConnState:         ConnReconnecting,
+	}
+	got := formatRunStatus(st)
+	want := "$0.05 · reconnecting..."
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}

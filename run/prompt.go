@@ -64,6 +64,12 @@ func formatRunStatus(st *state) string {
 	if strings.TrimSpace(st.NextPrompt) != "" {
 		parts = append(parts, "queued")
 	}
+	switch st.ConnState {
+	case ConnStreaming:
+		parts = append(parts, "streaming")
+	case ConnReconnecting:
+		parts = append(parts, "reconnecting...")
+	}
 	return strings.Join(parts, " · ")
 }
 
