@@ -275,7 +275,7 @@ func collectInitOptions() (initOptions, error) {
 		CloudMode:                     cloudMode,
 		CloudToken:                    cloudToken,
 		TargetNamespace:               targetNamespace,
-		BootstrapAPIKey:               resolveInitAPIKey(baseURL, serverName, accountName, global),
+		BootstrapAPIKey:               "",
 		AccountName:                   accountName,
 	}, nil
 }
@@ -389,9 +389,7 @@ func executeInit(opts initOptions) (*initResult, error) {
 			if v := strings.TrimSpace(resp.ServerURL); v != "" {
 				serverURL = v
 			}
-			if _, ok := cfg.Servers[opts.ServerName]; !ok || strings.TrimSpace(cfg.Servers[opts.ServerName].URL) == "" {
-				cfg.Servers[opts.ServerName] = awconfig.Server{URL: serverURL}
-			}
+			cfg.Servers[opts.ServerName] = awconfig.Server{URL: serverURL}
 			cfg.Accounts[accountName] = awconfig.Account{Account: awid.Account{
 				Server:        opts.ServerName,
 				APIKey:        resp.APIKey,
@@ -546,6 +544,7 @@ func tryHeadlessOrInit(
 		AgentID:       headlessResp.AgentID,
 		Alias:         headlessResp.Alias,
 		APIKey:        headlessResp.APIKey,
+		ServerURL:     headlessResp.ServerURL,
 		NamespaceSlug: headlessResp.OrgSlug,
 		Namespace:     headlessResp.Namespace,
 		Address:       headlessResp.Address,

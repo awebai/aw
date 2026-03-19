@@ -158,28 +158,32 @@ func TestAwInitHeadlessBootstrapAgainstHosted(t *testing.T) {
 	}
 }
 
-func TestAwInitWithExistingKeySkipsHeadless(t *testing.T) {
+func TestAwInitIgnoresExistingConfigKeys(t *testing.T) {
 	t.Parallel()
 
+	// Init should NOT use existing aw_sk_ keys from config to bootstrap.
+	// It should try headless first, even when config has keys.
 	var gotPath string
-	var gotAuth string
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/init":
+		case "/api/v1/bootstrap/headless-agent":
 			gotPath = r.URL.Path
-			gotAuth = r.Header.Get("Authorization")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":       "ok",
+				"org_id":       "org-1",
+				"org_slug":     "myteam",
 				"project_id":   "proj-1",
 				"project_slug": "default",
+				"namespace":    "myteam.aweb.ai",
 				"agent_id":     "agent-2",
 				"alias":        "reviewer",
+				"address":      "myteam.aweb.ai/reviewer",
 				"api_key":      "aw_sk_new_agent",
-				"created":      true,
 				"did":          "did:key:z6MkTest2",
+				"stable_id":    "stable-2",
 				"custody":      "self",
 				"lifetime":     "persistent",
+				"created":      true,
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -206,7 +210,7 @@ func TestAwInitWithExistingKeySkipsHeadless(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	// Existing aw_sk_ key in config → should skip headless, use /v1/init with auth.
+	// Config has an existing aw_sk_ key — init should ignore it.
 	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
 servers:
   local:
@@ -242,13 +246,9 @@ default_account: existing
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 
-	// Should have used /v1/init, NOT headless.
-	if gotPath != "/v1/init" {
-		t.Fatalf("expected /v1/init, got path=%q", gotPath)
-	}
-	// Should be authenticated with the existing key.
-	if gotAuth != "Bearer aw_sk_existing" {
-		t.Fatalf("expected auth with existing key, got %q", gotAuth)
+	// Should have used headless, NOT /v1/init with existing key.
+	if gotPath != "/api/v1/bootstrap/headless-agent" {
+		t.Fatalf("expected headless bootstrap, got path=%q", gotPath)
 	}
 }
 

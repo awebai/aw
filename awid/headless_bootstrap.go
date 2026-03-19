@@ -30,6 +30,7 @@ type HeadlessBootstrapResponse struct {
 	Alias       string `json:"alias"`
 	Address     string `json:"address,omitempty"`
 	APIKey      string `json:"api_key"`
+	ServerURL   string `json:"server_url,omitempty"`
 	DID         string `json:"did,omitempty"`
 	StableID    string `json:"stable_id,omitempty"`
 	Custody     string `json:"custody,omitempty"`
