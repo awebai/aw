@@ -254,12 +254,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// If we got an existing alias using the default suggestion, retry with server allocation.
+	// Headless-path conflicts arrive as 409 errors, not created=false. This condition
+	// is only reached via /v1/init responses, so the retry uses /v1/init directly.
 	if !aliasExplicit && aliasWasDefaultSuggestion && !resp.Created {
 		req.Alias = nil
 		if initCloudMode {
 			resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req, strings.TrimSpace(initTargetNamespace))
-		} else if initAPIKey == "" {
-			resp, err = tryHeadlessOrInit(ctx, bootstrapClient, req, baseURL)
 		} else {
 			resp, err = bootstrapClient.Init(ctx, req)
 		}
@@ -275,7 +275,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if namespaceSlug == "" {
 		namespaceSlug = nsSlug
 	}
-	// Prefer server-authoritative namespace domain.
+	// Prefer server-authoritative namespace domain for config storage.
 	if resp.Namespace != "" {
 		namespaceSlug = resp.Namespace
 	}
@@ -314,8 +314,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 			if cfg.Accounts == nil {
 				cfg.Accounts = map[string]awconfig.Account{}
 			}
+			serverURL := baseURL
+			if v := strings.TrimSpace(resp.ServerURL); v != "" {
+				serverURL = v
+			}
 			if _, ok := cfg.Servers[serverName]; !ok || strings.TrimSpace(cfg.Servers[serverName].URL) == "" {
-				cfg.Servers[serverName] = awconfig.Server{URL: baseURL}
+				cfg.Servers[serverName] = awconfig.Server{URL: serverURL}
 			}
 			cfg.Accounts[accountName] = awconfig.Account{Account: awid.Account{
 				Server:        serverName,
@@ -366,9 +370,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if initPrintExports {
 		fmt.Println("")
 		fmt.Println("# Copy/paste to configure your shell:")
-		fmt.Println("export AWEB_URL=" + baseURL)
+		exportURL := baseURL
+		if v := strings.TrimSpace(resp.ServerURL); v != "" {
+			exportURL = v
+		}
+		fmt.Println("export AWEB_URL=" + exportURL)
 		fmt.Println("export AWEB_API_KEY=" + resp.APIKey)
-		fmt.Println("export AWEB_NAMESPACE=" + namespaceSlug)
+		fmt.Println("export AWEB_NAMESPACE=" + nsSlug)
 		fmt.Println("export AWEB_AGENT_ID=" + resp.AgentID)
 		fmt.Println("export AWEB_AGENT_ALIAS=" + resp.Alias)
 	}
@@ -536,6 +544,7 @@ func bootstrapViaCloud(
 		NamespaceSlug: cloudResp.OrgSlug,
 		Namespace:     cloudResp.Namespace,
 		Address:       cloudResp.Address,
+		ServerURL:     cloudResp.ServerURL,
 		Created:       cloudResp.Created,
 		DID:           cloudResp.DID,
 		StableID:      cloudResp.StableID,

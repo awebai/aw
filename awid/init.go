@@ -30,6 +30,7 @@ type InitResponse struct {
 	NamespaceSlug string `json:"namespace_slug,omitempty"`
 	Namespace     string `json:"namespace,omitempty"`
 	Address       string `json:"address,omitempty"`
+	ServerURL     string `json:"server_url,omitempty"`
 	Created       bool   `json:"created"`
 	DID           string `json:"did,omitempty"`
 	StableID      string `json:"stable_id,omitempty"`

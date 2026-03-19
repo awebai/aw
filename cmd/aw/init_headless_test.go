@@ -330,6 +330,120 @@ func TestAwInitSelfHostedStillUsesV1Init(t *testing.T) {
 	}
 }
 
+func TestAwInitHeadlessRetryOnAliasCollision(t *testing.T) {
+	t.Parallel()
+
+	// On a hosted server: headless bootstrap succeeds for the first call
+	// with a suggested alias, but the alias is already taken (created=false
+	// shouldn't happen with headless — it would 409 — but the retry logic
+	// must still handle the self-hosted fallback case where /v1/init returns
+	// created=false). The retry should go directly to /v1/init with nil alias.
+	initCalls := 0
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/bootstrap/headless-agent":
+			http.NotFound(w, r)
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_slug": "myteam",
+				"project_id":   nil,
+				"name_prefix":  "alice",
+			})
+		case "/v1/init":
+			initCalls++
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+
+			if payload["alias"] != nil {
+				// First call: alias "alice" collides.
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"status":       "ok",
+					"project_id":   "proj-1",
+					"project_slug": "myteam",
+					"agent_id":     "agent-1",
+					"alias":        "alice",
+					"api_key":      "aw_sk_test",
+					"created":      false,
+					"did":          "did:key:z6MkTest",
+					"custody":      "self",
+					"lifetime":     "persistent",
+				})
+			} else {
+				// Retry: server allocates alias.
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"status":       "ok",
+					"project_id":   "proj-1",
+					"project_slug": "myteam",
+					"agent_id":     "agent-2",
+					"alias":        "alice-2",
+					"api_key":      "aw_sk_retry",
+					"created":      true,
+					"did":          "did:key:z6MkTest2",
+					"custody":      "self",
+					"lifetime":     "persistent",
+				})
+			}
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	// No --alias, no API key → headless 404s → /v1/init with suggested alias → collision → retry.
+	run := exec.CommandContext(ctx, bin, "init",
+		"--namespace", "myteam",
+		"--json",
+		"--write-context=false",
+		"--print-exports=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AWEB_URL="+server.URL,
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_CLOUD_TOKEN=",
+		"AWEB_API_KEY=",
+		"AWEB_NAMESPACE=",
+		"AWEB_ALIAS=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	if initCalls != 2 {
+		t.Fatalf("expected 2 /v1/init calls (first + retry), got %d", initCalls)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(extractJSON(t, out), &resp); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if resp["alias"] != "alice-2" {
+		t.Fatalf("alias=%v, want alice-2 (server-allocated)", resp["alias"])
+	}
+}
+
 func TestAwInitHeadlessWithAPIMount(t *testing.T) {
 	t.Parallel()
 
