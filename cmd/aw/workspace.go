@@ -368,15 +368,17 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("aw init failed: %w", initErr)
 		}
 
-		restoreJSON := jsonFlag
-		jsonFlag = wantJSON
-		printOutput(workspaceAddWorktreeOutput{
+		output := workspaceAddWorktreeOutput{
 			Alias:        alias,
 			Role:         role,
 			Branch:       branchName,
 			WorktreePath: worktreePath,
-		}, formatWorkspaceAddWorktree)
-		jsonFlag = restoreJSON
+		}
+		if wantJSON {
+			printJSON(output)
+		} else {
+			fmt.Print(formatWorkspaceAddWorktree(output))
+		}
 		return nil
 	}
 
@@ -644,9 +646,8 @@ func formatWorkspaceAddWorktree(v any) string {
 }
 
 var (
-	workspaceAliasPattern         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
-	workspaceSuggestedNamePattern = regexp.MustCompile(`^[a-z]+(-[0-9]{2})?$`)
-	workspaceRoleWordPattern      = regexp.MustCompile(`^[a-z0-9_-]+$`)
+	workspaceAliasPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+	workspaceRoleWordPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 )
 
 func isValidWorkspaceAlias(alias string) bool {
@@ -654,7 +655,7 @@ func isValidWorkspaceAlias(alias string) bool {
 }
 
 func isValidSuggestedAliasPrefix(alias string) bool {
-	return workspaceSuggestedNamePattern.MatchString(strings.TrimSpace(alias))
+	return isValidWorkspaceAlias(alias)
 }
 
 func normalizeWorkspaceRole(role string) string {

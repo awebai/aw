@@ -1115,3 +1115,179 @@ default_account: acct-source
 		t.Fatalf("expected branch cleanup, got %q", string(branchOut))
 	}
 }
+
+func TestAwWorkspaceAddWorktreeRetriesAliasTakenSuggestion(t *testing.T) {
+	t.Parallel()
+
+	const sourceID = "11111111-1111-1111-1111-111111111111"
+	const newID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	const origin = "https://github.com/acme/repo.git"
+
+	var suggestCalls int
+	var initCalls int
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			suggestCalls++
+			switch suggestCalls {
+			case 1:
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"project_slug": "demo",
+					"name_prefix":  "alice-123",
+				})
+			case 2:
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"project_slug": "demo",
+					"name_prefix":  "bob-3",
+				})
+			default:
+				t.Fatalf("unexpected suggest call %d", suggestCalls)
+			}
+		case "/v1/init":
+			initCalls++
+			var req map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode init request: %v", err)
+			}
+			switch initCalls {
+			case 1:
+				if req["alias"] != "alice-123" {
+					t.Fatalf("first alias=%v", req["alias"])
+				}
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]any{
+						"code":    "ALIAS_TAKEN",
+						"message": "alias already taken",
+						"details": map[string]any{
+							"attempted_alias": "alice-123",
+						},
+					},
+				})
+			case 2:
+				if req["alias"] != "bob-3" {
+					t.Fatalf("second alias=%v", req["alias"])
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"status":         "ok",
+					"created_at":     "2026-03-10T10:00:00Z",
+					"project_id":     "proj-1",
+					"project_slug":   "demo",
+					"namespace_slug": "demo",
+					"namespace":      "demo",
+					"agent_id":       newID,
+					"alias":          "bob-3",
+					"api_key":        "aw_sk_new",
+					"address":        "demo/bob-3",
+					"created":        true,
+					"did":            "did:key:z6Mktest",
+					"custody":        "self",
+					"lifetime":       "persistent",
+				})
+			default:
+				t.Fatalf("unexpected init call %d", initCalls)
+			}
+		case "/v1/workspaces/register":
+			var req map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode workspace register request: %v", err)
+			}
+			if req["role"] != "developer" {
+				t.Fatalf("role=%v", req["role"])
+			}
+			if req["repo_origin"] != origin {
+				t.Fatalf("repo_origin=%v", req["repo_origin"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspace_id":     newID,
+				"project_id":       "proj-1",
+				"project_slug":     "demo",
+				"repo_id":          "repo-1",
+				"canonical_origin": "github.com/acme/repo",
+				"alias":            "bob-3",
+				"human_name":       "Wendy",
+				"created":          true,
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepoWithOriginAndCommit(t, repo, origin)
+	buildAwBinary(t, ctx, bin)
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct-source:
+    server: local
+    api_key: aw_sk_source
+    agent_id: `+sourceID+`
+    agent_alias: alice
+    namespace_slug: demo
+default_account: acct-source
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := awconfig.SaveWorktreeContextTo(filepath.Join(repo, ".aw", "context"), &awconfig.WorktreeContext{
+		DefaultAccount: "acct-source",
+		ServerAccounts: map[string]string{"local": "acct-source"},
+	}); err != nil {
+		t.Fatalf("seed .aw/context: %v", err)
+	}
+	if err := awconfig.SaveWorktreeWorkspaceTo(filepath.Join(repo, ".aw", "workspace.yaml"), &awconfig.WorktreeWorkspace{
+		WorkspaceID:     sourceID,
+		ProjectID:       "proj-1",
+		ProjectSlug:     "demo",
+		CanonicalOrigin: "github.com/acme/repo",
+		Alias:           "alice",
+		HumanName:       "Wendy",
+		Role:            "developer",
+		WorkspacePath:   repo,
+	}); err != nil {
+		t.Fatalf("seed workspace state: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "workspace", "add-worktree", "developer")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = repo
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	if suggestCalls != 2 {
+		t.Fatalf("suggestCalls=%d", suggestCalls)
+	}
+	if initCalls != 2 {
+		t.Fatalf("initCalls=%d", initCalls)
+	}
+	if !strings.Contains(string(out), "Alias:    bob-3") {
+		t.Fatalf("unexpected output:\n%s", string(out))
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "repo-bob-3")); err != nil {
+		t.Fatalf("expected retried worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "repo-alice-123")); !os.IsNotExist(err) {
+		t.Fatalf("expected failed first worktree cleanup, stat err=%v", err)
+	}
+}
