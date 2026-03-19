@@ -12,8 +12,8 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
-	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
@@ -41,6 +41,8 @@ var (
 	initCloudToken      string
 	initCloudMode       bool
 	initTargetNamespace string
+	initWorkspaceRole   string
+	initSuppressSummary bool
 )
 
 func init() {
@@ -57,6 +59,10 @@ func init() {
 	initCmd.Flags().StringVar(&initCloudToken, "cloud-token", "", "Cloud auth bearer token for hosted aweb-cloud bootstrap (default: AWEB_CLOUD_TOKEN, then AWEB_API_KEY if non-aw_sk_, then existing aw_sk_ keys from config)")
 	initCmd.Flags().BoolVar(&initCloudMode, "cloud", false, "Force hosted aweb-cloud bootstrap mode (skip probing /v1/init)")
 	initCmd.Flags().StringVar(&initTargetNamespace, "target-namespace", "", "Create agent in a specific namespace (forces cloud mode; requires --alias)")
+	initCmd.Flags().StringVar(&initWorkspaceRole, "workspace-role", "", "Internal: coordination role to register when attaching repo workspace context")
+	initCmd.Flags().BoolVar(&initSuppressSummary, "suppress-summary", false, "Internal: suppress init summary output")
+	_ = initCmd.Flags().MarkHidden("workspace-role")
+	_ = initCmd.Flags().MarkHidden("suppress-summary")
 
 	rootCmd.AddCommand(initCmd)
 }
@@ -354,7 +360,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		authClient, err := aweb.NewWithAPIKey(baseURL, resp.APIKey)
 		if err == nil {
 			workingDir, _ := os.Getwd()
-			attachResult, err = autoAttachContext(workingDir, authClient)
+			attachResult, err = autoAttachContext(workingDir, authClient, strings.TrimSpace(initWorkspaceRole))
 			if err != nil {
 				debugLog("workspace attach: %v", err)
 				fmt.Fprintf(os.Stderr, "Warning: could not attach workspace context (coordination may not be available on this server)\n")
@@ -364,7 +370,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	if jsonFlag {
 		printJSON(resp)
-	} else {
+	} else if !initSuppressSummary {
 		printInitSummary(resp, accountName, serverName, attachResult)
 	}
 	if initPrintExports {

@@ -53,7 +53,7 @@ func runUse(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	attachResult, err := autoAttachContext(workingDir, client)
+	attachResult, err := autoAttachContext(workingDir, client, "")
 	if err != nil {
 		return err
 	}

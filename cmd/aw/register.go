@@ -12,8 +12,8 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
-	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
@@ -249,7 +249,7 @@ func saveNewRegistration(
 			return err
 		}
 		workingDir, _ := os.Getwd()
-		attachResult, err = autoAttachContext(workingDir, authClient)
+		attachResult, err = autoAttachContext(workingDir, authClient, "")
 		if err != nil {
 			return err
 		}
@@ -582,7 +582,7 @@ func verifyAndBootstrap(
 		}
 
 		workingDir, _ := os.Getwd()
-		attachResult, err := autoAttachContext(workingDir, authClient)
+		attachResult, err := autoAttachContext(workingDir, authClient, "")
 		if err != nil {
 			return err
 		}
