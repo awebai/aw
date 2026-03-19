@@ -485,19 +485,6 @@ func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName
 			}
 		}
 	}
-	if baseURL == "" && strings.TrimSpace(global.DefaultAccount) != "" {
-		if acct, ok := global.Accounts[strings.TrimSpace(global.DefaultAccount)]; ok {
-			serverName = strings.TrimSpace(acct.Server)
-			if srv, ok := global.Servers[serverName]; ok && strings.TrimSpace(srv.URL) != "" {
-				baseURL = strings.TrimSpace(srv.URL)
-			} else if serverName != "" {
-				baseURL, err = awconfig.DeriveBaseURLFromServerName(serverName)
-				if err != nil {
-					return "", "", nil, err
-				}
-			}
-		}
-	}
 	if baseURL == "" {
 		baseURL = DefaultServerURL
 	}
