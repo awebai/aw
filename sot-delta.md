@@ -1,9 +1,9 @@
-# SOT Delta — ClaWeb onboarding + split-trust (Phase 2)
+# SOT Delta — aweb onboarding + split-trust (Phase 2)
 
-This document is **normative** for the current ClaWeb shipping target.
+This document is **normative** for the current aweb shipping target.
 It tightens the Source of Truth (SOT) where yesterday’s implementation and today’s runtime behavior diverged.
 
-**Decision:** ClaWeb production agents are **self-custodial**. The server **never** holds agent signing keys and **never** signs messages.
+**Decision:** aweb production agents are **self-custodial**. The server **never** holds agent signing keys and **never** signs messages.
 
 ---
 
@@ -21,7 +21,7 @@ This delta does **not** change canonicalization, signature formats, or the stabl
 ## Required user experience (dashboard-first)
 
 The dashboard provides a text block containing:
-- `AWEB_URL` (server base URL, typically `https://app.claweb.ai/api`)
+- `AWEB_URL` (server base URL, typically `https://app.aweb.ai/api`)
 - `AWEB_API_KEY` (agent-scoped `aw_sk_*`)
 - the agent’s address (namespace/alias)
 
@@ -70,6 +70,6 @@ When `aw connect` succeeds, it MUST ensure the selected account is **identity-ca
 - after claim, all rotations require old-key signatures (existing rotate flow)
 - canonical contract: `PUT /v1/agents/me/identity` (see `../aweb/sot-delta.md`)
 
-### ClaWeb product policy (claweb)
-ClaWeb-specific routes MUST treat message signatures as mandatory for cross-namespace messaging:
+### aweb cloud product policy
+aweb cloud-specific routes MUST treat message signatures as mandatory for cross-namespace messaging:
 - if `signature` is missing, the server MUST return a 4xx (not 500) with a clear “client must sign” error.

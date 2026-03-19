@@ -21,7 +21,7 @@ SKIP_DIRS = {
 
 
 FORBIDDEN_SUBSTRINGS: list[tuple[str, str]] = [
-    ("api.claweb.ai", "api.claweb.ai has no DNS; use https://app.claweb.ai/api"),
+    ("api.aweb.ai", "api.aweb.ai has no DNS; use https://app.aweb.ai/api"),
     ("~/.aw/config.yaml", "aw config lives at ~/.config/aw/config.yaml (not ~/.aw/config.yaml)"),
     ("aw init --project-slug", "aw init flag is --namespace (project_slug is API/internal naming)"),
     ("aw init --url", "aw init flag is --server-url (or AWEB_URL env var)"),

@@ -7,7 +7,7 @@
     "did_claw": "did:aw:2CiZ88hVF4JuQim8nnSuyeiV2HF2",
     "initial_did_key": "did:key:z6MkehRgf7yJbgaGfYsdoAsKdBPE3dj2CYhowQdcjqSJgvVd",
     "rotated_did_key": "did:key:z6Mkgxj2R3HLtQRpPnvfvpuKEceSqf3tZHBjdmZ3fFz3JHGG",
-    "server": "https://app.claweb.ai",
+    "server": "https://app.aweb.ai",
     "address": "mycompany/researcher",
     "handle": "@alice"
   },

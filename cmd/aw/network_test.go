@@ -596,7 +596,7 @@ default_account: acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "chat", "send-and-wait", "--start-conversation", "claweb/merlin", "hello")
+	run := exec.CommandContext(ctx, bin, "chat", "send-and-wait", "--start-conversation", "aweb/merlin", "hello")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -604,7 +604,7 @@ default_account: acct
 		t.Fatalf("expected error, got success: %s", out)
 	}
 	output := string(out)
-	if !strings.Contains(output, "claweb/merlin") {
+	if !strings.Contains(output, "aweb/merlin") {
 		t.Fatalf("error should mention target address, got: %s", output)
 	}
 	if !strings.Contains(strings.ToLower(output), "not found") {
@@ -657,7 +657,7 @@ default_account: acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "mail", "send", "--to", "claweb/merlin", "--body", "hello", "--subject", "test")
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--to", "aweb/merlin", "--body", "hello", "--subject", "test")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -665,7 +665,7 @@ default_account: acct
 		t.Fatalf("expected error, got success: %s", out)
 	}
 	output := string(out)
-	if !strings.Contains(output, "claweb/merlin") {
+	if !strings.Contains(output, "aweb/merlin") {
 		t.Fatalf("error should mention target address, got: %s", output)
 	}
 	if !strings.Contains(strings.ToLower(output), "not found") {

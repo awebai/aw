@@ -26,7 +26,7 @@ The address is what humans type. The DID is what signatures verify against. The 
 
 Agents have a `lifetime` property set at registration: `persistent` or `ephemeral`.
 
-**Persistent agents** (ClaWeb default) have long-lived identities. TOFU pinning, key rotation, succession, and ClaWDID publication apply.
+**Persistent agents** (aweb default) have long-lived identities. TOFU pinning, key rotation, succession, and awid publication apply.
 
 **Ephemeral agents** (aweb coordination default) are session-scoped and disposable. Created per worktree, destroyed on cleanup. The alias may be reused by a future agent with a different key and DID. No TOFU pinning, no identity mismatch warnings, no succession.
 
@@ -40,7 +40,7 @@ The protocol is identical for both: every message carries `from_did` and `signat
 | TOFU pin by address | Yes | No — DID expected to change |
 | Identity mismatch warning | Yes | No — suppressed |
 | Key rotation | Yes | N/A — agent replaced |
-| ClaWDID publication | Yes (when available) | No |
+| awid publication | Yes (when available) | No |
 | Succession on retirement | Yes | No — deregister only |
 | Custody model | Self-custodial or custodial | Custodial (server generates/destroys key) |
 | Trust anchor | Agent's DID | Project membership |
@@ -100,15 +100,13 @@ The two layers answer different questions:
 ### `~/.config/aw/config.yaml`
 
 ```yaml
-handle: "@alice"
-
 servers:
-  claweb:
-    url: https://app.claweb.ai
+  aweb:
+    url: https://app.aweb.ai
 
 accounts:
-  alice-claweb-projA:
-    server: claweb
+  alice-aweb-projA:
+    server: aweb
     api_key: aw_sk_aaa
     default_project: project-a
     agent_id: <uuid>
@@ -118,8 +116,8 @@ accounts:
     signing_key: ~/.config/aw/keys/mycompany-researcher.signing.key
     custody: self
     lifetime: persistent
-  alice-claweb-projB:
-    server: claweb
+  alice-aweb-projB:
+    server: aweb
     api_key: aw_sk_bbb
     default_project: project-b
     agent_id: <uuid>
@@ -130,10 +128,10 @@ accounts:
     custody: self
     lifetime: persistent
 
-default_account: alice-claweb-projA
+default_account: alice-aweb-projA
 ```
 
-Each account is a fully independent agent with its own keypair and DID. The `@handle` identifies the human operator (for ClaWeb login and namespace management), but identity at the protocol level is per-agent.
+Each account is a fully independent agent with its own keypair and DID. Identity at the protocol level is per-agent.
 
 **Backward compatibility:** If an account has no `did` field, aw operates in legacy mode for that account — no signing, no verification. Messages are sent without identity fields.
 
@@ -187,10 +185,10 @@ pins:
   "did:key:z6MkrT4Jxd...":
     address: "otherco/monitor"
     handle: "@bob"
-    stable_id: "did:aw:Qm9iJ3x..."  # optional, present when agent has ClaWDID registration
+    stable_id: "did:aw:Qm9iJ3x..."  # optional, present when agent has awid registration
     first_seen: "2026-03-15T10:00:00Z"
     last_seen: "2026-03-20T14:30:00Z"
-    server: "app.claweb.ai"
+    server: "app.aweb.ai"
 addresses:
   "otherco/monitor": "did:key:z6MkrT4Jxd..."
 ```
@@ -243,7 +241,7 @@ No network call. The DID *is* the public key.
 ### `aw register` (self-custodial, persistent)
 
 ```
-aw register --server-url https://app.claweb.ai \
+aw register --server-url https://app.aweb.ai \
   --email alice@example.com --username alice --alias researcher
 
 1. Generate Ed25519 keypair locally.
@@ -577,7 +575,7 @@ type IdentityResolver interface {
 - `did:key:...` → DIDKeyResolver, supplemented with PinResolver metadata
 - `namespace/alias` → ServerResolver, then cross-checks: extracts public key from server-reported DID via DIDKeyResolver and confirms it matches the server-reported public key
 
-The ClaWDID cross-check (Phase 2) is a nil-safe slot in ChainResolver.
+The awid cross-check (Phase 2) is a nil-safe slot in ChainResolver.
 
 ### Server resolution endpoint (new)
 
@@ -591,7 +589,7 @@ Response:
   "agent_id": "<uuid>",
   "human_name": "Alice",
   "public_key": "<base64url-ed25519-pub>",
-  "server": "app.claweb.ai",
+  "server": "app.aweb.ai",
   "custody": "self",
   "lifetime": "persistent",
   "status": "active"
@@ -737,7 +735,7 @@ aw register --server-url https://new-server.example.com \
 |---|---|
 | `aw did rotate-key` | Rotate signing key. Generates new keypair, new DID. Server logs rotation. |
 | `aw did rotate-key --self-custody` | Graduate from custodial to self-custodial. Server destroys its copy. |
-| `aw did log [address]` | View rotation/retirement log for an agent from the server (or ClaWDID when available). |
+| `aw did log [address]` | View rotation/retirement log for an agent from the server (or awid when available). |
 | `aw agent retire --successor <address>` | Retire agent with optional successor link. |
 
 ### Modified commands
@@ -755,9 +753,8 @@ aw register --server-url https://new-server.example.com \
 ### `aw introspect` output
 
 ```
-server:      app.claweb.ai
+server:      app.aweb.ai
 did:         did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK
-handle:      @alice
 namespace:   mycompany
 alias:       researcher
 address:     mycompany/researcher
@@ -806,7 +803,7 @@ GET /v1/agents/resolve/{namespace}/{alias}
   "agent_id": "<uuid>",
   "human_name": "Alice",
   "public_key": "<base64url-ed25519-pub>",
-  "server": "app.claweb.ai",
+  "server": "app.aweb.ai",
   "custody": "self",
   "lifetime": "persistent",
   "status": "active"
@@ -943,7 +940,7 @@ Messages with `from_did`, `to_did`, `from_stable_id`, `to_stable_id`, `signature
 
 ## 13. Trust properties
 
-At launch (Phase 1, no ClaWDID):
+At launch (Phase 1, no awid):
 
 - **Offline signature verification.** Bob extracts Alice's public key from her `did:key` and verifies the signature. No server call.
 - **Server can't modify messages.** Modifying a signed message invalidates the signature.
@@ -953,10 +950,10 @@ At launch (Phase 1, no ClaWDID):
 - **Custodial agents: server can forge.** The server holds the signing key and can sign anything. The `VerifiedCustodial` status lets callers treat custodial signatures differently.
 - **Ephemeral agents: trust is project-scoped.** DIDs change across sessions by design. Trust comes from project membership, not individual agent identity.
 
-When ClaWDID is added (Phase 2):
+When awid is added (Phase 2):
 
-- **First-contact forgery requires compromising both ClaWeb and ClaWDID.** Bob cross-checks the server-reported DID against ClaWDID.
-- **ClaWDID compromise is visible.** Transparency log records all mutations.
+- **First-contact forgery requires compromising both aweb and awid.** Bob cross-checks the server-reported DID against awid.
+- **awid compromise is visible.** Transparency log records all mutations.
 
 ---
 

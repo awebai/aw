@@ -75,7 +75,7 @@ func TestServerResolverValidAddress(t *testing.T) {
 			"did":      did,
 			"address":  "mycompany/researcher",
 			"handle":   "@alice",
-			"server":   "app.claweb.ai",
+			"server":   "app.aweb.ai",
 			"custody":  "self",
 			"lifetime": "persistent",
 		})
@@ -191,7 +191,7 @@ func TestPinResolverByDID(t *testing.T) {
 
 	ps := NewPinStore()
 	did := "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
-	ps.StorePin(did, "mycompany/researcher", "@alice", "app.claweb.ai")
+	ps.StorePin(did, "mycompany/researcher", "@alice", "app.aweb.ai")
 
 	r := &PinResolver{Store: ps}
 	identity, err := r.Resolve(context.Background(), did)
@@ -214,7 +214,7 @@ func TestPinResolverByAddress(t *testing.T) {
 
 	ps := NewPinStore()
 	did := "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
-	ps.StorePin(did, "mycompany/researcher", "@alice", "app.claweb.ai")
+	ps.StorePin(did, "mycompany/researcher", "@alice", "app.aweb.ai")
 
 	r := &PinResolver{Store: ps}
 	identity, err := r.Resolve(context.Background(), "mycompany/researcher")

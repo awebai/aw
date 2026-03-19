@@ -1,7 +1,7 @@
 # Agent Identity System
 
 How agent identities are created, stored, resolved, and authenticated across
-the aw CLI, aweb server, and claweb cloud layer.
+the aw CLI, aweb server, and aweb cloud layer.
 
 ---
 
@@ -17,7 +17,7 @@ deployments an **org** (tenant) sits above projects.
 | `project_id` | UUID | PK, auto-generated |
 | `slug` | text | Unique among active projects (within tenant in cloud) |
 | `name` | text | Display name, defaults to `""` |
-| `tenant_id` | UUID | Cloud only — links to claweb org |
+| `tenant_id` | UUID | Cloud only — links to aweb org |
 | `deleted_at` | timestamptz | Soft-delete |
 
 Uniqueness constraints:
@@ -57,7 +57,7 @@ Alias validation (`aweb/auth.py:64`):
 | `api_key_id` | UUID | PK |
 | `project_id` | UUID | FK → projects |
 | `agent_id` | UUID | FK → agents (nullable in theory, required for OSS) |
-| `user_id` | UUID | Cloud only — audit link to claweb user |
+| `user_id` | UUID | Cloud only — audit link to aweb user |
 | `key_prefix` | text | First 12 chars of plaintext key, unique |
 | `key_hash` | text | SHA-256 hex digest of full key |
 | `is_active` | bool | Revocation flag |
@@ -71,7 +71,7 @@ subsequent verification is by hash lookup.
 > `aweb/bootstrap.py:13-18`, `aweb/migrations/aweb/001_initial.sql`,
 > `007_api_key_hash_index.sql`
 
-### Cloud Entities (claweb only)
+### Cloud Entities (aweb cloud only)
 
 | Entity | Key Fields | Notes |
 |---|---|---|
@@ -80,7 +80,7 @@ subsequent verification is by hash lookup.
 | `org_members` | user_id, org_id, role | Roles: `owner`, `admin`, `member` |
 | `published_agents` | org_id, agent_id, alias, is_listed | Agent registry for directory listing |
 
-A project's `tenant_id` links it to a claweb org, which links it to users
+A project's `tenant_id` links it to a aweb org, which links it to users
 via `org_members`.
 
 ---
@@ -178,14 +178,14 @@ cascade:
 
 > `cmd/aw/init.go:304-369`
 
-**Server-side flow** (`claweb/services/provisioning.py:136-332`):
+**Server-side flow** (`aweb_cloud/services/provisioning.py:136-332`):
 
 1. Verify user is authenticated and has access to the target org/project.
 2. Auto-provision default org and `"default"` project if needed.
 3. Create agent in `aweb.agents` (same alias allocation as OSS).
 4. Generate `aw_sk_*` key in `aweb.api_keys` with both `agent_id` and
    `user_id` set.
-5. Publish agent to `claweb.published_agents` (listed or unlisted based on
+5. Publish agent to `aweb_cloud.published_agents` (listed or unlisted based on
    user's privacy tier).
 
 **Response** adds cloud-specific fields:
@@ -195,7 +195,7 @@ cascade:
   "org_slug": "username",
   "project_id": "...",
   "project_slug": "default",
-  "server_url": "https://app.claweb.ai/api",
+  "server_url": "https://app.aweb.ai/api",
   "api_key": "aw_sk_...",
   "agent_id": "...",
   "alias": "alice",
@@ -203,7 +203,7 @@ cascade:
 }
 ```
 
-> `claweb/routers/auth.py:334-386`, `claweb/services/provisioning.py`
+> `aweb_cloud/routers/auth.py:334-386`, `aweb_cloud/services/provisioning.py`
 
 ### Client-Side Config Save
 
@@ -541,7 +541,7 @@ servers:
   local:
     url: http://localhost:8000
   prod:
-    url: https://app.claweb.ai/api
+    url: https://app.aweb.ai/api
 accounts:
   local-alice:
     server: local
@@ -591,6 +591,6 @@ the nearest `.aw/context` walking up from the working directory.
 | **Server bootstrap** | `aweb/src/aweb/bootstrap.py` | Key generation, identity creation |
 | **Server alias allocator** | `aweb/src/aweb/alias_allocator.py` | Classic name sequence |
 | **Server access control** | `aweb/src/aweb/contacts.py` | check_access() |
-| **Cloud auth bridge** | `claweb/backend/src/claweb/middleware/auth_bridge.py` | JWT → signed headers |
-| **Cloud OSS middleware** | `claweb/backend/src/claweb/middleware/oss_auth.py` | HMAC verification |
-| **Cloud provisioning** | `claweb/backend/src/claweb/services/provisioning.py` | Cloud bootstrap logic |
+| **Cloud auth bridge** | `aweb_cloud/backend/src/aweb_cloud/middleware/auth_bridge.py` | JWT → signed headers |
+| **Cloud OSS middleware** | `aweb_cloud/backend/src/aweb_cloud/middleware/oss_auth.py` | HMAC verification |
+| **Cloud provisioning** | `aweb_cloud/backend/src/aweb_cloud/services/provisioning.py` | Cloud bootstrap logic |

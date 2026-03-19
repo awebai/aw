@@ -12,7 +12,7 @@ func TestPinStoreStoreAndCheckRoundtrip(t *testing.T) {
 	ps := NewPinStore()
 	did := "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
 
-	ps.StorePin(did, "myco/agent", "@bob", "app.claweb.ai")
+	ps.StorePin(did, "myco/agent", "@bob", "app.aweb.ai")
 
 	result := ps.CheckPin("myco/agent", did, LifetimePersistent)
 	if result != PinOK {
@@ -27,7 +27,7 @@ func TestPinStoreIdentityMismatch(t *testing.T) {
 	did1 := "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
 	did2 := "did:key:z6Mkf5rGMoatrSj1f4CyvuHBeXJELe9RPdzo2PKGNCKVtZxP"
 
-	ps.StorePin(did1, "myco/agent", "@bob", "app.claweb.ai")
+	ps.StorePin(did1, "myco/agent", "@bob", "app.aweb.ai")
 
 	result := ps.CheckPin("myco/agent", did2, LifetimePersistent)
 	if result != PinMismatch {
@@ -43,7 +43,7 @@ func TestPinStoreEphemeralSkipsPinning(t *testing.T) {
 	did2 := "did:key:z6Mkf5rGMoatrSj1f4CyvuHBeXJELe9RPdzo2PKGNCKVtZxP"
 
 	// Pin under one DID.
-	ps.StorePin(did1, "myco/agent", "@bob", "app.claweb.ai")
+	ps.StorePin(did1, "myco/agent", "@bob", "app.aweb.ai")
 
 	// Ephemeral agent with a different DID should not trigger mismatch.
 	result := ps.CheckPin("myco/agent", did2, LifetimeEphemeral)
@@ -70,8 +70,8 @@ func TestPinStoreAddressChangeUpdatesReverseIndex(t *testing.T) {
 	ps := NewPinStore()
 	did := "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
 
-	ps.StorePin(did, "myco/agent-v1", "@bob", "app.claweb.ai")
-	ps.StorePin(did, "myco/agent-v2", "@bob", "app.claweb.ai")
+	ps.StorePin(did, "myco/agent-v1", "@bob", "app.aweb.ai")
+	ps.StorePin(did, "myco/agent-v2", "@bob", "app.aweb.ai")
 
 	// New address should resolve to the same DID.
 	result := ps.CheckPin("myco/agent-v2", did, LifetimePersistent)
@@ -94,7 +94,7 @@ func TestPinStoreSaveAndLoad(t *testing.T) {
 
 	ps := NewPinStore()
 	did := "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
-	ps.StorePin(did, "myco/agent", "@bob", "app.claweb.ai")
+	ps.StorePin(did, "myco/agent", "@bob", "app.aweb.ai")
 
 	if err := ps.Save(path); err != nil {
 		t.Fatal(err)
@@ -136,13 +136,13 @@ func TestPinStoreLastSeenUpdated(t *testing.T) {
 	ps := NewPinStore()
 	did := "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
 
-	ps.StorePin(did, "myco/agent", "@bob", "app.claweb.ai")
+	ps.StorePin(did, "myco/agent", "@bob", "app.aweb.ai")
 
 	// Backdate first_seen so the next StorePin produces a different last_seen.
 	ps.Pins[did].FirstSeen = "2020-01-01T00:00:00Z"
 	ps.Pins[did].LastSeen = "2020-01-01T00:00:00Z"
 
-	ps.StorePin(did, "myco/agent", "@bob", "app.claweb.ai")
+	ps.StorePin(did, "myco/agent", "@bob", "app.aweb.ai")
 	if ps.Pins[did].FirstSeen != "2020-01-01T00:00:00Z" {
 		t.Fatal("first_seen should not change on update")
 	}
@@ -158,7 +158,7 @@ func TestPinStoreSaveCreatesParentDir(t *testing.T) {
 	path := filepath.Join(dir, "subdir", "known_agents.yaml")
 
 	ps := NewPinStore()
-	ps.StorePin("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", "myco/agent", "@bob", "app.claweb.ai")
+	ps.StorePin("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", "myco/agent", "@bob", "app.aweb.ai")
 
 	if err := ps.Save(path); err != nil {
 		t.Fatal(err)
@@ -176,7 +176,7 @@ func TestPinStoreSaveFilePermissions(t *testing.T) {
 	path := filepath.Join(dir, "known_agents.yaml")
 
 	ps := NewPinStore()
-	ps.StorePin("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", "myco/agent", "@bob", "app.claweb.ai")
+	ps.StorePin("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", "myco/agent", "@bob", "app.aweb.ai")
 
 	if err := ps.Save(path); err != nil {
 		t.Fatal(err)
