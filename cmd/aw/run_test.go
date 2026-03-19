@@ -148,6 +148,7 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 	runAllowedTools = "Read,Write"
 	runModel = "sonnet"
 	runProviderName = "claude"
+	runProviderPTY = true
 	runAutofeedWork = true
 	runCompactPct = 61
 	runBasePrompt = "flag base"
@@ -180,6 +181,9 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 	}
 	if capturedOpts.MaxRuns != 3 || capturedOpts.AllowedTools != "Read,Write" || capturedOpts.Model != "sonnet" {
 		t.Fatalf("unexpected opts: %+v", capturedOpts)
+	}
+	if capturedOpts.ProviderPTY {
+		t.Fatalf("expected ProviderPTY=false when no interactive screen is available, got %+v", capturedOpts)
 	}
 	if len(capturedOpts.Services) != 1 || capturedOpts.Services[0].Name != "api" {
 		t.Fatalf("expected services in opts, got %+v", capturedOpts.Services)
@@ -221,6 +225,70 @@ func TestRunRequiresPromptWithoutConfiguredBasePrompt(t *testing.T) {
 	}
 }
 
+func TestRunAllowsEmptyPromptWhenInteractiveScreenIsAvailable(t *testing.T) {
+	initRunCommandVars()
+
+	oldLoad := runLoadUserConfig
+	oldResolveSettings := runResolveSettings
+	oldNewProvider := runNewProvider
+	oldResolveClient := runResolveClientForDir
+	oldNewLoop := runNewLoop
+	oldExecuteLoop := runExecuteLoop
+	oldNewEventBus := runNewEventBus
+	oldNewScreen := runNewScreenController
+	t.Cleanup(func() {
+		runLoadUserConfig = oldLoad
+		runResolveSettings = oldResolveSettings
+		runNewProvider = oldNewProvider
+		runResolveClientForDir = oldResolveClient
+		runNewLoop = oldNewLoop
+		runExecuteLoop = oldExecuteLoop
+		runNewEventBus = oldNewEventBus
+		runNewScreenController = oldNewScreen
+		initRunCommandVars()
+	})
+
+	runLoadUserConfig = func(dir string) (awrun.UserConfig, error) { return awrun.UserConfig{}, nil }
+	runResolveSettings = func(cfg awrun.UserConfig, overrides awrun.SettingOverrides) (awrun.Settings, error) {
+		return awrun.Settings{}, nil
+	}
+	runNewProvider = func(name string) (awrun.Provider, error) {
+		return awrun.ClaudeProvider{}, nil
+	}
+	runResolveClientForDir = func(dir string) (*aweb.Client, *awconfig.Selection, error) {
+		return &aweb.Client{}, &awconfig.Selection{NamespaceSlug: "team", AgentAlias: "rose"}, nil
+	}
+	runNewEventBus = func(client *aweb.Client) *awrun.EventBus { return nil }
+	runNewScreenController = func(in io.Reader, out io.Writer) *awrun.ScreenController {
+		return &awrun.ScreenController{}
+	}
+	runNewLoop = func(provider awrun.Provider, out io.Writer) *awrun.Loop {
+		return awrun.NewLoop(provider, out)
+	}
+
+	var capturedOpts awrun.LoopOptions
+	runExecuteLoop = func(loop *awrun.Loop, ctx context.Context, opts awrun.LoopOptions) error {
+		capturedOpts = opts
+		return nil
+	}
+
+	cmd := &cobraCommandClone{Command: *runCmd}
+	cmd.ResetFlagsForTest()
+	cmd.Command.SetContext(context.Background())
+	var stdout, stderr bytes.Buffer
+	setRunCommandIO(&cmd.Command, strings.NewReader(""), &stdout, &stderr)
+
+	if err := runRun(&cmd.Command, nil); err != nil {
+		t.Fatalf("runRun returned error: %v", err)
+	}
+	if capturedOpts.InitialPrompt != "" || capturedOpts.Prompt != "" {
+		t.Fatalf("expected empty prompts to be allowed interactively, got %+v", capturedOpts)
+	}
+	if !capturedOpts.ProviderPTY {
+		t.Fatalf("expected interactive run to keep ProviderPTY enabled, got %+v", capturedOpts)
+	}
+}
+
 type cobraCommandClone struct {
 	Command cobra.Command
 }
@@ -240,6 +308,7 @@ func (c *cobraCommandClone) ResetFlagsForTest() {
 	c.Command.Flags().StringVar(&runAllowedTools, "allowed-tools", "", "")
 	c.Command.Flags().StringVar(&runModel, "model", "", "")
 	c.Command.Flags().StringVar(&runProviderName, "provider", "claude", "")
+	c.Command.Flags().BoolVar(&runProviderPTY, "provider-pty", true, "")
 	c.Command.Flags().BoolVar(&runAutofeedWork, "autofeed-work", false, "")
 	c.Command.Flags().BoolVar(&runInitConfig, "init", false, "")
 }

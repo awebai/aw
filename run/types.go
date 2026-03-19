@@ -77,18 +77,19 @@ type ControlEventType string
 const DefaultInputPromptLabel = ">> "
 
 const (
-	ControlTypingStarted ControlEventType = "typing_started"
-	ControlBufferUpdated ControlEventType = "buffer_updated"
-	ControlPrompt        ControlEventType = "prompt"
-	ControlQuit          ControlEventType = "quit"
-	ControlStop          ControlEventType = "stop"
-	ControlWait          ControlEventType = "wait"
-	ControlResume        ControlEventType = "resume"
-	ControlAutofeedOn    ControlEventType = "autofeed_on"
-	ControlAutofeedOff   ControlEventType = "autofeed_off"
-	ControlStreamError   ControlEventType = "stream_error"
-	ControlInterrupt     ControlEventType = "interrupt"
-	ControlExitPrompt    ControlEventType = "exit_prompt"
+	ControlTypingStarted  ControlEventType = "typing_started"
+	ControlBufferUpdated  ControlEventType = "buffer_updated"
+	ControlPrompt         ControlEventType = "prompt"
+	ControlQuit           ControlEventType = "quit"
+	ControlStop           ControlEventType = "stop"
+	ControlWait           ControlEventType = "wait"
+	ControlResume         ControlEventType = "resume"
+	ControlAutofeedOn     ControlEventType = "autofeed_on"
+	ControlAutofeedOff    ControlEventType = "autofeed_off"
+	ControlProviderInput  ControlEventType = "provider_input"
+	ControlStreamError    ControlEventType = "stream_error"
+	ControlInterrupt      ControlEventType = "interrupt"
+	ControlExitPrompt     ControlEventType = "exit_prompt"
 	ControlExitConfirm    ControlEventType = "exit_confirm"
 	ControlExitCancel     ControlEventType = "exit_cancel"
 	ControlHelp           ControlEventType = "help"
@@ -152,6 +153,7 @@ type LoopOptions struct {
 	WorkingDir          string
 	AllowedTools        string
 	Model               string
+	ProviderPTY         bool
 	CompactThresholdPct int
 	Services            []ServiceConfig
 }

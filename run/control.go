@@ -24,6 +24,12 @@ func ParseControlSubmission(text string) ControlEvent {
 	case "/help":
 		return ControlEvent{Type: ControlHelp}
 	default:
+		if strings.HasPrefix(text, "/provider") {
+			return ControlEvent{
+				Type: ControlProviderInput,
+				Text: strings.TrimSpace(strings.TrimPrefix(text, "/provider")),
+			}
+		}
 		if strings.HasPrefix(text, "/") {
 			return ControlEvent{Type: ControlUnknownCommand, Text: text}
 		}

@@ -73,6 +73,27 @@ func formatRunStatus(st *state) string {
 	return strings.Join(parts, " · ")
 }
 
+func formatWaitStatus(label string, st *state) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+
+	parts := []string{label}
+	if st != nil && st.Autofeed {
+		parts = append(parts, "autofeed")
+	}
+	if st != nil {
+		switch st.ConnState {
+		case ConnStreaming:
+			parts = append(parts, "streaming")
+		case ConnReconnecting:
+			parts = append(parts, "reconnecting...")
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
 func ShortRepoName(canonicalOrigin string, repoOrigin string) string {
 	for _, candidate := range []string{canonicalOrigin, repoOrigin} {
 		candidate = strings.TrimSpace(candidate)

@@ -130,7 +130,6 @@ func (s *ScreenController) Start() error {
 		model,
 		tea.WithInput(s.inputFile),
 		tea.WithOutput(s.outputFile),
-		tea.WithAltScreen(),
 	)
 	s.program = program
 	s.doneCh = doneCh

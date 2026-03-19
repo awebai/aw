@@ -12,6 +12,8 @@ type presenterState struct {
 	lastWasText              bool
 	lastWasStructured        bool
 	lastTextEndedWithNewline bool
+	rawLineOpen              bool
+	rawLineLabel             string
 }
 
 func formatDone(event *Event) string {
