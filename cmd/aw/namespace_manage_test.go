@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -317,6 +318,65 @@ func TestAwNamespaceVerify(t *testing.T) {
 	}
 }
 
+func TestAwNamespaceVerifyDNSFailure(t *testing.T) {
+	t.Parallel()
+
+	// Test both 400 (wrong TXT content) and 422 (TXT not found) produce
+	// guided error output with the expected TXT record.
+	for _, code := range []int{400, 422} {
+		code := code
+		t.Run(fmt.Sprintf("status_%d", code), func(t *testing.T) {
+			t.Parallel()
+
+			server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/namespaces":
+					_ = json.NewEncoder(w).Encode([]map[string]any{
+						{
+							"namespace_id": "ns-1",
+							"full_name":    "acme.com",
+							"dns_txt_name": "_aweb.acme.com",
+							"dns_txt_value": "aweb=v1; controller=did:key:z6Mkf;",
+						},
+					})
+				case "/api/v1/namespaces/ns-1/verify":
+					w.WriteHeader(code)
+					_, _ = w.Write([]byte(`{"error":"dns verification failed"}`))
+				case "/v1/agents/heartbeat":
+					w.WriteHeader(http.StatusOK)
+				default:
+					t.Fatalf("unexpected path=%s", r.URL.Path)
+				}
+			}))
+
+			bin, cfgPath, tmp := testNamespaceConfig(t, server.URL)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			run := exec.CommandContext(ctx, bin, "namespace", "verify", "acme.com")
+			run.Env = append(os.Environ(),
+				"AW_CONFIG_PATH="+cfgPath,
+				"AWEB_URL=",
+				"AWEB_API_KEY=",
+			)
+			run.Dir = tmp
+			out, err := run.CombinedOutput()
+			if err == nil {
+				t.Fatalf("expected error for status %d, got success:\n%s", code, string(out))
+			}
+
+			output := string(out)
+			if !strings.Contains(output, "_aweb.acme.com") {
+				t.Fatalf("expected TXT name in error guidance:\n%s", output)
+			}
+			if !strings.Contains(output, "did:key:z6Mkf") {
+				t.Fatalf("expected TXT value in error guidance:\n%s", output)
+			}
+		})
+	}
+}
+
 func TestAwNamespaceDelete(t *testing.T) {
 	t.Parallel()
 
@@ -398,5 +458,44 @@ func TestAwNamespaceDeleteNotFound(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "not found") {
 		t.Fatalf("expected 'not found' in error:\n%s", string(out))
+	}
+}
+
+func TestAwNamespaceDeleteRequiresForceInNonTTY(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/namespaces":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"namespace_id": "ns-1", "full_name": "acme.com"},
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	bin, cfgPath, tmp := testNamespaceConfig(t, server.URL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// No --force, stdin is not a TTY (piped from test).
+	run := exec.CommandContext(ctx, bin, "namespace", "delete", "acme.com")
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected error, got success:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "--force") {
+		t.Fatalf("expected '--force' in error:\n%s", string(out))
 	}
 }

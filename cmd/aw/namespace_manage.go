@@ -91,10 +91,11 @@ var namespaceVerifyCmd = &cobra.Command{
 		resp, err := client.VerifyNamespace(ctx, ns.NamespaceID)
 		if err != nil {
 			code, _ := awid.HTTPStatusCode(err)
-			if code == 422 {
+			if code == 400 || code == 422 {
 				fmt.Printf("DNS verification failed for %s.\n\n", domain)
-				fmt.Printf("Make sure the TXT record is set:\n")
+				fmt.Printf("Make sure the TXT record is set correctly:\n")
 				fmt.Printf("  Name:  %s\n", ns.DnsTxtName)
+				fmt.Printf("  Type:  TXT\n")
 				fmt.Printf("  Value: %s\n\n", ns.DnsTxtValue)
 				fmt.Printf("DNS changes can take a few minutes to propagate. Try again shortly.\n")
 				return &cliError{code: 1, msg: "DNS verification failed"}
@@ -169,7 +170,10 @@ var namespaceDeleteCmd = &cobra.Command{
 			return err
 		}
 
-		if !namespaceDeleteForce && isTTY() {
+		if !namespaceDeleteForce {
+			if !isTTY() {
+				return usageError("--force is required for non-interactive namespace deletion")
+			}
 			v, err := promptString(fmt.Sprintf("Delete namespace %s? [y/N]", domain), "N")
 			if err != nil {
 				return err
