@@ -11,9 +11,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/cancelreader"
 	"golang.org/x/term"
@@ -38,9 +35,8 @@ type ScreenController struct {
 	historyDraft  string
 	desiredColumn int
 
-	events  chan ControlEvent
-	program *tea.Program
-	doneCh  chan error
+	events chan ControlEvent
+	doneCh chan error
 
 	cancelReader     cancelreader.CancelReader
 	rawState         *term.State
@@ -51,42 +47,6 @@ type ScreenController struct {
 }
 
 var _ UI = (*ScreenController)(nil)
-
-type screenSnapshot struct {
-	Lines       []string
-	Current     string
-	StatusLine  string
-	InputLine   string
-	PromptLabel string
-	ExitConfirm bool
-}
-
-type screenAppendTextMsg string
-type screenSetStatusMsg string
-type screenSetInputMsg string
-type screenSetExitConfirmMsg bool
-type screenQuitMsg struct{}
-
-type screenModel struct {
-	viewport    viewport.Model
-	input       textarea.Model
-	width       int
-	height      int
-	promptLabel string
-	exitConfirm bool
-
-	lines      []string
-	current    string
-	statusLine string
-	styles     screenStyles
-
-	onInputChanged func(string)
-	onSubmitted    func(string)
-	onInterrupt    func()
-	onExitPrompt   func()
-	onExitConfirm  func()
-	onExitCancel   func()
-}
 
 type screenStyles struct {
 	prompt    lipgloss.Style
@@ -188,7 +148,6 @@ func (s *ScreenController) Stop() error {
 	s.rawState = nil
 	s.doneCh = nil
 	s.pending = false
-	s.program = nil
 	s.mu.Unlock()
 
 	if cancelReader != nil {
@@ -785,55 +744,11 @@ func writeScreenLines(w io.Writer, lines []string) {
 	}
 }
 
-func (s *ScreenController) snapshotLocked() screenSnapshot {
-	lines := make([]string, len(s.lines))
-	copy(lines, s.lines)
-	return screenSnapshot{
-		Lines:       lines,
-		Current:     s.current,
-		StatusLine:  s.statusLine,
-		InputLine:   s.inputLine,
-		PromptLabel: s.promptLabel,
-		ExitConfirm: s.exitConfirm,
-	}
-}
-
 func (s *ScreenController) emit(event ControlEvent) {
 	select {
 	case s.events <- event:
 	default:
 	}
-}
-
-func (s *ScreenController) handleInputChanged(value string) {
-	s.mu.Lock()
-	wasPending := s.pending
-	s.pending = value != ""
-	s.inputLine = FormatInputLine(s.promptLabel, value)
-	s.inputCursor = utf8.RuneCountInString(value)
-	s.desiredColumn = -1
-	s.mu.Unlock()
-
-	if !wasPending && value != "" {
-		s.emit(ControlEvent{Type: ControlTypingStarted})
-	}
-	s.emit(ControlEvent{Type: ControlBufferUpdated, Text: value})
-}
-
-func (s *ScreenController) handleInputSubmitted(value string) {
-	s.mu.Lock()
-	s.pending = false
-	s.inputLine = s.promptLabel
-	s.inputCursor = 0
-	s.desiredColumn = -1
-	s.appendHistoryLocked(value)
-	s.mu.Unlock()
-
-	s.emit(ControlEvent{Type: ControlBufferUpdated, Text: ""})
-	if strings.TrimSpace(value) == "" {
-		return
-	}
-	s.emit(ParseControlSubmission(value))
 }
 
 func (s *ScreenController) handleInterruptRequested() {
@@ -846,58 +761,6 @@ func (s *ScreenController) handleExitPromptRequested() {
 
 func (s *ScreenController) handleExitConfirmed() {
 	s.emit(ControlEvent{Type: ControlExitConfirm})
-}
-
-func (s *ScreenController) handleExitCanceled() {
-	s.emit(ControlEvent{Type: ControlExitCancel})
-}
-
-func newScreenModel(
-	snapshot screenSnapshot,
-	onInputChanged func(string),
-	onSubmitted func(string),
-	onInterrupt func(),
-	onExitPrompt func(),
-	onExitConfirm func(),
-	onExitCancel func(),
-) screenModel {
-	input := textarea.New()
-	input.Prompt = snapshot.PromptLabel
-	input.ShowLineNumbers = false
-	input.SetValue(InputValueFromLine(snapshot.InputLine, snapshot.PromptLabel))
-	input.Focus()
-	input.CharLimit = 0
-	input.SetPromptFunc(lipgloss.Width(snapshot.PromptLabel), func(lineIdx int) string {
-		if lineIdx == 0 {
-			return snapshot.PromptLabel
-		}
-		return strings.Repeat(" ", lipgloss.Width(snapshot.PromptLabel))
-	})
-	input.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	input.FocusedStyle.Base = lipgloss.NewStyle()
-	input.FocusedStyle.Text = lipgloss.NewStyle()
-	input.BlurredStyle.CursorLine = lipgloss.NewStyle()
-	input.BlurredStyle.Base = lipgloss.NewStyle()
-	input.BlurredStyle.Text = lipgloss.NewStyle()
-
-	model := screenModel{
-		viewport:       viewport.New(0, 0),
-		input:          input,
-		promptLabel:    snapshot.PromptLabel,
-		exitConfirm:    snapshot.ExitConfirm,
-		lines:          snapshot.Lines,
-		current:        snapshot.Current,
-		statusLine:     snapshot.StatusLine,
-		styles:         newScreenStyles(),
-		onInputChanged: onInputChanged,
-		onSubmitted:    onSubmitted,
-		onInterrupt:    onInterrupt,
-		onExitPrompt:   onExitPrompt,
-		onExitConfirm:  onExitConfirm,
-		onExitCancel:   onExitCancel,
-	}
-	model.syncViewport(true)
-	return model
 }
 
 func newScreenStyles() screenStyles {
@@ -914,255 +777,6 @@ func newScreenStyles() screenStyles {
 			Padding(0, 1),
 		hint: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "8"}),
 	}
-}
-
-func (m screenModel) Init() tea.Cmd {
-	return nil
-}
-
-func (m screenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch typed := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = typed.Width
-		m.height = typed.Height
-		m.syncLayout()
-		return m, nil
-	case screenAppendTextMsg:
-		wasAtBottom := m.viewport.AtBottom()
-		appendScreenText(&m.lines, &m.current, string(typed))
-		m.syncViewport(wasAtBottom)
-		return m, nil
-	case screenSetStatusMsg:
-		m.statusLine = string(typed)
-		return m, nil
-	case screenSetInputMsg:
-		if m.input.Value() != string(typed) {
-			m.input.SetValue(string(typed))
-			m.input.CursorEnd()
-			m.syncLayout()
-		}
-		return m, nil
-	case screenSetExitConfirmMsg:
-		m.exitConfirm = bool(typed)
-		return m, nil
-	case screenQuitMsg:
-		return m, tea.Quit
-	case tea.KeyMsg:
-		if m.exitConfirm {
-			switch typed.Type {
-			case tea.KeyCtrlC, tea.KeyCtrlD:
-				if m.onExitConfirm != nil {
-					m.onExitConfirm()
-				}
-				return m, nil
-			case tea.KeyEsc:
-				m.exitConfirm = false
-				if m.onExitCancel != nil {
-					m.onExitCancel()
-				}
-				return m, nil
-			case tea.KeyRunes:
-				if len(typed.Runes) == 1 {
-					switch typed.Runes[0] {
-					case 'y', 'Y':
-						if m.onExitConfirm != nil {
-							m.onExitConfirm()
-						}
-						return m, nil
-					case 'n', 'N':
-						m.exitConfirm = false
-						if m.onExitCancel != nil {
-							m.onExitCancel()
-						}
-						return m, nil
-					}
-				}
-				m.exitConfirm = false
-				if m.onExitCancel != nil {
-					m.onExitCancel()
-				}
-			default:
-				m.exitConfirm = false
-				if m.onExitCancel != nil {
-					m.onExitCancel()
-				}
-			}
-		}
-
-		switch typed.Type {
-		case tea.KeyCtrlC:
-			if m.onInterrupt != nil {
-				m.onInterrupt()
-			}
-			return m, nil
-		case tea.KeyCtrlD:
-			if m.onExitPrompt != nil {
-				m.onExitPrompt()
-			}
-			return m, nil
-		case tea.KeyEnter:
-			if m.onSubmitted != nil {
-				m.onSubmitted(m.input.Value())
-			}
-			m.input.SetValue("")
-			m.syncLayout()
-			return m, nil
-		case tea.KeyPgUp, tea.KeyPgDown:
-			var cmd tea.Cmd
-			m.viewport, cmd = m.viewport.Update(typed)
-			return m, cmd
-		case tea.KeyUp, tea.KeyDown:
-			if m.input.Value() != "" {
-				// Navigate within textarea when it has content
-			} else {
-				var cmd tea.Cmd
-				m.viewport, cmd = m.viewport.Update(typed)
-				return m, cmd
-			}
-		case tea.KeyHome, tea.KeyEnd:
-			var cmd tea.Cmd
-			m.viewport, cmd = m.viewport.Update(typed)
-			return m, cmd
-		}
-
-		previous := m.input.Value()
-		previousHeight := m.input.Height()
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(typed)
-		m.syncLayout()
-		if m.input.Height() > previousHeight {
-			m.restoreWrappedInputViewport()
-		}
-		if m.input.Value() != previous && m.onInputChanged != nil {
-			m.onInputChanged(m.input.Value())
-		}
-		return m, cmd
-	}
-
-	return m, nil
-}
-
-func (m screenModel) View() string {
-	if m.width <= 0 || m.height <= 0 {
-		return ""
-	}
-
-	divider := m.styles.separator.Render(strings.Repeat("─", m.width))
-	status := m.styles.status.Width(m.width).Render(m.statusText())
-	return m.viewport.View() + "\n" + divider + "\n" + m.input.View() + "\n\n" + status
-}
-
-func (m *screenModel) syncLayout() {
-	if m.width <= 0 || m.height <= 0 {
-		return
-	}
-
-	m.input.SetWidth(m.width)
-	inputHeight := m.textareaVisualHeight()
-	maxInputHeight := max(1, m.height-screenFooterBaseLines-1)
-	if inputHeight > maxInputHeight {
-		inputHeight = maxInputHeight
-	}
-	m.input.SetHeight(inputHeight)
-
-	outputHeight := m.height - (screenFooterBaseLines + inputHeight)
-	if outputHeight < 1 {
-		outputHeight = 1
-	}
-
-	m.viewport.Width = m.width
-	m.viewport.Height = outputHeight
-	m.syncViewport(false)
-}
-
-// textareaVisualHeight returns the number of visual lines the textarea
-// content occupies using the textarea's own word-wrapping calculation.
-func (m *screenModel) textareaVisualHeight() int {
-	if m.input.Value() == "" {
-		return 1
-	}
-	height := m.input.LineInfo().Height
-	if height < 1 {
-		return 1
-	}
-	return height
-}
-
-func (m *screenModel) syncViewport(autoBottom bool) {
-	content := strings.Join(m.formattedOutputLines(), "\n")
-	m.viewport.SetContent(content)
-	if autoBottom {
-		m.viewport.GotoBottom()
-	}
-}
-
-func (m *screenModel) restoreWrappedInputViewport() {
-	value := m.input.Value()
-	cursorCol := inputCursorColumn(m.input)
-	m.input.SetValue(value)
-	m.input.SetCursor(cursorCol)
-}
-
-func (m screenModel) formattedOutputLines() []string {
-	lines := make([]string, 0, len(m.lines)+1)
-	for _, line := range m.lines {
-		lines = appendWrappedStyledScreenLine(lines, line, m.width, m.styles)
-	}
-	if m.current != "" {
-		lines = appendWrappedStyledScreenLine(lines, m.current, m.width, m.styles)
-	}
-	return lines
-}
-
-func (m screenModel) statusText() string {
-	if strings.TrimSpace(m.statusLine) == "" {
-		return ""
-	}
-	return truncateText(strings.TrimSpace(m.statusLine), max(1, m.width-2))
-}
-
-func inputVisualHeight(promptLabel string, value string, width int) int {
-	if width <= 0 {
-		return 1
-	}
-
-	promptWidth := lipgloss.Width(promptLabel)
-	availableWidth := width - promptWidth
-	if availableWidth < 1 {
-		availableWidth = 1
-	}
-
-	lines := strings.Split(value, "\n")
-	if len(lines) == 0 {
-		return 1
-	}
-
-	height := 0
-	for _, line := range lines {
-		if line == "" {
-			height++
-			continue
-		}
-		currentWidth := 0
-		height++
-		for _, r := range line {
-			runeWidth := lipgloss.Width(string(r))
-			if runeWidth <= 0 {
-				runeWidth = 1
-			}
-			if currentWidth+runeWidth > availableWidth {
-				height++
-				currentWidth = runeWidth
-				continue
-			}
-			currentWidth += runeWidth
-		}
-	}
-
-	if height < 1 {
-		return 1
-	}
-	return height
 }
 
 type promptVisualLine struct {
@@ -1194,10 +808,6 @@ func buildPromptLayout(promptLabel string, value string, cursor int, width int) 
 	}
 
 	promptWidth := lipgloss.Width(promptLabel)
-	availableWidth := width - promptWidth
-	if availableWidth < 1 {
-		availableWidth = 1
-	}
 
 	continuation := strings.Repeat(" ", promptWidth)
 	runes := []rune(strings.ReplaceAll(value, "\n", " "))
@@ -1284,11 +894,6 @@ func (l promptLayout) cursorIndexForLineColumn(targetLine int, targetColumn int)
 		}
 	}
 	return best
-}
-
-func inputCursorColumn(input textarea.Model) int {
-	info := input.LineInfo()
-	return info.StartColumn + info.CharOffset
 }
 
 func appendScreenText(lines *[]string, current *string, text string) {
