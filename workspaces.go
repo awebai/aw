@@ -24,6 +24,7 @@ type WorkspaceAttachRequest struct {
 	AttachmentType string `json:"attachment_type"`
 	Role           string `json:"role,omitempty"`
 	Hostname       string `json:"hostname,omitempty"`
+	WorkspacePath  string `json:"workspace_path,omitempty"`
 }
 
 type WorkspaceAttachResponse struct {

@@ -497,6 +497,7 @@ func registerWorkspaceForRoot(root string, client *aweb.Client, roleOverride str
 
 func registerLocalAttachmentForDir(workingDir string, client *aweb.Client) (*contextAttachResult, error) {
 	hostname, _ := os.Hostname()
+	workspacePath := filepath.Clean(workingDir)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -504,6 +505,7 @@ func registerLocalAttachmentForDir(workingDir string, client *aweb.Client) (*con
 	resp, err := client.WorkspaceAttach(ctx, &aweb.WorkspaceAttachRequest{
 		AttachmentType: "local_dir",
 		Hostname:       hostname,
+		WorkspacePath:  workspacePath,
 	})
 	if err != nil {
 		return nil, err
@@ -516,13 +518,14 @@ func registerLocalAttachmentForDir(workingDir string, client *aweb.Client) (*con
 	return &contextAttachResult{
 		ContextKind: "local_dir",
 		Workspace: &workspaceInitOutput{
-			WorkspaceID: resp.WorkspaceID,
-			ProjectID:   resp.ProjectID,
-			ProjectSlug: resp.ProjectSlug,
-			Alias:       resp.Alias,
-			HumanName:   resp.HumanName,
-			Hostname:    hostname,
-			Created:     resp.Created,
+			WorkspaceID:   resp.WorkspaceID,
+			ProjectID:     resp.ProjectID,
+			ProjectSlug:   resp.ProjectSlug,
+			Alias:         resp.Alias,
+			HumanName:     resp.HumanName,
+			Hostname:      hostname,
+			WorkspacePath: workspacePath,
+			Created:       resp.Created,
 		},
 	}, nil
 }

@@ -21,6 +21,10 @@ func TestAwUseBindsDirectoryWithoutRepo(t *testing.T) {
 	defer cancel()
 
 	tmp := t.TempDir()
+	resolvedTmp, err := filepath.EvalSymlinks(tmp)
+	if err != nil {
+		t.Fatalf("resolve temp dir: %v", err)
+	}
 	bin := filepath.Join(tmp, "aw")
 	cfgPath := filepath.Join(tmp, "config.yaml")
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -38,6 +42,9 @@ func TestAwUseBindsDirectoryWithoutRepo(t *testing.T) {
 			}
 			if req["attachment_type"] != "local_dir" {
 				t.Fatalf("attachment_type=%v", req["attachment_type"])
+			}
+			if req["workspace_path"] != resolvedTmp {
+				t.Fatalf("workspace_path=%v, want %q", req["workspace_path"], resolvedTmp)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"workspace_id":    "11111111-1111-1111-1111-111111111111",
