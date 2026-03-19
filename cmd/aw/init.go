@@ -421,7 +421,11 @@ func executeInit(opts initOptions) (*initResult, error) {
 
 	var attachResult *contextAttachResult
 	if opts.WriteContext {
-		authClient, err := aweb.NewWithAPIKey(opts.BaseURL, resp.APIKey)
+		attachURL := opts.BaseURL
+		if v := strings.TrimSpace(resp.ServerURL); v != "" {
+			attachURL = v
+		}
+		authClient, err := aweb.NewWithAPIKey(attachURL, resp.APIKey)
 		if err == nil {
 			attachResult, err = autoAttachContext(opts.WorkingDir, authClient, strings.TrimSpace(opts.WorkspaceRole))
 			if err != nil {
