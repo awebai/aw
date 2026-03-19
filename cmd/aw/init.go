@@ -41,9 +41,38 @@ var (
 	initCloudToken      string
 	initCloudMode       bool
 	initTargetNamespace string
-	initWorkspaceRole   string
-	initSuppressSummary bool
 )
+
+type initOptions struct {
+	WorkingDir                    string
+	BaseURL                       string
+	ServerName                    string
+	NamespaceSlug                 string
+	NamespaceName                 string
+	Alias                         string
+	AliasExplicit                 bool
+	RetrySuggestedAliasOnConflict bool
+	HumanName                     string
+	AgentType                     string
+	SaveConfig                    bool
+	SetDefault                    bool
+	WriteContext                  bool
+	CloudMode                     bool
+	CloudToken                    string
+	TargetNamespace               string
+	BootstrapAPIKey               string
+	AccountName                   string
+	WorkspaceRole                 string
+}
+
+type initResult struct {
+	Response        *awid.InitResponse
+	AccountName     string
+	ServerName      string
+	AttachResult    *contextAttachResult
+	ExportBaseURL   string
+	ExportNamespace string
+}
 
 func init() {
 	initCmd.Flags().StringVar(&initServerURL, "server-url", "", "Base URL for the aweb server (or AWEB_URL). Any URL is accepted; aw probes common mounts (including /api).")
@@ -59,121 +88,142 @@ func init() {
 	initCmd.Flags().StringVar(&initCloudToken, "cloud-token", "", "Cloud auth bearer token for hosted aweb-cloud bootstrap (default: AWEB_CLOUD_TOKEN, then AWEB_API_KEY if non-aw_sk_, then existing aw_sk_ keys from config)")
 	initCmd.Flags().BoolVar(&initCloudMode, "cloud", false, "Force hosted aweb-cloud bootstrap mode (skip probing /v1/init)")
 	initCmd.Flags().StringVar(&initTargetNamespace, "target-namespace", "", "Create agent in a specific namespace (forces cloud mode; requires --alias)")
-	initCmd.Flags().StringVar(&initWorkspaceRole, "workspace-role", "", "Internal: coordination role to register when attaching repo workspace context")
-	initCmd.Flags().BoolVar(&initSuppressSummary, "suppress-summary", false, "Internal: suppress init summary output")
-	_ = initCmd.Flags().MarkHidden("workspace-role")
-	_ = initCmd.Flags().MarkHidden("suppress-summary")
 
 	rootCmd.AddCommand(initCmd)
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
-	if strings.TrimSpace(initTargetNamespace) != "" {
-		if strings.TrimSpace(initAlias) == "" && strings.TrimSpace(os.Getenv("AWEB_ALIAS")) == "" {
-			return usageError("--target-namespace requires --alias (server cannot auto-assign in a specific namespace)")
-		}
-		initCloudMode = true
+	opts, err := collectInitOptions()
+	if err != nil {
+		return err
 	}
-
-	baseURL, serverName, global, err := resolveBaseURLForInit(initServerURL, serverFlag)
+	result, err := executeInit(opts)
 	if err != nil {
 		return err
 	}
 
-	if !initCloudMode {
-		if v := strings.TrimSpace(initCloudToken); v != "" {
-			initCloudMode = true
+	if jsonFlag {
+		printJSON(result.Response)
+	} else {
+		printInitSummary(result.Response, result.AccountName, result.ServerName, result.AttachResult)
+	}
+	if initPrintExports {
+		fmt.Println("")
+		fmt.Println("# Copy/paste to configure your shell:")
+		fmt.Println("export AWEB_URL=" + result.ExportBaseURL)
+		fmt.Println("export AWEB_API_KEY=" + result.Response.APIKey)
+		fmt.Println("export AWEB_NAMESPACE=" + result.ExportNamespace)
+		fmt.Println("export AWEB_AGENT_ID=" + result.Response.AgentID)
+		fmt.Println("export AWEB_AGENT_ALIAS=" + result.Response.Alias)
+	}
+	return nil
+}
+
+func collectInitOptions() (initOptions, error) {
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return initOptions{}, err
+	}
+
+	targetNamespace := strings.TrimSpace(initTargetNamespace)
+	aliasFromFlag := strings.TrimSpace(initAlias)
+	aliasFromEnv := strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
+	if targetNamespace != "" && aliasFromFlag == "" && aliasFromEnv == "" {
+		return initOptions{}, usageError("--target-namespace requires --alias (server cannot auto-assign in a specific namespace)")
+	}
+
+	baseURL, serverName, global, err := resolveBaseURLForInit(initServerURL, serverFlag)
+	if err != nil {
+		return initOptions{}, err
+	}
+
+	accountName := strings.TrimSpace(accountFlag)
+	cloudMode := initCloudMode || targetNamespace != ""
+	explicitCloudToken := strings.TrimSpace(initCloudToken)
+	if !cloudMode {
+		if explicitCloudToken != "" {
+			cloudMode = true
 		} else if v := strings.TrimSpace(os.Getenv("AWEB_CLOUD_TOKEN")); v != "" {
-			initCloudMode = true
+			cloudMode = true
 		} else if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); v != "" {
 			if !strings.HasPrefix(v, "aw_sk_") {
-				initCloudMode = true
+				cloudMode = true
 			} else if strings.TrimSpace(initNamespaceSlug) == "" &&
 				strings.TrimSpace(os.Getenv("AWEB_NAMESPACE")) == "" &&
 				strings.TrimSpace(os.Getenv("AWEB_PROJECT_SLUG")) == "" &&
 				strings.TrimSpace(os.Getenv("AWEB_PROJECT")) == "" &&
-				strings.TrimSpace(initTargetNamespace) == "" {
-				// Hosted setup commands provide a project API key but no namespace.
-				// In that case, bootstrap through Cloud and let the server infer the
-				// owner/project namespace instead of prompting locally.
-				initCloudMode = true
+				targetNamespace == "" {
+				cloudMode = true
 			}
 		}
 	}
 
-	nsSlug := initNamespaceSlug
-	if strings.TrimSpace(nsSlug) == "" {
+	nsSlug := strings.TrimSpace(initNamespaceSlug)
+	if nsSlug == "" {
 		nsSlug = strings.TrimSpace(os.Getenv("AWEB_NAMESPACE"))
 	}
-	// Backward compat: fall back to old env vars.
-	if strings.TrimSpace(nsSlug) == "" {
+	if nsSlug == "" {
 		nsSlug = strings.TrimSpace(os.Getenv("AWEB_PROJECT_SLUG"))
 	}
-	if strings.TrimSpace(nsSlug) == "" {
+	if nsSlug == "" {
 		nsSlug = strings.TrimSpace(os.Getenv("AWEB_PROJECT"))
 	}
 
-	if strings.TrimSpace(nsSlug) == "" && !initCloudMode {
+	if nsSlug == "" && !cloudMode {
 		if isTTY() {
-			wd, _ := os.Getwd()
-			suggested := sanitizeSlug(filepath.Base(wd))
+			suggested := sanitizeSlug(filepath.Base(workingDir))
 			v, err := promptString("Namespace", suggested)
 			if err != nil {
-				return err
+				return initOptions{}, err
 			}
 			nsSlug = v
 		} else {
-			return usageError("missing namespace (use --namespace or AWEB_NAMESPACE)")
+			return initOptions{}, usageError("missing namespace (use --namespace or AWEB_NAMESPACE)")
 		}
 	}
 
-	nsName := initNamespaceName
-	if strings.TrimSpace(nsName) == "" {
+	nsName := strings.TrimSpace(initNamespaceName)
+	if nsName == "" {
 		nsName = strings.TrimSpace(os.Getenv("AWEB_NAMESPACE_NAME"))
 	}
-	// Backward compat: fall back to old env var.
-	if strings.TrimSpace(nsName) == "" {
+	if nsName == "" {
 		nsName = strings.TrimSpace(os.Getenv("AWEB_PROJECT_NAME"))
 	}
-	if strings.TrimSpace(nsName) == "" {
-		nsName = nsSlug
-	}
 
-	humanName := initHumanName
-	if strings.TrimSpace(humanName) == "" {
+	humanName := strings.TrimSpace(initHumanName)
+	if humanName == "" {
 		humanName = strings.TrimSpace(os.Getenv("AWEB_HUMAN"))
 	}
-	if strings.TrimSpace(humanName) == "" {
+	if humanName == "" {
 		humanName = strings.TrimSpace(os.Getenv("AWEB_HUMAN_NAME"))
 	}
-	if strings.TrimSpace(humanName) == "" {
+	if humanName == "" {
 		humanName = strings.TrimSpace(os.Getenv("USER"))
 	}
-	if strings.TrimSpace(humanName) == "" {
+	if humanName == "" {
 		humanName = "developer"
 	}
 
-	agentType := initAgentType
-	if strings.TrimSpace(agentType) == "" {
+	agentType := strings.TrimSpace(initAgentType)
+	if agentType == "" {
 		agentType = strings.TrimSpace(os.Getenv("AWEB_AGENT_TYPE"))
 	}
-	if strings.TrimSpace(agentType) == "" {
+	if agentType == "" {
 		agentType = "agent"
 	}
 
-	alias := strings.TrimSpace(initAlias)
+	alias := aliasFromFlag
 	aliasExplicit := alias != ""
 	if !aliasExplicit {
-		alias = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
+		alias = aliasFromEnv
 		aliasExplicit = alias != ""
 	}
 
-	// When using an existing API key for cloud bootstrap, --alias is required
-	// because the server cannot auto-assign unique aliases for peer agents.
-	if initCloudMode && !aliasExplicit {
-		token := resolveCloudToken(baseURL, serverName, global)
-		if strings.HasPrefix(token, "aw_sk_") {
-			return usageError("--alias is required when bootstrapping a new agent with an existing API key")
+	cloudToken := ""
+	if cloudMode {
+		cloudToken = resolveCloudToken(baseURL, serverName, accountName, explicitCloudToken, global)
+		if !aliasExplicit && strings.HasPrefix(cloudToken, "aw_sk_") {
+			return initOptions{}, usageError("--alias is required when bootstrapping a new agent with an existing API key")
 		}
 	}
 
@@ -181,7 +231,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if !aliasExplicit {
 		bootstrapClient, err := aweb.New(baseURL)
 		if err != nil {
-			return err
+			return initOptions{}, err
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -198,7 +248,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if isTTY() && !aliasExplicit {
 		v, err := promptString("Agent alias", alias)
 		if err != nil {
-			return err
+			return initOptions{}, err
 		}
 		aliasWasDefaultSuggestion = v == alias
 		alias = strings.TrimSpace(v)
@@ -208,69 +258,91 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	return initOptions{
+		WorkingDir:                    workingDir,
+		BaseURL:                       baseURL,
+		ServerName:                    serverName,
+		NamespaceSlug:                 nsSlug,
+		NamespaceName:                 nsName,
+		Alias:                         alias,
+		AliasExplicit:                 aliasExplicit,
+		RetrySuggestedAliasOnConflict: aliasWasDefaultSuggestion && !aliasExplicit,
+		HumanName:                     humanName,
+		AgentType:                     agentType,
+		SaveConfig:                    initSaveConfig,
+		SetDefault:                    initSetDefault,
+		WriteContext:                  initWriteContext,
+		CloudMode:                     cloudMode,
+		CloudToken:                    cloudToken,
+		TargetNamespace:               targetNamespace,
+		BootstrapAPIKey:               resolveInitAPIKey(baseURL, serverName, accountName, global),
+		AccountName:                   accountName,
+	}, nil
+}
+
+func executeInit(opts initOptions) (*initResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	var bootstrapClient *aweb.Client
-	initAPIKey := resolveInitAPIKey(baseURL, serverName, global)
-	if initAPIKey != "" {
-		bootstrapClient, err = aweb.NewWithAPIKey(baseURL, initAPIKey)
+	var err error
+	if opts.BootstrapAPIKey != "" {
+		bootstrapClient, err = aweb.NewWithAPIKey(opts.BaseURL, opts.BootstrapAPIKey)
 	} else {
-		bootstrapClient, err = aweb.New(baseURL)
+		bootstrapClient, err = aweb.New(opts.BaseURL)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// Generate Ed25519 keypair for self-custodial identity.
-	// Keypair generated once; reused on alias-retry so the DID stays
-	// consistent with the registered key.
 	pub, priv, err := awid.GenerateKeypair()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	did := awid.ComputeDIDKey(pub)
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
+	namespaceName := strings.TrimSpace(opts.NamespaceName)
+	if namespaceName == "" {
+		namespaceName = strings.TrimSpace(opts.NamespaceSlug)
+	}
+
 	req := &awid.InitRequest{
-		ProjectSlug: nsSlug,
-		ProjectName: nsName,
-		HumanName:   humanName,
-		AgentType:   agentType,
+		ProjectSlug: opts.NamespaceSlug,
+		ProjectName: namespaceName,
+		HumanName:   opts.HumanName,
+		AgentType:   opts.AgentType,
 		DID:         did,
 		PublicKey:   pubKeyB64,
 		Custody:     awid.CustodySelf,
 		Lifetime:    awid.LifetimePersistent,
 	}
-	if strings.TrimSpace(alias) != "" {
+	if strings.TrimSpace(opts.Alias) != "" {
+		alias := strings.TrimSpace(opts.Alias)
 		req.Alias = &alias
 	}
 
 	var resp *awid.InitResponse
-	if initCloudMode {
-		resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req, strings.TrimSpace(initTargetNamespace))
-	} else if initAPIKey == "" {
-		// No credentials: use anonymous headless bootstrap for hosted servers.
-		resp, err = tryHeadlessOrInit(ctx, bootstrapClient, req, baseURL)
+	if opts.CloudMode {
+		resp, err = bootstrapViaCloud(ctx, opts.BaseURL, opts.CloudToken, req, opts.TargetNamespace)
+	} else if opts.BootstrapAPIKey == "" {
+		resp, err = tryHeadlessOrInit(ctx, bootstrapClient, req, opts.BaseURL)
 	} else {
 		resp, err = bootstrapClient.Init(ctx, req)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// If we got an existing alias using the default suggestion, retry with server allocation.
-	// Headless-path conflicts arrive as 409 errors, not created=false. This condition
-	// is only reached via /v1/init responses, so the retry uses /v1/init directly.
-	if !aliasExplicit && aliasWasDefaultSuggestion && !resp.Created {
+	if opts.RetrySuggestedAliasOnConflict && !resp.Created {
 		req.Alias = nil
-		if initCloudMode {
-			resp, err = bootstrapViaCloud(ctx, baseURL, serverName, global, req, strings.TrimSpace(initTargetNamespace))
+		if opts.CloudMode {
+			resp, err = bootstrapViaCloud(ctx, opts.BaseURL, opts.CloudToken, req, opts.TargetNamespace)
 		} else {
 			resp, err = bootstrapClient.Init(ctx, req)
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -279,56 +351,49 @@ func runInit(cmd *cobra.Command, args []string) error {
 		namespaceSlug = strings.TrimSpace(resp.ProjectSlug)
 	}
 	if namespaceSlug == "" {
-		namespaceSlug = nsSlug
+		namespaceSlug = strings.TrimSpace(opts.NamespaceSlug)
 	}
-	// Prefer server-authoritative namespace domain for config storage.
 	if resp.Namespace != "" {
 		namespaceSlug = resp.Namespace
 	}
 
-	accountName := strings.TrimSpace(accountFlag)
+	accountName := strings.TrimSpace(opts.AccountName)
 	if accountName == "" {
-		accountName = deriveAccountName(serverName, namespaceSlug, resp.Alias)
+		accountName = deriveAccountName(opts.ServerName, namespaceSlug, resp.Alias)
 	}
 
-	// Prefer server-authoritative address.
 	address := resp.Address
 	if address == "" {
 		address = deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
 	}
 	cfgPath, err := defaultGlobalPath()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	keysDir := awconfig.KeysDir(cfgPath)
 	signingKeyPath := awid.SigningKeyPath(keysDir, address)
-
-	// Save keypair to disk BEFORE writing config. If config is written but
-	// the key save fails, the agent would be bricked (config pointing to a
-	// nonexistent key). An orphaned key file on disk is harmless.
 	if err := awid.SaveKeypair(keysDir, address, pub, priv); err != nil {
-		return err
+		return nil, err
 	}
 
 	stableID := strings.TrimSpace(resp.StableID)
-
-	if initSaveConfig {
-		updateErr := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
+	if opts.SaveConfig {
+		if err := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
 			if cfg.Servers == nil {
 				cfg.Servers = map[string]awconfig.Server{}
 			}
 			if cfg.Accounts == nil {
 				cfg.Accounts = map[string]awconfig.Account{}
 			}
-			serverURL := baseURL
+			serverURL := opts.BaseURL
 			if v := strings.TrimSpace(resp.ServerURL); v != "" {
 				serverURL = v
 			}
-			if _, ok := cfg.Servers[serverName]; !ok || strings.TrimSpace(cfg.Servers[serverName].URL) == "" {
-				cfg.Servers[serverName] = awconfig.Server{URL: serverURL}
+			if _, ok := cfg.Servers[opts.ServerName]; !ok || strings.TrimSpace(cfg.Servers[opts.ServerName].URL) == "" {
+				cfg.Servers[opts.ServerName] = awconfig.Server{URL: serverURL}
 			}
 			cfg.Accounts[accountName] = awconfig.Account{Account: awid.Account{
-				Server:        serverName,
+				Server:        opts.ServerName,
 				APIKey:        resp.APIKey,
 				AgentID:       resp.AgentID,
 				AgentAlias:    resp.Alias,
@@ -339,28 +404,26 @@ func runInit(cmd *cobra.Command, args []string) error {
 				Custody:       resp.Custody,
 				Lifetime:      resp.Lifetime,
 			}}
-			if strings.TrimSpace(cfg.DefaultAccount) == "" || initSetDefault {
+			if strings.TrimSpace(cfg.DefaultAccount) == "" || opts.SetDefault {
 				cfg.DefaultAccount = accountName
 			}
 			return nil
-		})
-		if updateErr != nil {
-			return updateErr
+		}); err != nil {
+			return nil, err
 		}
 	}
 
-	if initWriteContext {
-		if err := writeOrUpdateContext(serverName, accountName); err != nil {
-			return err
+	if opts.WriteContext {
+		if err := writeOrUpdateContextAt(opts.WorkingDir, opts.ServerName, accountName, true); err != nil {
+			return nil, err
 		}
 	}
 
 	var attachResult *contextAttachResult
-	if initWriteContext {
-		authClient, err := aweb.NewWithAPIKey(baseURL, resp.APIKey)
+	if opts.WriteContext {
+		authClient, err := aweb.NewWithAPIKey(opts.BaseURL, resp.APIKey)
 		if err == nil {
-			workingDir, _ := os.Getwd()
-			attachResult, err = autoAttachContext(workingDir, authClient, strings.TrimSpace(initWorkspaceRole))
+			attachResult, err = autoAttachContext(opts.WorkingDir, authClient, strings.TrimSpace(opts.WorkspaceRole))
 			if err != nil {
 				debugLog("workspace attach: %v", err)
 				fmt.Fprintf(os.Stderr, "Warning: could not attach workspace context (coordination may not be available on this server)\n")
@@ -368,25 +431,19 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if jsonFlag {
-		printJSON(resp)
-	} else if !initSuppressSummary {
-		printInitSummary(resp, accountName, serverName, attachResult)
+	exportBaseURL := opts.BaseURL
+	if v := strings.TrimSpace(resp.ServerURL); v != "" {
+		exportBaseURL = v
 	}
-	if initPrintExports {
-		fmt.Println("")
-		fmt.Println("# Copy/paste to configure your shell:")
-		exportURL := baseURL
-		if v := strings.TrimSpace(resp.ServerURL); v != "" {
-			exportURL = v
-		}
-		fmt.Println("export AWEB_URL=" + exportURL)
-		fmt.Println("export AWEB_API_KEY=" + resp.APIKey)
-		fmt.Println("export AWEB_NAMESPACE=" + nsSlug)
-		fmt.Println("export AWEB_AGENT_ID=" + resp.AgentID)
-		fmt.Println("export AWEB_AGENT_ALIAS=" + resp.Alias)
-	}
-	return nil
+
+	return &initResult{
+		Response:        resp,
+		AccountName:     accountName,
+		ServerName:      opts.ServerName,
+		AttachResult:    attachResult,
+		ExportBaseURL:   exportBaseURL,
+		ExportNamespace: namespaceSlug,
+	}, nil
 }
 
 func printInitSummary(resp *awid.InitResponse, accountName, serverName string, attachResult *contextAttachResult) {
@@ -499,12 +556,10 @@ func tryHeadlessOrInit(
 func bootstrapViaCloud(
 	ctx context.Context,
 	baseURL string,
-	serverName string,
-	global *awconfig.GlobalConfig,
+	token string,
 	req *awid.InitRequest,
 	namespaceSlug string,
 ) (*awid.InitResponse, error) {
-	token := resolveCloudToken(baseURL, serverName, global)
 	if strings.TrimSpace(token) == "" {
 		return nil, fmt.Errorf("hosted Cloud bootstrap requires --cloud-token, AWEB_CLOUD_TOKEN, or an existing aw_sk_ key in config")
 	}
@@ -559,7 +614,7 @@ func bootstrapViaCloud(
 	}, nil
 }
 
-func resolveInitAPIKey(baseURL, serverName string, global *awconfig.GlobalConfig) string {
+func resolveInitAPIKey(baseURL, serverName, accountName string, global *awconfig.GlobalConfig) string {
 	if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); strings.HasPrefix(v, "aw_sk_") {
 		return v
 	}
@@ -568,7 +623,7 @@ func resolveInitAPIKey(baseURL, serverName string, global *awconfig.GlobalConfig
 	}
 
 	candidates := make([]string, 0, 4)
-	if v := strings.TrimSpace(accountFlag); v != "" {
+	if v := strings.TrimSpace(accountName); v != "" {
 		candidates = append(candidates, v)
 	}
 	for _, name := range sortedAccountNames(global) {
@@ -618,8 +673,8 @@ func resolveInitAPIKey(baseURL, serverName string, global *awconfig.GlobalConfig
 	return ""
 }
 
-func resolveCloudToken(baseURL, serverName string, global *awconfig.GlobalConfig) string {
-	if v := strings.TrimSpace(initCloudToken); v != "" {
+func resolveCloudToken(baseURL, serverName, accountName, explicitToken string, global *awconfig.GlobalConfig) string {
+	if v := strings.TrimSpace(explicitToken); v != "" {
 		return v
 	}
 	if v := strings.TrimSpace(os.Getenv("AWEB_CLOUD_TOKEN")); v != "" {
@@ -633,7 +688,7 @@ func resolveCloudToken(baseURL, serverName string, global *awconfig.GlobalConfig
 	}
 
 	candidates := make([]string, 0, 4)
-	if v := strings.TrimSpace(accountFlag); v != "" {
+	if v := strings.TrimSpace(accountName); v != "" {
 		candidates = append(candidates, v)
 	}
 	for _, name := range sortedAccountNames(global) {

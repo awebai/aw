@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 
 	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
@@ -261,13 +263,20 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 	if sourceBaseURL == "" {
 		return fmt.Errorf("selected account missing server URL")
 	}
+	sourceServerName := strings.TrimSpace(sel.ServerName)
+	if sourceServerName == "" {
+		derived, derr := awconfig.DeriveServerNameFromURL(sourceBaseURL)
+		if derr != nil {
+			return fmt.Errorf("derive server name: %w", derr)
+		}
+		sourceServerName = derived
+	}
 
 	humanName := ""
 	if state != nil {
 		humanName = strings.TrimSpace(state.HumanName)
 	}
 
-	origDir := workingDir
 	wantJSON := jsonFlag
 
 	const maxAttempts = 25
@@ -295,12 +304,12 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 		}
 
 		if !wantJSON {
-			fmt.Printf("Creating worktree for branch %q...\n", branchName)
-			fmt.Printf("  Main repo: %s\n", root)
-			fmt.Printf("  Worktree:  %s\n", worktreePath)
-			fmt.Printf("  Role:      %s\n", role)
-			fmt.Printf("  Alias:     %s\n\n", alias)
-			fmt.Println("Creating git worktree...")
+			fmt.Fprintf(os.Stderr, "Creating worktree for branch %q...\n", branchName)
+			fmt.Fprintf(os.Stderr, "  Main repo: %s\n", root)
+			fmt.Fprintf(os.Stderr, "  Worktree:  %s\n", worktreePath)
+			fmt.Fprintf(os.Stderr, "  Role:      %s\n", role)
+			fmt.Fprintf(os.Stderr, "  Alias:     %s\n\n", alias)
+			fmt.Fprintln(os.Stderr, "Creating git worktree...")
 		}
 
 		branchCreated, err := createWorkspaceGitWorktree(root, worktreePath, branchName, wantJSON)
@@ -309,38 +318,46 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 		}
 
 		if !wantJSON {
-			fmt.Println("Initializing aw...")
-		}
-		if err := os.Chdir(worktreePath); err != nil {
-			cleanupWorkspaceWorktree(root, worktreePath, branchName, branchCreated)
-			return fmt.Errorf("failed to change to worktree directory: %w", err)
+			fmt.Fprintln(os.Stderr, "Initializing aw...")
 		}
 
-		restore := snapshotWorkspaceAddInitState()
-		setWorkspaceAddRunInitState(sourceBaseURL, namespaceSlug, alias, humanName, role)
-		prevAPIKey, hadAPIKey := os.LookupEnv("AWEB_API_KEY")
-		_ = os.Setenv("AWEB_API_KEY", sourceAPIKey)
-
-		initErr := runInit(nil, nil)
-
-		if hadAPIKey {
-			_ = os.Setenv("AWEB_API_KEY", prevAPIKey)
+		initOpts := initOptions{
+			WorkingDir:      worktreePath,
+			BaseURL:         sourceBaseURL,
+			ServerName:      sourceServerName,
+			NamespaceSlug:   namespaceSlug,
+			NamespaceName:   "",
+			Alias:           alias,
+			AliasExplicit:   true,
+			HumanName:       humanName,
+			AgentType:       "agent",
+			SaveConfig:      true,
+			SetDefault:      false,
+			WriteContext:    true,
+			CloudMode:       !strings.HasPrefix(sourceAPIKey, "aw_sk_"),
+			CloudToken:      "",
+			TargetNamespace: "",
+			BootstrapAPIKey: "",
+			AccountName:     "",
+			WorkspaceRole:   role,
+		}
+		if strings.HasPrefix(sourceAPIKey, "aw_sk_") {
+			initOpts.BootstrapAPIKey = sourceAPIKey
 		} else {
-			_ = os.Unsetenv("AWEB_API_KEY")
+			initOpts.CloudToken = sourceAPIKey
 		}
-		restore()
-		_ = os.Chdir(origDir)
 
+		_, initErr := executeInit(initOpts)
 		if initErr != nil {
 			if !wantJSON {
-				fmt.Println()
-				fmt.Println("Error: Failed to initialize aw. Cleaning up worktree...")
+				fmt.Fprintln(os.Stderr)
+				fmt.Fprintln(os.Stderr, "Error: Failed to initialize aw. Cleaning up worktree...")
 			}
 			cleanupWorkspaceWorktree(root, worktreePath, branchName, branchCreated)
 
 			if !aliasExplicit && isWorkspaceAliasTakenError(initErr) {
 				if !wantJSON {
-					fmt.Printf("Alias %q was taken; retrying with a new name...\n", alias)
+					fmt.Fprintf(os.Stderr, "Alias %q was taken; retrying with a new name...\n", alias)
 				}
 				if attempt < maxAttempts {
 					time.Sleep(time.Duration(attempt) * 50 * time.Millisecond)
@@ -736,22 +753,22 @@ func workspaceBranchExists(repoPath, branch string) bool {
 func createWorkspaceGitWorktree(repoPath, worktreePath, branchName string, quiet bool) (branchCreated bool, err error) {
 	if workspaceBranchExists(repoPath, branchName) {
 		if !quiet {
-			fmt.Printf("  Using existing branch %q\n", branchName)
+			fmt.Fprintf(os.Stderr, "  Using existing branch %q\n", branchName)
 		}
 		cmd := exec.Command("git", "-C", repoPath, "worktree", "add", worktreePath, branchName)
 		if !quiet {
-			cmd.Stdout = os.Stdout
+			cmd.Stdout = os.Stderr
 			cmd.Stderr = os.Stderr
 		}
 		return false, cmd.Run()
 	}
 
 	if !quiet {
-		fmt.Printf("  Creating new branch %q\n", branchName)
+		fmt.Fprintf(os.Stderr, "  Creating new branch %q\n", branchName)
 	}
 	cmd := exec.Command("git", "-C", repoPath, "worktree", "add", worktreePath, "-b", branchName)
 	if !quiet {
-		cmd.Stdout = os.Stdout
+		cmd.Stdout = os.Stderr
 		cmd.Stderr = os.Stderr
 	}
 	return true, cmd.Run()
@@ -770,10 +787,12 @@ func cleanupWorkspaceWorktree(repoPath, worktreePath, branchName string, deleteB
 	}
 
 	if deleteBranch && workspaceBranchExists(repoPath, branchName) {
-		listCmd := exec.Command("git", "-C", repoPath, "worktree", "list")
-		output, _ := listCmd.Output()
-		if !strings.Contains(string(output), " ["+branchName+"]") {
-			deleteCmd := exec.Command("git", "-C", repoPath, "branch", "-d", branchName)
+		inUse, err := workspaceBranchInUse(repoPath, branchName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to inspect worktree list for branch %s: %v\n", branchName, err)
+		}
+		if !inUse {
+			deleteCmd := exec.Command("git", "-C", repoPath, "branch", "-D", branchName)
 			if err := deleteCmd.Run(); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to delete branch %s: %v\n", branchName, err)
 			}
@@ -785,93 +804,42 @@ func isWorkspaceAliasTakenError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "alias") && strings.Contains(msg, "already taken")
+	code, ok := apiStructuredErrorCode(err)
+	return ok && code == "ALIAS_TAKEN"
 }
 
-type workspaceAddInitState struct {
-	serverFlag          string
-	accountFlag         string
-	jsonFlag            bool
-	initServerURL       string
-	initNamespaceSlug   string
-	initNamespaceName   string
-	initAlias           string
-	initHumanName       string
-	initAgentType       string
-	initSaveConfig      bool
-	initSetDefault      bool
-	initWriteContext    bool
-	initPrintExports    bool
-	initCloudToken      string
-	initCloudMode       bool
-	initTargetNamespace string
-	initWorkspaceRole   string
-	initSuppressSummary bool
-}
-
-func snapshotWorkspaceAddInitState() func() {
-	saved := workspaceAddInitState{
-		serverFlag:          serverFlag,
-		accountFlag:         accountFlag,
-		jsonFlag:            jsonFlag,
-		initServerURL:       initServerURL,
-		initNamespaceSlug:   initNamespaceSlug,
-		initNamespaceName:   initNamespaceName,
-		initAlias:           initAlias,
-		initHumanName:       initHumanName,
-		initAgentType:       initAgentType,
-		initSaveConfig:      initSaveConfig,
-		initSetDefault:      initSetDefault,
-		initWriteContext:    initWriteContext,
-		initPrintExports:    initPrintExports,
-		initCloudToken:      initCloudToken,
-		initCloudMode:       initCloudMode,
-		initTargetNamespace: initTargetNamespace,
-		initWorkspaceRole:   initWorkspaceRole,
-		initSuppressSummary: initSuppressSummary,
+func workspaceBranchInUse(repoPath, branchName string) (bool, error) {
+	cmd := exec.Command("git", "-C", repoPath, "worktree", "list", "--porcelain")
+	out, err := cmd.Output()
+	if err != nil {
+		return false, err
 	}
-	return func() {
-		serverFlag = saved.serverFlag
-		accountFlag = saved.accountFlag
-		jsonFlag = saved.jsonFlag
-		initServerURL = saved.initServerURL
-		initNamespaceSlug = saved.initNamespaceSlug
-		initNamespaceName = saved.initNamespaceName
-		initAlias = saved.initAlias
-		initHumanName = saved.initHumanName
-		initAgentType = saved.initAgentType
-		initSaveConfig = saved.initSaveConfig
-		initSetDefault = saved.initSetDefault
-		initWriteContext = saved.initWriteContext
-		initPrintExports = saved.initPrintExports
-		initCloudToken = saved.initCloudToken
-		initCloudMode = saved.initCloudMode
-		initTargetNamespace = saved.initTargetNamespace
-		initWorkspaceRole = saved.initWorkspaceRole
-		initSuppressSummary = saved.initSuppressSummary
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "branch ") && strings.TrimPrefix(line, "branch ") == "refs/heads/"+branchName {
+			return true, nil
+		}
 	}
+	return false, nil
 }
 
-func setWorkspaceAddRunInitState(baseURL, namespaceSlug, alias, humanName, role string) {
-	serverFlag = ""
-	accountFlag = ""
-	jsonFlag = false
-	initServerURL = strings.TrimSpace(baseURL)
-	initNamespaceSlug = strings.TrimSpace(namespaceSlug)
-	initNamespaceName = strings.TrimSpace(namespaceSlug)
-	initAlias = strings.TrimSpace(alias)
-	initHumanName = strings.TrimSpace(humanName)
-	initAgentType = ""
-	initSaveConfig = true
-	initSetDefault = false
-	initWriteContext = true
-	initPrintExports = false
-	initCloudToken = ""
-	initCloudMode = false
-	initTargetNamespace = ""
-	initWorkspaceRole = strings.TrimSpace(role)
-	initSuppressSummary = true
+func apiStructuredErrorCode(err error) (string, bool) {
+	body, ok := awid.HTTPErrorBody(err)
+	if !ok {
+		return "", false
+	}
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(body), &envelope) != nil || strings.TrimSpace(envelope.Error.Code) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(envelope.Error.Code), true
 }
 
 func formatWorkspaceStatus(v any) string {

@@ -15,8 +15,8 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
-	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 	"github.com/joho/godotenv"
 )
 
@@ -615,7 +615,11 @@ func deriveAgentAddress(namespaceSlug, projectSlug, alias string) string {
 }
 
 func writeOrUpdateContext(serverName, accountName string) error {
-	return writeOrUpdateContextWithOptions(serverName, accountName, true)
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	return writeOrUpdateContextAt(wd, serverName, accountName, true)
 }
 
 func writeOrUpdateContextWithOptions(serverName, accountName string, setDefault bool) error {
@@ -623,10 +627,13 @@ func writeOrUpdateContextWithOptions(serverName, accountName string, setDefault 
 	if err != nil {
 		return err
 	}
+	return writeOrUpdateContextAt(wd, serverName, accountName, setDefault)
+}
 
-	ctxPath, err := awconfig.FindWorktreeContextPath(wd)
+func writeOrUpdateContextAt(workingDir, serverName, accountName string, setDefault bool) error {
+	ctxPath, err := awconfig.FindWorktreeContextPath(workingDir)
 	if err != nil {
-		ctxPath = filepath.Join(wd, awconfig.DefaultWorktreeContextRelativePath())
+		ctxPath = filepath.Join(workingDir, awconfig.DefaultWorktreeContextRelativePath())
 	}
 
 	ctx := &awconfig.WorktreeContext{
