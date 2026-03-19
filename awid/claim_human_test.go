@@ -24,8 +24,13 @@ func TestClaimHuman(t *testing.T) {
 		gotAuth = r.Header.Get("Authorization")
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":  "verification_sent",
-			"message": "Check your inbox for a verification email",
+			"status":       "verification_sent",
+			"message":      "Check your inbox for a verification email",
+			"email":        "alice@example.com",
+			"org_id":       "org-1",
+			"org_slug":     "myteam",
+			"project_id":   "proj-1",
+			"project_slug": "default",
 		})
 	}))
 	t.Cleanup(server.Close)
@@ -59,6 +64,15 @@ func TestClaimHuman(t *testing.T) {
 	}
 	if resp.Message != "Check your inbox for a verification email" {
 		t.Fatalf("message=%q", resp.Message)
+	}
+	if resp.Email != "alice@example.com" {
+		t.Fatalf("email=%q", resp.Email)
+	}
+	if resp.OrgSlug != "myteam" {
+		t.Fatalf("org_slug=%q", resp.OrgSlug)
+	}
+	if resp.ProjectSlug != "default" {
+		t.Fatalf("project_slug=%q", resp.ProjectSlug)
 	}
 }
 

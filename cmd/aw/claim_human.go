@@ -35,12 +35,21 @@ var claimHumanCmd = &cobra.Command{
 			return err
 		}
 
-		printOutput(resp, func(v any) string {
-			r := v.(*awid.ClaimHumanResponse)
-			return fmt.Sprintf("Verification email sent to %s. %s\n", email, r.Message)
-		})
+		printOutput(resp, formatClaimHuman)
 		return nil
 	},
+}
+
+func formatClaimHuman(v any) string {
+	r := v.(*awid.ClaimHumanResponse)
+	switch r.Status {
+	case "attached":
+		return fmt.Sprintf("Human account attached to %s. Dashboard access is now available.\n", r.OrgSlug)
+	case "already_attached":
+		return fmt.Sprintf("Human account is already attached to %s.\n", r.OrgSlug)
+	default:
+		return fmt.Sprintf("Verification email sent to %s. Check your inbox to complete the claim.\n", r.Email)
+	}
 }
 
 func init() {
