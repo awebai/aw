@@ -197,6 +197,107 @@ func TestScreenViewShowsDividerAboveInputAndStatusBelow(t *testing.T) {
 	}
 }
 
+func TestScreenControllerFooterPlacesPromptAboveStatus(t *testing.T) {
+	screen := &ScreenController{
+		promptLabel: ">> ",
+		statusLine:  "paused",
+		inputLine:   ">> hello",
+		inputCursor: len([]rune("hello")),
+		styles:      newScreenStyles(),
+	}
+
+	lines := screen.renderFooterLinesLocked(40)
+	dividerIdx := -1
+	promptIdx := -1
+	statusIdx := -1
+	for i, line := range lines {
+		switch {
+		case strings.Contains(line, "────"):
+			dividerIdx = i
+		case strings.Contains(line, "hello"):
+			promptIdx = i
+		case strings.Contains(line, "paused"):
+			statusIdx = i
+		}
+	}
+
+	if dividerIdx < 0 || promptIdx < 0 || statusIdx < 0 {
+		t.Fatalf("expected divider, prompt, and status in footer, got %#v", lines)
+	}
+	if dividerIdx >= promptIdx {
+		t.Fatalf("expected divider before prompt, got %#v", lines)
+	}
+	if promptIdx >= statusIdx {
+		t.Fatalf("expected prompt before status, got %#v", lines)
+	}
+	if statusIdx-promptIdx < 2 {
+		t.Fatalf("expected blank line between prompt and status, got %#v", lines)
+	}
+	if lines[statusIdx-1] != "" {
+		t.Fatalf("expected blank line before status, got %#v", lines)
+	}
+}
+
+func TestScreenControllerHistoryNavigation(t *testing.T) {
+	screen := &ScreenController{
+		promptLabel:   ">> ",
+		inputLine:     ">> ",
+		historyIndex:  -1,
+		desiredColumn: -1,
+		events:        make(chan ControlEvent, 64),
+	}
+
+	screen.handleInlineInput([]byte("first"))
+	screen.handleInlineInput([]byte{'\r'})
+	screen.handleInlineInput([]byte("second"))
+	screen.handleInlineInput([]byte{'\r'})
+	screen.handleInlineInput([]byte{0x1b, '[', 'A'})
+
+	if got := InputValueFromLine(screen.inputLine, screen.promptLabel); got != "second" {
+		t.Fatalf("expected first history recall to show latest entry, got %q", got)
+	}
+
+	screen.handleInlineInput([]byte{0x1b, '[', 'A'})
+	if got := InputValueFromLine(screen.inputLine, screen.promptLabel); got != "first" {
+		t.Fatalf("expected second history recall to show older entry, got %q", got)
+	}
+
+	screen.handleInlineInput([]byte{0x1b, '[', 'B'})
+	if got := InputValueFromLine(screen.inputLine, screen.promptLabel); got != "second" {
+		t.Fatalf("expected down arrow to move forward in history, got %q", got)
+	}
+
+	screen.handleInlineInput([]byte{0x1b, '[', 'B'})
+	if got := InputValueFromLine(screen.inputLine, screen.promptLabel); got != "" {
+		t.Fatalf("expected second down arrow to restore draft input, got %q", got)
+	}
+}
+
+func TestScreenControllerUpMovesWithinWrappedInputBeforeHistory(t *testing.T) {
+	value := strings.Repeat("x", 100)
+	screen := &ScreenController{
+		promptLabel:   ">> ",
+		inputLine:     FormatInputLine(">> ", value),
+		inputCursor:   len([]rune(value)),
+		history:       []string{"from-history"},
+		historyIndex:  -1,
+		desiredColumn: -1,
+		events:        make(chan ControlEvent, 64),
+	}
+
+	screen.handleInlineInput([]byte{0x1b, '[', 'A'})
+
+	if got := InputValueFromLine(screen.inputLine, screen.promptLabel); got != value {
+		t.Fatalf("expected wrapped up-arrow to keep current input, got %q", got)
+	}
+	if screen.historyIndex != -1 {
+		t.Fatalf("expected wrapped up-arrow to stay out of history, got historyIndex=%d", screen.historyIndex)
+	}
+	if screen.inputCursor >= len([]rune(value)) {
+		t.Fatalf("expected wrapped up-arrow to move cursor within input, got cursor=%d", screen.inputCursor)
+	}
+}
+
 func TestInputVisualHeightWrapsLongInput(t *testing.T) {
 	got := inputVisualHeight("aw:repo:rose> ", strings.Repeat("x", 40), 30)
 	if got < 2 {
