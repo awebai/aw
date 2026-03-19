@@ -10,6 +10,7 @@ require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/creack/pty v1.1.24
 	github.com/mr-tron/base58 v1.2.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.39.0

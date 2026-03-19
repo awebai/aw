@@ -28,18 +28,19 @@ var (
 	runModel        string
 	runCompactPct   int
 	runProviderName string
+	runProviderPTY  bool
 	runAutofeedWork bool
 	runInitConfig   bool
 )
 
 var (
-	runLoadUserConfig      = awrun.LoadUserConfig
-	runInitUserConfig      = awrun.InitUserConfig
-	runResolveSettings     = awrun.ResolveSettings
-	runNewProvider         = awrun.NewProvider
-	runNewLoop             = awrun.NewLoop
-	runExecuteLoop         = func(loop *awrun.Loop, ctx context.Context, opts awrun.LoopOptions) error { return loop.Run(ctx, opts) }
-	runNewEventBus = func(client *aweb.Client) *awrun.EventBus {
+	runLoadUserConfig  = awrun.LoadUserConfig
+	runInitUserConfig  = awrun.InitUserConfig
+	runResolveSettings = awrun.ResolveSettings
+	runNewProvider     = awrun.NewProvider
+	runNewLoop         = awrun.NewLoop
+	runExecuteLoop     = func(loop *awrun.Loop, ctx context.Context, opts awrun.LoopOptions) error { return loop.Run(ctx, opts) }
+	runNewEventBus     = func(client *aweb.Client) *awrun.EventBus {
 		return awrun.NewEventBus(awrun.EventBusConfig{
 			Stream: awrun.NewEventStreamOpener(client.Client),
 		})
@@ -81,6 +82,7 @@ func init() {
 	runCmd.Flags().StringVar(&runAllowedTools, "allowed-tools", "", "Provider-specific allowed tools string")
 	runCmd.Flags().StringVar(&runModel, "model", "", "Provider-specific model override")
 	runCmd.Flags().StringVar(&runProviderName, "provider", "claude", "Agent provider to run")
+	runCmd.Flags().BoolVar(&runProviderPTY, "provider-pty", true, "Run the provider subprocess inside a pseudo-terminal when interactive controls are available")
 	runCmd.Flags().BoolVar(&runAutofeedWork, "autofeed-work", false, "Wake for work-related events in addition to incoming mail/chat")
 	runCmd.Flags().BoolVar(&runInitConfig, "init", false, "Prompt for ~/.config/aw/run.json values and write them")
 
@@ -118,7 +120,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	initialPrompt := strings.TrimSpace(strings.Join(args, " "))
-	if strings.TrimSpace(settings.BasePrompt) == "" && initialPrompt == "" {
+	screen := runNewScreenController(cmd.InOrStdin(), cmd.OutOrStdout())
+	allowInteractiveEmptyPrompt := screen != nil
+	if strings.TrimSpace(settings.BasePrompt) == "" && initialPrompt == "" && !allowInteractiveEmptyPrompt {
 		return usageError("missing prompt (pass a prompt argument, --base-prompt, or configure base_prompt with `aw run --init`)")
 	}
 
@@ -134,8 +138,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	repoSlug := runDetectRepoSlug(workingDir)
 	statusIdentity := awrun.StatusIdentity(runProviderName, sel.NamespaceSlug, repoSlug, sel.AgentAlias)
-
-	screen := runNewScreenController(cmd.InOrStdin(), cmd.OutOrStdout())
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 	defer stop()
@@ -156,6 +158,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		WorkingDir:          workingDir,
 		AllowedTools:        runAllowedTools,
 		Model:               runModel,
+		ProviderPTY:         runProviderPTY && screen != nil,
 		CompactThresholdPct: settings.CompactThreshold,
 		Services:            settings.Services,
 	}
@@ -213,6 +216,7 @@ func initRunCommandVars() {
 	runModel = ""
 	runCompactPct = awrun.DefaultCompactThreshold
 	runProviderName = "claude"
+	runProviderPTY = true
 	runAutofeedWork = false
 	runInitConfig = false
 }

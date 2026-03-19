@@ -6,6 +6,12 @@ import (
 	"testing"
 )
 
+type testWriteCloser struct {
+	*bytes.Buffer
+}
+
+func (t testWriteCloser) Close() error { return nil }
+
 func TestParseControlSubmissionHelp(t *testing.T) {
 	event := ParseControlSubmission("/help")
 	if event.Type != ControlHelp {
@@ -33,6 +39,16 @@ func TestParseControlSubmissionPassesRegularText(t *testing.T) {
 	}
 }
 
+func TestParseControlSubmissionProviderInput(t *testing.T) {
+	event := ParseControlSubmission("/provider y")
+	if event.Type != ControlProviderInput {
+		t.Fatalf("expected ControlProviderInput, got %q", event.Type)
+	}
+	if event.Text != "y" {
+		t.Fatalf("expected text 'y', got %q", event.Text)
+	}
+}
+
 func TestHelpEventPrintsCommands(t *testing.T) {
 	var out bytes.Buffer
 	loop := NewLoop(fakeProvider{}, &out)
@@ -41,7 +57,7 @@ func TestHelpEventPrintsCommands(t *testing.T) {
 	loop.applyControlEvent(ControlEvent{Type: ControlHelp}, st, false, nil)
 
 	output := out.String()
-	for _, cmd := range []string{"/wait", "/resume", "/stop", "/autofeed", "/quit", "/help"} {
+	for _, cmd := range []string{"/wait", "/resume", "/stop", "/provider", "/autofeed", "/quit", "/help"} {
 		if !strings.Contains(output, cmd) {
 			t.Errorf("help output missing %q, got %q", cmd, output)
 		}
@@ -61,5 +77,24 @@ func TestUnknownCommandEventPrintsError(t *testing.T) {
 	}
 	if !strings.Contains(output, "/help") {
 		t.Fatalf("expected /help hint in error, got %q", output)
+	}
+}
+
+func TestProviderInputEventWritesToActiveProvider(t *testing.T) {
+	var out bytes.Buffer
+	var stdin bytes.Buffer
+	loop := NewLoop(fakeProvider{}, &out)
+	st := &state{
+		ProviderInput: &providerInputState{},
+	}
+	st.ProviderInput.SetWriter(testWriteCloser{Buffer: &stdin})
+
+	loop.applyControlEvent(ControlEvent{Type: ControlProviderInput, Text: "y"}, st, true, nil)
+
+	if got := stdin.String(); got != "y\n" {
+		t.Fatalf("expected provider stdin write, got %q", got)
+	}
+	if got := out.String(); !strings.Contains(got, "sent provider input: y") {
+		t.Fatalf("expected confirmation output, got %q", got)
 	}
 }

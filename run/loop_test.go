@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +29,61 @@ func (f *fakeInputController) Start() error                { return nil }
 func (f *fakeInputController) Stop() error                 { return nil }
 func (f *fakeInputController) Events() <-chan ControlEvent { return f.events }
 func (f *fakeInputController) HasPendingInput() bool       { return false }
+
+type recordingUI struct {
+	*fakeInputController
+	statusMu sync.Mutex
+	statuses []string
+	outputMu sync.Mutex
+	output   string
+}
+
+func newRecordingUI() *recordingUI {
+	return &recordingUI{fakeInputController: newFakeInputController()}
+}
+
+func (r *recordingUI) AppendText(text string) {
+	r.outputMu.Lock()
+	defer r.outputMu.Unlock()
+	r.output += text
+}
+
+func (r *recordingUI) AppendLine(text string) {
+	r.AppendText(text + "\n")
+}
+func (r *recordingUI) SetInputLine(string)      {}
+func (r *recordingUI) ClearInputLine()          {}
+func (r *recordingUI) SetExitConfirmation(bool) {}
+func (r *recordingUI) HasActiveProgram() bool   { return true }
+
+func (r *recordingUI) SetStatusLine(text string) {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	r.statuses = append(r.statuses, text)
+}
+
+func (r *recordingUI) ClearStatusLine() {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	r.statuses = append(r.statuses, "")
+}
+
+func (r *recordingUI) sawStatusContaining(substr string) bool {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	for _, status := range r.statuses {
+		if strings.Contains(status, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *recordingUI) sawOutputContaining(substr string) bool {
+	r.outputMu.Lock()
+	defer r.outputMu.Unlock()
+	return strings.Contains(r.output, substr)
+}
 
 type fakeDispatcher struct {
 	decisions []DispatchDecision
@@ -283,9 +342,18 @@ func TestFormatRunStatusOmitsRunLabel(t *testing.T) {
 	}
 }
 
+func TestFormatWaitStatusShowsConnectionStateAndAutofeed(t *testing.T) {
+	st := &state{Autofeed: true, ConnState: ConnReconnecting}
+	got := formatWaitStatus("waiting for prompt", st)
+	want := "waiting for prompt · autofeed · reconnecting..."
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
 func TestFormatRunStatusShowsContextAndCost(t *testing.T) {
 	st := &state{
-		RunLabel: "run 1",
+		RunLabel:    "run 1",
 		HasRunUsage: true,
 		LastRunUsage: UsageStats{
 			InputTokens:       45000,
@@ -636,6 +704,94 @@ func TestLoopEventBusWakesOnMailMessage(t *testing.T) {
 	}
 }
 
+func TestLoopShowsStartupStatusBeforeFirstPromptWhileEventBusRuns(t *testing.T) {
+	ui := newRecordingUI()
+	bus := newTestEventBus()
+
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.Control = ui
+	loop.EventBus = bus
+	loop.StatusIdentity = "claude@aweb:aw:rose"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.Run(ctx, LoopOptions{WaitSeconds: 30})
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ui.sawStatusContaining("claude@aweb:aw:rose · waiting for prompt") {
+			cancel()
+			err := <-done
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("expected context canceled, got %v", err)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	_ = <-done
+	t.Fatal("timed out waiting for startup status line")
+}
+
+func TestLoopShowsFreshStartGreetingWithoutContinue(t *testing.T) {
+	ui := newRecordingUI()
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.Control = ui
+	loop.StatusIdentity = "claude@aweb:aw:rose"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.Run(ctx, LoopOptions{WaitSeconds: 30})
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ui.sawOutputContaining("__ ___      __  _    __ ___") && ui.sawOutputContaining("The aweb agent runner") && ui.sawOutputContaining("type /help for controls, or enter a prompt to begin") {
+			cancel()
+			err := <-done
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("expected context canceled, got %v", err)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	_ = <-done
+	t.Fatal("timed out waiting for startup greeting")
+}
+
+func TestLoopSkipsFreshStartGreetingInContinueMode(t *testing.T) {
+	ui := newRecordingUI()
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.Control = ui
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.Run(ctx, LoopOptions{
+			WaitSeconds:  30,
+			ContinueMode: true,
+		})
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	if ui.sawOutputContaining("The aweb agent runner") {
+		t.Fatal("did not expect startup greeting in continue mode")
+	}
+}
+
 func TestLoopEventBusInterruptDuringRun(t *testing.T) {
 	bus := newTestEventBus(
 		awid.AgentEvent{Type: awid.AgentEventControlInterrupt},
@@ -761,8 +917,8 @@ func TestApplyBusInterruptResumeClearsPause(t *testing.T) {
 	var out bytes.Buffer
 	loop := NewLoop(ClaudeProvider{}, &out)
 	st := &state{
-		Paused:         true,
-		PauseAfterRun:  true,
+		Paused:           true,
+		PauseAfterRun:    true,
 		PauseNoticeShown: true,
 	}
 
@@ -1007,5 +1163,313 @@ func TestRemoteInterruptDuringIdleDoesNotLeakIntoNextRun(t *testing.T) {
 	}
 	if st.PauseAfterRun {
 		t.Fatal("expected PauseAfterRun=false after next run")
+	}
+}
+
+func TestLoopAllowsInteractiveStartWithoutPrompt(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(fakeProvider{event: &Event{Type: EventDone}}, &out)
+	controller := newFakeInputController()
+	loop.Control = controller
+	ran := make(chan []string, 1)
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		ran <- append([]string(nil), argv...)
+		return nil
+	}
+	loop.Sleep = func(ctx context.Context, d time.Duration) error {
+		return SleepWithContext(ctx, 10*time.Millisecond)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.Run(context.Background(), LoopOptions{
+			WaitSeconds: 1,
+			MaxRuns:     1,
+		})
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	controller.events <- ControlEvent{Type: ControlPrompt, Text: "hello from user"}
+
+	select {
+	case argv := <-ran:
+		if len(argv) < 2 || argv[1] != "hello from user" {
+			t.Fatalf("unexpected command argv %q", argv)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for manual prompt to start first run")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for loop to finish after first manual run")
+	}
+}
+
+func TestRunOnceSurfacesProviderStderr(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(fakeProvider{
+		event: &Event{Type: EventDone},
+	}, &out)
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		sinks, ok := stderrSink.(*commandOutputSinks)
+		if !ok || sinks == nil || sinks.stderrLine == nil {
+			t.Fatal("expected stderr sinks")
+		}
+		sinks.stderrLine("approval required")
+		onLine("done")
+		return nil
+	}
+
+	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", "review"); err != nil {
+		t.Fatalf("runOnce returned error: %v", err)
+	}
+
+	if got := out.String(); !strings.Contains(got, "provider stderr: approval required") {
+		t.Fatalf("expected streamed stderr in output, got %q", got)
+	}
+}
+
+func TestRunOnceSurfacesProviderStdoutPartial(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(fakeProvider{
+		event: &Event{Type: EventDone},
+	}, &out)
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		sinks, ok := stderrSink.(*commandOutputSinks)
+		if !ok || sinks == nil || sinks.stdoutPartial == nil {
+			t.Fatal("expected stdout partial sink")
+		}
+		sinks.stdoutPartial("Allow? [y/N]")
+		return nil
+	}
+
+	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", "review"); err != nil {
+		t.Fatalf("runOnce returned error: %v", err)
+	}
+
+	if got := out.String(); !strings.Contains(got, "provider stdout: Allow? [y/N]") {
+		t.Fatalf("expected streamed stdout partial in output, got %q", got)
+	}
+}
+
+func TestRealCommandRunnerStreamsPartialStderrBeforeExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+
+	stderrSeen := make(chan string, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- RealCommandRunner(context.Background(), "", []string{
+			"sh", "-c", "printf 'approval required' >&2; sleep 1",
+		}, func(string) {}, &commandOutputSinks{
+			stderrPartial: func(chunk string) {
+				select {
+				case stderrSeen <- chunk:
+				default:
+				}
+			},
+		})
+	}()
+
+	select {
+	case got := <-stderrSeen:
+		if got != "approval required" {
+			t.Fatalf("unexpected stderr line %q", got)
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("timed out waiting for stderr before process exit")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RealCommandRunner returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for RealCommandRunner to finish")
+	}
+}
+
+func TestRealCommandRunnerStreamsPartialStdoutBeforeExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+
+	stdoutSeen := make(chan string, 1)
+	done := make(chan error, 1)
+	lineSeen := make(chan string, 1)
+
+	go func() {
+		done <- RealCommandRunner(context.Background(), "", []string{
+			"sh", "-c", "printf 'Allow? [y/N]'; sleep 1",
+		}, func(line string) {
+			select {
+			case lineSeen <- line:
+			default:
+			}
+		}, &commandOutputSinks{
+			stdoutPartial: func(chunk string) {
+				select {
+				case stdoutSeen <- chunk:
+				default:
+				}
+			},
+		})
+	}()
+
+	select {
+	case got := <-stdoutSeen:
+		if got != "Allow? [y/N]" {
+			t.Fatalf("unexpected stdout partial %q", got)
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("timed out waiting for stdout partial before process exit")
+	}
+
+	select {
+	case got := <-lineSeen:
+		t.Fatalf("did not expect line callback for partial stdout, got %q", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RealCommandRunner returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for RealCommandRunner to finish")
+	}
+}
+
+func TestRealCommandRunnerAcceptsProviderInput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+
+	lineSeen := make(chan string, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- RealCommandRunner(context.Background(), "", []string{
+			"sh", "-c", "read answer; printf '%s\\n' \"$answer\"",
+		}, func(line string) {
+			select {
+			case lineSeen <- line:
+			default:
+			}
+		}, &commandOutputSinks{
+			stdinReady: func(w io.WriteCloser) {
+				_, _ = io.WriteString(w, "y\n")
+			},
+		})
+	}()
+
+	select {
+	case got := <-lineSeen:
+		if got != "y" {
+			t.Fatalf("unexpected stdout line %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for provider stdin round-trip")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RealCommandRunner returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for RealCommandRunner to finish")
+	}
+}
+
+func TestRealCommandRunnerPTYProvidesTTYAndAcceptsInput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PTY test uses POSIX shell semantics")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+
+	partialSeen := make(chan string, 1)
+	lineSeen := make(chan string, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- RealCommandRunner(context.Background(), "", []string{
+			"sh", "-c", "test -t 0 || exit 42; printf 'Allow? [y/N]'; read answer; printf '\\n%s\\n' \"$answer\"",
+		}, func(line string) {
+			select {
+			case lineSeen <- line:
+			default:
+			}
+		}, &commandOutputSinks{
+			usePTY: true,
+			ptyPartial: func(chunk string) {
+				select {
+				case partialSeen <- chunk:
+				default:
+				}
+			},
+			stdinReady: func(w io.WriteCloser) {
+				go func() {
+					time.Sleep(100 * time.Millisecond)
+					_, _ = io.WriteString(w, "y\n")
+				}()
+			},
+		})
+	}()
+
+	select {
+	case got := <-partialSeen:
+		if got != "Allow? [y/N]" {
+			t.Fatalf("unexpected PTY partial %q", got)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for PTY partial prompt")
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case got := <-lineSeen:
+			if got == "" {
+				continue
+			}
+			if got != "y" {
+				t.Fatalf("unexpected PTY stdout line %q", got)
+			}
+			goto ptyDone
+		case <-deadline:
+			t.Fatal("timed out waiting for PTY input round-trip")
+		}
+	}
+
+ptyDone:
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RealCommandRunner returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for PTY runner to finish")
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	awid "github.com/awebai/aw/awid"
@@ -54,16 +55,62 @@ type state struct {
 	LastRunUsage       UsageStats
 	HasRunUsage        bool
 	ConnState          ConnectionState
+	ProviderInput      *providerInputState
+}
+
+type providerInputState struct {
+	mu     sync.Mutex
+	writer io.WriteCloser
+}
+
+func (p *providerInputState) SetWriter(w io.WriteCloser) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.writer = w
+}
+
+func (p *providerInputState) Clear() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.writer = nil
+}
+
+func (p *providerInputState) SendLine(text string) error {
+	if p == nil {
+		return fmt.Errorf("provider input unavailable")
+	}
+	p.mu.Lock()
+	writer := p.writer
+	p.mu.Unlock()
+	if writer == nil {
+		return fmt.Errorf("provider input unavailable")
+	}
+	if _, err := io.WriteString(writer, text+"\n"); err != nil {
+		return err
+	}
+	return nil
 }
 
 const (
 	pausedNoticeText = "paused. use /resume, /quit, or type a prompt to continue."
 	pausedStatusText = "paused: /resume, /quit, or type a prompt"
 	exitStatusText   = "exit aw run? [y/N]"
+	startupBanner    = `                                         _           _
+  __ ___      __  _    __ ___      _____| |__   __ _(_)
+ / _` + "`" + ` \ \ /\ / / (_)  / _` + "`" + ` \ \ /\ / / _ \ '_ \ / _` + "`" + ` | |
+| (_| |\ V  V /   _  | (_| |\ V  V /  __/ |_) | (_| | |
+ \__,_| \_/\_/   (_)  \__,_| \_/\_/ \___|_.__(_)__,_|_|`
 	helpText         = `available commands:
   /wait           pause after the current run
   /resume         resume from a pause
   /stop           stop the current run and pause
+  /provider TEXT  send one line to the active provider stdin
   /autofeed on    enable autofeed (work events wake the agent)
   /autofeed off   disable autofeed
   /quit           exit aw run
@@ -100,7 +147,7 @@ func (l *Loop) Run(ctx context.Context, opts LoopOptions) error {
 	if l.Out == nil {
 		l.Out = io.Discard
 	}
-	if l.Dispatch == nil && strings.TrimSpace(opts.Prompt) == "" && strings.TrimSpace(opts.InitialPrompt) == "" {
+	if l.Dispatch == nil && strings.TrimSpace(opts.Prompt) == "" && strings.TrimSpace(opts.InitialPrompt) == "" && l.Control == nil {
 		return fmt.Errorf("prompt cannot be empty when dispatch is unavailable")
 	}
 
@@ -124,8 +171,13 @@ func (l *Loop) Run(ctx context.Context, opts LoopOptions) error {
 	if l.EventBus != nil {
 		l.EventBus.onStateChange = func(cs ConnectionState) {
 			state.ConnState = cs
-			if state.RunLabel != "" {
-				l.setStatusLine(formatRunStatus(state))
+			l.refreshStatusLine(state)
+		}
+		l.EventBus.onError = func(ev awid.AgentEvent) {
+			if text := strings.TrimSpace(ev.Text); text != "" {
+				l.printf("info: event stream error: %s\n", text)
+			} else {
+				l.println("info: event stream error")
 			}
 		}
 		l.EventBus.onError = func(ev awid.AgentEvent) {
@@ -138,6 +190,8 @@ func (l *Loop) Run(ctx context.Context, opts LoopOptions) error {
 		l.EventBus.Start(ctx)
 		defer l.EventBus.Stop()
 	}
+	l.refreshStatusLine(state)
+	l.showStartupGreeting(opts, state)
 
 	for {
 		decision, err := l.nextPrompt(ctx, opts, state)
@@ -218,6 +272,9 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 	if explicitMissionPrompt != "" {
 		return DispatchDecision{MissionPrompt: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
 	}
+	if l.Dispatch == nil && st.Run == 0 && l.Control != nil && strings.TrimSpace(opts.Prompt) == "" {
+		return DispatchDecision{WaitSeconds: opts.WaitSeconds, Skip: true}, nil
+	}
 	if l.Dispatch != nil {
 		decision, err := l.Dispatch.Next(ctx, st.Autofeed, st.LastWakeEvent)
 		if err != nil {
@@ -278,6 +335,12 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 	presenter := &presenterState{}
 	st.StructuredOut = false
 	observedSessionID := ""
+	providerInput := &providerInputState{}
+	st.ProviderInput = providerInput
+	defer func() {
+		providerInput.Clear()
+		st.ProviderInput = nil
+	}()
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -288,10 +351,32 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 		busInterrupts = l.EventBus.Interrupts()
 	}
 
+	sinks := &commandOutputSinks{
+		stdinReady: func(w io.WriteCloser) {
+			providerInput.SetWriter(w)
+		},
+		usePTY: opts.ProviderPTY,
+	}
+	if opts.ProviderPTY {
+		sinks.ptyPartial = func(chunk string) {
+			l.handleRawProviderChunk("provider tty", chunk, presenter)
+		}
+	} else {
+		sinks.stderrLine = func(line string) {
+			l.handleRawProviderChunk("provider stderr", line+"\n", presenter)
+		}
+		sinks.stderrPartial = func(chunk string) {
+			l.handleRawProviderChunk("provider stderr", chunk, presenter)
+		}
+		sinks.stdoutPartial = func(chunk string) {
+			l.handleRawProviderChunk("provider stdout", chunk, presenter)
+		}
+	}
+
 	go func() {
 		errCh <- l.Runner(runCtx, opts.WorkingDir, argv, func(line string) {
 			l.handleOutputLine(line, presenter, st, &observedSessionID)
-		}, nil)
+		}, sinks)
 	}()
 
 	for {
@@ -346,7 +431,6 @@ func (l *Loop) maybeAutoCompact(ctx context.Context, opts LoopOptions, st *state
 	}
 	return true, nil
 }
-
 
 func (l *Loop) drainPendingControlEvents(st *state, activeRun bool) {
 	for {
@@ -423,6 +507,41 @@ func (l *Loop) handleOutputLine(line string, presenter *presenterState, st *stat
 		// System info suppressed from display
 	}
 	l.renderInputPrompt(st)
+}
+
+func (l *Loop) handleRawProviderChunk(label string, chunk string, presenter *presenterState) {
+	if chunk == "" {
+		return
+	}
+	l.runPresenterEnsureTextSpacing(presenter)
+	for len(chunk) > 0 {
+		if presenter == nil || !presenter.rawLineOpen || presenter.rawLineLabel != label {
+			l.printf("%s: ", label)
+			if presenter != nil {
+				presenter.rawLineOpen = true
+				presenter.rawLineLabel = label
+			}
+		}
+		newline := strings.IndexByte(chunk, '\n')
+		if newline < 0 {
+			l.print(chunk)
+			if presenter != nil {
+				presenter.lastWasText = true
+				presenter.lastWasStructured = false
+				presenter.lastTextEndedWithNewline = false
+			}
+			return
+		}
+		l.print(chunk[:newline+1])
+		if presenter != nil {
+			presenter.rawLineOpen = false
+			presenter.rawLineLabel = ""
+			presenter.lastWasText = true
+			presenter.lastWasStructured = false
+			presenter.lastTextEndedWithNewline = true
+		}
+		chunk = chunk[newline+1:]
+	}
 }
 
 func (l *Loop) runPresenterEnsureTextSpacing(presenter *presenterState) {
@@ -503,6 +622,8 @@ func (l *Loop) waitForBusEvents(ctx context.Context, waitSeconds int, st *state)
 		}
 	}
 
+	l.refreshStatusLine(st)
+
 	remaining := time.Duration(waitSeconds) * time.Second
 	timer := time.NewTimer(remaining)
 	defer timer.Stop()
@@ -532,6 +653,7 @@ func (l *Loop) waitForBusEvents(ctx context.Context, waitSeconds int, st *state)
 			if st.Paused {
 				return l.waitWhilePaused(ctx, st)
 			}
+			l.refreshStatusLine(st)
 		case event := <-l.controlEvents():
 			l.applyControlEvent(event, st, false, nil)
 			if st.StopRequested {
@@ -543,6 +665,7 @@ func (l *Loop) waitForBusEvents(ctx context.Context, waitSeconds int, st *state)
 			if st.Paused {
 				return l.waitWhilePaused(ctx, st)
 			}
+			l.refreshStatusLine(st)
 		case <-timer.C:
 			return nil
 		case <-ctx.Done():
@@ -604,6 +727,7 @@ func (l *Loop) waitWhilePaused(ctx context.Context, st *state) error {
 	}
 
 	for {
+		l.refreshStatusLine(st)
 		if st.StopRequested {
 			return context.Canceled
 		}
@@ -811,6 +935,25 @@ func (l *Loop) applyControlEvent(event ControlEvent, st *state, activeRun bool, 
 		st.Autofeed = false
 		l.announceAutofeedState(false, "off. only comms can wake the agent.")
 		l.renderInputPrompt(st)
+	case ControlProviderInput:
+		st.PendingInput = false
+		st.InputBuffer = ""
+		if !activeRun {
+			l.println("info: no active provider run to send input to.")
+			l.renderInputPrompt(st)
+			return
+		}
+		if st.ProviderInput == nil {
+			l.println("info: provider stdin unavailable.")
+			l.renderInputPrompt(st)
+			return
+		}
+		if err := st.ProviderInput.SendLine(event.Text); err != nil {
+			l.printf("info: failed to send provider input: %v\n", err)
+		} else {
+			l.printf("info: sent provider input: %s\n", truncateText(event.Text, 80))
+		}
+		l.renderInputPrompt(st)
 	case ControlStreamError:
 		if text := strings.TrimSpace(event.Text); text != "" {
 			l.printf("info: event stream error: %s\n", text)
@@ -942,11 +1085,7 @@ func (l *Loop) cancelExitConfirmation(st *state) {
 	}
 	st.ExitConfirmPending = false
 	l.setExitConfirmation(false)
-	if st.Paused {
-		l.setStatusLine(pausedStatusText)
-		return
-	}
-	l.clearStatusLine()
+	l.refreshStatusLine(st)
 }
 
 func (l *Loop) confirmExit(st *state, activeRun bool, cancel context.CancelFunc) {
@@ -1005,6 +1144,50 @@ func (l *Loop) setStatusLine(text string) {
 	if screen := l.screen(); screen != nil {
 		screen.SetStatusLine(ComposeStatusLine(l.StatusIdentity, text))
 	}
+}
+
+func (l *Loop) showStartupGreeting(opts LoopOptions, st *state) {
+	if l.screen() == nil || opts.ContinueMode {
+		return
+	}
+
+	l.println(startupBanner)
+	l.println("The aweb agent runner")
+	if strings.TrimSpace(l.StatusIdentity) != "" {
+		l.println(l.StatusIdentity)
+	}
+	l.println("type /help for controls, or enter a prompt to begin")
+	l.println("info: mail and chat wake the agent while idle.")
+	if opts.Autofeed {
+		l.println("info: work events also wake the agent.")
+	} else {
+		l.println("info: work events stay muted until /autofeed on.")
+	}
+	l.renderInputPrompt(st)
+}
+
+func (l *Loop) refreshStatusLine(st *state) {
+	if st == nil {
+		l.clearStatusLine()
+		return
+	}
+	if st.ExitConfirmPending {
+		l.setStatusLine(exitStatusText)
+		return
+	}
+	if st.Paused {
+		l.setStatusLine(pausedStatusText)
+		return
+	}
+	if status := formatRunStatus(st); strings.TrimSpace(status) != "" {
+		l.setStatusLine(status)
+		return
+	}
+	label := "waiting for work"
+	if st.Run == 0 && !st.RanOnce {
+		label = "waiting for prompt"
+	}
+	l.setStatusLine(formatWaitStatus(label, st))
 }
 
 func (l *Loop) clearStatusLine() {
@@ -1082,9 +1265,13 @@ func SleepWithContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func RealCommandRunner(ctx context.Context, dir string, argv []string, onLine func(string), _ any) error {
+func RealCommandRunner(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
 	if len(argv) == 0 {
 		return fmt.Errorf("empty command")
+	}
+	sinks, _ := stderrSink.(*commandOutputSinks)
+	if sinks != nil && sinks.usePTY {
+		return realPTYCommandRunner(ctx, dir, argv, onLine, sinks)
 	}
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -1095,35 +1282,191 @@ func RealCommandRunner(ctx context.Context, dir string, argv []string, onLine fu
 		return err
 	}
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
 
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		onLine(scanner.Text())
+	if callback := stdinReadyCallback(stderrSink); callback != nil {
+		callback(stdin)
 	}
-	if err := scanner.Err(); err != nil {
+
+	stderrResultCh := make(chan pipeScanResult, 1)
+	go func() {
+		stderrResultCh <- scanCommandPipe(stderr, stderrLineCallback(stderrSink), stderrPartialCallback(stderrSink), true, false, false)
+	}()
+
+	if result := scanCommandPipe(stdout, onLine, stdoutPartialCallback(stderrSink), false, true, false); result.Err != nil {
 		_ = cmd.Wait()
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return err
+		return result.Err
+	}
+
+	stderrResult := <-stderrResultCh
+	if stderrResult.Err != nil {
+		_ = cmd.Wait()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return stderrResult.Err
 	}
 
 	if err := cmd.Wait(); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		stderrText := strings.TrimSpace(stderr.String())
+		stderrText := strings.TrimSpace(stderrResult.Text)
 		if stderrText != "" {
 			return fmt.Errorf("%w: %s", err, stderrText)
 		}
 		return err
 	}
 	return nil
+}
+
+type pipeScanResult struct {
+	Text string
+	Err  error
+}
+
+type commandOutputSinks struct {
+	stdinReady    func(io.WriteCloser)
+	usePTY        bool
+	ptyPartial    func(string)
+	stderrLine    func(string)
+	stderrPartial func(string)
+	stdoutPartial func(string)
+}
+
+func scanCommandPipe(r io.Reader, lineSink func(string), partialSink func(string), collectText bool, suppressJSONPartial bool, allowEIOEOF bool) pipeScanResult {
+	reader := bufio.NewReader(r)
+	var (
+		lineBuf        bytes.Buffer
+		collectedLines []string
+		partialEmitted bool
+	)
+	buf := make([]byte, 1024)
+
+	flushCompleteLine := func() {
+		line := strings.TrimSuffix(lineBuf.String(), "\r")
+		if collectText {
+			collectedLines = append(collectedLines, line)
+		}
+		if partialEmitted {
+			if partialSink != nil {
+				partialSink("\n")
+			}
+		} else if lineSink != nil {
+			lineSink(line)
+		}
+		lineBuf.Reset()
+		partialEmitted = false
+	}
+
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			for len(chunk) > 0 {
+				newline := bytes.IndexByte(chunk, '\n')
+				if newline < 0 {
+					lineBuf.Write(chunk)
+					if partialSink != nil && shouldEmitPartialLine(lineBuf.Bytes(), suppressJSONPartial) {
+						partialSink(string(chunk))
+						partialEmitted = true
+					}
+					break
+				}
+				segment := chunk[:newline]
+				if len(segment) > 0 {
+					lineBuf.Write(segment)
+					if partialEmitted && partialSink != nil {
+						partialSink(string(segment))
+					}
+				}
+				flushCompleteLine()
+				chunk = chunk[newline+1:]
+			}
+		}
+		if err == nil {
+			continue
+		}
+		if allowEIOEOF && errors.Is(err, syscall.EIO) {
+			break
+		}
+		if !errors.Is(err, io.EOF) {
+			return pipeScanResult{Err: err}
+		}
+		break
+	}
+
+	if lineBuf.Len() > 0 {
+		line := strings.TrimSuffix(lineBuf.String(), "\r")
+		if collectText {
+			collectedLines = append(collectedLines, line)
+		}
+		if !partialEmitted && lineSink != nil {
+			lineSink(line)
+		}
+	}
+
+	return pipeScanResult{
+		Text: strings.Join(collectedLines, "\n"),
+	}
+}
+
+func shouldEmitPartialLine(line []byte, suppressJSONPartial bool) bool {
+	if len(line) == 0 {
+		return false
+	}
+	if !suppressJSONPartial {
+		return true
+	}
+	trimmed := bytes.TrimLeft(line, " \t\r")
+	if len(trimmed) == 0 {
+		return true
+	}
+	return trimmed[0] != '{' && trimmed[0] != '['
+}
+
+func stderrLineCallback(stderrSink any) func(string) {
+	sinks, _ := stderrSink.(*commandOutputSinks)
+	if sinks == nil {
+		return nil
+	}
+	return sinks.stderrLine
+}
+
+func stderrPartialCallback(stderrSink any) func(string) {
+	sinks, _ := stderrSink.(*commandOutputSinks)
+	if sinks == nil {
+		return nil
+	}
+	return sinks.stderrPartial
+}
+
+func stdoutPartialCallback(stderrSink any) func(string) {
+	sinks, _ := stderrSink.(*commandOutputSinks)
+	if sinks == nil {
+		return nil
+	}
+	return sinks.stdoutPartial
+}
+
+func stdinReadyCallback(stderrSink any) func(io.WriteCloser) {
+	sinks, _ := stderrSink.(*commandOutputSinks)
+	if sinks == nil {
+		return nil
+	}
+	return sinks.stdinReady
 }
