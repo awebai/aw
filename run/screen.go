@@ -460,14 +460,12 @@ func (s *ScreenController) handleInlineRuneLocked(r rune) {
 		switch r {
 		case 'y', 'Y':
 			s.handleExitConfirmed()
-			return
-		case 'n', 'N':
-			s.exitConfirm = false
-			s.emit(ControlEvent{Type: ControlExitCancel})
 		default:
 			s.exitConfirm = false
 			s.emit(ControlEvent{Type: ControlExitCancel})
 		}
+		s.renderFooterLocked()
+		return
 	}
 
 	value := InputValueFromLine(s.inputLine, s.promptLabel)
@@ -596,14 +594,14 @@ func (s *ScreenController) renderFooterLinesLocked(width int) []string {
 }
 
 func (s *ScreenController) renderFooterLayoutLocked(width int) promptLayout {
-	lines := s.renderCurrentLinesLocked(width)
-	lines = append(lines, s.styles.separator.Render(strings.Repeat("─", max(1, width))))
+	currentLines := s.renderCurrentLinesLocked(width)
+	lines := append(currentLines, s.styles.separator.Render(strings.Repeat("─", max(1, width))))
 	prompt := buildPromptLayout(s.promptLabel, InputValueFromLine(s.inputLine, s.promptLabel), s.inputCursor, width)
 	lines = append(lines, prompt.lines...)
 	lines = append(lines, "")
 	lines = append(lines, s.renderStatusLineLocked(width))
 	prompt.lines = lines
-	prompt.cursorLine += len(s.renderCurrentLinesLocked(width)) + 1
+	prompt.cursorLine += len(currentLines) + 1
 	return prompt
 }
 

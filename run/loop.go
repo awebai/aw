@@ -180,13 +180,6 @@ func (l *Loop) Run(ctx context.Context, opts LoopOptions) error {
 				l.println("info: event stream error")
 			}
 		}
-		l.EventBus.onError = func(ev awid.AgentEvent) {
-			if text := strings.TrimSpace(ev.Text); text != "" {
-				l.printf("info: event stream error: %s\n", text)
-			} else {
-				l.println("info: event stream error")
-			}
-		}
 		l.EventBus.Start(ctx)
 		defer l.EventBus.Stop()
 	}
