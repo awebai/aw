@@ -350,6 +350,9 @@ func dedupeEventKey(evt awid.AgentEvent) string {
 	case evt.SignalID != "":
 		return string(evt.Type) + ":signal:" + evt.SignalID
 	default:
+		// Coordination events intentionally bypass dedupe for now. Their
+		// task_id/status combinations do not yet form a stable replay key,
+		// and dropping them risks hiding a real coordination state change.
 		return ""
 	}
 }
