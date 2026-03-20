@@ -18,6 +18,8 @@ const (
 	AgentEventConnected        AgentEventType = "connected"
 	AgentEventMailMessage      AgentEventType = "mail_message"
 	AgentEventChatMessage      AgentEventType = "chat_message"
+	AgentEventActionableMail   AgentEventType = "actionable_mail"
+	AgentEventActionableChat   AgentEventType = "actionable_chat"
 	AgentEventWorkAvailable    AgentEventType = "work_available"
 	AgentEventClaimUpdate      AgentEventType = "claim_update"
 	AgentEventClaimRemoved     AgentEventType = "claim_removed"
@@ -29,19 +31,45 @@ const (
 
 // AgentEvent is a typed event emitted by GET /v1/events/stream.
 type AgentEvent struct {
-	Type      AgentEventType  `json:"type"`
-	Raw       json.RawMessage `json:"raw,omitempty"`
-	AgentID   string          `json:"agent_id,omitempty"`
-	ProjectID string          `json:"project_id,omitempty"`
-	MessageID string          `json:"message_id,omitempty"`
-	FromAlias string          `json:"from_alias,omitempty"`
-	SessionID string          `json:"session_id,omitempty"`
-	Subject   string          `json:"subject,omitempty"`
-	TaskID    string          `json:"task_id,omitempty"`
-	Title     string          `json:"title,omitempty"`
-	Status    string          `json:"status,omitempty"`
-	SignalID  string          `json:"signal_id,omitempty"`
-	Text      string          `json:"text,omitempty"`
+	Type          AgentEventType  `json:"type"`
+	Raw           json.RawMessage `json:"raw,omitempty"`
+	AgentID       string          `json:"agent_id,omitempty"`
+	ProjectID     string          `json:"project_id,omitempty"`
+	WakeMode      string          `json:"wake_mode,omitempty"`
+	Channel       string          `json:"channel,omitempty"`
+	MessageID     string          `json:"message_id,omitempty"`
+	FromAlias     string          `json:"from_alias,omitempty"`
+	SessionID     string          `json:"session_id,omitempty"`
+	Subject       string          `json:"subject,omitempty"`
+	UnreadCount   int             `json:"unread_count,omitempty"`
+	SenderWaiting bool            `json:"sender_waiting,omitempty"`
+	TaskID        string          `json:"task_id,omitempty"`
+	Title         string          `json:"title,omitempty"`
+	Status        string          `json:"status,omitempty"`
+	SignalID      string          `json:"signal_id,omitempty"`
+	Text          string          `json:"text,omitempty"`
+}
+
+func (e AgentEvent) IsActionableCoordination() bool {
+	switch e.Type {
+	case AgentEventActionableMail, AgentEventActionableChat:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e AgentEvent) IsCommunicationWake() bool {
+	switch e.Type {
+	case AgentEventMailMessage, AgentEventChatMessage, AgentEventActionableMail, AgentEventActionableChat:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e AgentEvent) IsInterruptWake() bool {
+	return e.IsActionableCoordination() && strings.EqualFold(strings.TrimSpace(e.WakeMode), "interrupt")
 }
 
 // AgentEventStream decodes typed events from GET /v1/events/stream.
@@ -173,6 +201,54 @@ func parseAgentEvent(eventName, data string) (AgentEvent, bool, error) {
 			SessionID: payload.SessionID,
 		}, true, nil
 
+	case AgentEventActionableMail:
+		var payload struct {
+			MessageID   string `json:"message_id"`
+			FromAlias   string `json:"from_alias"`
+			Subject     string `json:"subject"`
+			WakeMode    string `json:"wake_mode"`
+			Channel     string `json:"channel"`
+			UnreadCount int    `json:"unread_count"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return AgentEvent{}, false, fmt.Errorf("parse actionable_mail event: %w", err)
+		}
+		return AgentEvent{
+			Type:        AgentEventActionableMail,
+			Raw:         raw,
+			WakeMode:    payload.WakeMode,
+			Channel:     coalesceChannel(payload.Channel, AgentEventActionableMail),
+			MessageID:   payload.MessageID,
+			FromAlias:   payload.FromAlias,
+			Subject:     payload.Subject,
+			UnreadCount: payload.UnreadCount,
+		}, true, nil
+
+	case AgentEventActionableChat:
+		var payload struct {
+			MessageID     string `json:"message_id"`
+			FromAlias     string `json:"from_alias"`
+			SessionID     string `json:"session_id"`
+			WakeMode      string `json:"wake_mode"`
+			Channel       string `json:"channel"`
+			UnreadCount   int    `json:"unread_count"`
+			SenderWaiting bool   `json:"sender_waiting"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return AgentEvent{}, false, fmt.Errorf("parse actionable_chat event: %w", err)
+		}
+		return AgentEvent{
+			Type:          AgentEventActionableChat,
+			Raw:           raw,
+			WakeMode:      payload.WakeMode,
+			Channel:       coalesceChannel(payload.Channel, AgentEventActionableChat),
+			MessageID:     payload.MessageID,
+			FromAlias:     payload.FromAlias,
+			SessionID:     payload.SessionID,
+			UnreadCount:   payload.UnreadCount,
+			SenderWaiting: payload.SenderWaiting,
+		}, true, nil
+
 	case AgentEventWorkAvailable:
 		var payload struct {
 			TaskID string `json:"task_id"`
@@ -244,6 +320,21 @@ func parseAgentEvent(eventName, data string) (AgentEvent, bool, error) {
 
 	default:
 		return AgentEvent{}, false, nil
+	}
+}
+
+func coalesceChannel(value string, eventType AgentEventType) string {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		return value
+	}
+	switch eventType {
+	case AgentEventActionableMail:
+		return "mail"
+	case AgentEventActionableChat:
+		return "chat"
+	default:
+		return ""
 	}
 }
 

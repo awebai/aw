@@ -35,7 +35,7 @@ func TestAwEventsStream(t *testing.T) {
 			fmt.Fprintf(w, "event: connected\ndata: {\"agent_id\":\"a-1\",\"project_id\":\"p-1\"}\n\n")
 			flusher.Flush()
 
-			fmt.Fprintf(w, "event: mail_message\ndata: {\"message_id\":\"m-1\",\"from_alias\":\"alice\",\"subject\":\"hello\"}\n\n")
+			fmt.Fprintf(w, "event: actionable_mail\ndata: {\"message_id\":\"m-1\",\"from_alias\":\"alice\",\"subject\":\"hello\",\"wake_mode\":\"prompt\",\"unread_count\":2}\n\n")
 			flusher.Flush()
 
 			// Close to terminate the stream.
@@ -112,14 +112,17 @@ default_account: acct
 		t.Fatalf("connected agent_id=%v", events[0]["agent_id"])
 	}
 
-	if events[1]["type"] != "mail_message" {
-		t.Fatalf("second event type=%v, want mail_message", events[1]["type"])
+	if events[1]["type"] != "actionable_mail" {
+		t.Fatalf("second event type=%v, want actionable_mail", events[1]["type"])
 	}
 	if events[1]["message_id"] != "m-1" {
 		t.Fatalf("mail message_id=%v", events[1]["message_id"])
 	}
 	if events[1]["from_alias"] != "alice" {
 		t.Fatalf("mail from_alias=%v", events[1]["from_alias"])
+	}
+	if events[1]["wake_mode"] != "prompt" {
+		t.Fatalf("mail wake_mode=%v", events[1]["wake_mode"])
 	}
 }
 
@@ -139,7 +142,7 @@ func TestAwEventsStreamTextOutput(t *testing.T) {
 			fmt.Fprintf(w, "event: connected\ndata: {\"agent_id\":\"a-1\",\"project_id\":\"p-1\"}\n\n")
 			flusher.Flush()
 
-			fmt.Fprintf(w, "event: mail_message\ndata: {\"message_id\":\"m-1\",\"from_alias\":\"alice\",\"subject\":\"hello\"}\n\n")
+			fmt.Fprintf(w, "event: actionable_mail\ndata: {\"message_id\":\"m-1\",\"from_alias\":\"alice\",\"subject\":\"hello\",\"wake_mode\":\"prompt\",\"unread_count\":2}\n\n")
 			flusher.Flush()
 		case r.URL.Path == "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -200,7 +203,7 @@ default_account: acct
 		t.Fatalf("line[0]=%q, want %q", lines[0], wantConnected)
 	}
 
-	wantMail := `[mail_message] from=alice message_id=m-1 subject="hello"`
+	wantMail := `[actionable_mail] from=alice wake_mode=prompt unread=2 message_id=m-1 subject="hello"`
 	if strings.TrimSpace(lines[1]) != wantMail {
 		t.Fatalf("line[1]=%q, want %q", lines[1], wantMail)
 	}

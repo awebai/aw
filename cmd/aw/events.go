@@ -79,6 +79,25 @@ func printEventText(ev *awid.AgentEvent) {
 		fmt.Printf("[mail_message] from=%s message_id=%s subject=%q\n", ev.FromAlias, ev.MessageID, ev.Subject)
 	case awid.AgentEventChatMessage:
 		fmt.Printf("[chat_message] from=%s session_id=%s message_id=%s\n", ev.FromAlias, ev.SessionID, ev.MessageID)
+	case awid.AgentEventActionableMail:
+		fmt.Printf(
+			"[actionable_mail] from=%s wake_mode=%s unread=%d message_id=%s subject=%q\n",
+			ev.FromAlias,
+			eventTextValue(ev.WakeMode),
+			ev.UnreadCount,
+			ev.MessageID,
+			ev.Subject,
+		)
+	case awid.AgentEventActionableChat:
+		fmt.Printf(
+			"[actionable_chat] from=%s wake_mode=%s unread=%d sender_waiting=%t session_id=%s message_id=%s\n",
+			ev.FromAlias,
+			eventTextValue(ev.WakeMode),
+			ev.UnreadCount,
+			ev.SenderWaiting,
+			ev.SessionID,
+			ev.MessageID,
+		)
 	case awid.AgentEventWorkAvailable:
 		fmt.Printf("[work_available] task_id=%s title=%q\n", ev.TaskID, ev.Title)
 	case awid.AgentEventClaimUpdate:
@@ -96,6 +115,13 @@ func printEventText(ev *awid.AgentEvent) {
 	default:
 		fmt.Printf("[%s] %s\n", ev.Type, string(ev.Raw))
 	}
+}
+
+func eventTextValue(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 func init() {

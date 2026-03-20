@@ -54,6 +54,11 @@ func classifyAgentEvent(evt awid.AgentEvent) (EventPriority, bool) {
 	switch evt.Type {
 	case awid.AgentEventControlInterrupt, awid.AgentEventControlPause, awid.AgentEventControlResume:
 		return PriorityInterrupt, true
+	case awid.AgentEventActionableMail, awid.AgentEventActionableChat:
+		if evt.IsInterruptWake() {
+			return PriorityInterrupt, true
+		}
+		return PriorityCommunication, true
 	case awid.AgentEventMailMessage, awid.AgentEventChatMessage:
 		return PriorityCommunication, true
 	case awid.AgentEventWorkAvailable, awid.AgentEventClaimUpdate, awid.AgentEventClaimRemoved:

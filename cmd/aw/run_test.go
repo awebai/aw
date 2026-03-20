@@ -322,6 +322,36 @@ func TestNewRunDispatcherBuildsMailPrompt(t *testing.T) {
 	}
 }
 
+func TestNewRunDispatcherBuildsActionableChatPrompt(t *testing.T) {
+	dispatcher := newRunDispatcher(awrun.Settings{
+		CommsPromptSuffix: "comms suffix",
+	})
+
+	decision, err := dispatcher.Next(context.Background(), false, &awid.AgentEvent{
+		Type:          awid.AgentEventActionableChat,
+		FromAlias:     "henry",
+		SessionID:     "s-9",
+		WakeMode:      "interrupt",
+		SenderWaiting: true,
+		UnreadCount:   2,
+	})
+	if err != nil {
+		t.Fatalf("Next returned error: %v", err)
+	}
+	if decision.Skip {
+		t.Fatalf("expected actionable chat wake to produce a prompt, got %+v", decision)
+	}
+	if !strings.Contains(decision.Prompt, "actionable chat from henry") {
+		t.Fatalf("expected actionable chat details, got %q", decision.Prompt)
+	}
+	if !strings.Contains(decision.Prompt, "explicitly waiting on you") {
+		t.Fatalf("expected waiting guidance, got %q", decision.Prompt)
+	}
+	if !strings.Contains(decision.Prompt, "Unread: 2") {
+		t.Fatalf("expected unread count, got %q", decision.Prompt)
+	}
+}
+
 func TestNewRunDispatcherSkipsWorkWakeWithoutAutofeed(t *testing.T) {
 	dispatcher := newRunDispatcher(awrun.Settings{
 		WorkPromptSuffix: "work suffix",
@@ -487,6 +517,106 @@ func TestRunUsesWakeEventToTriggerSecondCycle(t *testing.T) {
 	}
 	if !builds[1].ContinueSession || builds[1].SessionID != "sess-42" {
 		t.Fatalf("second run should continue session sess-42, got %+v", builds[1])
+	}
+}
+
+func TestRunUsesActionableWakeEventToTriggerSecondCycle(t *testing.T) {
+	initRunCommandVars()
+
+	oldLoad := runLoadUserConfig
+	oldResolveSettings := runResolveSettings
+	oldNewProvider := runNewProvider
+	oldResolveClient := runResolveClientForDir
+	oldNewLoop := runNewLoop
+	oldNewScreen := runNewScreenController
+	t.Cleanup(func() {
+		runLoadUserConfig = oldLoad
+		runResolveSettings = oldResolveSettings
+		runNewProvider = oldNewProvider
+		runResolveClientForDir = oldResolveClient
+		runNewLoop = oldNewLoop
+		runNewScreenController = oldNewScreen
+		initRunCommandVars()
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/events/stream"):
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				t.Fatal("response writer does not support flushing")
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+
+			_, _ = io.WriteString(w, "event: connected\ndata: {\"agent_id\":\"a-1\",\"project_id\":\"p-1\"}\n\n")
+			flusher.Flush()
+			_, _ = io.WriteString(w, "event: actionable_chat\ndata: {\"message_id\":\"m-2\",\"from_alias\":\"henry\",\"session_id\":\"s-9\",\"wake_mode\":\"interrupt\",\"unread_count\":1,\"sender_waiting\":true}\n\n")
+			flusher.Flush()
+			<-r.Context().Done()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := aweb.NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	runLoadUserConfig = func(string) (awrun.UserConfig, error) { return awrun.UserConfig{}, nil }
+	runResolveSettings = func(cfg awrun.UserConfig, overrides awrun.SettingOverrides) (awrun.Settings, error) {
+		return awrun.Settings{
+			BasePrompt:       "persistent mission",
+			WaitSeconds:      30,
+			IdleWaitSeconds:  1,
+			CompactThreshold: awrun.DefaultCompactThreshold,
+		}, nil
+	}
+
+	provider := &recordingRunProvider{}
+	runNewProvider = func(name string) (awrun.Provider, error) {
+		return provider, nil
+	}
+	runResolveClientForDir = func(string) (*aweb.Client, *awconfig.Selection, error) {
+		return client, &awconfig.Selection{NamespaceSlug: "team", AgentAlias: "rose"}, nil
+	}
+	runNewLoop = func(provider awrun.Provider, out io.Writer) *awrun.Loop {
+		loop := awrun.NewLoop(provider, out)
+		loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+			onLine("done")
+			return nil
+		}
+		return loop
+	}
+	runNewScreenController = func(in io.Reader, out io.Writer) *awrun.ScreenController { return nil }
+
+	cmd := &cobraCommandClone{Command: *runCmd}
+	cmd.ResetFlagsForTest()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd.Command.SetContext(ctx)
+	runMaxRuns = 2
+	var stdout, stderr bytes.Buffer
+	setRunCommandIO(&cmd.Command, strings.NewReader(""), &stdout, &stderr)
+
+	if err := runRun(&cmd.Command, nil); err != nil {
+		t.Fatalf("runRun returned error: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
+
+	prompts, builds := provider.snapshot()
+	if len(prompts) != 2 {
+		t.Fatalf("expected 2 provider runs, got %d prompts: %#v", len(prompts), prompts)
+	}
+	if !strings.Contains(prompts[1], "actionable chat from henry") {
+		t.Fatalf("expected actionable chat wake reason, got %q", prompts[1])
+	}
+	if !strings.Contains(prompts[1], "explicitly waiting on you") {
+		t.Fatalf("expected waiting guidance, got %q", prompts[1])
+	}
+	if len(builds) != 2 || !builds[1].ContinueSession || builds[1].SessionID != "sess-42" {
+		t.Fatalf("expected second run to continue session sess-42, got %+v", builds)
 	}
 }
 

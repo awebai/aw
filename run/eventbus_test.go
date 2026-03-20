@@ -121,6 +121,30 @@ func TestClassifyCommunicationEvents(t *testing.T) {
 	}
 }
 
+func TestClassifyActionableCommunicationEvents(t *testing.T) {
+	for _, typ := range []awid.AgentEventType{awid.AgentEventActionableMail, awid.AgentEventActionableChat} {
+		pri, ok := classifyAgentEvent(awid.AgentEvent{Type: typ, WakeMode: "prompt"})
+		if !ok {
+			t.Fatalf("%s should be queued", typ)
+		}
+		if pri != PriorityCommunication {
+			t.Fatalf("%s should be communication priority, got %d", typ, pri)
+		}
+	}
+}
+
+func TestClassifyInterruptWakeEvents(t *testing.T) {
+	for _, typ := range []awid.AgentEventType{awid.AgentEventActionableMail, awid.AgentEventActionableChat} {
+		pri, ok := classifyAgentEvent(awid.AgentEvent{Type: typ, WakeMode: "interrupt"})
+		if !ok {
+			t.Fatalf("%s should be queued", typ)
+		}
+		if pri != PriorityInterrupt {
+			t.Fatalf("%s interrupt wake should be interrupt priority, got %d", typ, pri)
+		}
+	}
+}
+
 func TestClassifyCoordinationEvents(t *testing.T) {
 	for _, typ := range []awid.AgentEventType{awid.AgentEventWorkAvailable, awid.AgentEventClaimUpdate, awid.AgentEventClaimRemoved} {
 		pri, ok := classifyAgentEvent(awid.AgentEvent{Type: typ})
@@ -236,6 +260,42 @@ func TestEventBusDeliversInterruptsToChannel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for interrupt")
+	}
+
+	cancel()
+	bus.Stop()
+}
+
+func TestEventBusDeliversInterruptWakeToChannel(t *testing.T) {
+	source := newFakeEventSource(
+		awid.AgentEvent{Type: awid.AgentEventActionableChat, WakeMode: "interrupt", FromAlias: "mia"},
+	)
+	called := false
+	bus := NewEventBus(EventBusConfig{
+		Stream: func(ctx context.Context, deadline time.Time) (awid.EventSource, error) {
+			if called {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			called = true
+			return source, nil
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bus.Start(ctx)
+
+	select {
+	case evt := <-bus.Interrupts():
+		if evt.Event.Type != awid.AgentEventActionableChat {
+			t.Fatalf("expected actionable_chat, got %s", evt.Event.Type)
+		}
+		if evt.Priority != PriorityInterrupt {
+			t.Fatalf("expected interrupt priority, got %d", evt.Priority)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for interrupt wake")
 	}
 
 	cancel()

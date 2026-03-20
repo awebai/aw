@@ -40,6 +40,7 @@ type state struct {
 	SessionID          string
 	RanOnce            bool
 	RunInterrupted     bool
+	WakeInterrupted    bool
 	PauseAfterRun      bool
 	PauseNoticeShown   bool
 	StopRequested      bool
@@ -386,6 +387,11 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 			st.RunLabel = ""
 			l.drainPendingControlEvents(st, true)
 			st.RanOnce = true
+			if st.WakeInterrupted {
+				st.WakeInterrupted = false
+				st.RunInterrupted = false
+				return nil
+			}
 			if st.RunInterrupted {
 				st.Paused = true
 				st.PauseAfterRun = true
@@ -659,6 +665,9 @@ func (l *Loop) waitForBusEvents(ctx context.Context, waitSeconds int, st *state)
 			if st.StopRequested {
 				return context.Canceled
 			}
+			if busEvt.Event.IsInterruptWake() && st.LastWakeEvent != nil && !st.Paused {
+				return nil
+			}
 			// During idle wait there is no active run, so PauseAfterRun
 			// should take effect immediately.
 			if st.PauseAfterRun && !st.Paused {
@@ -731,6 +740,36 @@ func (l *Loop) applyBusInterrupt(evt BusEvent, st *state, cancel context.CancelF
 		st.PauseNoticeShown = false
 		st.PauseAfterRun = false
 		l.renderInputPrompt(st)
+	default:
+		if evt.Event.IsInterruptWake() {
+			st.LastWakeEvent = &evt.Event
+			st.PendingInput = false
+			st.InputBuffer = ""
+			if cancel != nil {
+				st.WakeInterrupted = true
+				l.printf("\nurgent wake: %s. stopping current run to respond.\n", describeUrgentWake(evt.Event))
+				cancel()
+			} else if !st.Paused {
+				l.printf("\nurgent wake: %s.\n", describeUrgentWake(evt.Event))
+			}
+		}
+	}
+}
+
+func describeUrgentWake(evt awid.AgentEvent) string {
+	switch evt.Type {
+	case awid.AgentEventActionableChat, awid.AgentEventChatMessage:
+		if alias := strings.TrimSpace(evt.FromAlias); alias != "" {
+			return fmt.Sprintf("chat requires attention from %s", alias)
+		}
+		return "chat requires attention"
+	case awid.AgentEventActionableMail, awid.AgentEventMailMessage:
+		if alias := strings.TrimSpace(evt.FromAlias); alias != "" {
+			return fmt.Sprintf("mail requires attention from %s", alias)
+		}
+		return "mail requires attention"
+	default:
+		return "coordination requires attention"
 	}
 }
 
