@@ -74,6 +74,7 @@ type initResult struct {
 	AttachResult    *contextAttachResult
 	ExportBaseURL   string
 	ExportNamespace string
+	JoinedViaInvite bool
 }
 
 func init() {
@@ -109,7 +110,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if jsonFlag {
 		printJSON(result.Response)
 	} else {
-		printInitSummary(result.Response, result.AccountName, result.ServerName, result.AttachResult)
+		printInitSummary(result.Response, result.AccountName, result.ServerName, result.AttachResult, result.JoinedViaInvite)
 	}
 	if initPrintExports {
 		fmt.Println("")
@@ -139,12 +140,6 @@ func collectInitOptions() (initOptions, error) {
 	if targetNamespace != "" && aliasFromFlag == "" && aliasFromEnv == "" {
 		return initOptions{}, usageError("--target-namespace requires --alias (server cannot auto-assign in a specific namespace)")
 	}
-	if inviteToken != "" {
-		if targetNamespace != "" || strings.TrimSpace(initNamespaceSlug) != "" || strings.TrimSpace(initNamespaceName) != "" || initCloudMode || strings.TrimSpace(initCloudToken) != "" {
-			return initOptions{}, usageError("--invite cannot be combined with namespace/bootstrap flags")
-		}
-	}
-
 	baseURL, serverName, global, err := resolveBaseURLForInit(initServerURL, serverFlag)
 	if err != nil {
 		return initOptions{}, err
@@ -180,6 +175,11 @@ func collectInitOptions() (initOptions, error) {
 	}
 	if nsSlug == "" {
 		nsSlug = strings.TrimSpace(os.Getenv("AWEB_PROJECT"))
+	}
+	if inviteToken != "" {
+		if targetNamespace != "" || nsSlug != "" || strings.TrimSpace(initNamespaceName) != "" || initCloudMode || strings.TrimSpace(initCloudToken) != "" {
+			return initOptions{}, usageError("--invite cannot be combined with namespace/bootstrap flags")
+		}
 	}
 
 	if nsSlug == "" && !cloudMode && inviteToken == "" {
@@ -461,14 +461,26 @@ func executeInit(opts initOptions) (*initResult, error) {
 		AttachResult:    attachResult,
 		ExportBaseURL:   exportBaseURL,
 		ExportNamespace: namespaceSlug,
+		JoinedViaInvite: opts.InviteToken != "",
 	}, nil
 }
 
-func printInitSummary(resp *awid.InitResponse, accountName, serverName string, attachResult *contextAttachResult) {
+func printInitSummary(resp *awid.InitResponse, accountName, serverName string, attachResult *contextAttachResult, joinedViaInvite bool) {
 	if resp == nil {
 		return
 	}
-	fmt.Printf("Initialized agent %s\n", resp.Alias)
+	if joinedViaInvite {
+		namespace := strings.TrimSpace(resp.Namespace)
+		if namespace == "" {
+			namespace = strings.TrimSpace(resp.NamespaceSlug)
+		}
+		if namespace == "" {
+			namespace = strings.TrimSpace(resp.ProjectSlug)
+		}
+		fmt.Printf("Joined %s as %s\n", namespace, resp.Alias)
+	} else {
+		fmt.Printf("Initialized agent %s\n", resp.Alias)
+	}
 	if strings.TrimSpace(resp.NamespaceSlug) != "" {
 		fmt.Printf("Namespace:  %s\n", strings.TrimSpace(resp.NamespaceSlug))
 	}
@@ -660,9 +672,14 @@ func acceptInviteViaCloud(
 	resp, err := client.InviteAccept(ctx, req)
 	if err != nil {
 		if code, ok := awid.HTTPStatusCode(err); ok && code == 422 && strings.TrimSpace(alias) == "" {
-			return nil, usageError("alias is required (use --alias)")
+			if body, ok := awid.HTTPErrorBody(err); ok && strings.Contains(strings.ToLower(body), "alias") {
+				return nil, usageError("alias is required (use --alias)")
+			}
 		}
 		return nil, err
+	}
+	if strings.TrimSpace(resp.APIKey) == "" {
+		return nil, fmt.Errorf("invite accept failed: missing api_key in response")
 	}
 	return &awid.InitResponse{
 		Status:        "ok",

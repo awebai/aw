@@ -15,11 +15,15 @@ import (
 func TestAwInviteCreateOmitsDefaultServerFlag(t *testing.T) {
 	t.Parallel()
 
+	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/invites/cli":
 			if r.Method != http.MethodPost {
 				t.Fatalf("method=%s", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatal(err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"invite_id":    "inv-1",
@@ -82,6 +86,9 @@ default_account: acct
 	}
 	if strings.Contains(text, "--server ") {
 		t.Fatalf("default hosted server should be omitted:\n%s", text)
+	}
+	if gotBody["access_mode"] != "open" {
+		t.Fatalf("access_mode=%v", gotBody["access_mode"])
 	}
 }
 
@@ -224,7 +231,7 @@ default_account: acct
 	if err != nil {
 		t.Fatalf("invite list failed: %v\n%s", err, string(listOut))
 	}
-	if !strings.Contains(string(listOut), "7f3k9x2m") || !strings.Contains(string(listOut), "reviewer") {
+	if !strings.Contains(string(listOut), "ALIAS HINT") || !strings.Contains(string(listOut), "7f3k9x2m") || !strings.Contains(string(listOut), "reviewer") {
 		t.Fatalf("unexpected list output:\n%s", string(listOut))
 	}
 
@@ -238,7 +245,122 @@ default_account: acct
 	if gotDeletePath != "/api/v1/invites/cli/inv-1" {
 		t.Fatalf("delete path=%q", gotDeletePath)
 	}
-	if !strings.Contains(string(revokeOut), "Invite 7f3k9x revoked") {
+	if !strings.Contains(string(revokeOut), "Invite 7f3k9x2m revoked") {
 		t.Fatalf("unexpected revoke output:\n%s", string(revokeOut))
+	}
+}
+
+func TestAwInviteCreateMapsAccessFlag(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/invites/cli":
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"invite_id":    "inv-1",
+				"token":        "aw_inv_7f3k9x2m",
+				"token_prefix": "7f3k9x2m",
+				"access_mode":  "contacts_only",
+				"max_uses":     1,
+				"expires_at":   "2026-03-21T18:00:00Z",
+				"namespace":    "myteam.aweb.ai",
+				"server_url":   "https://app.aweb.ai/api",
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "invite", "--access", "contacts")
+	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+	if gotBody["access_mode"] != "contacts_only" {
+		t.Fatalf("access_mode=%v", gotBody["access_mode"])
+	}
+	_ = out
+}
+
+func TestAwInviteRejectsZeroUses(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: https://app.aweb.ai
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "invite", "--uses", "0")
+	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure, got success:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "--uses must be >= 1") {
+		t.Fatalf("unexpected output:\n%s", string(out))
 	}
 }

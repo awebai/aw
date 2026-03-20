@@ -37,6 +37,9 @@ var inviteCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if inviteUses < 1 {
+			return usageError("--uses must be >= 1")
+		}
 		expiresInSeconds, err := parseInviteExpirySeconds(inviteExpires)
 		if err != nil {
 			return err
@@ -118,7 +121,7 @@ var inviteRevokeCmd = &cobra.Command{
 		}
 		printOutput(inviteRevokeOutput{
 			Status:      "revoked",
-			TokenPrefix: prefix,
+			TokenPrefix: match.TokenPrefix,
 		}, formatInviteRevoke)
 		return nil
 	},
@@ -215,7 +218,7 @@ func formatInviteList(v any) string {
 		return "No invites.\n"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%-10s %-16s %-6s %-12s %s\n", "PREFIX", "ALIAS", "USES", "EXPIRES", "CREATED")
+	fmt.Fprintf(&b, "%-10s %-16s %-6s %-12s %s\n", "PREFIX", "ALIAS HINT", "USES", "EXPIRES", "CREATED")
 	for _, invite := range resp.Invites {
 		alias := strings.TrimSpace(invite.AliasHint)
 		if alias == "" {
