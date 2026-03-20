@@ -1293,6 +1293,53 @@ func TestLoopAllowsInteractiveStartWithoutPrompt(t *testing.T) {
 	}
 }
 
+func TestLoopAllowsInteractiveStartWithoutPromptWhenDispatcherSkipsIdle(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(fakeProvider{event: &Event{Type: EventDone}}, &out)
+	controller := newFakeInputController()
+	loop.Control = controller
+	loop.Dispatch = &recordingDispatcher{
+		decision: DispatchDecision{Skip: true},
+	}
+	ran := make(chan []string, 1)
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		ran <- append([]string(nil), argv...)
+		return nil
+	}
+	loop.Sleep = func(ctx context.Context, d time.Duration) error {
+		return SleepWithContext(ctx, 10*time.Millisecond)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- loop.Run(context.Background(), LoopOptions{
+			WaitSeconds: 1,
+			MaxRuns:     1,
+		})
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	controller.events <- ControlEvent{Type: ControlPrompt, Text: "hello from user"}
+
+	select {
+	case argv := <-ran:
+		if len(argv) < 2 || argv[1] != "hello from user" {
+			t.Fatalf("unexpected command argv %q", argv)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for manual prompt to start first run with dispatcher")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for loop to finish after first manual run with dispatcher")
+	}
+}
+
 func TestRunOnceSurfacesProviderStderr(t *testing.T) {
 	var out bytes.Buffer
 	loop := NewLoop(fakeProvider{

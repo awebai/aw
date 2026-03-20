@@ -279,6 +279,9 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 			l.println("info: waiting for dispatch recovery before starting a run.")
 			return DispatchDecision{WaitSeconds: opts.IdleWaitSeconds, Skip: true}, nil
 		}
+		if decision.Skip && decision.WaitSeconds <= 0 {
+			decision.WaitSeconds = opts.WaitSeconds
+		}
 		st.LastWakeEvent = nil
 		return decision, nil
 	}
