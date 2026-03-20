@@ -1024,7 +1024,7 @@ func TestApplyBusInterruptResumeClearsPause(t *testing.T) {
 	}
 }
 
-func TestApplyBusInterruptUrgentWakeDuringRunCancelsWithoutPausing(t *testing.T) {
+func TestApplyBusInterruptIgnoresCommunicationWakeEvents(t *testing.T) {
 	var out bytes.Buffer
 	loop := NewLoop(ClaudeProvider{}, &out)
 	st := &state{}
@@ -1038,31 +1038,22 @@ func TestApplyBusInterruptUrgentWakeDuringRunCancelsWithoutPausing(t *testing.T)
 			SenderWaiting: true,
 			SessionID:     "s-1",
 		},
-		Priority: PriorityInterrupt,
+		Priority: PriorityCommunication,
 	}, st, func() {
 		cancelled = true
 	})
 
 	if wakeNow {
-		t.Fatal("urgent wake during active run should cancel, not return an immediate idle wake")
+		t.Fatal("communication wake should not request an immediate idle wake")
 	}
-	if !cancelled {
-		t.Fatal("expected urgent wake to cancel the active run")
+	if cancelled {
+		t.Fatal("communication wake should not cancel the active run")
 	}
-	if st.LastWakeEvent == nil || st.LastWakeEvent.Type != awid.AgentEventActionableChat {
-		t.Fatalf("expected actionable chat to become last wake event, got %#v", st.LastWakeEvent)
+	if st.LastWakeEvent != nil {
+		t.Fatalf("communication wake should not be handled by applyBusInterrupt, got %#v", st.LastWakeEvent)
 	}
-	if !st.WakeInterrupted {
-		t.Fatal("expected WakeInterrupted to be set")
-	}
-	if st.RunInterrupted {
-		t.Fatal("urgent wake should not be treated as direct run interruption")
-	}
-	if st.Paused {
-		t.Fatal("urgent wake should not pause the loop")
-	}
-	if !strings.Contains(out.String(), "urgent wake") {
-		t.Fatalf("expected urgent wake notice, got %q", out.String())
+	if out.Len() != 0 {
+		t.Fatalf("expected no interrupt output, got %q", out.String())
 	}
 }
 
@@ -1111,7 +1102,7 @@ func TestWaitForBusEventsDrainsQueueAfterReady(t *testing.T) {
 	}
 }
 
-func TestWaitForBusEventsReturnsOnInterruptWake(t *testing.T) {
+func TestWaitForBusEventsReturnsOnQueuedActionableChatWake(t *testing.T) {
 	bus := newTestEventBus()
 	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
 	loop.EventBus = bus
@@ -1126,7 +1117,7 @@ func TestWaitForBusEventsReturnsOnInterruptWake(t *testing.T) {
 	}()
 
 	time.Sleep(50 * time.Millisecond)
-	bus.interrupts <- BusEvent{
+	bus.queue.Push(BusEvent{
 		Event: awid.AgentEvent{
 			Type:          awid.AgentEventActionableChat,
 			FromAlias:     "henry",
@@ -1134,8 +1125,8 @@ func TestWaitForBusEventsReturnsOnInterruptWake(t *testing.T) {
 			SenderWaiting: true,
 			SessionID:     "s-9",
 		},
-		Priority: PriorityInterrupt,
-	}
+		Priority: PriorityCommunication,
+	})
 
 	select {
 	case err := <-done:
@@ -1150,7 +1141,7 @@ func TestWaitForBusEventsReturnsOnInterruptWake(t *testing.T) {
 		t.Fatalf("expected actionable chat wake, got %#v", st.LastWakeEvent)
 	}
 	if st.Paused {
-		t.Fatal("urgent wake while idle should not pause the loop")
+		t.Fatal("communication wake while idle should not pause the loop")
 	}
 }
 

@@ -40,7 +40,6 @@ type state struct {
 	SessionID          string
 	RanOnce            bool
 	RunInterrupted     bool
-	WakeInterrupted    bool
 	PauseAfterRun      bool
 	PauseNoticeShown   bool
 	StopRequested      bool
@@ -387,11 +386,6 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 			st.RunLabel = ""
 			l.drainPendingControlEvents(st, true)
 			st.RanOnce = true
-			if st.WakeInterrupted {
-				st.WakeInterrupted = false
-				st.RunInterrupted = false
-				return nil
-			}
 			if st.RunInterrupted {
 				st.Paused = true
 				st.PauseAfterRun = true
@@ -732,8 +726,8 @@ func (l *Loop) processWakeEvent(ctx context.Context, evt BusEvent, st *state) er
 // applyBusInterrupt handles an interrupt-priority event from the EventBus.
 // Called from runOnce (active run), waitForBusEvents (idle), and
 // waitWhilePaused. cancel is non-nil only during an active run.
-// Returns true when an urgent wake should trigger an immediate next cycle
-// from idle wait without entering paused handling.
+// Returns true when a non-pausing control event should trigger an immediate next
+// cycle from idle wait without entering paused handling.
 func (l *Loop) applyBusInterrupt(evt BusEvent, st *state, cancel context.CancelFunc) bool {
 	switch evt.Event.Type {
 	case awid.AgentEventControlInterrupt:
@@ -765,39 +759,7 @@ func (l *Loop) applyBusInterrupt(evt BusEvent, st *state, cancel context.CancelF
 		l.renderInputPrompt(st)
 		return false
 	default:
-		if evt.Event.IsInterruptWake() {
-			st.LastWakeEvent = &evt.Event
-			st.PendingInput = false
-			st.InputBuffer = ""
-			if cancel != nil {
-				st.WakeInterrupted = true
-				l.printf("\nurgent wake: %s. stopping current run to respond.\n", describeUrgentWake(evt.Event))
-				cancel()
-				return false
-			}
-			if !st.Paused {
-				l.printf("\nurgent wake: %s.\n", describeUrgentWake(evt.Event))
-				return true
-			}
-		}
 		return false
-	}
-}
-
-func describeUrgentWake(evt awid.AgentEvent) string {
-	switch evt.Type {
-	case awid.AgentEventActionableChat:
-		if alias := strings.TrimSpace(evt.FromAlias); alias != "" {
-			return fmt.Sprintf("chat requires attention from %s", alias)
-		}
-		return "chat requires attention"
-	case awid.AgentEventActionableMail:
-		if alias := strings.TrimSpace(evt.FromAlias); alias != "" {
-			return fmt.Sprintf("mail requires attention from %s", alias)
-		}
-		return "mail requires attention"
-	default:
-		return "coordination requires attention"
 	}
 }
 
