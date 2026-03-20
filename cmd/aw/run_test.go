@@ -10,6 +10,7 @@ import (
 
 	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 	awrun "github.com/awebai/aw/run"
 	"github.com/spf13/cobra"
 )
@@ -167,6 +168,9 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 	if capturedLoop.StatusIdentity != "claude@team:rose" {
 		t.Fatalf("status identity=%q", capturedLoop.StatusIdentity)
 	}
+	if capturedLoop.Dispatch == nil {
+		t.Fatal("expected run loop to have a dispatcher")
+	}
 	if capturedOpts.InitialPrompt != "finish the migration" {
 		t.Fatalf("initial prompt=%q", capturedOpts.InitialPrompt)
 	}
@@ -286,6 +290,49 @@ func TestRunAllowsEmptyPromptWhenInteractiveScreenIsAvailable(t *testing.T) {
 	}
 	if !capturedOpts.ProviderPTY {
 		t.Fatalf("expected interactive run to keep ProviderPTY enabled, got %+v", capturedOpts)
+	}
+}
+
+func TestNewRunDispatcherBuildsMailPrompt(t *testing.T) {
+	dispatcher := newRunDispatcher(awrun.Settings{
+		WorkPromptSuffix:  "work suffix",
+		CommsPromptSuffix: "comms suffix",
+	})
+
+	decision, err := dispatcher.Next(context.Background(), false, &awid.AgentEvent{
+		Type:      awid.AgentEventMailMessage,
+		FromAlias: "mia",
+		Subject:   "API review",
+	})
+	if err != nil {
+		t.Fatalf("Next returned error: %v", err)
+	}
+	if decision.Skip {
+		t.Fatalf("expected mail wake to produce a prompt, got %+v", decision)
+	}
+	if !strings.Contains(decision.Prompt, "new mail from mia") {
+		t.Fatalf("expected mail wake details, got %q", decision.Prompt)
+	}
+	if !strings.Contains(decision.Prompt, "comms suffix") {
+		t.Fatalf("expected comms suffix in prompt, got %q", decision.Prompt)
+	}
+}
+
+func TestNewRunDispatcherSkipsWorkWakeWithoutAutofeed(t *testing.T) {
+	dispatcher := newRunDispatcher(awrun.Settings{
+		WorkPromptSuffix: "work suffix",
+	})
+
+	decision, err := dispatcher.Next(context.Background(), false, &awid.AgentEvent{
+		Type:   awid.AgentEventWorkAvailable,
+		TaskID: "aw-i4h",
+		Title:  "Surface wake stream mode transitions to the user",
+	})
+	if err != nil {
+		t.Fatalf("Next returned error: %v", err)
+	}
+	if !decision.Skip {
+		t.Fatalf("expected work wake without autofeed to skip, got %+v", decision)
 	}
 }
 

@@ -99,6 +99,21 @@ func (d *fakeDispatcher) Next(_ context.Context, _ bool, _ *awid.AgentEvent) (Di
 	return decision, nil
 }
 
+type recordingDispatcher struct {
+	decision DispatchDecision
+	events   []*awid.AgentEvent
+}
+
+func (d *recordingDispatcher) Next(_ context.Context, _ bool, wakeEvent *awid.AgentEvent) (DispatchDecision, error) {
+	if wakeEvent == nil {
+		d.events = append(d.events, nil)
+		return d.decision, nil
+	}
+	copy := *wakeEvent
+	d.events = append(d.events, &copy)
+	return d.decision, nil
+}
+
 type fakeProvider struct {
 	event *Event
 }
@@ -704,6 +719,48 @@ func TestLoopEventBusWakesOnMailMessage(t *testing.T) {
 	}
 }
 
+func TestNextPromptConsumesWakeEventAfterDispatch(t *testing.T) {
+	dispatcher := &recordingDispatcher{
+		decision: DispatchDecision{Prompt: "handle wake"},
+	}
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.Dispatch = dispatcher
+
+	st := &state{
+		Run:           1,
+		LastWakeEvent: &awid.AgentEvent{Type: awid.AgentEventMailMessage, FromAlias: "alice"},
+	}
+	opts := LoopOptions{WaitSeconds: 5, IdleWaitSeconds: 9}
+
+	first, err := loop.nextPrompt(context.Background(), opts, st)
+	if err != nil {
+		t.Fatalf("nextPrompt returned error: %v", err)
+	}
+	if first.Prompt != "handle wake" {
+		t.Fatalf("unexpected first decision: %+v", first)
+	}
+	if st.LastWakeEvent != nil {
+		t.Fatalf("expected wake event to be consumed, got %+v", st.LastWakeEvent)
+	}
+
+	second, err := loop.nextPrompt(context.Background(), opts, st)
+	if err != nil {
+		t.Fatalf("second nextPrompt returned error: %v", err)
+	}
+	if len(dispatcher.events) != 2 {
+		t.Fatalf("expected two dispatch calls, got %d", len(dispatcher.events))
+	}
+	if dispatcher.events[0] == nil || dispatcher.events[0].FromAlias != "alice" {
+		t.Fatalf("expected first dispatch to receive wake event, got %+v", dispatcher.events[0])
+	}
+	if dispatcher.events[1] != nil {
+		t.Fatalf("expected second dispatch to receive nil wake event, got %+v", dispatcher.events[1])
+	}
+	if second.Prompt != "handle wake" {
+		t.Fatalf("unexpected second decision: %+v", second)
+	}
+}
+
 func TestLoopShowsStartupStatusBeforeFirstPromptWhileEventBusRuns(t *testing.T) {
 	ui := newRecordingUI()
 	bus := newTestEventBus()
@@ -1254,6 +1311,32 @@ func TestRunOnceSurfacesProviderStdoutPartial(t *testing.T) {
 
 	if got := out.String(); !strings.Contains(got, "provider stdout: Allow? [y/N]") {
 		t.Fatalf("expected streamed stdout partial in output, got %q", got)
+	}
+}
+
+func TestHandleRawProviderChunkPTYStartsOnFreshLineWithoutLabel(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(fakeProvider{
+		event: &Event{Type: EventText, Text: "Juan"},
+	}, &out)
+	presenter := &presenterState{}
+	st := &state{}
+
+	loop.handleOutputLine("ignored", presenter, st, nil)
+	loop.handleRawProviderChunk("", "Allow? [y/N]", presenter)
+
+	got := out.String()
+	if strings.Contains(got, "provider tty:") {
+		t.Fatalf("expected PTY output to omit provider tty label, got %q", got)
+	}
+	if !strings.Contains(got, "Allow? [y/N]") {
+		t.Fatalf("expected PTY partial output, got %q", got)
+	}
+	if strings.Contains(got, "JuanAllow? [y/N]") {
+		t.Fatalf("expected PTY chunk to start on a fresh line, got %q", got)
+	}
+	if !strings.Contains(got, "Juan\nAllow? [y/N]") {
+		t.Fatalf("expected PTY chunk to be separated from prior text, got %q", got)
 	}
 }
 

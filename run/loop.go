@@ -106,7 +106,7 @@ const (
  / _` + "`" + ` \ \ /\ / / (_)  / _` + "`" + ` \ \ /\ / / _ \ '_ \ / _` + "`" + ` | |
 | (_| |\ V  V /   _  | (_| |\ V  V /  __/ |_) | (_| | |
  \__,_| \_/\_/   (_)  \__,_| \_/\_/ \___|_.__(_)__,_|_|`
-	helpText         = `available commands:
+	helpText = `available commands:
   /wait           pause after the current run
   /resume         resume from a pause
   /stop           stop the current run and pause
@@ -269,12 +269,14 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 		return DispatchDecision{WaitSeconds: opts.WaitSeconds, Skip: true}, nil
 	}
 	if l.Dispatch != nil {
-		decision, err := l.Dispatch.Next(ctx, st.Autofeed, st.LastWakeEvent)
+		wakeEvent := st.LastWakeEvent
+		decision, err := l.Dispatch.Next(ctx, st.Autofeed, wakeEvent)
 		if err != nil {
 			l.printf("info: dispatch failed: %v\n", err)
 			l.println("info: waiting for dispatch recovery before starting a run.")
 			return DispatchDecision{WaitSeconds: opts.IdleWaitSeconds, Skip: true}, nil
 		}
+		st.LastWakeEvent = nil
 		return decision, nil
 	}
 	// Without an external dispatcher, run one cycle then rely on wake/control
@@ -352,7 +354,7 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 	}
 	if opts.ProviderPTY {
 		sinks.ptyPartial = func(chunk string) {
-			l.handleRawProviderChunk("provider tty", chunk, presenter)
+			l.handleRawProviderChunk("", chunk, presenter)
 		}
 	} else {
 		sinks.stderrLine = func(line string) {
@@ -506,10 +508,12 @@ func (l *Loop) handleRawProviderChunk(label string, chunk string, presenter *pre
 	if chunk == "" {
 		return
 	}
-	l.runPresenterEnsureTextSpacing(presenter)
+	l.runPresenterEnsureRawSpacing(presenter)
 	for len(chunk) > 0 {
 		if presenter == nil || !presenter.rawLineOpen || presenter.rawLineLabel != label {
-			l.printf("%s: ", label)
+			if label != "" {
+				l.printf("%s: ", label)
+			}
 			if presenter != nil {
 				presenter.rawLineOpen = true
 				presenter.rawLineLabel = label
@@ -541,6 +545,17 @@ func (l *Loop) runPresenterEnsureTextSpacing(presenter *presenterState) {
 	if presenter != nil && presenter.lastWasStructured {
 		l.print("\n")
 		presenter.lastWasStructured = false
+	}
+}
+
+func (l *Loop) runPresenterEnsureRawSpacing(presenter *presenterState) {
+	l.runPresenterEnsureTextSpacing(presenter)
+	if presenter == nil || presenter.rawLineOpen {
+		return
+	}
+	if presenter.lastWasText && !presenter.lastTextEndedWithNewline {
+		l.print("\n")
+		presenter.lastTextEndedWithNewline = true
 	}
 }
 

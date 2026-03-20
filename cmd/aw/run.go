@@ -145,6 +145,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	loop := runNewLoop(provider, cmd.OutOrStdout())
 	loop.EventBus = runNewEventBus(client)
 	loop.Control = screen
+	loop.Dispatch = newRunDispatcher(settings)
 	loop.StatusIdentity = statusIdentity
 
 	opts := awrun.LoopOptions{
