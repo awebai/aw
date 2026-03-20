@@ -151,6 +151,7 @@ type EventBus struct {
 
 	interrupts chan BusEvent
 	queue      *PriorityQueue
+	deduper    *recentEventDeduper
 
 	connState     atomic.Int32
 	onStateChange func(ConnectionState)
@@ -177,6 +178,7 @@ func NewEventBus(cfg EventBusConfig) *EventBus {
 		now:           nowFn,
 		interrupts:    make(chan BusEvent, 8),
 		queue:         NewPriorityQueue(),
+		deduper:       newRecentEventDeduper(256),
 		onStateChange: cfg.OnStateChange,
 		done:          make(chan struct{}),
 	}
@@ -286,6 +288,9 @@ func (b *EventBus) consumeStream(ctx context.Context, source awid.EventSource) {
 		if !shouldQueue {
 			continue
 		}
+		if b.deduper != nil && b.deduper.Seen(*ev) {
+			continue
+		}
 
 		busEvt := BusEvent{Event: *ev, Priority: priority}
 		if priority == PriorityInterrupt {
@@ -297,5 +302,54 @@ func (b *EventBus) consumeStream(ctx context.Context, source awid.EventSource) {
 		} else {
 			b.queue.Push(busEvt)
 		}
+	}
+}
+
+type recentEventDeduper struct {
+	limit int
+	order []string
+	seen  map[string]struct{}
+}
+
+func newRecentEventDeduper(limit int) *recentEventDeduper {
+	if limit <= 0 {
+		limit = 1
+	}
+	return &recentEventDeduper{
+		limit: limit,
+		order: make([]string, 0, limit),
+		seen:  make(map[string]struct{}, limit),
+	}
+}
+
+func (d *recentEventDeduper) Seen(evt awid.AgentEvent) bool {
+	if d == nil {
+		return false
+	}
+	key := dedupeEventKey(evt)
+	if key == "" {
+		return false
+	}
+	if _, ok := d.seen[key]; ok {
+		return true
+	}
+	if len(d.order) >= d.limit {
+		oldest := d.order[0]
+		d.order = d.order[1:]
+		delete(d.seen, oldest)
+	}
+	d.order = append(d.order, key)
+	d.seen[key] = struct{}{}
+	return false
+}
+
+func dedupeEventKey(evt awid.AgentEvent) string {
+	switch {
+	case evt.MessageID != "":
+		return string(evt.Type) + ":message:" + evt.MessageID
+	case evt.SignalID != "":
+		return string(evt.Type) + ":signal:" + evt.SignalID
+	default:
+		return ""
 	}
 }

@@ -3,6 +3,7 @@ package awid
 import (
 	"bufio"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -10,6 +11,8 @@ import (
 type SSEEvent struct {
 	Event string
 	Data  string
+	ID    string
+	Retry int
 }
 
 // SSEStream decodes a text/event-stream body.
@@ -17,7 +20,7 @@ type SSEEvent struct {
 // It is intentionally minimal; callers can unmarshal Data as JSON based on Event.
 type SSEStream struct {
 	body io.ReadCloser
-	r *bufio.Reader
+	r    *bufio.Reader
 }
 
 func NewSSEStream(body io.ReadCloser) *SSEStream {
@@ -35,12 +38,19 @@ func (s *SSEStream) Close() error {
 func (s *SSEStream) Next() (*SSEEvent, error) {
 	var eventName string
 	var dataLines []string
+	var eventID string
+	retry := -1
 
 	for {
 		line, err := s.r.ReadString('\n')
 		if err != nil {
 			if err == io.EOF && (eventName != "" || len(dataLines) > 0) {
-				return &SSEEvent{Event: eventName, Data: strings.Join(dataLines, "\n")}, nil
+				return &SSEEvent{
+					Event: eventName,
+					Data:  strings.Join(dataLines, "\n"),
+					ID:    eventID,
+					Retry: retry,
+				}, nil
 			}
 			return nil, err
 		}
@@ -50,18 +60,49 @@ func (s *SSEStream) Next() (*SSEEvent, error) {
 			if eventName == "" && len(dataLines) == 0 {
 				continue
 			}
-			return &SSEEvent{Event: eventName, Data: strings.Join(dataLines, "\n")}, nil
+			return &SSEEvent{
+				Event: eventName,
+				Data:  strings.Join(dataLines, "\n"),
+				ID:    eventID,
+				Retry: retry,
+			}, nil
 		}
 		if strings.HasPrefix(line, ":") {
 			continue
 		}
-		if strings.HasPrefix(line, "event:") {
-			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+
+		field, value, ok := parseSSEField(line)
+		if !ok {
 			continue
 		}
-		if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-			continue
+		switch field {
+		case "event":
+			eventName = value
+		case "data":
+			dataLines = append(dataLines, value)
+		case "id":
+			eventID = value
+		case "retry":
+			if ms, err := strconv.Atoi(value); err == nil && ms >= 0 {
+				retry = ms
+			}
 		}
 	}
+}
+
+func parseSSEField(line string) (field string, value string, ok bool) {
+	field = line
+	value = ""
+	if idx := strings.IndexByte(line, ':'); idx >= 0 {
+		field = line[:idx]
+		value = line[idx+1:]
+		if strings.HasPrefix(value, " ") {
+			value = value[1:]
+		}
+	}
+	field = strings.TrimSpace(field)
+	if field == "" {
+		return "", "", false
+	}
+	return field, value, true
 }

@@ -480,6 +480,70 @@ func TestEventBusInjectAutofeed(t *testing.T) {
 	}
 }
 
+func TestEventBusDedupesReplayByMessageIDAcrossReconnects(t *testing.T) {
+	first := newFakeEventSource(
+		awid.AgentEvent{Type: awid.AgentEventActionableChat, MessageID: "m-1", FromAlias: "henry", WakeMode: "prompt"},
+	)
+	second := newFakeEventSource(
+		awid.AgentEvent{Type: awid.AgentEventActionableChat, MessageID: "m-1", FromAlias: "henry", WakeMode: "prompt"},
+	)
+
+	streamCalls := 0
+	bus := NewEventBus(EventBusConfig{
+		Stream: func(ctx context.Context, deadline time.Time) (awid.EventSource, error) {
+			streamCalls++
+			switch streamCalls {
+			case 1:
+				return first, nil
+			case 2:
+				return second, nil
+			default:
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bus.Start(ctx)
+
+	select {
+	case <-bus.Queue().Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for queue ready")
+	}
+
+	time.Sleep(150 * time.Millisecond)
+
+	if got := bus.Queue().Len(); got != 1 {
+		t.Fatalf("expected exactly 1 queued event after replay, got %d", got)
+	}
+
+	cancel()
+	bus.Stop()
+}
+
+func TestRecentEventDeduperKeepsOnlyBoundedRecentKeys(t *testing.T) {
+	d := newRecentEventDeduper(2)
+
+	if d.Seen(awid.AgentEvent{Type: awid.AgentEventMailMessage, MessageID: "m1"}) {
+		t.Fatal("first event should not be seen")
+	}
+	if d.Seen(awid.AgentEvent{Type: awid.AgentEventMailMessage, MessageID: "m2"}) {
+		t.Fatal("second event should not be seen")
+	}
+	if !d.Seen(awid.AgentEvent{Type: awid.AgentEventMailMessage, MessageID: "m1"}) {
+		t.Fatal("replayed event should be seen")
+	}
+	if d.Seen(awid.AgentEvent{Type: awid.AgentEventMailMessage, MessageID: "m3"}) {
+		t.Fatal("third distinct event should not be seen")
+	}
+	if d.Seen(awid.AgentEvent{Type: awid.AgentEventMailMessage, MessageID: "m1"}) {
+		t.Fatal("oldest key should have been evicted")
+	}
+}
+
 func TestEventBusStopWithoutStartDoesNotDeadlock(t *testing.T) {
 	bus := NewEventBus(EventBusConfig{
 		Stream: func(ctx context.Context, deadline time.Time) (awid.EventSource, error) {
