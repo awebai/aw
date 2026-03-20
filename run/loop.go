@@ -405,9 +405,19 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 			if followUpRun {
 				switch {
 				case strings.TrimSpace(observedSessionID) == "":
-					return fmt.Errorf("provider %s did not report a session id for follow-up run", l.Provider.Name())
+					l.resetSessionContinuity(st, fmt.Sprintf(
+						"provider %s did not report a session id for follow-up run; starting a fresh session",
+						l.Provider.Name(),
+					))
+					return nil
 				case observedSessionID != expectedSessionID:
-					return fmt.Errorf("provider %s switched sessions unexpectedly: expected %s, got %s", l.Provider.Name(), expectedSessionID, observedSessionID)
+					l.resetSessionContinuity(st, fmt.Sprintf(
+						"provider %s switched sessions unexpectedly (expected %s, got %s); starting a fresh session",
+						l.Provider.Name(),
+						expectedSessionID,
+						observedSessionID,
+					))
+					return nil
 				}
 			}
 			return err
@@ -421,6 +431,15 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 			return ctx.Err()
 		}
 	}
+}
+
+func (l *Loop) resetSessionContinuity(st *state, message string) {
+	if st == nil {
+		return
+	}
+	st.SessionID = ""
+	st.RanOnce = false
+	l.printf("warning: %s\n", message)
 }
 
 func (l *Loop) maybeAutoCompact(ctx context.Context, opts LoopOptions, st *state) (bool, error) {

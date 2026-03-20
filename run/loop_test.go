@@ -1544,6 +1544,49 @@ func TestRealCommandRunnerStreamsPartialStderrBeforeExit(t *testing.T) {
 	}
 }
 
+func TestRealCommandRunnerStreamsStderrBeforeExitFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+
+	stderrSeen := make(chan string, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- RealCommandRunner(context.Background(), "", []string{
+			"sh", "-c", "printf 'fatal approval denied\\n' >&2; sleep 1; exit 7",
+		}, func(string) {}, &commandOutputSinks{
+			stderrLine: func(line string) {
+				select {
+				case stderrSeen <- line:
+				default:
+				}
+			},
+		})
+	}()
+
+	select {
+	case got := <-stderrSeen:
+		if got != "fatal approval denied" {
+			t.Fatalf("unexpected stderr line %q", got)
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("timed out waiting for stderr before process exit")
+	}
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "fatal approval denied") {
+			t.Fatalf("expected exit error to include stderr text, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for RealCommandRunner failure")
+	}
+}
+
 func TestRealCommandRunnerStreamsPartialStdoutBeforeExit(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX shell")
@@ -1641,6 +1684,104 @@ func TestRealCommandRunnerAcceptsProviderInput(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for RealCommandRunner to finish")
+	}
+}
+
+func TestLoopRecoversFromMissingFollowUpSessionID(t *testing.T) {
+	var out bytes.Buffer
+	var commands [][]string
+	loop := NewLoop(ClaudeProvider{}, &out)
+	callCount := 0
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		callCount++
+		commands = append(commands, append([]string(nil), argv...))
+		switch callCount {
+		case 1:
+			onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
+		case 2:
+			onLine(`{"type":"result","duration_ms":1000}`)
+		case 3:
+			onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-99"}`)
+		default:
+			t.Fatalf("unexpected runner call %d", callCount)
+		}
+		return nil
+	}
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	loop.Dispatch = &fakeDispatcher{
+		decisions: []DispatchDecision{
+			{MissionPrompt: "persistent mission", WaitSeconds: 1},
+			{MissionPrompt: "persistent mission", WaitSeconds: 1},
+			{MissionPrompt: "persistent mission", WaitSeconds: 1},
+		},
+	}
+
+	err := loop.Run(context.Background(), LoopOptions{
+		WaitSeconds: 1,
+		MaxRuns:     3,
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if callCount != 3 {
+		t.Fatalf("expected 3 runs, got %d", callCount)
+	}
+	if !strings.Contains(strings.Join(commands[1], " "), "--continue") {
+		t.Fatalf("second run should still attempt continuity, got %q", strings.Join(commands[1], " "))
+	}
+	if strings.Contains(strings.Join(commands[2], " "), "--continue") {
+		t.Fatalf("third run should start fresh after missing session id, got %q", strings.Join(commands[2], " "))
+	}
+	if !strings.Contains(out.String(), "did not report a session id for follow-up run; starting a fresh session") {
+		t.Fatalf("expected continuity warning, got %q", out.String())
+	}
+}
+
+func TestLoopRecoversFromSessionIDMismatch(t *testing.T) {
+	var out bytes.Buffer
+	var commands [][]string
+	loop := NewLoop(ClaudeProvider{}, &out)
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		commands = append(commands, append([]string(nil), argv...))
+		switch len(commands) {
+		case 1:
+			onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
+		case 2:
+			onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-bad"}`)
+		case 3:
+			onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-fresh"}`)
+		default:
+			t.Fatalf("unexpected runner call %d", len(commands))
+		}
+		return nil
+	}
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	loop.Dispatch = &fakeDispatcher{
+		decisions: []DispatchDecision{
+			{MissionPrompt: "persistent mission", WaitSeconds: 1},
+			{MissionPrompt: "persistent mission", WaitSeconds: 1},
+			{MissionPrompt: "persistent mission", WaitSeconds: 1},
+		},
+	}
+
+	err := loop.Run(context.Background(), LoopOptions{
+		WaitSeconds: 1,
+		MaxRuns:     3,
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(commands) != 3 {
+		t.Fatalf("expected 3 commands, got %d", len(commands))
+	}
+	if !strings.Contains(strings.Join(commands[1], " "), "--continue") {
+		t.Fatalf("second run should still attempt continuity, got %q", strings.Join(commands[1], " "))
+	}
+	if strings.Contains(strings.Join(commands[2], " "), "--continue") {
+		t.Fatalf("third run should start fresh after mismatch, got %q", strings.Join(commands[2], " "))
+	}
+	if !strings.Contains(out.String(), "switched sessions unexpectedly") {
+		t.Fatalf("expected mismatch warning, got %q", out.String())
 	}
 }
 
