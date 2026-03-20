@@ -133,14 +133,14 @@ func TestClassifyActionableCommunicationEvents(t *testing.T) {
 	}
 }
 
-func TestClassifyInterruptWakeEvents(t *testing.T) {
+func TestClassifyInterruptWakeEventsAsCommunication(t *testing.T) {
 	for _, typ := range []awid.AgentEventType{awid.AgentEventActionableMail, awid.AgentEventActionableChat} {
 		pri, ok := classifyAgentEvent(awid.AgentEvent{Type: typ, WakeMode: "interrupt"})
 		if !ok {
 			t.Fatalf("%s should be queued", typ)
 		}
-		if pri != PriorityInterrupt {
-			t.Fatalf("%s interrupt wake should be interrupt priority, got %d", typ, pri)
+		if pri != PriorityCommunication {
+			t.Fatalf("%s interrupt wake should remain communication priority, got %d", typ, pri)
 		}
 	}
 }
@@ -266,7 +266,7 @@ func TestEventBusDeliversInterruptsToChannel(t *testing.T) {
 	bus.Stop()
 }
 
-func TestEventBusDeliversInterruptWakeToChannel(t *testing.T) {
+func TestEventBusQueuesInterruptWakeCommunicationEvents(t *testing.T) {
 	source := newFakeEventSource(
 		awid.AgentEvent{Type: awid.AgentEventActionableChat, WakeMode: "interrupt", FromAlias: "mia"},
 	)
@@ -288,14 +288,24 @@ func TestEventBusDeliversInterruptWakeToChannel(t *testing.T) {
 
 	select {
 	case evt := <-bus.Interrupts():
-		if evt.Event.Type != awid.AgentEventActionableChat {
-			t.Fatalf("expected actionable_chat, got %s", evt.Event.Type)
-		}
-		if evt.Priority != PriorityInterrupt {
-			t.Fatalf("expected interrupt priority, got %d", evt.Priority)
-		}
+		t.Fatalf("did not expect communication wake on interrupts channel: %+v", evt)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	select {
+	case <-bus.Queue().Ready():
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for interrupt wake")
+		t.Fatal("timed out waiting for queued communication wake")
+	}
+	evt, ok := bus.Queue().Pop()
+	if !ok {
+		t.Fatal("expected queued communication wake")
+	}
+	if evt.Event.Type != awid.AgentEventActionableChat {
+		t.Fatalf("expected actionable_chat, got %s", evt.Event.Type)
+	}
+	if evt.Priority != PriorityCommunication {
+		t.Fatalf("expected communication priority, got %d", evt.Priority)
 	}
 
 	cancel()

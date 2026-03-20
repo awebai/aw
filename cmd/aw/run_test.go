@@ -301,7 +301,7 @@ func TestNewRunDispatcherBuildsMailPrompt(t *testing.T) {
 	dispatcher := newRunDispatcher(awrun.Settings{
 		WorkPromptSuffix:  "work suffix",
 		CommsPromptSuffix: "comms suffix",
-	})
+	}, nil)
 
 	decision, err := dispatcher.Next(context.Background(), false, &awid.AgentEvent{
 		Type:      awid.AgentEventMailMessage,
@@ -325,7 +325,7 @@ func TestNewRunDispatcherBuildsMailPrompt(t *testing.T) {
 func TestNewRunDispatcherBuildsActionableChatPrompt(t *testing.T) {
 	dispatcher := newRunDispatcher(awrun.Settings{
 		CommsPromptSuffix: "comms suffix",
-	})
+	}, nil)
 
 	decision, err := dispatcher.Next(context.Background(), false, &awid.AgentEvent{
 		Type:          awid.AgentEventActionableChat,
@@ -353,7 +353,7 @@ func TestNewRunDispatcherBuildsActionableChatPrompt(t *testing.T) {
 }
 
 func TestNewRunDispatcherBuildsIdleActionableChatPrompt(t *testing.T) {
-	dispatcher := newRunDispatcher(awrun.Settings{})
+	dispatcher := newRunDispatcher(awrun.Settings{}, nil)
 
 	decision, err := dispatcher.Next(context.Background(), false, &awid.AgentEvent{
 		Type:        awid.AgentEventActionableChat,
@@ -379,7 +379,7 @@ func TestNewRunDispatcherBuildsIdleActionableChatPrompt(t *testing.T) {
 func TestNewRunDispatcherSkipsWorkWakeWithoutAutofeed(t *testing.T) {
 	dispatcher := newRunDispatcher(awrun.Settings{
 		WorkPromptSuffix: "work suffix",
-	})
+	}, nil)
 
 	decision, err := dispatcher.Next(context.Background(), false, &awid.AgentEvent{
 		Type:   awid.AgentEventWorkAvailable,
@@ -391,6 +391,26 @@ func TestNewRunDispatcherSkipsWorkWakeWithoutAutofeed(t *testing.T) {
 	}
 	if !decision.Skip {
 		t.Fatalf("expected work wake without autofeed to skip, got %+v", decision)
+	}
+}
+
+func TestNewRunDispatcherSkipsStaleActionableChat(t *testing.T) {
+	dispatcher := newRunDispatcher(awrun.Settings{}, func(context.Context, awid.AgentEvent) (bool, error) {
+		return false, nil
+	})
+
+	decision, err := dispatcher.Next(context.Background(), false, &awid.AgentEvent{
+		Type:        awid.AgentEventActionableChat,
+		FromAlias:   "rose",
+		SessionID:   "s-10",
+		WakeMode:    "interrupt",
+		UnreadCount: 1,
+	})
+	if err != nil {
+		t.Fatalf("Next returned error: %v", err)
+	}
+	if !decision.Skip {
+		t.Fatalf("expected stale actionable chat wake to skip, got %+v", decision)
 	}
 }
 
@@ -578,6 +598,9 @@ func TestRunUsesActionableWakeEventToTriggerSecondCycle(t *testing.T) {
 			_, _ = io.WriteString(w, "event: actionable_chat\ndata: {\"message_id\":\"m-2\",\"from_alias\":\"henry\",\"session_id\":\"s-9\",\"wake_mode\":\"interrupt\",\"unread_count\":1,\"sender_waiting\":true}\n\n")
 			flusher.Flush()
 			<-r.Context().Done()
+		case r.URL.Path == "/v1/chat/pending":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"pending":[{"session_id":"s-9","participants":["henry","rose"],"last_message":"ping","last_from":"henry","unread_count":1,"last_activity":"2026-03-20T00:00:00Z","sender_waiting":true}],"messages_waiting":1}`)
 		default:
 			http.NotFound(w, r)
 		}

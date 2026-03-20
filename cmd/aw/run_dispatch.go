@@ -5,29 +5,43 @@ import (
 	"fmt"
 	"strings"
 
+	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/awid"
 	awrun "github.com/awebai/aw/run"
 )
 
+type runWakeValidator func(context.Context, awid.AgentEvent) (bool, error)
+
 type runDispatcher struct {
 	workPromptSuffix  string
 	commsPromptSuffix string
+	validateWake      runWakeValidator
 }
 
-func newRunDispatcher(settings awrun.Settings) awrun.Dispatcher {
+func newRunDispatcher(settings awrun.Settings, validateWake runWakeValidator) awrun.Dispatcher {
 	return runDispatcher{
 		workPromptSuffix:  strings.TrimSpace(settings.WorkPromptSuffix),
 		commsPromptSuffix: strings.TrimSpace(settings.CommsPromptSuffix),
+		validateWake:      validateWake,
 	}
 }
 
-func (d runDispatcher) Next(_ context.Context, autofeed bool, wakeEvent *awid.AgentEvent) (awrun.DispatchDecision, error) {
+func (d runDispatcher) Next(ctx context.Context, autofeed bool, wakeEvent *awid.AgentEvent) (awrun.DispatchDecision, error) {
 	if wakeEvent == nil {
 		return awrun.DispatchDecision{Skip: true}, nil
 	}
 
 	switch wakeEvent.Type {
 	case awid.AgentEventMailMessage, awid.AgentEventChatMessage, awid.AgentEventActionableMail, awid.AgentEventActionableChat:
+		if d.validateWake != nil && wakeEvent.IsActionableCoordination() {
+			ok, err := d.validateWake(ctx, *wakeEvent)
+			if err != nil {
+				return awrun.DispatchDecision{}, err
+			}
+			if !ok {
+				return awrun.DispatchDecision{Skip: true, WaitSeconds: awrun.DefaultWaitSeconds}, nil
+			}
+		}
 		return awrun.DispatchDecision{
 			Prompt:      joinPromptSections(formatCommsWakePrompt(*wakeEvent), d.commsPromptSuffix),
 			WaitSeconds: awrun.DefaultWaitSeconds,
@@ -43,6 +57,56 @@ func (d runDispatcher) Next(_ context.Context, autofeed bool, wakeEvent *awid.Ag
 	default:
 		return awrun.DispatchDecision{Skip: true}, nil
 	}
+}
+
+func newRunWakeValidator(client *aweb.Client) runWakeValidator {
+	if client == nil || client.Client == nil {
+		return nil
+	}
+	return func(ctx context.Context, evt awid.AgentEvent) (bool, error) {
+		switch evt.Type {
+		case awid.AgentEventActionableChat:
+			return validateActionableChatWake(ctx, client, evt)
+		case awid.AgentEventActionableMail:
+			return validateActionableMailWake(ctx, client, evt)
+		default:
+			return true, nil
+		}
+	}
+}
+
+func validateActionableChatWake(ctx context.Context, client *aweb.Client, evt awid.AgentEvent) (bool, error) {
+	sessionID := strings.TrimSpace(evt.SessionID)
+	if sessionID == "" {
+		return true, nil
+	}
+	resp, err := client.ChatPending(ctx)
+	if err != nil {
+		return false, fmt.Errorf("check pending chat for wake %s: %w", sessionID, err)
+	}
+	for _, pending := range resp.Pending {
+		if strings.TrimSpace(pending.SessionID) == sessionID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func validateActionableMailWake(ctx context.Context, client *aweb.Client, evt awid.AgentEvent) (bool, error) {
+	messageID := strings.TrimSpace(evt.MessageID)
+	if messageID == "" {
+		return true, nil
+	}
+	resp, err := client.Inbox(ctx, awid.InboxParams{UnreadOnly: true})
+	if err != nil {
+		return false, fmt.Errorf("check unread mail for wake %s: %w", messageID, err)
+	}
+	for _, msg := range resp.Messages {
+		if strings.TrimSpace(msg.MessageID) == messageID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func joinPromptSections(parts ...string) string {
