@@ -1,0 +1,212 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/awebai/aw/awconfig"
+	"gopkg.in/yaml.v3"
+)
+
+func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	var serverURL string
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/invites/cli/accept":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method=%s", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id":   "proj-1",
+				"project_slug": "myteam",
+				"namespace":    "myteam.aweb.ai",
+				"agent_id":     "agent-1",
+				"alias":        "reviewer",
+				"address":      "myteam.aweb.ai/reviewer",
+				"api_key":      "aw_sk_invited",
+				"server_url":   serverURL + "/api",
+				"did":          "did:key:z6MkInvite",
+				"stable_id":    "did:aw:invite",
+				"custody":      "self",
+				"lifetime":     "persistent",
+				"access_mode":  "owner_only",
+				"created":      true,
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		case "/v1/workspaces/register", "/v1/workspaces/attach":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+	serverURL = server.URL
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	run := exec.CommandContext(ctx, bin, "init",
+		"--invite", "aw_inv_test",
+		"--alias", "reviewer",
+		"--server", server.URL,
+		"--json",
+		"--write-context=false",
+		"--print-exports=false",
+	)
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	if gotBody["token"] != "aw_inv_test" {
+		t.Fatalf("token=%v", gotBody["token"])
+	}
+	if gotBody["alias"] != "reviewer" {
+		t.Fatalf("alias=%v", gotBody["alias"])
+	}
+	if gotBody["custody"] != "self" {
+		t.Fatalf("custody=%v", gotBody["custody"])
+	}
+	if _, ok := gotBody["public_key"]; !ok {
+		t.Fatal("missing public_key")
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(extractJSON(t, out), &resp); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if resp["alias"] != "reviewer" {
+		t.Fatalf("alias=%v", resp["alias"])
+	}
+
+	cfgData, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg awconfig.GlobalConfig
+	if err := yaml.Unmarshal(cfgData, &cfg); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	found := false
+	for _, acct := range cfg.Accounts {
+		if acct.APIKey == "aw_sk_invited" {
+			found = true
+			if acct.AgentAlias != "reviewer" {
+				t.Fatalf("agent_alias=%q", acct.AgentAlias)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("missing invited account in config:\n%s", string(cfgData))
+	}
+}
+
+func TestAwInitInviteAcceptUsesServerProvidedAliasHint(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/invites/cli/accept":
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id":   "proj-1",
+				"project_slug": "myteam",
+				"namespace":    "myteam.aweb.ai",
+				"agent_id":     "agent-1",
+				"alias":        "reviewer",
+				"address":      "myteam.aweb.ai/reviewer",
+				"api_key":      "aw_sk_invited",
+				"server_url":   "https://app.aweb.ai/api",
+				"did":          "did:key:z6MkInvite",
+				"stable_id":    "did:aw:invite",
+				"custody":      "self",
+				"lifetime":     "persistent",
+				"access_mode":  "open",
+				"created":      true,
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		case "/v1/workspaces/register", "/v1/workspaces/attach":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	run := exec.CommandContext(ctx, bin, "init",
+		"--invite", "aw_inv_test",
+		"--server", server.URL,
+		"--json",
+		"--write-context=false",
+		"--print-exports=false",
+	)
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+	if _, ok := gotBody["alias"]; ok {
+		t.Fatalf("alias should be omitted when not provided: %+v", gotBody)
+	}
+	if !strings.Contains(string(out), "\"alias\": \"reviewer\"") {
+		t.Fatalf("expected server-provided alias in output:\n%s", string(out))
+	}
+}

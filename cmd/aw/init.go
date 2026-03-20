@@ -32,6 +32,7 @@ var (
 	initNamespaceSlug   string
 	initNamespaceName   string
 	initAlias           string
+	initInviteToken     string
 	initHumanName       string
 	initAgentType       string
 	initSaveConfig      bool
@@ -61,6 +62,7 @@ type initOptions struct {
 	CloudToken                    string
 	TargetNamespace               string
 	BootstrapAPIKey               string
+	InviteToken                   string
 	AccountName                   string
 	WorkspaceRole                 string
 }
@@ -76,9 +78,11 @@ type initResult struct {
 
 func init() {
 	initCmd.Flags().StringVar(&initServerURL, "server-url", "", "Base URL for the aweb server (or AWEB_URL). Any URL is accepted; aw probes common mounts (including /api).")
+	initCmd.Flags().StringVar(&initServerURL, "server", "", "Base URL for the aweb server (alias for --server-url)")
 	initCmd.Flags().StringVar(&initNamespaceSlug, "namespace", "", "Namespace slug (default: AWEB_NAMESPACE or prompt in TTY)")
 	initCmd.Flags().StringVar(&initNamespaceName, "namespace-name", "", "Namespace display name (default: AWEB_NAMESPACE_NAME or namespace slug)")
 	initCmd.Flags().StringVar(&initAlias, "alias", "", "Agent alias (optional; default: server-suggested)")
+	initCmd.Flags().StringVar(&initInviteToken, "invite", "", "CLI invite token (aw_inv_...)")
 	initCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
 	initCmd.Flags().StringVar(&initAgentType, "agent-type", "", "Agent type (default: AWEB_AGENT_TYPE or agent)")
 	initCmd.Flags().BoolVar(&initSaveConfig, "save-config", true, "Write/update ~/.config/aw/config.yaml with the new credentials")
@@ -126,10 +130,19 @@ func collectInitOptions() (initOptions, error) {
 	}
 
 	targetNamespace := strings.TrimSpace(initTargetNamespace)
+	inviteToken := strings.TrimSpace(initInviteToken)
 	aliasFromFlag := strings.TrimSpace(initAlias)
 	aliasFromEnv := strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
+	if inviteToken != "" && !strings.HasPrefix(inviteToken, "aw_inv_") {
+		return initOptions{}, usageError("invalid --invite token (expected aw_inv_...)")
+	}
 	if targetNamespace != "" && aliasFromFlag == "" && aliasFromEnv == "" {
 		return initOptions{}, usageError("--target-namespace requires --alias (server cannot auto-assign in a specific namespace)")
+	}
+	if inviteToken != "" {
+		if targetNamespace != "" || strings.TrimSpace(initNamespaceSlug) != "" || strings.TrimSpace(initNamespaceName) != "" || initCloudMode || strings.TrimSpace(initCloudToken) != "" {
+			return initOptions{}, usageError("--invite cannot be combined with namespace/bootstrap flags")
+		}
 	}
 
 	baseURL, serverName, global, err := resolveBaseURLForInit(initServerURL, serverFlag)
@@ -169,7 +182,7 @@ func collectInitOptions() (initOptions, error) {
 		nsSlug = strings.TrimSpace(os.Getenv("AWEB_PROJECT"))
 	}
 
-	if nsSlug == "" && !cloudMode {
+	if nsSlug == "" && !cloudMode && inviteToken == "" {
 		if isTTY() {
 			suggested := sanitizeSlug(filepath.Base(workingDir))
 			v, err := promptString("Namespace", suggested)
@@ -228,7 +241,7 @@ func collectInitOptions() (initOptions, error) {
 	}
 
 	aliasWasDefaultSuggestion := false
-	if !aliasExplicit {
+	if !aliasExplicit && inviteToken == "" {
 		bootstrapClient, err := aweb.New(baseURL)
 		if err != nil {
 			return initOptions{}, err
@@ -245,7 +258,7 @@ func collectInitOptions() (initOptions, error) {
 		aliasWasDefaultSuggestion = true
 	}
 
-	if isTTY() && !aliasExplicit {
+	if isTTY() && !aliasExplicit && inviteToken == "" {
 		v, err := promptString("Agent alias", alias)
 		if err != nil {
 			return initOptions{}, err
@@ -276,6 +289,7 @@ func collectInitOptions() (initOptions, error) {
 		CloudToken:                    cloudToken,
 		TargetNamespace:               targetNamespace,
 		BootstrapAPIKey:               "",
+		InviteToken:                   inviteToken,
 		AccountName:                   accountName,
 	}, nil
 }
@@ -323,7 +337,9 @@ func executeInit(opts initOptions) (*initResult, error) {
 	}
 
 	var resp *awid.InitResponse
-	if opts.CloudMode {
+	if opts.InviteToken != "" {
+		resp, err = acceptInviteViaCloud(ctx, opts.BaseURL, opts.InviteToken, opts.Alias, opts.HumanName, opts.AgentType, did, pubKeyB64)
+	} else if opts.CloudMode {
 		resp, err = bootstrapViaCloud(ctx, opts.BaseURL, opts.CloudToken, req, opts.TargetNamespace)
 	} else if opts.BootstrapAPIKey == "" {
 		resp, err = tryHeadlessOrInit(ctx, bootstrapClient, req, opts.BaseURL)
@@ -614,6 +630,57 @@ func bootstrapViaCloud(
 		StableID:      cloudResp.StableID,
 		Custody:       cloudResp.Custody,
 		Lifetime:      cloudResp.Lifetime,
+	}, nil
+}
+
+func acceptInviteViaCloud(
+	ctx context.Context,
+	baseURL string,
+	token string,
+	alias string,
+	humanName string,
+	agentType string,
+	did string,
+	publicKey string,
+) (*awid.InitResponse, error) {
+	client, err := newUnauthenticatedCloudClient(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invite accept requires a valid URL: %w", err)
+	}
+	req := &awid.InviteAcceptRequest{
+		Token:     token,
+		Alias:     strings.TrimSpace(alias),
+		HumanName: humanName,
+		AgentType: agentType,
+		DID:       did,
+		PublicKey: publicKey,
+		Custody:   awid.CustodySelf,
+		Lifetime:  awid.LifetimePersistent,
+	}
+	resp, err := client.InviteAccept(ctx, req)
+	if err != nil {
+		if code, ok := awid.HTTPStatusCode(err); ok && code == 422 && strings.TrimSpace(alias) == "" {
+			return nil, usageError("alias is required (use --alias)")
+		}
+		return nil, err
+	}
+	return &awid.InitResponse{
+		Status:        "ok",
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		ProjectID:     resp.ProjectID,
+		ProjectSlug:   resp.ProjectSlug,
+		AgentID:       resp.AgentID,
+		Alias:         resp.Alias,
+		APIKey:        resp.APIKey,
+		ServerURL:     resp.ServerURL,
+		NamespaceSlug: resp.OrgSlug,
+		Namespace:     resp.Namespace,
+		Address:       resp.Address,
+		Created:       resp.Created,
+		DID:           resp.DID,
+		StableID:      resp.StableID,
+		Custody:       resp.Custody,
+		Lifetime:      resp.Lifetime,
 	}, nil
 }
 
