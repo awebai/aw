@@ -5,8 +5,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/awconfig"
@@ -333,6 +337,156 @@ func TestNewRunDispatcherSkipsWorkWakeWithoutAutofeed(t *testing.T) {
 	}
 	if !decision.Skip {
 		t.Fatalf("expected work wake without autofeed to skip, got %+v", decision)
+	}
+}
+
+type recordingRunProvider struct {
+	mu      sync.Mutex
+	prompts []string
+	builds  []awrun.BuildOptions
+}
+
+func (p *recordingRunProvider) Name() string { return "fake" }
+
+func (p *recordingRunProvider) BuildCommand(prompt string, opts awrun.BuildOptions) ([]string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.prompts = append(p.prompts, prompt)
+	p.builds = append(p.builds, opts)
+	return []string{"fake-provider", prompt}, nil
+}
+
+func (p *recordingRunProvider) ParseOutput(string) (*awrun.Event, error) {
+	return &awrun.Event{Type: awrun.EventDone, Session: "sess-42"}, nil
+}
+
+func (p *recordingRunProvider) SessionID(event *awrun.Event) string {
+	if event == nil {
+		return ""
+	}
+	return event.Session
+}
+
+func (p *recordingRunProvider) snapshot() ([]string, []awrun.BuildOptions) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	prompts := append([]string(nil), p.prompts...)
+	builds := append([]awrun.BuildOptions(nil), p.builds...)
+	return prompts, builds
+}
+
+func TestRunUsesWakeEventToTriggerSecondCycle(t *testing.T) {
+	initRunCommandVars()
+
+	oldLoad := runLoadUserConfig
+	oldResolveSettings := runResolveSettings
+	oldNewProvider := runNewProvider
+	oldResolveClient := runResolveClientForDir
+	oldNewLoop := runNewLoop
+	oldNewScreen := runNewScreenController
+	t.Cleanup(func() {
+		runLoadUserConfig = oldLoad
+		runResolveSettings = oldResolveSettings
+		runNewProvider = oldNewProvider
+		runResolveClientForDir = oldResolveClient
+		runNewLoop = oldNewLoop
+		runNewScreenController = oldNewScreen
+		initRunCommandVars()
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/events/stream"):
+			if r.Method != http.MethodGet {
+				t.Fatalf("method=%s", r.Method)
+			}
+			if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
+				t.Fatalf("auth=%q", r.Header.Get("Authorization"))
+			}
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				t.Fatal("response writer does not support flushing")
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+
+			_, _ = io.WriteString(w, "event: connected\ndata: {\"agent_id\":\"a-1\",\"project_id\":\"p-1\"}\n\n")
+			flusher.Flush()
+			_, _ = io.WriteString(w, "event: chat_message\ndata: {\"message_id\":\"m-1\",\"from_alias\":\"mia\",\"session_id\":\"s-1\"}\n\n")
+			flusher.Flush()
+			<-r.Context().Done()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := aweb.NewWithAPIKey(server.URL, "aw_sk_test")
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	runLoadUserConfig = func(string) (awrun.UserConfig, error) { return awrun.UserConfig{}, nil }
+	runResolveSettings = func(cfg awrun.UserConfig, overrides awrun.SettingOverrides) (awrun.Settings, error) {
+		return awrun.Settings{
+			BasePrompt:       "persistent mission",
+			WaitSeconds:      30,
+			IdleWaitSeconds:  1,
+			CompactThreshold: awrun.DefaultCompactThreshold,
+		}, nil
+	}
+
+	provider := &recordingRunProvider{}
+	runNewProvider = func(name string) (awrun.Provider, error) {
+		return provider, nil
+	}
+	runResolveClientForDir = func(string) (*aweb.Client, *awconfig.Selection, error) {
+		return client, &awconfig.Selection{NamespaceSlug: "team", AgentAlias: "rose"}, nil
+	}
+	runNewLoop = func(provider awrun.Provider, out io.Writer) *awrun.Loop {
+		loop := awrun.NewLoop(provider, out)
+		loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+			onLine("done")
+			return nil
+		}
+		return loop
+	}
+	runNewScreenController = func(in io.Reader, out io.Writer) *awrun.ScreenController { return nil }
+
+	cmd := &cobraCommandClone{Command: *runCmd}
+	cmd.ResetFlagsForTest()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd.Command.SetContext(ctx)
+	runMaxRuns = 2
+	var stdout, stderr bytes.Buffer
+	setRunCommandIO(&cmd.Command, strings.NewReader(""), &stdout, &stderr)
+
+	if err := runRun(&cmd.Command, nil); err != nil {
+		t.Fatalf("runRun returned error: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
+
+	prompts, builds := provider.snapshot()
+	if len(prompts) != 2 {
+		t.Fatalf("expected 2 provider runs, got %d prompts: %#v", len(prompts), prompts)
+	}
+	if prompts[0] != "persistent mission" {
+		t.Fatalf("first prompt=%q", prompts[0])
+	}
+	if !strings.Contains(prompts[1], "Primary mission:\npersistent mission") {
+		t.Fatalf("expected second prompt to preserve base mission, got %q", prompts[1])
+	}
+	if !strings.Contains(prompts[1], "Wake reason: new chat activity from mia.") {
+		t.Fatalf("expected second prompt to include wake reason, got %q", prompts[1])
+	}
+	if len(builds) != 2 {
+		t.Fatalf("expected 2 build option records, got %d", len(builds))
+	}
+	if builds[0].ContinueSession {
+		t.Fatalf("first run should not continue a session, got %+v", builds[0])
+	}
+	if !builds[1].ContinueSession || builds[1].SessionID != "sess-42" {
+		t.Fatalf("second run should continue session sess-42, got %+v", builds[1])
 	}
 }
 

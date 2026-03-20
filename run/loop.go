@@ -265,6 +265,9 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 	if explicitMissionPrompt != "" {
 		return DispatchDecision{MissionPrompt: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
 	}
+	if st.Run == 0 && strings.TrimSpace(opts.Prompt) != "" {
+		return DispatchDecision{MissionPrompt: strings.TrimSpace(opts.Prompt), WaitSeconds: opts.WaitSeconds}, nil
+	}
 	if l.Dispatch == nil && st.Run == 0 && l.Control != nil && strings.TrimSpace(opts.Prompt) == "" {
 		return DispatchDecision{WaitSeconds: opts.WaitSeconds, Skip: true}, nil
 	}

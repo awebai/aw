@@ -761,6 +761,32 @@ func TestNextPromptConsumesWakeEventAfterDispatch(t *testing.T) {
 	}
 }
 
+func TestNextPromptRunsBasePromptBeforeDispatchOnFirstCycle(t *testing.T) {
+	dispatcher := &recordingDispatcher{
+		decision: DispatchDecision{Skip: true},
+	}
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.Dispatch = dispatcher
+
+	st := &state{}
+	opts := LoopOptions{
+		Prompt:          "persistent mission",
+		WaitSeconds:     5,
+		IdleWaitSeconds: 9,
+	}
+
+	decision, err := loop.nextPrompt(context.Background(), opts, st)
+	if err != nil {
+		t.Fatalf("nextPrompt returned error: %v", err)
+	}
+	if decision.MissionPrompt != "persistent mission" {
+		t.Fatalf("expected first cycle to run base prompt, got %+v", decision)
+	}
+	if len(dispatcher.events) != 0 {
+		t.Fatalf("expected dispatcher to be bypassed on first base-prompt cycle, got %d calls", len(dispatcher.events))
+	}
+}
+
 func TestLoopShowsStartupStatusBeforeFirstPromptWhileEventBusRuns(t *testing.T) {
 	ui := newRecordingUI()
 	bus := newTestEventBus()
