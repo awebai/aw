@@ -59,13 +59,15 @@ func joinPromptSections(parts ...string) string {
 func formatCommsWakePrompt(evt awid.AgentEvent) string {
 	switch evt.Type {
 	case awid.AgentEventMailMessage, awid.AgentEventActionableMail:
+		wakeMode := effectiveWakeMode(evt)
 		parts := []string{
 			fmt.Sprintf("Wake reason: new mail from %s.", formatWakeAlias(evt.FromAlias)),
 			"Open your inbox, read the new mail, respond if needed, and update any relevant coordination state.",
 		}
 		if evt.Type == awid.AgentEventActionableMail {
-			parts[0] = fmt.Sprintf("Wake reason: actionable mail from %s.", formatWakeAlias(evt.FromAlias))
-			if strings.EqualFold(strings.TrimSpace(evt.WakeMode), "interrupt") {
+			parts[0] = fmt.Sprintf("Wake reason: unread mail from %s.", formatWakeAlias(evt.FromAlias))
+			if wakeMode == "interrupt" {
+				parts[0] = fmt.Sprintf("Wake reason: urgent mail from %s.", formatWakeAlias(evt.FromAlias))
 				parts[1] = "A coordination message needs immediate attention. Check unread mail first, respond to the blocking item, and then return to your prior task."
 			}
 		}
@@ -77,16 +79,18 @@ func formatCommsWakePrompt(evt awid.AgentEvent) string {
 		}
 		return strings.Join(parts, " ")
 	case awid.AgentEventChatMessage, awid.AgentEventActionableChat:
+		wakeMode := effectiveWakeMode(evt)
 		parts := []string{
 			fmt.Sprintf("Wake reason: new chat activity from %s.", formatWakeAlias(evt.FromAlias)),
 			"Open the active chat, answer what is blocking them, and then continue your current work if nothing else changed.",
 		}
 		if evt.Type == awid.AgentEventActionableChat {
-			parts[0] = fmt.Sprintf("Wake reason: actionable chat from %s.", formatWakeAlias(evt.FromAlias))
+			parts[0] = fmt.Sprintf("Wake reason: chat from %s.", formatWakeAlias(evt.FromAlias))
 			switch {
-			case strings.EqualFold(strings.TrimSpace(evt.WakeMode), "interrupt"), evt.SenderWaiting:
+			case wakeMode == "interrupt":
+				parts[0] = fmt.Sprintf("Wake reason: urgent chat from %s.", formatWakeAlias(evt.FromAlias))
 				parts[1] = "Another agent is explicitly waiting on you. Open the chat immediately, unblock them, and then resume your work."
-			case strings.EqualFold(strings.TrimSpace(evt.WakeMode), "idle"):
+			case wakeMode == "idle":
 				parts[1] = "Review the chat state when convenient, respond if needed, and then continue your current work."
 			}
 		}
@@ -100,6 +104,17 @@ func formatCommsWakePrompt(evt awid.AgentEvent) string {
 	default:
 		return ""
 	}
+}
+
+func effectiveWakeMode(evt awid.AgentEvent) string {
+	mode := strings.ToLower(strings.TrimSpace(evt.WakeMode))
+	if mode != "" {
+		return mode
+	}
+	if evt.Type == awid.AgentEventActionableChat && evt.SenderWaiting {
+		return "interrupt"
+	}
+	return ""
 }
 
 func formatWorkWakePrompt(evt awid.AgentEvent) string {

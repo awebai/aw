@@ -7,6 +7,7 @@ func TestIsProtocolEvent(t *testing.T) {
 
 	protocol := []AgentEventType{
 		AgentEventMailMessage, AgentEventChatMessage,
+		AgentEventActionableMail, AgentEventActionableChat,
 		AgentEventControlPause, AgentEventControlResume, AgentEventControlInterrupt,
 		AgentEventError,
 	}
@@ -65,6 +66,8 @@ func TestDefaultWakeFilterMatchesPreviousBehavior(t *testing.T) {
 		{"connected never wakes autofeed", AgentEventConnected, true, false},
 		{"mail always wakes", AgentEventMailMessage, false, true},
 		{"chat always wakes", AgentEventChatMessage, false, true},
+		{"actionable mail always wakes", AgentEventActionableMail, false, true},
+		{"actionable chat always wakes", AgentEventActionableChat, false, true},
 		{"pause always wakes", AgentEventControlPause, false, true},
 		{"resume always wakes", AgentEventControlResume, false, true},
 		{"interrupt always wakes", AgentEventControlInterrupt, false, true},

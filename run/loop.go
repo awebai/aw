@@ -661,11 +661,11 @@ func (l *Loop) waitForBusEvents(ctx context.Context, waitSeconds int, st *state)
 				}
 			}
 		case busEvt := <-bus.Interrupts():
-			l.applyBusInterrupt(busEvt, st, nil)
+			wakeNow := l.applyBusInterrupt(busEvt, st, nil)
 			if st.StopRequested {
 				return context.Canceled
 			}
-			if busEvt.Event.IsInterruptWake() && st.LastWakeEvent != nil && !st.Paused {
+			if wakeNow {
 				return nil
 			}
 			// During idle wait there is no active run, so PauseAfterRun
@@ -713,7 +713,9 @@ func (l *Loop) processWakeEvent(ctx context.Context, evt BusEvent, st *state) er
 // applyBusInterrupt handles an interrupt-priority event from the EventBus.
 // Called from runOnce (active run), waitForBusEvents (idle), and
 // waitWhilePaused. cancel is non-nil only during an active run.
-func (l *Loop) applyBusInterrupt(evt BusEvent, st *state, cancel context.CancelFunc) {
+// Returns true when an urgent wake should trigger an immediate next cycle
+// from idle wait without entering paused handling.
+func (l *Loop) applyBusInterrupt(evt BusEvent, st *state, cancel context.CancelFunc) bool {
 	switch evt.Event.Type {
 	case awid.AgentEventControlInterrupt:
 		st.PendingInput = false
@@ -732,14 +734,17 @@ func (l *Loop) applyBusInterrupt(evt BusEvent, st *state, cancel context.CancelF
 		if cancel != nil {
 			cancel()
 		}
+		return false
 	case awid.AgentEventControlPause:
 		st.PauseAfterRun = true
 		l.println("\nwill pause after this run.")
+		return false
 	case awid.AgentEventControlResume:
 		st.Paused = false
 		st.PauseNoticeShown = false
 		st.PauseAfterRun = false
 		l.renderInputPrompt(st)
+		return false
 	default:
 		if evt.Event.IsInterruptWake() {
 			st.LastWakeEvent = &evt.Event
@@ -749,21 +754,25 @@ func (l *Loop) applyBusInterrupt(evt BusEvent, st *state, cancel context.CancelF
 				st.WakeInterrupted = true
 				l.printf("\nurgent wake: %s. stopping current run to respond.\n", describeUrgentWake(evt.Event))
 				cancel()
-			} else if !st.Paused {
+				return false
+			}
+			if !st.Paused {
 				l.printf("\nurgent wake: %s.\n", describeUrgentWake(evt.Event))
+				return true
 			}
 		}
+		return false
 	}
 }
 
 func describeUrgentWake(evt awid.AgentEvent) string {
 	switch evt.Type {
-	case awid.AgentEventActionableChat, awid.AgentEventChatMessage:
+	case awid.AgentEventActionableChat:
 		if alias := strings.TrimSpace(evt.FromAlias); alias != "" {
 			return fmt.Sprintf("chat requires attention from %s", alias)
 		}
 		return "chat requires attention"
-	case awid.AgentEventActionableMail, awid.AgentEventMailMessage:
+	case awid.AgentEventActionableMail:
 		if alias := strings.TrimSpace(evt.FromAlias); alias != "" {
 			return fmt.Sprintf("mail requires attention from %s", alias)
 		}
@@ -798,7 +807,10 @@ func (l *Loop) waitWhilePaused(ctx context.Context, st *state) error {
 		}
 		select {
 		case busEvt := <-busInterrupts:
-			l.applyBusInterrupt(busEvt, st, nil)
+			if l.applyBusInterrupt(busEvt, st, nil) {
+				st.Paused = false
+				return nil
+			}
 		case event := <-l.controlEvents():
 			l.applyControlEvent(event, st, false, nil)
 			if st.StopRequested {

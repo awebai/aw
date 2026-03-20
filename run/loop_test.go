@@ -1005,11 +1005,14 @@ func TestApplyBusInterruptResumeClearsPause(t *testing.T) {
 		PauseNoticeShown: true,
 	}
 
-	loop.applyBusInterrupt(BusEvent{
+	wakeNow := loop.applyBusInterrupt(BusEvent{
 		Event:    awid.AgentEvent{Type: awid.AgentEventControlResume},
 		Priority: PriorityInterrupt,
 	}, st, nil)
 
+	if wakeNow {
+		t.Fatal("control resume should not request an immediate wake")
+	}
 	if st.Paused {
 		t.Fatal("expected Paused to be cleared")
 	}
@@ -1027,7 +1030,7 @@ func TestApplyBusInterruptUrgentWakeDuringRunCancelsWithoutPausing(t *testing.T)
 	st := &state{}
 	cancelled := false
 
-	loop.applyBusInterrupt(BusEvent{
+	wakeNow := loop.applyBusInterrupt(BusEvent{
 		Event: awid.AgentEvent{
 			Type:          awid.AgentEventActionableChat,
 			FromAlias:     "mia",
@@ -1040,6 +1043,9 @@ func TestApplyBusInterruptUrgentWakeDuringRunCancelsWithoutPausing(t *testing.T)
 		cancelled = true
 	})
 
+	if wakeNow {
+		t.Fatal("urgent wake during active run should cancel, not return an immediate idle wake")
+	}
 	if !cancelled {
 		t.Fatal("expected urgent wake to cancel the active run")
 	}

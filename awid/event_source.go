@@ -14,10 +14,11 @@ type EventSource interface {
 type WakeFilter func(evt AgentEvent, autofeed bool) bool
 
 // IsProtocolEvent returns true for events that belong to the protocol layer:
-// mail_message, chat_message, control signals, and stream errors.
+// communication wake events, control signals, and stream errors.
 func IsProtocolEvent(evt AgentEvent) bool {
 	switch evt.Type {
 	case AgentEventMailMessage, AgentEventChatMessage,
+		AgentEventActionableMail, AgentEventActionableChat,
 		AgentEventControlPause, AgentEventControlResume, AgentEventControlInterrupt,
 		AgentEventError:
 		return true
@@ -37,7 +38,7 @@ func IsCoordinationEvent(evt AgentEvent) bool {
 	}
 }
 
-// ProtocolWakeFilter wakes on protocol events (mail, chat, control, error).
+// ProtocolWakeFilter wakes on protocol events (communication, control, error).
 // Connected events are excluded — they are informational only.
 func ProtocolWakeFilter(evt AgentEvent, _ bool) bool {
 	return IsProtocolEvent(evt)

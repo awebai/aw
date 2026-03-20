@@ -341,7 +341,7 @@ func TestNewRunDispatcherBuildsActionableChatPrompt(t *testing.T) {
 	if decision.Skip {
 		t.Fatalf("expected actionable chat wake to produce a prompt, got %+v", decision)
 	}
-	if !strings.Contains(decision.Prompt, "actionable chat from henry") {
+	if !strings.Contains(decision.Prompt, "urgent chat from henry") {
 		t.Fatalf("expected actionable chat details, got %q", decision.Prompt)
 	}
 	if !strings.Contains(decision.Prompt, "explicitly waiting on you") {
@@ -349,6 +349,30 @@ func TestNewRunDispatcherBuildsActionableChatPrompt(t *testing.T) {
 	}
 	if !strings.Contains(decision.Prompt, "Unread: 2") {
 		t.Fatalf("expected unread count, got %q", decision.Prompt)
+	}
+}
+
+func TestNewRunDispatcherBuildsIdleActionableChatPrompt(t *testing.T) {
+	dispatcher := newRunDispatcher(awrun.Settings{})
+
+	decision, err := dispatcher.Next(context.Background(), false, &awid.AgentEvent{
+		Type:        awid.AgentEventActionableChat,
+		FromAlias:   "rose",
+		SessionID:   "s-10",
+		WakeMode:    "idle",
+		UnreadCount: 1,
+	})
+	if err != nil {
+		t.Fatalf("Next returned error: %v", err)
+	}
+	if decision.Skip {
+		t.Fatalf("expected idle actionable chat wake to produce a prompt, got %+v", decision)
+	}
+	if !strings.Contains(decision.Prompt, "chat from rose") {
+		t.Fatalf("expected chat wake details, got %q", decision.Prompt)
+	}
+	if !strings.Contains(decision.Prompt, "Review the chat state when convenient") {
+		t.Fatalf("expected idle wake guidance, got %q", decision.Prompt)
 	}
 }
 
@@ -609,7 +633,7 @@ func TestRunUsesActionableWakeEventToTriggerSecondCycle(t *testing.T) {
 	if len(prompts) != 2 {
 		t.Fatalf("expected 2 provider runs, got %d prompts: %#v", len(prompts), prompts)
 	}
-	if !strings.Contains(prompts[1], "actionable chat from henry") {
+	if !strings.Contains(prompts[1], "urgent chat from henry") {
 		t.Fatalf("expected actionable chat wake reason, got %q", prompts[1])
 	}
 	if !strings.Contains(prompts[1], "explicitly waiting on you") {
