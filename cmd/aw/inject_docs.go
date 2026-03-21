@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -36,6 +35,7 @@ aw mail inbox --unread-only
 - Respond promptly to WAITING conversations
 - Check ` + "`aw workspace status`" + ` before doing coordination work
 - Prefer shared coordination state over local TODO notes: ` + "`aw work ready`" + ` and ` + "`aw work active`" + `
+- You will receive automatic chat notifications after each tool call via the PostToolUse hook (` + "`aw notify`" + `). Respond promptly when notified.
 
 ## Using Mail
 
@@ -67,11 +67,10 @@ const awAgentsTemplate = `# Agent Instructions
 type injectDocsResult struct {
 	Created  []string
 	Injected []string
-	Skipped  []string
 	Errors   []string
 }
 
-func InjectAgentDocs(repoRoot string) (*injectDocsResult, error) {
+func InjectAgentDocs(repoRoot string) *injectDocsResult {
 	result := &injectDocsResult{}
 	candidates := []string{"CLAUDE.md", "AGENTS.md"}
 	processed := map[string]bool{}
@@ -128,7 +127,7 @@ func InjectAgentDocs(repoRoot string) (*injectDocsResult, error) {
 		}
 	}
 
-	return result, nil
+	return result
 }
 
 func removeInjectedDocs(content string) string {
@@ -160,29 +159,14 @@ func printInjectDocsResult(result *injectDocsResult) {
 	for _, name := range result.Injected {
 		fmt.Printf("Injected aw coordination instructions into %s\n", name)
 	}
-	for _, name := range result.Skipped {
-		fmt.Printf("Skipped %s\n", name)
-	}
 	for _, msg := range result.Errors {
 		fmt.Fprintf(os.Stderr, "Warning: could not inject docs: %s\n", msg)
 	}
 }
 
 func resolveRepoRoot(workingDir string) string {
-	if ctxPath, err := filepath.Abs(workingDir); err == nil {
-		if found, err := findGitRoot(ctxPath); err == nil && found != "" {
-			return found
-		}
+	if root, err := currentGitWorktreeRootFromDir(workingDir); err == nil {
+		return root
 	}
 	return workingDir
-}
-
-func findGitRoot(workingDir string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	cmd.Dir = workingDir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
 }

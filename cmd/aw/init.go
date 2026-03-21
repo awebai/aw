@@ -127,12 +127,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 	repoRoot := resolveRepoRoot(opts.WorkingDir)
 	if initInjectDocs {
-		injected, err := InjectAgentDocs(repoRoot)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not inject docs: %v\n", err)
-		} else {
-			printInjectDocsResult(injected)
-		}
+		printInjectDocsResult(InjectAgentDocs(repoRoot))
 	}
 	if initSetupHooks {
 		hookResult := SetupClaudeHooks(repoRoot, isTTY())

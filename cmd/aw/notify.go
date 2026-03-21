@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/awebai/aw/chat"
 	"github.com/spf13/cobra"
@@ -14,8 +15,21 @@ import (
 var notifyCmd = &cobra.Command{
 	Use:   "notify",
 	Short: "Check for pending chat notifications for Claude Code hooks",
-	Args:  cobra.NoArgs,
-	RunE:  runNotify,
+	Long: `Check for pending chat notifications.
+
+Silent if no pending chats; outputs JSON with additionalContext if there are
+messages waiting. Designed for Claude Code PostToolUse hooks so notifications
+are surfaced to the agent automatically.
+
+Hook configuration in .claude/settings.json (set up via aw init --setup-hooks):
+  "hooks": {
+    "PostToolUse": [{
+      "matcher": ".*",
+      "hooks": [{"type": "command", "command": "aw notify"}]
+    }]
+  }`,
+	Args: cobra.NoArgs,
+	RunE: runNotify,
 }
 
 func init() {
@@ -97,10 +111,13 @@ func formatNotifyOutput(result *chat.PendingResult, selfAlias string) string {
 
 func padNotifyLine(line string) string {
 	const width = 65
-	if len(line) >= width {
-		return line[:width] + "║\n"
+	runeCount := utf8.RuneCountInString(line)
+	if runeCount >= width {
+		// Truncate by runes, not bytes
+		runes := []rune(line)
+		return string(runes[:width]) + "║\n"
 	}
-	return line + strings.Repeat(" ", width-len(line)) + "║\n"
+	return line + strings.Repeat(" ", width-runeCount) + "║\n"
 }
 
 func formatHookOutput(content string) string {
