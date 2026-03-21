@@ -277,8 +277,8 @@ func collectInitOptions() (initOptions, error) {
 	cloudToken := ""
 	if cloudMode {
 		cloudToken = resolveCloudToken(baseURL, serverName, accountName, explicitCloudToken, global)
-		if !aliasExplicit && strings.HasPrefix(cloudToken, "aw_sk_") {
-			return initOptions{}, usageError("--alias is required when bootstrapping a new agent with an existing API key")
+		if !aliasExplicit && strings.HasPrefix(cloudToken, "aw_sk_") && !isTTY() {
+			return initOptions{}, usageError("--alias is required when bootstrapping a new agent with an existing API key (non-interactive)")
 		}
 	}
 
