@@ -33,6 +33,8 @@ var (
 	initNamespaceName   string
 	initAlias           string
 	initInviteToken     string
+	initInjectDocs      bool
+	initSetupHooks      bool
 	initHumanName       string
 	initAgentType       string
 	initSaveConfig      bool
@@ -84,6 +86,8 @@ func init() {
 	initCmd.Flags().StringVar(&initNamespaceName, "namespace-name", "", "Namespace display name (default: AWEB_NAMESPACE_NAME or namespace slug)")
 	initCmd.Flags().StringVar(&initAlias, "alias", "", "Agent alias (optional; default: server-suggested)")
 	initCmd.Flags().StringVar(&initInviteToken, "invite", "", "CLI invite token (aw_inv_...)")
+	initCmd.Flags().BoolVar(&initInjectDocs, "inject-docs", false, "Inject aw coordination instructions into CLAUDE.md and AGENTS.md")
+	initCmd.Flags().BoolVar(&initSetupHooks, "setup-hooks", false, "Set up Claude Code PostToolUse hook for aw notify")
 	initCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
 	initCmd.Flags().StringVar(&initAgentType, "agent-type", "", "Agent type (default: AWEB_AGENT_TYPE or agent)")
 	initCmd.Flags().BoolVar(&initSaveConfig, "save-config", true, "Write/update ~/.config/aw/config.yaml with the new credentials")
@@ -120,6 +124,19 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Println("export AWEB_NAMESPACE=" + result.ExportNamespace)
 		fmt.Println("export AWEB_AGENT_ID=" + result.Response.AgentID)
 		fmt.Println("export AWEB_AGENT_ALIAS=" + result.Response.Alias)
+	}
+	repoRoot := resolveRepoRoot(opts.WorkingDir)
+	if initInjectDocs {
+		injected, err := InjectAgentDocs(repoRoot)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not inject docs: %v\n", err)
+		} else {
+			printInjectDocsResult(injected)
+		}
+	}
+	if initSetupHooks {
+		hookResult := SetupClaudeHooks(repoRoot, isTTY())
+		printClaudeHooksResult(hookResult)
 	}
 	return nil
 }
