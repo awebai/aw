@@ -71,7 +71,11 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 		req.AssigneeAgentID = &v
 	}
 	if v, _ := cmd.Flags().GetString("parent"); v != "" {
-		req.ParentTaskID = &v
+		parentID, err := resolveTaskID(ctx, client, v)
+		if err != nil {
+			return fmt.Errorf("resolving parent %s: %w", v, err)
+		}
+		req.ParentTaskID = &parentID
 	}
 
 	task, err := client.TaskCreate(ctx, req)
