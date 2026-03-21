@@ -62,7 +62,7 @@ type TaskCreateRequest struct {
 	Title           string   `json:"title"`
 	Description     string   `json:"description,omitempty"`
 	Notes           string   `json:"notes,omitempty"`
-	Priority        int      `json:"priority,omitempty"`
+	Priority        int      `json:"priority"`
 	TaskType        string   `json:"task_type,omitempty"`
 	Labels          []string `json:"labels,omitempty"`
 	ParentTaskID    *string  `json:"parent_task_id,omitempty"`

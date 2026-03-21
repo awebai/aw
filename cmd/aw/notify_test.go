@@ -88,16 +88,7 @@ func TestAwNotifySilentWithoutConfig(t *testing.T) {
 
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "aw")
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, string(out))
-	}
+	buildAwBinary(t, ctx, bin)
 
 	run := exec.CommandContext(ctx, bin, "notify")
 	run.Env = append(os.Environ(),
@@ -136,16 +127,7 @@ func TestAwNotifySilentOnAPIError(t *testing.T) {
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "aw")
 	cfgPath := filepath.Join(tmp, "config.yaml")
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, string(out))
-	}
+	buildAwBinary(t, ctx, bin)
 
 	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
 servers:
@@ -207,16 +189,7 @@ func TestAwNotifyOutputsHookJSONWhenPendingChatsExist(t *testing.T) {
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "aw")
 	cfgPath := filepath.Join(tmp, "config.yaml")
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, string(out))
-	}
+	buildAwBinary(t, ctx, bin)
 
 	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
 servers:

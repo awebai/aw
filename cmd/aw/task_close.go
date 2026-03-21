@@ -40,7 +40,9 @@ func runTaskClose(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var result taskCloseOutput
+	result := taskCloseOutput{
+		Closed: make([]aweb.TaskUpdateResponse, 0),
+	}
 
 	for _, ref := range args {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
