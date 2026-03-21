@@ -83,7 +83,7 @@ func runTaskCommentList(cmd *cobra.Command, args []string) error {
 			if c.AuthorAgentID != nil {
 				author = *c.AuthorAgentID
 			}
-			sb.WriteString(fmt.Sprintf("[%s] %s:\n  %s\n", taskFormatDate(c.CreatedAt), author, c.Body))
+			sb.WriteString(fmt.Sprintf("[%s] %s:\n  %s\n", formatDate(c.CreatedAt), author, c.Body))
 		}
 		return sb.String()
 	})

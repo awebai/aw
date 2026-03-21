@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	aweb "github.com/awebai/aw"
@@ -17,7 +18,7 @@ var taskCloseCmd = &cobra.Command{
 }
 
 func init() {
-	taskCloseCmd.Flags().String("reason", "", "Reason for closing (stored in notes)")
+	taskCloseCmd.Flags().String("reason", "", "Reason for closing (replaces notes)")
 	taskCmd.AddCommand(taskCloseCmd)
 }
 
@@ -39,12 +40,11 @@ func runTaskClose(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
 	var result taskCloseOutput
 
 	for _, ref := range args {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+
 		status := "closed"
 		req := &aweb.TaskUpdateRequest{Status: &status}
 		if reason != "" {
@@ -52,6 +52,7 @@ func runTaskClose(cmd *cobra.Command, args []string) error {
 		}
 
 		resp, err := client.TaskUpdate(ctx, ref, req)
+		cancel()
 		if err != nil {
 			result.Failures = append(result.Failures, taskCloseFailure{Ref: ref, Error: err.Error()})
 			continue
@@ -59,11 +60,7 @@ func runTaskClose(cmd *cobra.Command, args []string) error {
 		result.Closed = append(result.Closed, *resp)
 	}
 
-	printOutput(result, func(v any) string {
-		r := v.(taskCloseOutput)
-		var sb fmt.Stringer = &closeFormatter{r}
-		return sb.String()
-	})
+	printOutput(result, formatTaskCloseOutput)
 
 	if len(result.Failures) > 0 {
 		return fmt.Errorf("failed to close %d of %d tasks", len(result.Failures), len(args))
@@ -71,20 +68,17 @@ func runTaskClose(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-type closeFormatter struct {
-	r taskCloseOutput
-}
-
-func (f *closeFormatter) String() string {
-	var s string
-	for _, closed := range f.r.Closed {
-		s += fmt.Sprintf("✓ Closed %s: %s\n", closed.TaskRef, closed.Title)
+func formatTaskCloseOutput(v any) string {
+	r := v.(taskCloseOutput)
+	var sb strings.Builder
+	for _, closed := range r.Closed {
+		sb.WriteString(fmt.Sprintf("✓ Closed %s: %s\n", closed.TaskRef, closed.Title))
 		for _, ac := range closed.AutoClosed {
-			s += fmt.Sprintf("  ✓ Auto-closed %s: %s\n", ac.TaskRef, ac.Title)
+			sb.WriteString(fmt.Sprintf("  ✓ Auto-closed %s: %s\n", ac.TaskRef, ac.Title))
 		}
 	}
-	for _, fail := range f.r.Failures {
-		s += fmt.Sprintf("✗ Failed to close %s: %s\n", fail.Ref, fail.Error)
+	for _, fail := range r.Failures {
+		sb.WriteString(fmt.Sprintf("✗ Failed to close %s: %s\n", fail.Ref, fail.Error))
 	}
-	return s
+	return sb.String()
 }

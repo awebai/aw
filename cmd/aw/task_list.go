@@ -50,7 +50,7 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 		params.Priority = &pv
 	}
 	if v, _ := cmd.Flags().GetString("labels"); v != "" {
-		params.Labels = strings.Split(v, ",")
+		params.Labels = splitAndTrimLabels(v)
 	}
 	if v, _ := cmd.Flags().GetString("assignee"); v != "" {
 		params.AssigneeAgentID = v

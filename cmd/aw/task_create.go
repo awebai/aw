@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	aweb "github.com/awebai/aw"
@@ -66,7 +65,7 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 		req.Priority = pv
 	}
 	if v, _ := cmd.Flags().GetString("labels"); v != "" {
-		req.Labels = strings.Split(v, ",")
+		req.Labels = splitAndTrimLabels(v)
 	}
 	if v, _ := cmd.Flags().GetString("assignee"); v != "" {
 		req.AssigneeAgentID = &v

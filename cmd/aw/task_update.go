@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	aweb "github.com/awebai/aw"
@@ -65,7 +64,7 @@ func runTaskUpdate(cmd *cobra.Command, args []string) error {
 		hasUpdate = true
 	}
 	if v, _ := cmd.Flags().GetString("labels"); v != "" {
-		req.Labels = strings.Split(v, ",")
+		req.Labels = splitAndTrimLabels(v)
 		hasUpdate = true
 	}
 	if v, _ := cmd.Flags().GetString("assignee"); v != "" {

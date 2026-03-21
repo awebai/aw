@@ -227,7 +227,7 @@ func formatWorkList(v any) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%s (%d):\n\n", title, len(out.Items)))
 	for i, item := range out.Items {
-		icon := workPriorityIcon(item.Priority)
+		icon := priorityIcon(item.Priority)
 		sb.WriteString(fmt.Sprintf("%d. [%s P%d] [%s] %s: %s", i+1, icon, item.Priority, item.TaskType, item.TaskRef, item.Title))
 		if item.OwnerAlias != nil && strings.TrimSpace(*item.OwnerAlias) != "" {
 			sb.WriteString(fmt.Sprintf(" — %s", strings.TrimSpace(*item.OwnerAlias)))
@@ -241,13 +241,6 @@ func formatWorkList(v any) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
-}
-
-func workPriorityIcon(p int) string {
-	if p <= 2 {
-		return "●"
-	}
-	return "○"
 }
 
 func currentWorkspaceID(workingDir string, sel *awconfig.Selection) string {

@@ -23,6 +23,7 @@ type taskStatsOutput struct {
 	Total      int `json:"total"`
 	Open       int `json:"open"`
 	InProgress int `json:"in_progress"`
+	Blocked    int `json:"blocked"`
 	Closed     int `json:"closed"`
 }
 
@@ -48,6 +49,8 @@ func runTaskStats(cmd *cobra.Command, args []string) error {
 			stats.Open++
 		case "in_progress":
 			stats.InProgress++
+		case "blocked":
+			stats.Blocked++
 		case "closed":
 			stats.Closed++
 		}
@@ -55,8 +58,8 @@ func runTaskStats(cmd *cobra.Command, args []string) error {
 
 	printOutput(stats, func(v any) string {
 		s := v.(taskStatsOutput)
-		return fmt.Sprintf("Total: %d\n  Open: %d\n  In progress: %d\n  Closed: %d\n",
-			s.Total, s.Open, s.InProgress, s.Closed)
+		return fmt.Sprintf("Total: %d\n  Open: %d\n  In progress: %d\n  Blocked: %d\n  Closed: %d\n",
+			s.Total, s.Open, s.InProgress, s.Blocked, s.Closed)
 	})
 	return nil
 }
