@@ -496,9 +496,6 @@ func printInitSummary(resp *awid.InitResponse, accountName, serverName string, a
 	if strings.TrimSpace(resp.NamespaceSlug) != "" {
 		fmt.Printf("Namespace:  %s\n", strings.TrimSpace(resp.NamespaceSlug))
 	}
-	if strings.TrimSpace(accountName) != "" {
-		fmt.Printf("Account:    %s\n", strings.TrimSpace(accountName))
-	}
 	if strings.TrimSpace(serverName) != "" {
 		fmt.Printf("Server:     %s\n", strings.TrimSpace(serverName))
 	}
