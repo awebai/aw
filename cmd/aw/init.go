@@ -133,6 +133,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 		hookResult := SetupClaudeHooks(repoRoot, isTTY())
 		printClaudeHooksResult(hookResult)
 	}
+	if !jsonFlag {
+		printInitNextSteps(initInjectDocs, initSetupHooks)
+	}
 	return nil
 }
 
@@ -496,19 +499,35 @@ func printInitSummary(resp *awid.InitResponse, accountName, serverName string, a
 	if strings.TrimSpace(resp.NamespaceSlug) != "" {
 		fmt.Printf("Namespace:  %s\n", strings.TrimSpace(resp.NamespaceSlug))
 	}
+	if strings.TrimSpace(resp.Address) != "" {
+		fmt.Printf("Address:    %s\n", strings.TrimSpace(resp.Address))
+	}
 	if strings.TrimSpace(serverName) != "" {
 		fmt.Printf("Server:     %s\n", strings.TrimSpace(serverName))
 	}
-	if attachResult == nil {
+	if attachResult != nil {
+		switch strings.TrimSpace(attachResult.ContextKind) {
+		case "repo_worktree":
+			if attachResult.Workspace != nil {
+				fmt.Printf("Context:    attached %s\n", strings.TrimSpace(attachResult.Workspace.CanonicalOrigin))
+			}
+		case "local_dir":
+			fmt.Println("Context:    attached local directory")
+		}
+	}
+}
+
+func printInitNextSteps(didInjectDocs, didSetupHooks bool) {
+	if didInjectDocs && didSetupHooks {
 		return
 	}
-	switch strings.TrimSpace(attachResult.ContextKind) {
-	case "repo_worktree":
-		if attachResult.Workspace != nil {
-			fmt.Printf("Context:    attached %s\n", strings.TrimSpace(attachResult.Workspace.CanonicalOrigin))
-		}
-	case "local_dir":
-		fmt.Println("Context:    attached local directory")
+	fmt.Println()
+	fmt.Println("Next steps:")
+	if !didInjectDocs {
+		fmt.Println("  aw init --inject-docs    Add coordination instructions to CLAUDE.md / AGENTS.md")
+	}
+	if !didSetupHooks {
+		fmt.Println("  aw init --setup-hooks    Set up Claude Code chat notification hook")
 	}
 }
 
