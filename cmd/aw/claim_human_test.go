@@ -108,6 +108,90 @@ default_account: acct
 	}
 }
 
+func TestAwClaimHumanNormalizesAPIServerURL(t *testing.T) {
+	t.Parallel()
+
+	var seenClaim bool
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/claim-human":
+			seenClaim = true
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":   "verification_sent",
+				"message":  "Check your inbox",
+				"email":    "alice@example.com",
+				"org_id":   "org-1",
+				"org_slug": "myteam",
+			})
+		case "/api/v1/namespaces":
+			// resolveCloudClient should not probe or list namespaces here; fail loudly if it does.
+			t.Fatalf("unexpected namespace request: %s", r.URL.Path)
+		case "/api/v1/claim-human/":
+			t.Fatalf("unexpected claim-human path with trailing slash: %s", r.URL.Path)
+		case "/api/api/v1/claim-human":
+			t.Fatalf("claim-human doubled /api prefix: %s", r.URL.Path)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`/api
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com", "--json")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	if !seenClaim {
+		t.Fatalf("expected claim-human request to hit cloud root path")
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(extractJSON(t, out), &resp); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if resp["status"] != "verification_sent" {
+		t.Fatalf("status=%v", resp["status"])
+	}
+}
+
 func TestAwClaimHumanTextOutput(t *testing.T) {
 	t.Parallel()
 

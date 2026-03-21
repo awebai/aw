@@ -19,7 +19,7 @@ var claimHumanCmd = &cobra.Command{
 			return usageError("missing required flag: --email")
 		}
 
-		client, err := resolveClient()
+		client, err := resolveCloudClient()
 		if err != nil {
 			return err
 		}
