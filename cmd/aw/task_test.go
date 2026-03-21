@@ -424,3 +424,227 @@ default_account: acct
 		t.Fatalf("expected error for missing ref, got success:\n%s", string(out))
 	}
 }
+
+func TestAwTaskUpdateSuccess(t *testing.T) {
+	t.Parallel()
+
+	var gotReq map[string]any
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPatch && r.URL.Path == "/v1/tasks/PROJ-001":
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &gotReq)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"task_id":     "tid-1",
+				"task_ref":    "PROJ-001",
+				"task_number": 1,
+				"title":       "Updated title",
+				"status":      "in_progress",
+				"priority":    1,
+				"task_type":   "task",
+				"created_at":  "2026-03-21T10:00:00Z",
+				"updated_at":  "2026-03-21T11:00:00Z",
+			})
+		case r.URL.Path == "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	buildAwBinary(t, ctx, bin)
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+    agent_id: agent-1
+    agent_alias: alice
+    namespace_slug: demo
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "task", "update", "PROJ-001",
+		"--status", "in_progress",
+		"--title", "Updated title",
+	)
+	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+	text := string(out)
+	if !strings.Contains(text, "PROJ-001") || !strings.Contains(text, "Updated title") {
+		t.Fatalf("output missing task info:\n%s", text)
+	}
+	if gotReq["status"] != "in_progress" {
+		t.Fatalf("status=%v", gotReq["status"])
+	}
+	if gotReq["title"] != "Updated title" {
+		t.Fatalf("title=%v", gotReq["title"])
+	}
+}
+
+func TestAwTaskUpdateRequiresFields(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("no API call expected, got %s %s", r.Method, r.URL.Path)
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	buildAwBinary(t, ctx, bin)
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+    agent_id: agent-1
+    agent_alias: alice
+    namespace_slug: demo
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "task", "update", "PROJ-001")
+	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected error for no fields, got success:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "no fields to update") {
+		t.Fatalf("expected 'no fields to update' error, got:\n%s", string(out))
+	}
+}
+
+func TestAwTaskCloseSuccess(t *testing.T) {
+	t.Parallel()
+
+	var closedRefs []string
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/v1/tasks/"):
+			ref := strings.TrimPrefix(r.URL.Path, "/v1/tasks/")
+			closedRefs = append(closedRefs, ref)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"task_id":     "tid-" + ref,
+				"task_ref":    ref,
+				"task_number": 1,
+				"title":       "Task " + ref,
+				"status":      "closed",
+				"priority":    2,
+				"task_type":   "task",
+				"created_at":  "2026-03-21T10:00:00Z",
+				"updated_at":  "2026-03-21T11:00:00Z",
+			})
+		case r.URL.Path == "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	buildAwBinary(t, ctx, bin)
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+    agent_id: agent-1
+    agent_alias: alice
+    namespace_slug: demo
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Close multiple tasks at once
+	run := exec.CommandContext(ctx, bin, "task", "close", "PROJ-001", "PROJ-002")
+	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+	text := string(out)
+	if !strings.Contains(text, "PROJ-001") || !strings.Contains(text, "PROJ-002") {
+		t.Fatalf("output missing closed refs:\n%s", text)
+	}
+	if len(closedRefs) != 2 {
+		t.Fatalf("expected 2 close calls, got %d", len(closedRefs))
+	}
+}
+
+func TestAwTaskCloseRequiresRef(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("no API call expected, got %s %s", r.Method, r.URL.Path)
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	buildAwBinary(t, ctx, bin)
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+    agent_id: agent-1
+    agent_alias: alice
+    namespace_slug: demo
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "task", "close")
+	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected error for missing ref, got success:\n%s", string(out))
+	}
+}
