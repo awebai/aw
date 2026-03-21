@@ -381,7 +381,7 @@ func executeInit(opts initOptions) (*initResult, error) {
 
 	var resp *awid.InitResponse
 	if opts.InviteToken != "" {
-		resp, err = acceptInviteViaCloud(ctx, opts.BaseURL, opts.InviteToken, opts.Alias, opts.HumanName, opts.AgentType, did, pubKeyB64)
+		resp, err = acceptInviteViaCloud(ctx, opts.BaseURL, opts.InviteToken, opts.Alias, opts.HumanName, opts.AgentType, did, pubKeyB64, resolveInitLifetime(opts.Lifetime))
 	} else if opts.CloudMode {
 		resp, err = bootstrapViaCloud(ctx, opts.BaseURL, opts.CloudToken, req, opts.TargetNamespace)
 	} else if opts.BootstrapAPIKey == "" {
@@ -710,6 +710,7 @@ func acceptInviteViaCloud(
 	agentType string,
 	did string,
 	publicKey string,
+	lifetime string,
 ) (*awid.InitResponse, error) {
 	client, err := newUnauthenticatedCloudClient(baseURL)
 	if err != nil {
@@ -723,7 +724,7 @@ func acceptInviteViaCloud(
 		DID:       did,
 		PublicKey: publicKey,
 		Custody:   awid.CustodySelf,
-		Lifetime:  awid.LifetimePersistent,
+		Lifetime:  lifetime,
 	}
 	resp, err := client.InviteAccept(ctx, req)
 	if err != nil {

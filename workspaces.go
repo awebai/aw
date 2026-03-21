@@ -1,6 +1,10 @@
 package aweb
 
-import "context"
+import (
+	"context"
+
+	"github.com/awebai/aw/awid"
+)
 
 type WorkspaceRegisterRequest struct {
 	RepoOrigin    string `json:"repo_origin"`
@@ -137,8 +141,15 @@ func (c *Client) WorkspaceTeam(ctx context.Context, params WorkspaceTeamParams) 
 }
 
 // WorkspaceDelete soft-deletes a workspace by its ID.
+// Returns nil if the workspace was already deleted (404).
 func (c *Client) WorkspaceDelete(ctx context.Context, workspaceID string) error {
-	return c.Delete(ctx, "/v1/workspaces/"+urlPathEscape(workspaceID))
+	err := c.Delete(ctx, "/v1/workspaces/"+urlPathEscape(workspaceID))
+	if err != nil {
+		if code, ok := awid.HTTPStatusCode(err); ok && code == 404 {
+			return nil
+		}
+	}
+	return err
 }
 
 type WorkspaceListParams struct {
