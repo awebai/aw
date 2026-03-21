@@ -67,6 +67,7 @@ type initOptions struct {
 	InviteToken                   string
 	AccountName                   string
 	WorkspaceRole                 string
+	Lifetime                      string // "persistent" (default) or "ephemeral"
 }
 
 type initResult struct {
@@ -371,7 +372,7 @@ func executeInit(opts initOptions) (*initResult, error) {
 		DID:         did,
 		PublicKey:   pubKeyB64,
 		Custody:     awid.CustodySelf,
-		Lifetime:    awid.LifetimePersistent,
+		Lifetime:    resolveInitLifetime(opts.Lifetime),
 	}
 	if strings.TrimSpace(opts.Alias) != "" {
 		alias := strings.TrimSpace(opts.Alias)
@@ -754,6 +755,13 @@ func acceptInviteViaCloud(
 		Custody:       resp.Custody,
 		Lifetime:      resp.Lifetime,
 	}, nil
+}
+
+func resolveInitLifetime(explicit string) string {
+	if strings.TrimSpace(explicit) != "" {
+		return strings.TrimSpace(explicit)
+	}
+	return awid.LifetimePersistent
 }
 
 func resolveInitAPIKey(baseURL, serverName, accountName string, global *awconfig.GlobalConfig) string {

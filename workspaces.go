@@ -136,6 +136,32 @@ func (c *Client) WorkspaceTeam(ctx context.Context, params WorkspaceTeamParams) 
 	return &out, nil
 }
 
+// WorkspaceDelete soft-deletes a workspace by its ID.
+func (c *Client) WorkspaceDelete(ctx context.Context, workspaceID string) error {
+	return c.Delete(ctx, "/v1/workspaces/"+urlPathEscape(workspaceID))
+}
+
+type WorkspaceListParams struct {
+	Hostname        string
+	IncludePresence bool
+}
+
+// WorkspaceList lists workspaces, optionally filtered by hostname.
+func (c *Client) WorkspaceList(ctx context.Context, params WorkspaceListParams) (*WorkspaceListResponse, error) {
+	path := "/v1/workspaces"
+	sep := "?"
+	if params.Hostname != "" {
+		path += sep + "hostname=" + urlQueryEscape(params.Hostname)
+		sep = "&"
+	}
+	path += sep + "include_presence=" + boolString(params.IncludePresence)
+	var out WorkspaceListResponse
+	if err := c.Get(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func boolString(v bool) string {
 	if v {
 		return "true"

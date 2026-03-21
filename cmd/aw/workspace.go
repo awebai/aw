@@ -208,6 +208,11 @@ func runWorkspaceStatus(cmd *cobra.Command, args []string) error {
 		EscalationsPending: statusResp.EscalationsPending,
 		ConflictCount:      len(statusResp.Conflicts),
 	}, formatWorkspaceStatus)
+
+	// Opportunistically clean up workspaces whose directories have disappeared.
+	if gone := detectGoneWorkspaces(client, workspaceID); len(gone) > 0 {
+		fmt.Fprint(os.Stderr, formatGoneWorkspaces(gone))
+	}
 	return nil
 }
 
@@ -340,6 +345,7 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 			BootstrapAPIKey: "",
 			AccountName:     "",
 			WorkspaceRole:   role,
+			Lifetime:        awid.LifetimeEphemeral,
 		}
 		if strings.HasPrefix(sourceAPIKey, "aw_sk_") {
 			initOpts.BootstrapAPIKey = sourceAPIKey

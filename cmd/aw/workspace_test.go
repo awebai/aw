@@ -367,6 +367,8 @@ func TestAwWorkspaceStatusShowsTeamState(t *testing.T) {
 				"escalations_pending": 2,
 				"timestamp":           "2026-03-10T10:10:00Z",
 			})
+		case "/v1/workspaces":
+			_ = json.NewEncoder(w).Encode(map[string]any{"workspaces": []map[string]any{}, "has_more": false})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -490,6 +492,8 @@ func TestAwWorkspaceStatusWithoutLocalWorkspaceShowsAgentContext(t *testing.T) {
 				"escalations_pending": 1,
 				"timestamp":           "2026-03-10T10:10:00Z",
 			})
+		case "/v1/workspaces":
+			_ = json.NewEncoder(w).Encode(map[string]any{"workspaces": []map[string]any{}, "has_more": false})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
 		default:
