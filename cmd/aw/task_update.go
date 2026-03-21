@@ -25,7 +25,7 @@ func init() {
 	taskUpdateCmd.Flags().String("type", "", "Type (task, bug, feature, epic)")
 	taskUpdateCmd.Flags().String("priority", "", "Priority 0-4 (accepts P0-P4)")
 	taskUpdateCmd.Flags().String("labels", "", "Comma-separated labels")
-	taskUpdateCmd.Flags().String("assignee", "", "Assignee agent alias or ID")
+	taskUpdateCmd.Flags().String("assignee", "", "Assignee agent alias")
 	taskCmd.AddCommand(taskUpdateCmd)
 }
 
