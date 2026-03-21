@@ -102,6 +102,21 @@ func init() {
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
+	// When only --inject-docs or --setup-hooks are requested, operate on the
+	// existing workspace without running the full init/register flow.
+	if (initInjectDocs || initSetupHooks) && !initNeedsFullInit() {
+		wd, _ := os.Getwd()
+		repoRoot := resolveRepoRoot(wd)
+		if initInjectDocs {
+			printInjectDocsResult(InjectAgentDocs(repoRoot))
+		}
+		if initSetupHooks {
+			hookResult := SetupClaudeHooks(repoRoot, isTTY())
+			printClaudeHooksResult(hookResult)
+		}
+		return nil
+	}
+
 	opts, err := collectInitOptions()
 	if err != nil {
 		return err
@@ -137,6 +152,18 @@ func runInit(cmd *cobra.Command, args []string) error {
 		printInitNextSteps(initInjectDocs, initSetupHooks)
 	}
 	return nil
+}
+
+// initNeedsFullInit returns true if the user passed flags that require the
+// full register flow (server-url, namespace, alias, invite, etc.) or if no
+// .aw/context exists yet (first-time init).
+func initNeedsFullInit() bool {
+	if initServerURL != "" || initNamespaceSlug != "" || initAlias != "" || initInviteToken != "" {
+		return true
+	}
+	wd, _ := os.Getwd()
+	_, _, err := awconfig.LoadWorktreeContextFromDir(wd)
+	return err != nil
 }
 
 func collectInitOptions() (initOptions, error) {
