@@ -1,17 +1,13 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 
 	aweb "github.com/awebai/aw"
 	"github.com/spf13/cobra"
 )
-
-var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 var taskCmd = &cobra.Command{
 	Use:   "task",
@@ -89,20 +85,6 @@ func parsePriority(raw string) (int, error) {
 		return 0, fmt.Errorf("invalid priority %q — use a number 0-4 (e.g., --priority 2 or --priority P2)", raw)
 	}
 	return pv, nil
-}
-
-// resolveTaskID takes a task ref or UUID and returns the task UUID.
-// If the value is already a UUID, it's returned as-is. Otherwise it's
-// looked up via TaskGet to resolve the ref to an ID.
-func resolveTaskID(ctx context.Context, client *aweb.Client, refOrID string) (string, error) {
-	if uuidPattern.MatchString(strings.ToLower(refOrID)) {
-		return refOrID, nil
-	}
-	task, err := client.TaskGet(ctx, refOrID)
-	if err != nil {
-		return "", err
-	}
-	return task.TaskID, nil
 }
 
 // splitAndTrimLabels splits a comma-separated label string and trims whitespace.

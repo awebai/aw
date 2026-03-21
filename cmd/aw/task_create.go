@@ -38,9 +38,6 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
 	const defaultPriority = 2
 
 	req := &aweb.TaskCreateRequest{
@@ -71,12 +68,11 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 		req.AssigneeAgentID = &v
 	}
 	if v, _ := cmd.Flags().GetString("parent"); v != "" {
-		parentID, err := resolveTaskID(ctx, client, v)
-		if err != nil {
-			return fmt.Errorf("resolving parent %s: %w", v, err)
-		}
-		req.ParentTaskID = &parentID
+		req.ParentTaskID = &v
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 
 	task, err := client.TaskCreate(ctx, req)
 	if err != nil {
