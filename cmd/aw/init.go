@@ -202,13 +202,9 @@ func collectInitOptions() (initOptions, error) {
 		} else if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); v != "" {
 			if !strings.HasPrefix(v, "aw_sk_") {
 				cloudMode = true
-			} else if strings.TrimSpace(initNamespaceSlug) == "" &&
-				strings.TrimSpace(os.Getenv("AWEB_NAMESPACE")) == "" &&
-				strings.TrimSpace(os.Getenv("AWEB_PROJECT_SLUG")) == "" &&
-				strings.TrimSpace(os.Getenv("AWEB_PROJECT")) == "" &&
-				targetNamespace == "" {
-				cloudMode = true
 			}
+			// aw_sk_ keys are project API keys — they go through the
+			// OSS init path as BootstrapAPIKey, not cloud bootstrap.
 		}
 	}
 
@@ -279,20 +275,36 @@ func collectInitOptions() (initOptions, error) {
 	}
 
 	cloudToken := ""
+	bootstrapAPIKey := ""
 	if cloudMode {
 		cloudToken = resolveCloudToken(baseURL, serverName, accountName, explicitCloudToken, global)
 		if !aliasExplicit && strings.HasPrefix(cloudToken, "aw_sk_") && !isTTY() {
 			return initOptions{}, usageError("--alias is required when bootstrapping a new agent with an existing API key (non-interactive)")
 		}
 	}
+	// aw_sk_ keys from AWEB_API_KEY env are project API keys — route through
+	// OSS init, not cloud bootstrap. Stored config keys are NOT used here;
+	// they belong to existing agents and should not bootstrap new ones.
+	if !cloudMode {
+		if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); strings.HasPrefix(v, "aw_sk_") {
+			bootstrapAPIKey = v
+			if !aliasExplicit && !isTTY() {
+				return initOptions{}, usageError("--alias is required when bootstrapping a new agent with an existing API key (non-interactive)")
+			}
+		}
+	}
 
 	// Fetch alias suggestion and available roles from the server.
-	// For the project-key flow (cloudMode with aw_sk_ token), use an
-	// authenticated client so the server can infer the project.
+	// Use the project key for auth when available so the server can
+	// infer the project and return project-specific suggestions.
+	authToken := cloudToken
+	if authToken == "" {
+		authToken = bootstrapAPIKey
+	}
 	var suggestedRoles []string
 	aliasWasDefaultSuggestion := false
 	if !aliasExplicit && inviteToken == "" {
-		suggestion := fetchInitSuggestion(baseURL, nsSlug, cloudToken)
+		suggestion := fetchInitSuggestion(baseURL, nsSlug, authToken)
 		if strings.TrimSpace(suggestion.NamePrefix) != "" {
 			alias = suggestion.NamePrefix
 		} else {
@@ -360,7 +372,7 @@ func collectInitOptions() (initOptions, error) {
 		CloudMode:                     cloudMode,
 		CloudToken:                    cloudToken,
 		TargetNamespace:               targetNamespace,
-		BootstrapAPIKey:               "",
+		BootstrapAPIKey:               bootstrapAPIKey,
 		InviteToken:                   inviteToken,
 		AccountName:                   accountName,
 		WorkspaceRole:                 role,

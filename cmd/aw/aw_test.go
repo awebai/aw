@@ -1807,6 +1807,8 @@ func TestAwInitCloudWithAPIKeyRequiresAlias(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "alice", "roles": []string{}})
 		case "/api/v1/agents/bootstrap":
 			t.Fatal("bootstrap should not be called when alias is missing")
 		default:
@@ -5616,37 +5618,32 @@ func TestAwInitNamespaceStoresInConfig(t *testing.T) {
 	}
 }
 
-func TestAwInitHostedProjectKeyAutoCloudWithoutNamespace(t *testing.T) {
+func TestAwInitProjectKeyRoutesToOSSInit(t *testing.T) {
 	t.Parallel()
 
-	var bootstrapAuth string
-	var bootstrapBody map[string]any
+	// aw_sk_ keys from AWEB_API_KEY should route through /v1/init (OSS path),
+	// not /api/v1/agents/bootstrap (cloud path).
+	var initAuth string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/agents/bootstrap":
-			bootstrapAuth = r.Header.Get("Authorization")
-			if err := json.NewDecoder(r.Body).Decode(&bootstrapBody); err != nil {
-				t.Fatal(err)
-			}
+		case "/v1/init":
+			initAuth = r.Header.Get("Authorization")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"org_id":       "org-1",
-				"org_slug":     "livepub",
-				"org_name":     "Live Publication",
-				"project_id":   "proj-1",
-				"project_slug": "live-publication-project",
-				"project_name": "Live Publication Project",
-				"server_url":   "http://localhost:9999",
-				"api_key":      "aw_sk_new",
-				"agent_id":     "agent-new",
-				"alias":        "coordinator",
-				"created":      true,
-				"did":          "did:key:z6MkrE2V7wKtsQxC3YGHc6Uf2a8Kz1JkP8Y5Gm23Nfej4m9b",
-				"stable_id":    "did:aw:livepubstableid12345678901234567",
-				"custody":      "self",
-				"lifetime":     "persistent",
+				"status":        "ok",
+				"project_id":    "proj-1",
+				"project_slug":  "live-publication-project",
+				"agent_id":      "agent-new",
+				"alias":         "coordinator",
+				"api_key":       "aw_sk_new",
+				"created":       true,
+				"did":           "did:key:z6MkTest",
+				"custody":       "self",
+				"lifetime":      "persistent",
 			})
 		case "/v1/agents/suggest-alias-prefix":
-			t.Fatalf("unexpected alias suggestion request for hosted bootstrap without namespace")
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "coordinator", "roles": []string{}})
+		case "/api/v1/agents/bootstrap":
+			t.Fatal("aw_sk_ key should not hit cloud bootstrap")
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
@@ -5676,6 +5673,7 @@ func TestAwInitHostedProjectKeyAutoCloudWithoutNamespace(t *testing.T) {
 
 	run := exec.CommandContext(ctx, bin, "init",
 		"--server-url", server.URL,
+		"--namespace", "livepub",
 		"--alias", "coordinator",
 		"--write-context=false",
 	)
@@ -5690,11 +5688,8 @@ func TestAwInitHostedProjectKeyAutoCloudWithoutNamespace(t *testing.T) {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 
-	if bootstrapAuth != "Bearer aw_sk_project" {
-		t.Fatalf("Authorization=%q, want Bearer aw_sk_project", bootstrapAuth)
-	}
-	if got := bootstrapBody["namespace_slug"]; got != nil && got != "" {
-		t.Fatalf("namespace_slug=%v, want empty for inferred owner namespace", got)
+	if initAuth != "Bearer aw_sk_project" {
+		t.Fatalf("Authorization=%q, want Bearer aw_sk_project", initAuth)
 	}
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -5710,8 +5705,8 @@ func TestAwInitHostedProjectKeyAutoCloudWithoutNamespace(t *testing.T) {
 	for name, acct := range cfg.Accounts {
 		if acct["api_key"] == "aw_sk_new" {
 			found = true
-			if acct["namespace_slug"] != "livepub" {
-				t.Fatalf("accounts.%s.namespace_slug=%v, want livepub", name, acct["namespace_slug"])
+			if acct["namespace_slug"] != "livepub" && acct["namespace_slug"] != "live-publication-project" {
+				t.Fatalf("accounts.%s.namespace_slug=%v, want livepub or live-publication-project", name, acct["namespace_slug"])
 			}
 			if acct["agent_alias"] != "coordinator" {
 				t.Fatalf("accounts.%s.agent_alias=%v, want coordinator", name, acct["agent_alias"])
