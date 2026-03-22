@@ -583,33 +583,29 @@ func TestAwWorkspaceAddWorktreeCreatesSiblingWorktree(t *testing.T) {
 				"project_slug": "demo",
 				"name_prefix":  "bob",
 			})
-		case "/v1/init":
+		case "/api/v1/agents/bootstrap":
 			initAuth = r.Header.Get("Authorization")
 			var req map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode init request: %v", err)
-			}
-			if req["project_slug"] != "demo" {
-				t.Fatalf("project_slug=%v", req["project_slug"])
+				t.Fatalf("decode bootstrap request: %v", err)
 			}
 			if req["alias"] != "bob" {
 				t.Fatalf("alias=%v", req["alias"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":         "ok",
-				"created_at":     "2026-03-10T10:00:00Z",
-				"project_id":     "proj-1",
-				"project_slug":   "demo",
-				"namespace_slug": "demo",
-				"namespace":      "demo",
-				"agent_id":       newID,
-				"alias":          "bob",
-				"api_key":        "aw_sk_new",
-				"address":        "demo/bob",
-				"created":        true,
-				"did":            "did:key:z6Mktest",
-				"custody":        "self",
-				"lifetime":       "persistent",
+				"org_id":       "org-1",
+				"org_slug":     "demo",
+				"project_id":   "proj-1",
+				"project_slug": "demo",
+				"namespace":    "demo",
+				"agent_id":     newID,
+				"alias":        "bob",
+				"api_key":      "aw_sk_new",
+				"address":      "demo/bob",
+				"created":      true,
+				"did":          "did:key:z6Mktest",
+				"custody":      "self",
+				"lifetime":     "ephemeral",
 			})
 		case "/v1/workspaces/register":
 			registerAuth = r.Header.Get("Authorization")
@@ -903,29 +899,28 @@ func TestAwWorkspaceAddWorktreeExplicitAliasCreatesSiblingWorktree(t *testing.T)
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/init":
+		case "/api/v1/agents/bootstrap":
 			var req map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode init request: %v", err)
+				t.Fatalf("decode bootstrap request: %v", err)
 			}
 			if req["alias"] != "carol" {
 				t.Fatalf("alias=%v", req["alias"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":         "ok",
-				"created_at":     "2026-03-10T10:00:00Z",
-				"project_id":     "proj-1",
-				"project_slug":   "demo",
-				"namespace_slug": "demo",
-				"namespace":      "demo",
-				"agent_id":       newID,
-				"alias":          "carol",
-				"api_key":        "aw_sk_new",
-				"address":        "demo/carol",
-				"created":        true,
-				"did":            "did:key:z6Mktest",
-				"custody":        "self",
-				"lifetime":       "persistent",
+				"org_id":       "org-1",
+				"org_slug":     "demo",
+				"project_id":   "proj-1",
+				"project_slug": "demo",
+				"namespace":    "demo",
+				"agent_id":     newID,
+				"alias":        "carol",
+				"api_key":      "aw_sk_new",
+				"address":      "demo/carol",
+				"created":      true,
+				"did":          "did:key:z6Mktest",
+				"custody":      "self",
+				"lifetime":     "ephemeral",
 			})
 		case "/v1/workspaces/register":
 			var req map[string]any
@@ -1030,7 +1025,7 @@ func TestAwWorkspaceAddWorktreeCleansUpOnInitFailure(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/init":
+		case "/api/v1/agents/bootstrap":
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"error": map[string]any{
@@ -1150,11 +1145,11 @@ func TestAwWorkspaceAddWorktreeRetriesAliasTakenSuggestion(t *testing.T) {
 			default:
 				t.Fatalf("unexpected suggest call %d", suggestCalls)
 			}
-		case "/v1/init":
+		case "/api/v1/agents/bootstrap":
 			initCalls++
 			var req map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode init request: %v", err)
+				t.Fatalf("decode bootstrap request: %v", err)
 			}
 			switch initCalls {
 			case 1:
@@ -1176,23 +1171,22 @@ func TestAwWorkspaceAddWorktreeRetriesAliasTakenSuggestion(t *testing.T) {
 					t.Fatalf("second alias=%v", req["alias"])
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{
-					"status":         "ok",
-					"created_at":     "2026-03-10T10:00:00Z",
-					"project_id":     "proj-1",
-					"project_slug":   "demo",
-					"namespace_slug": "demo",
-					"namespace":      "demo",
-					"agent_id":       newID,
-					"alias":          "bob-3",
-					"api_key":        "aw_sk_new",
-					"address":        "demo/bob-3",
-					"created":        true,
-					"did":            "did:key:z6Mktest",
-					"custody":        "self",
-					"lifetime":       "persistent",
+					"org_id":       "org-1",
+					"org_slug":     "demo",
+					"project_id":   "proj-1",
+					"project_slug": "demo",
+					"namespace":    "demo",
+					"agent_id":     newID,
+					"alias":        "bob-3",
+					"api_key":      "aw_sk_new",
+					"address":      "demo/bob-3",
+					"created":      true,
+					"did":          "did:key:z6Mktest",
+					"custody":      "self",
+					"lifetime":     "ephemeral",
 				})
 			default:
-				t.Fatalf("unexpected init call %d", initCalls)
+				t.Fatalf("unexpected bootstrap call %d", initCalls)
 			}
 		case "/v1/workspaces/register":
 			var req map[string]any
