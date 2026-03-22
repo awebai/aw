@@ -64,7 +64,7 @@ func appendInteractionLogForDir(startDir string, entry *InteractionEntry) {
 	if interactionEntryExists(path, entry.Kind, entry.MessageID) {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		debugLog("interaction-log: mkdir %s: %v", filepath.Dir(path), err)
 		return
 	}
@@ -188,8 +188,9 @@ func summarizeInteractionText(text string, limit int) string {
 	if text == "" {
 		return ""
 	}
-	if limit > 0 && len(text) > limit {
-		return text[:limit-1] + "…"
+	runes := []rune(text)
+	if limit > 0 && len(runes) > limit {
+		return string(runes[:limit-1]) + "…"
 	}
 	return text
 }
