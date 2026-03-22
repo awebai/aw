@@ -6,7 +6,26 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
+
+// AnnouncementMaxAge is the maximum age for rotation and replacement
+// announcements. Announcements older than this are rejected to prevent
+// replay attacks.
+const AnnouncementMaxAge = 7 * 24 * time.Hour
+
+// isTimestampFresh returns true if the timestamp is valid RFC3339 and
+// within AnnouncementMaxAge of now.
+func isTimestampFresh(ts string) bool {
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339Nano, ts)
+		if err != nil {
+			return false
+		}
+	}
+	return time.Since(t).Abs() <= AnnouncementMaxAge
+}
 
 type VerificationStatus string
 

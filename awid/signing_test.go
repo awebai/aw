@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"testing"
+	"time"
 )
 
 func TestSignVerifyRoundtrip(t *testing.T) {
@@ -376,5 +377,104 @@ func TestCanonicalJSONEscaping(t *testing.T) {
 
 	if got != want {
 		t.Fatalf("canonicalJSON:\ngot:  %s\nwant: %s", got, want)
+	}
+}
+
+func TestCanonicalReplacementJSONFieldOrder(t *testing.T) {
+	t.Parallel()
+
+	got := CanonicalReplacementJSON("acme.com/billing", "did:key:controller", "did:key:old", "did:key:new", "2026-03-22T10:00:00Z")
+	want := `{"address":"acme.com/billing","controller_did":"did:key:controller","new_did":"did:key:new","old_did":"did:key:old","timestamp":"2026-03-22T10:00:00Z"}`
+	if got != want {
+		t.Fatalf("got:  %s\nwant: %s", got, want)
+	}
+}
+
+func TestVerifyReplacementSignatureRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	address := "acme.com/billing"
+	controllerDID := ComputeDIDKey(pub)
+	oldDID := "did:key:z6MkOLD"
+	newDID := "did:key:z6MkNEW"
+	timestamp := "2026-03-22T10:00:00Z"
+
+	payload := CanonicalReplacementJSON(address, controllerDID, oldDID, newDID, timestamp)
+	sig := ed25519.Sign(priv, []byte(payload))
+	sigB64 := base64.RawStdEncoding.EncodeToString(sig)
+
+	ok, err := VerifyReplacementSignature(pub, address, controllerDID, oldDID, newDID, timestamp, sigB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("valid signature rejected")
+	}
+}
+
+func TestVerifyReplacementSignatureTamperedPayload(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	controllerDID := ComputeDIDKey(pub)
+	payload := CanonicalReplacementJSON("acme.com/billing", controllerDID, "did:key:old", "did:key:new", "2026-03-22T10:00:00Z")
+	sig := ed25519.Sign(priv, []byte(payload))
+	sigB64 := base64.RawStdEncoding.EncodeToString(sig)
+
+	// Verify with wrong address
+	ok, _ := VerifyReplacementSignature(pub, "evil.com/billing", controllerDID, "did:key:old", "did:key:new", "2026-03-22T10:00:00Z", sigB64)
+	if ok {
+		t.Fatal("tampered address should fail verification")
+	}
+
+	// Verify with wrong newDID
+	ok, _ = VerifyReplacementSignature(pub, "acme.com/billing", controllerDID, "did:key:old", "did:key:EVIL", "2026-03-22T10:00:00Z", sigB64)
+	if ok {
+		t.Fatal("tampered new_did should fail verification")
+	}
+}
+
+func TestVerifyReplacementSignatureBadBase64(t *testing.T) {
+	t.Parallel()
+
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = VerifyReplacementSignature(pub, "a", "b", "c", "d", "e", "not-base64!!!")
+	if err == nil {
+		t.Fatal("expected error for bad base64")
+	}
+}
+
+func TestIsTimestampFresh(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if !isTimestampFresh(now) {
+		t.Fatal("current timestamp should be fresh")
+	}
+
+	old := time.Now().Add(-8 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	if isTimestampFresh(old) {
+		t.Fatal("8-day-old timestamp should not be fresh")
+	}
+
+	if isTimestampFresh("not-a-timestamp") {
+		t.Fatal("invalid timestamp should not be fresh")
+	}
+
+	if isTimestampFresh("") {
+		t.Fatal("empty timestamp should not be fresh")
 	}
 }

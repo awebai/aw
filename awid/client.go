@@ -354,11 +354,12 @@ func (c *Client) verifyRotationAnnouncement(ra *RotationAnnouncement, messageDID
 	if ra.OldDID == "" || ra.NewDID == "" || ra.OldKeySignature == "" || ra.Timestamp == "" {
 		return false
 	}
-	// The announcement's new_did must match the message's from_did.
+	if !isTimestampFresh(ra.Timestamp) {
+		return false
+	}
 	if ra.NewDID != messageDID {
 		return false
 	}
-	// The announcement's old_did must match the pinned DID for this address.
 	if ra.OldDID != pinnedDID {
 		return false
 	}
@@ -375,6 +376,9 @@ func (c *Client) verifyReplacementAnnouncement(ctx context.Context, address stri
 		return false
 	}
 	if repl.Address == "" || repl.OldDID == "" || repl.NewDID == "" || repl.ControllerDID == "" || repl.Timestamp == "" || repl.ControllerSignature == "" {
+		return false
+	}
+	if !isTimestampFresh(repl.Timestamp) {
 		return false
 	}
 	if repl.Address != address || repl.NewDID != messageDID || repl.OldDID != pinnedDID {
