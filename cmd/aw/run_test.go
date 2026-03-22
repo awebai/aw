@@ -306,7 +306,9 @@ func TestNewRunDispatcherBuildsMailPrompt(t *testing.T) {
 	dispatcher := newRunDispatcher(awrun.Settings{
 		WorkPromptSuffix:  "work suffix",
 		CommsPromptSuffix: "comms suffix",
-	}, nil)
+	}, func(context.Context, awid.AgentEvent) (runWakeResolution, error) {
+		return runWakeResolution{CycleContext: "<- mia (mail): API review — please take a look"}, nil
+	})
 
 	decision, err := dispatcher.Next(context.Background(), false, &awid.AgentEvent{
 		Type:      awid.AgentEventMailMessage,
@@ -319,8 +321,8 @@ func TestNewRunDispatcherBuildsMailPrompt(t *testing.T) {
 	if decision.Skip {
 		t.Fatalf("expected mail wake to produce a prompt, got %+v", decision)
 	}
-	if !strings.Contains(decision.CycleContext, "new mail from mia") {
-		t.Fatalf("expected mail wake details, got %q", decision.CycleContext)
+	if !strings.Contains(decision.CycleContext, "<- mia (mail): API review — please take a look") {
+		t.Fatalf("expected hydrated mail content, got %q", decision.CycleContext)
 	}
 	if !strings.Contains(decision.CycleContext, "comms suffix") {
 		t.Fatalf("expected comms suffix in prompt, got %q", decision.CycleContext)
@@ -330,7 +332,9 @@ func TestNewRunDispatcherBuildsMailPrompt(t *testing.T) {
 func TestNewRunDispatcherBuildsActionableChatPrompt(t *testing.T) {
 	dispatcher := newRunDispatcher(awrun.Settings{
 		CommsPromptSuffix: "comms suffix",
-	}, nil)
+	}, func(context.Context, awid.AgentEvent) (runWakeResolution, error) {
+		return runWakeResolution{CycleContext: "<- henry: ping"}, nil
+	})
 
 	decision, err := dispatcher.Next(context.Background(), false, &awid.AgentEvent{
 		Type:          awid.AgentEventActionableChat,
@@ -346,19 +350,15 @@ func TestNewRunDispatcherBuildsActionableChatPrompt(t *testing.T) {
 	if decision.Skip {
 		t.Fatalf("expected actionable chat wake to produce a prompt, got %+v", decision)
 	}
-	if !strings.Contains(decision.CycleContext, "urgent chat from henry") {
-		t.Fatalf("expected actionable chat details, got %q", decision.CycleContext)
-	}
-	if !strings.Contains(decision.CycleContext, "explicitly waiting on you") {
-		t.Fatalf("expected waiting guidance, got %q", decision.CycleContext)
-	}
-	if !strings.Contains(decision.CycleContext, "Unread: 2") {
-		t.Fatalf("expected unread count, got %q", decision.CycleContext)
+	if !strings.Contains(decision.CycleContext, "<- henry: ping") {
+		t.Fatalf("expected hydrated chat content, got %q", decision.CycleContext)
 	}
 }
 
 func TestNewRunDispatcherBuildsIdleActionableChatPrompt(t *testing.T) {
-	dispatcher := newRunDispatcher(awrun.Settings{}, nil)
+	dispatcher := newRunDispatcher(awrun.Settings{}, func(context.Context, awid.AgentEvent) (runWakeResolution, error) {
+		return runWakeResolution{CycleContext: "<- rose: when you have a moment"}, nil
+	})
 
 	decision, err := dispatcher.Next(context.Background(), false, &awid.AgentEvent{
 		Type:        awid.AgentEventActionableChat,
@@ -373,11 +373,8 @@ func TestNewRunDispatcherBuildsIdleActionableChatPrompt(t *testing.T) {
 	if decision.Skip {
 		t.Fatalf("expected idle actionable chat wake to produce a prompt, got %+v", decision)
 	}
-	if !strings.Contains(decision.CycleContext, "chat from rose") {
-		t.Fatalf("expected chat wake details, got %q", decision.CycleContext)
-	}
-	if !strings.Contains(decision.CycleContext, "Review the chat state when convenient") {
-		t.Fatalf("expected idle wake guidance, got %q", decision.CycleContext)
+	if !strings.Contains(decision.CycleContext, "<- rose: when you have a moment") {
+		t.Fatalf("expected chat content, got %q", decision.CycleContext)
 	}
 }
 
@@ -400,8 +397,8 @@ func TestNewRunDispatcherSkipsWorkWakeWithoutAutofeed(t *testing.T) {
 }
 
 func TestNewRunDispatcherSkipsStaleActionableChat(t *testing.T) {
-	dispatcher := newRunDispatcher(awrun.Settings{}, func(context.Context, awid.AgentEvent) (bool, error) {
-		return false, nil
+	dispatcher := newRunDispatcher(awrun.Settings{}, func(context.Context, awid.AgentEvent) (runWakeResolution, error) {
+		return runWakeResolution{Skip: true}, nil
 	})
 
 	decision, err := dispatcher.Next(context.Background(), false, &awid.AgentEvent{
@@ -494,6 +491,9 @@ func TestRunUsesWakeEventToTriggerSecondCycle(t *testing.T) {
 			_, _ = io.WriteString(w, "event: chat_message\ndata: {\"message_id\":\"m-1\",\"from_alias\":\"mia\",\"session_id\":\"s-1\"}\n\n")
 			flusher.Flush()
 			<-r.Context().Done()
+		case r.URL.Path == "/v1/chat/pending":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"pending":[{"session_id":"s-1","participants":["mia","rose"],"last_message":"can you review the retry path?","last_from":"mia","unread_count":1,"last_activity":"2026-03-20T00:00:00Z","sender_waiting":true}],"messages_waiting":1}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -555,8 +555,8 @@ func TestRunUsesWakeEventToTriggerSecondCycle(t *testing.T) {
 	if !strings.Contains(prompts[1], "Primary mission:\npersistent mission") {
 		t.Fatalf("expected second prompt to preserve base mission, got %q", prompts[1])
 	}
-	if !strings.Contains(prompts[1], "Wake reason: new chat activity from mia.") {
-		t.Fatalf("expected second prompt to include wake reason, got %q", prompts[1])
+	if !strings.Contains(prompts[1], "<- mia: can you review the retry path?") {
+		t.Fatalf("expected second prompt to include unread chat content, got %q", prompts[1])
 	}
 	if len(builds) != 2 {
 		t.Fatalf("expected 2 build option records, got %d", len(builds))
@@ -661,11 +661,8 @@ func TestRunUsesActionableWakeEventToTriggerSecondCycle(t *testing.T) {
 	if len(prompts) != 2 {
 		t.Fatalf("expected 2 provider runs, got %d prompts: %#v", len(prompts), prompts)
 	}
-	if !strings.Contains(prompts[1], "urgent chat from henry") {
-		t.Fatalf("expected actionable chat wake reason, got %q", prompts[1])
-	}
-	if !strings.Contains(prompts[1], "explicitly waiting on you") {
-		t.Fatalf("expected waiting guidance, got %q", prompts[1])
+	if !strings.Contains(prompts[1], "<- henry: ping") {
+		t.Fatalf("expected actionable chat content, got %q", prompts[1])
 	}
 	if len(builds) != 2 || !builds[1].ContinueSession || builds[1].SessionID != "sess-42" {
 		t.Fatalf("expected second run to continue session sess-42, got %+v", builds)

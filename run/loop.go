@@ -333,7 +333,11 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 		l.printf("\ninfo: compacting context\n\n")
 	} else {
 		st.RunLabel = "active"
-		l.printf("\n> %s\n\n", display)
+		if strings.HasPrefix(strings.TrimSpace(display), "<- ") {
+			l.printf("\n%s\n\n", display)
+		} else {
+			l.printf("\n> %s\n\n", display)
+		}
 	}
 	l.setStatusLine(formatRunStatus(st))
 	l.renderInputPrompt(st)
