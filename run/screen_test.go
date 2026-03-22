@@ -29,7 +29,7 @@ func TestStyleScreenLineCategories(t *testing.T) {
 		want string
 	}{
 		{line: "> fix the bug", want: "prompt"},
-		{line: `- Bash("go test ./... 2>&1")`, want: "tool"},
+		{line: `>_ go test ./... 2>&1`, want: "tool"},
 		{line: "  -> ok", want: "result"},
 		{line: "done  2.1s", want: "done"},
 		{line: "info: session", want: "info"},
@@ -47,8 +47,8 @@ func TestStyleScreenLineCategories(t *testing.T) {
 
 func TestStyleScreenLineKeepsToolArgumentsNeutralOnFirstLine(t *testing.T) {
 	styles := newScreenStyles()
-	got := styleScreenLine(`- View("/tmp/image.png")`, styles)
-	want := styles.tool.Render(`- View(`) + `"/tmp/image.png"` + styles.tool.Render(`)`)
+	got := styleScreenLine(`>_ View /tmp/image.png`, styles)
+	want := styles.tool.Render(`>_ View /tmp/image.png`)
 	if got != want {
 		t.Fatalf("unexpected styled tool line %q", got)
 	}
@@ -258,4 +258,3 @@ func TestScreenControllerUpMovesWithinWrappedInputBeforeHistory(t *testing.T) {
 		t.Fatalf("expected wrapped up-arrow to move cursor within input, got cursor=%d", screen.inputCursor)
 	}
 }
-

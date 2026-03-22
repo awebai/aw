@@ -165,19 +165,19 @@ func formatInteractionEntry(entry InteractionEntry) string {
 	case interactionKindAgent:
 		return fmt.Sprintf("agent: %s", text)
 	case interactionKindChatIn:
-		return fmt.Sprintf("%s (chat): %s", interactionParty(entry.From, "someone"), text)
+		return fmt.Sprintf("<- chat from %s: %s", interactionParty(entry.From, "someone"), text)
 	case interactionKindChatOut:
-		return fmt.Sprintf("you -> %s (chat): %s", interactionParty(entry.To, "someone"), text)
+		return fmt.Sprintf("-> chat to %s: %s", interactionParty(entry.To, "someone"), text)
 	case interactionKindMailIn:
 		if subject := strings.TrimSpace(entry.Subject); subject != "" {
-			return fmt.Sprintf("%s (mail): %s — %s", interactionParty(entry.From, "someone"), subject, text)
+			return fmt.Sprintf("<- mail from %s: %s — %s", interactionParty(entry.From, "someone"), subject, text)
 		}
-		return fmt.Sprintf("%s (mail): %s", interactionParty(entry.From, "someone"), text)
+		return fmt.Sprintf("<- mail from %s: %s", interactionParty(entry.From, "someone"), text)
 	case interactionKindMailOut:
 		if subject := strings.TrimSpace(entry.Subject); subject != "" {
-			return fmt.Sprintf("you -> %s (mail): %s — %s", interactionParty(entry.To, "someone"), subject, text)
+			return fmt.Sprintf("-> mail to %s: %s — %s", interactionParty(entry.To, "someone"), subject, text)
 		}
-		return fmt.Sprintf("you -> %s (mail): %s", interactionParty(entry.To, "someone"), text)
+		return fmt.Sprintf("-> mail to %s: %s", interactionParty(entry.To, "someone"), text)
 	default:
 		return text
 	}

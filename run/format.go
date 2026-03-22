@@ -45,23 +45,23 @@ func formatToolCallLines(call ToolCall) []string {
 }
 
 func formatToolSummaryLines(name string, args []string) []string {
-	prefix := fmt.Sprintf("- %s(", name)
+	prefix := ">_ "
+	name = strings.TrimSpace(name)
+	if name != "" && !strings.EqualFold(name, "Bash") {
+		prefix += name + " "
+	}
 	if len(args) == 0 {
-		return []string{prefix + ")"}
+		return []string{strings.TrimRight(prefix, " ")}
 	}
 
 	indent := strings.Repeat(" ", len(prefix))
 	lines := make([]string, 0, len(args))
 	for i, arg := range args {
-		suffix := ","
-		if i == len(args)-1 {
-			suffix = ")"
-		}
 		if i == 0 {
-			lines = append(lines, prefix+arg+suffix)
+			lines = append(lines, prefix+arg)
 			continue
 		}
-		lines = append(lines, indent+arg+suffix)
+		lines = append(lines, indent+arg)
 	}
 	return lines
 }
@@ -101,8 +101,9 @@ func formatToolSummaryArgs(data map[string]any) []string {
 	args := make([]string, 0, len(keys))
 	for index, key := range keys {
 		value := data[key]
-		formattedValue := formatToolSummaryValue(value)
-		if index == 0 && toolSummaryCanOmitKey(key, value) {
+		omitKey := index == 0 && toolSummaryCanOmitKey(key, value)
+		formattedValue := formatToolSummaryValue(value, omitKey)
+		if omitKey {
 			args = append(args, formattedValue)
 			continue
 		}
@@ -142,9 +143,12 @@ func toolSummaryKeyRank(key string) int {
 	}
 }
 
-func formatToolSummaryValue(value any) string {
+func formatToolSummaryValue(value any, rawString bool) string {
 	switch typed := value.(type) {
 	case string:
+		if rawString {
+			return truncateText(typed, 160)
+		}
 		return fmt.Sprintf("%q", truncateText(typed, 160))
 	default:
 		return truncateText(fmt.Sprintf("%v", typed), 160)

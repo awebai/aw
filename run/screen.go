@@ -765,17 +765,17 @@ func (s *ScreenController) handleExitConfirmed() {
 
 func newScreenStyles() screenStyles {
 	return screenStyles{
-		prompt:    lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "24", Dark: "12"}).Bold(true),
+		prompt:    lipgloss.NewStyle().Bold(true),
 		separator: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "247", Dark: "245"}),
-		tool:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "130", Dark: "214"}).Bold(true),
-		result:    lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "247", Dark: "242"}),
-		done:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "28", Dark: "10"}).Bold(true),
-		info:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "8"}),
+		tool:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "245"}),
+		result:    lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "245"}),
+		done:      lipgloss.NewStyle(),
+		info:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "245"}),
 		status: lipgloss.NewStyle().
 			Foreground(lipgloss.AdaptiveColor{Light: "236", Dark: "252"}).
 			Background(lipgloss.AdaptiveColor{Light: "252", Dark: "236"}).
 			Padding(0, 1),
-		hint: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "8"}),
+		hint: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "245"}),
 	}
 }
 
@@ -1044,11 +1044,7 @@ func styleScreenLine(line string, styles screenStyles) string {
 }
 
 func styleScreenToolLine(line string, styles screenStyles) string {
-	idx := strings.Index(line, "(")
-	if idx < 0 {
-		return styles.tool.Render(line)
-	}
-	return styles.tool.Render(line[:idx+1]) + styleScreenToolClosingParen(line[idx+1:], styles)
+	return styles.tool.Render(line)
 }
 
 func styleScreenToolClosingParen(line string, styles screenStyles) string {
@@ -1067,7 +1063,7 @@ func screenLineStyleKind(line string) string {
 		return "separator"
 	case strings.HasPrefix(trimmed, "> "):
 		return "prompt"
-	case strings.HasPrefix(trimmed, "- ") && strings.Contains(trimmed, "("):
+	case strings.HasPrefix(trimmed, ">_ "):
 		return "tool"
 	case strings.HasPrefix(trimmed, "->") || strings.HasPrefix(trimmed, "  ->"):
 		return "result"

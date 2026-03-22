@@ -37,6 +37,7 @@ func TestFormatInteractionRecapRendersConversationLikeSummary(t *testing.T) {
 		{Timestamp: "2026-03-22T10:00:00Z", Kind: interactionKindUser, Text: "please fix the continue UX"},
 		{Timestamp: "2026-03-22T10:01:00Z", Kind: interactionKindAgent, Text: "I can do that with a small local recap."},
 		{Timestamp: "2026-03-22T10:02:00Z", Kind: interactionKindChatIn, From: "rose", Text: "please keep it narrow"},
+		{Timestamp: "2026-03-22T10:03:00Z", Kind: interactionKindMailOut, To: "henry", Subject: "review", Text: "please take a look"},
 	}, 8)
 
 	if !strings.Contains(recap, "Recent interactions:") {
@@ -48,7 +49,10 @@ func TestFormatInteractionRecapRendersConversationLikeSummary(t *testing.T) {
 	if !strings.Contains(recap, "agent: I can do that with a small local recap.") {
 		t.Fatalf("expected agent line, got %q", recap)
 	}
-	if !strings.Contains(recap, "rose (chat): please keep it narrow") {
+	if !strings.Contains(recap, "<- chat from rose: please keep it narrow") {
 		t.Fatalf("expected chat line, got %q", recap)
+	}
+	if !strings.Contains(recap, "-> mail to henry: review — please take a look") {
+		t.Fatalf("expected outbound mail line, got %q", recap)
 	}
 }
