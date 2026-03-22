@@ -631,10 +631,10 @@ func writeOrUpdateContextWithOptions(serverName, accountName string, setDefault 
 }
 
 func writeOrUpdateContextAt(workingDir, serverName, accountName string, setDefault bool) error {
-	ctxPath, err := awconfig.FindWorktreeContextPath(workingDir)
-	if err != nil {
-		ctxPath = filepath.Join(workingDir, awconfig.DefaultWorktreeContextRelativePath())
-	}
+	// Always write to workingDir/.aw/context. Never walk up the directory
+	// tree — that would write to a parent project's context and cause
+	// identity mismatches.
+	ctxPath := filepath.Join(workingDir, awconfig.DefaultWorktreeContextRelativePath())
 
 	ctx := &awconfig.WorktreeContext{
 		DefaultAccount: accountName,
