@@ -3571,6 +3571,240 @@ func TestCheckTOFUPinUpgradeOnFirstSight(t *testing.T) {
 	}
 }
 
+func TestCheckTOFUPinAcceptsValidReplacementAnnouncement(t *testing.T) {
+	t.Parallel()
+
+	// Setup: old agent pinned at address, new agent with replacement announcement
+	oldPub, _, _ := ed25519.GenerateKey(nil)
+	newPub, _, _ := ed25519.GenerateKey(nil)
+	controllerPub, controllerPriv, _ := ed25519.GenerateKey(nil)
+
+	oldDID := ComputeDIDKey(oldPub)
+	newDID := ComputeDIDKey(newPub)
+	controllerDID := ComputeDIDKey(controllerPub)
+	address := "acme.com/billing"
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+
+	// Sign the replacement announcement
+	payload := CanonicalReplacementJSON(address, controllerDID, oldDID, newDID, timestamp)
+	sig := ed25519.Sign(controllerPriv, []byte(payload))
+	sigB64 := base64.RawStdEncoding.EncodeToString(sig)
+
+	repl := &ReplacementAnnouncement{
+		Address:             address,
+		OldDID:              oldDID,
+		NewDID:              newDID,
+		ControllerDID:       controllerDID,
+		Timestamp:           timestamp,
+		ControllerSignature: sigB64,
+	}
+
+	// Mock resolver that returns the controller_did for this address
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did":            newDID,
+				"agent_id":       "agent-new",
+				"address":        address,
+				"controller_did": controllerDID,
+				"lifetime":       "persistent",
+				"custody":        "self",
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	c, _ := NewWithAPIKey(server.URL, "aw_sk_test")
+	ps := NewPinStore()
+	c.SetPinStore(ps, "")
+	c.SetResolver(&ServerResolver{Client: c})
+
+	// Pin the old DID
+	status := c.CheckTOFUPin(context.Background(), Verified, address, oldDID, "", nil, nil)
+	if status != Verified {
+		t.Fatalf("initial pin: status=%q, want verified", status)
+	}
+
+	// Now send a message from the new DID with a valid replacement announcement
+	status = c.CheckTOFUPin(context.Background(), Verified, address, newDID, "", nil, repl)
+	if status != Verified {
+		t.Fatalf("replacement: status=%q, want verified (accepted via controller authorization)", status)
+	}
+
+	// Pin should now point to the new DID
+	if ps.Addresses[address] != newDID {
+		t.Fatalf("pin not updated: address maps to %q, want %q", ps.Addresses[address], newDID)
+	}
+}
+
+func TestCheckTOFUPinRejectsReplacementWrongController(t *testing.T) {
+	t.Parallel()
+
+	oldPub, _, _ := ed25519.GenerateKey(nil)
+	newPub, _, _ := ed25519.GenerateKey(nil)
+	controllerPub, _, _ := ed25519.GenerateKey(nil)
+	wrongPub, wrongPriv, _ := ed25519.GenerateKey(nil)
+
+	oldDID := ComputeDIDKey(oldPub)
+	newDID := ComputeDIDKey(newPub)
+	controllerDID := ComputeDIDKey(controllerPub)
+	wrongDID := ComputeDIDKey(wrongPub)
+	address := "acme.com/billing"
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+
+	// Sign with the WRONG controller key
+	payload := CanonicalReplacementJSON(address, wrongDID, oldDID, newDID, timestamp)
+	sig := ed25519.Sign(wrongPriv, []byte(payload))
+	sigB64 := base64.RawStdEncoding.EncodeToString(sig)
+
+	repl := &ReplacementAnnouncement{
+		Address:             address,
+		OldDID:              oldDID,
+		NewDID:              newDID,
+		ControllerDID:       wrongDID,
+		Timestamp:           timestamp,
+		ControllerSignature: sigB64,
+	}
+
+	// Resolver returns the REAL controller_did (not the one in the announcement)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did":            newDID,
+				"agent_id":       "agent-new",
+				"address":        address,
+				"controller_did": controllerDID,
+				"lifetime":       "persistent",
+				"custody":        "self",
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	c, _ := NewWithAPIKey(server.URL, "aw_sk_test")
+	ps := NewPinStore()
+	c.SetPinStore(ps, "")
+	c.SetResolver(&ServerResolver{Client: c})
+
+	// Pin the old DID
+	c.CheckTOFUPin(context.Background(), Verified, address, oldDID, "", nil, nil)
+
+	// Replacement with wrong controller should be rejected
+	status := c.CheckTOFUPin(context.Background(), Verified, address, newDID, "", nil, repl)
+	if status != IdentityMismatch {
+		t.Fatalf("wrong controller: status=%q, want identity_mismatch", status)
+	}
+}
+
+func TestCheckTOFUPinRejectsReplacementBadSignature(t *testing.T) {
+	t.Parallel()
+
+	oldPub, _, _ := ed25519.GenerateKey(nil)
+	newPub, _, _ := ed25519.GenerateKey(nil)
+	controllerPub, _, _ := ed25519.GenerateKey(nil)
+
+	oldDID := ComputeDIDKey(oldPub)
+	newDID := ComputeDIDKey(newPub)
+	controllerDID := ComputeDIDKey(controllerPub)
+	address := "acme.com/billing"
+
+	repl := &ReplacementAnnouncement{
+		Address:             address,
+		OldDID:              oldDID,
+		NewDID:              newDID,
+		ControllerDID:       controllerDID,
+		Timestamp:           time.Now().UTC().Format(time.RFC3339),
+		ControllerSignature: base64.RawStdEncoding.EncodeToString([]byte("bad-signature-garbage")),
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did":            newDID,
+				"agent_id":       "agent-new",
+				"address":        address,
+				"controller_did": controllerDID,
+				"lifetime":       "persistent",
+				"custody":        "self",
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	c, _ := NewWithAPIKey(server.URL, "aw_sk_test")
+	ps := NewPinStore()
+	c.SetPinStore(ps, "")
+	c.SetResolver(&ServerResolver{Client: c})
+
+	c.CheckTOFUPin(context.Background(), Verified, address, oldDID, "", nil, nil)
+
+	status := c.CheckTOFUPin(context.Background(), Verified, address, newDID, "", nil, repl)
+	if status != IdentityMismatch {
+		t.Fatalf("bad signature: status=%q, want identity_mismatch", status)
+	}
+}
+
+func TestCheckTOFUPinRejectsReplacementStaleTimestamp(t *testing.T) {
+	t.Parallel()
+
+	oldPub, _, _ := ed25519.GenerateKey(nil)
+	newPub, _, _ := ed25519.GenerateKey(nil)
+	controllerPub, controllerPriv, _ := ed25519.GenerateKey(nil)
+
+	oldDID := ComputeDIDKey(oldPub)
+	newDID := ComputeDIDKey(newPub)
+	controllerDID := ComputeDIDKey(controllerPub)
+	address := "acme.com/billing"
+	staleTimestamp := time.Now().Add(-10 * 24 * time.Hour).UTC().Format(time.RFC3339)
+
+	payload := CanonicalReplacementJSON(address, controllerDID, oldDID, newDID, staleTimestamp)
+	sig := ed25519.Sign(controllerPriv, []byte(payload))
+	sigB64 := base64.RawStdEncoding.EncodeToString(sig)
+
+	repl := &ReplacementAnnouncement{
+		Address:             address,
+		OldDID:              oldDID,
+		NewDID:              newDID,
+		ControllerDID:       controllerDID,
+		Timestamp:           staleTimestamp,
+		ControllerSignature: sigB64,
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did":            newDID,
+				"agent_id":       "agent-new",
+				"address":        address,
+				"controller_did": controllerDID,
+				"lifetime":       "persistent",
+				"custody":        "self",
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	c, _ := NewWithAPIKey(server.URL, "aw_sk_test")
+	ps := NewPinStore()
+	c.SetPinStore(ps, "")
+	c.SetResolver(&ServerResolver{Client: c})
+
+	c.CheckTOFUPin(context.Background(), Verified, address, oldDID, "", nil, nil)
+
+	status := c.CheckTOFUPin(context.Background(), Verified, address, newDID, "", nil, repl)
+	if status != IdentityMismatch {
+		t.Fatalf("stale timestamp: status=%q, want identity_mismatch", status)
+	}
+}
+
 func TestSignEnvelopePopulatesFromStableID(t *testing.T) {
 	t.Parallel()
 
