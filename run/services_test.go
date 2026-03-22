@@ -124,7 +124,7 @@ func TestLoopStartsServicesBeforeFirstRun(t *testing.T) {
 	loop.Sleep = func(context.Context, time.Duration) error { return nil }
 
 	err := loop.Run(context.Background(), LoopOptions{
-		Prompt:      "inspect workspace",
+		BasePrompt:  "inspect workspace",
 		MaxRuns:     1,
 		WorkingDir:  "/tmp/work",
 		Services:    []ServiceConfig{{Name: "backend", Command: "make run-backend", Description: "Backend API"}},

@@ -172,7 +172,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	opts := awrun.LoopOptions{
 		InitialPrompt:       initialPrompt,
-		Prompt:              settings.BasePrompt,
+		BasePrompt:          settings.BasePrompt,
 		WaitSeconds:         settings.WaitSeconds,
 		IdleWaitSeconds:     settings.IdleWaitSeconds,
 		MaxRuns:             runMaxRuns,

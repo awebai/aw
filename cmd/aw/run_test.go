@@ -183,8 +183,8 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 	if capturedOpts.InitialPrompt != "finish the migration" {
 		t.Fatalf("initial prompt=%q", capturedOpts.InitialPrompt)
 	}
-	if capturedOpts.Prompt != "resolved base" {
-		t.Fatalf("prompt=%q", capturedOpts.Prompt)
+	if capturedOpts.BasePrompt != "resolved base" {
+		t.Fatalf("base prompt=%q", capturedOpts.BasePrompt)
 	}
 	if capturedOpts.WaitSeconds != 9 || capturedOpts.IdleWaitSeconds != 12 {
 		t.Fatalf("wait settings=%+v", capturedOpts)
@@ -294,7 +294,7 @@ func TestRunAllowsEmptyPromptWhenInteractiveScreenIsAvailable(t *testing.T) {
 	if err := runRun(&cmd.Command, nil); err != nil {
 		t.Fatalf("runRun returned error: %v", err)
 	}
-	if capturedOpts.InitialPrompt != "" || capturedOpts.Prompt != "" {
+	if capturedOpts.InitialPrompt != "" || capturedOpts.BasePrompt != "" {
 		t.Fatalf("expected empty prompts to be allowed interactively, got %+v", capturedOpts)
 	}
 	if !capturedOpts.ProviderPTY {
@@ -319,11 +319,11 @@ func TestNewRunDispatcherBuildsMailPrompt(t *testing.T) {
 	if decision.Skip {
 		t.Fatalf("expected mail wake to produce a prompt, got %+v", decision)
 	}
-	if !strings.Contains(decision.Prompt, "new mail from mia") {
-		t.Fatalf("expected mail wake details, got %q", decision.Prompt)
+	if !strings.Contains(decision.CycleContext, "new mail from mia") {
+		t.Fatalf("expected mail wake details, got %q", decision.CycleContext)
 	}
-	if !strings.Contains(decision.Prompt, "comms suffix") {
-		t.Fatalf("expected comms suffix in prompt, got %q", decision.Prompt)
+	if !strings.Contains(decision.CycleContext, "comms suffix") {
+		t.Fatalf("expected comms suffix in prompt, got %q", decision.CycleContext)
 	}
 }
 
@@ -346,14 +346,14 @@ func TestNewRunDispatcherBuildsActionableChatPrompt(t *testing.T) {
 	if decision.Skip {
 		t.Fatalf("expected actionable chat wake to produce a prompt, got %+v", decision)
 	}
-	if !strings.Contains(decision.Prompt, "urgent chat from henry") {
-		t.Fatalf("expected actionable chat details, got %q", decision.Prompt)
+	if !strings.Contains(decision.CycleContext, "urgent chat from henry") {
+		t.Fatalf("expected actionable chat details, got %q", decision.CycleContext)
 	}
-	if !strings.Contains(decision.Prompt, "explicitly waiting on you") {
-		t.Fatalf("expected waiting guidance, got %q", decision.Prompt)
+	if !strings.Contains(decision.CycleContext, "explicitly waiting on you") {
+		t.Fatalf("expected waiting guidance, got %q", decision.CycleContext)
 	}
-	if !strings.Contains(decision.Prompt, "Unread: 2") {
-		t.Fatalf("expected unread count, got %q", decision.Prompt)
+	if !strings.Contains(decision.CycleContext, "Unread: 2") {
+		t.Fatalf("expected unread count, got %q", decision.CycleContext)
 	}
 }
 
@@ -373,11 +373,11 @@ func TestNewRunDispatcherBuildsIdleActionableChatPrompt(t *testing.T) {
 	if decision.Skip {
 		t.Fatalf("expected idle actionable chat wake to produce a prompt, got %+v", decision)
 	}
-	if !strings.Contains(decision.Prompt, "chat from rose") {
-		t.Fatalf("expected chat wake details, got %q", decision.Prompt)
+	if !strings.Contains(decision.CycleContext, "chat from rose") {
+		t.Fatalf("expected chat wake details, got %q", decision.CycleContext)
 	}
-	if !strings.Contains(decision.Prompt, "Review the chat state when convenient") {
-		t.Fatalf("expected idle wake guidance, got %q", decision.Prompt)
+	if !strings.Contains(decision.CycleContext, "Review the chat state when convenient") {
+		t.Fatalf("expected idle wake guidance, got %q", decision.CycleContext)
 	}
 }
 

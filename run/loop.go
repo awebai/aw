@@ -149,7 +149,7 @@ func (l *Loop) Run(ctx context.Context, opts LoopOptions) error {
 	if l.Out == nil {
 		l.Out = io.Discard
 	}
-	if l.Dispatch == nil && strings.TrimSpace(opts.Prompt) == "" && strings.TrimSpace(opts.InitialPrompt) == "" && l.Control == nil {
+	if l.Dispatch == nil && strings.TrimSpace(opts.BasePrompt) == "" && strings.TrimSpace(opts.InitialPrompt) == "" && l.Control == nil {
 		return fmt.Errorf("prompt cannot be empty when dispatch is unavailable")
 	}
 
@@ -203,18 +203,18 @@ func (l *Loop) Run(ctx context.Context, opts LoopOptions) error {
 			continue
 		}
 
-		missionPrompt := resolveMissionPrompt(strings.TrimSpace(opts.Prompt), decision.MissionPrompt)
-		prompt := composePromptWithServices(missionPrompt, decision.Prompt, opts.Services)
-		displayPrompt := displayPrompt(missionPrompt, decision.Prompt)
-		if strings.TrimSpace(prompt) == "" {
-			if l.Dispatch == nil && state.Run > 0 && strings.TrimSpace(opts.Prompt) == "" && strings.TrimSpace(opts.InitialPrompt) != "" {
+		mission := resolveMission(strings.TrimSpace(opts.BasePrompt), decision.Mission)
+		fullPrompt := composeFullPrompt(mission, decision.CycleContext, opts.Services)
+		cycleLabel := displayCycleLabel(mission, decision.CycleContext)
+		if strings.TrimSpace(fullPrompt) == "" {
+			if l.Dispatch == nil && state.Run > 0 && strings.TrimSpace(opts.BasePrompt) == "" && strings.TrimSpace(opts.InitialPrompt) != "" {
 				l.println("done: initial prompt consumed; use a persistent base prompt.")
 				return nil
 			}
 			return fmt.Errorf("prompt cannot be empty")
 		}
 		state.Run++
-		if err := l.runOnce(ctx, opts, state, prompt, displayPrompt, decision.UserPrompt); err != nil {
+		if err := l.runOnce(ctx, opts, state, fullPrompt, cycleLabel, decision.UserPrompt); err != nil {
 			if state.StopRequested && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 				return nil
 			}
@@ -265,12 +265,12 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 		explicitMissionPrompt = strings.TrimSpace(opts.InitialPrompt)
 	}
 	if explicitMissionPrompt != "" {
-		return DispatchDecision{MissionPrompt: explicitMissionPrompt, UserPrompt: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
+		return DispatchDecision{Mission: explicitMissionPrompt, UserPrompt: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
 	}
-	if st.Run == 0 && strings.TrimSpace(opts.Prompt) != "" {
-		return DispatchDecision{MissionPrompt: strings.TrimSpace(opts.Prompt), WaitSeconds: opts.WaitSeconds}, nil
+	if st.Run == 0 && strings.TrimSpace(opts.BasePrompt) != "" {
+		return DispatchDecision{Mission: strings.TrimSpace(opts.BasePrompt), WaitSeconds: opts.WaitSeconds}, nil
 	}
-	if l.Dispatch == nil && st.Run == 0 && l.Control != nil && strings.TrimSpace(opts.Prompt) == "" {
+	if l.Dispatch == nil && st.Run == 0 && l.Control != nil && strings.TrimSpace(opts.BasePrompt) == "" {
 		return DispatchDecision{WaitSeconds: opts.WaitSeconds, Skip: true}, nil
 	}
 	if l.Dispatch != nil {
@@ -292,7 +292,7 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 	if st.Run > 0 && l.EventBus != nil {
 		return DispatchDecision{WaitSeconds: opts.WaitSeconds, Skip: true}, nil
 	}
-	return DispatchDecision{MissionPrompt: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
+	return DispatchDecision{Mission: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
 }
 
 func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt string, display string, userPrompt string) error {
@@ -1282,7 +1282,7 @@ func (l *Loop) screen() UI {
 	return screen
 }
 
-func resolveMissionPrompt(basePrompt string, overridePrompt string) string {
+func resolveMission(basePrompt string, overridePrompt string) string {
 	overridePrompt = strings.TrimSpace(overridePrompt)
 	if overridePrompt != "" {
 		return overridePrompt
@@ -1290,20 +1290,20 @@ func resolveMissionPrompt(basePrompt string, overridePrompt string) string {
 	return strings.TrimSpace(basePrompt)
 }
 
-func composePrompt(missionPrompt string, cyclePrompt string) string {
-	missionPrompt = strings.TrimSpace(missionPrompt)
-	cyclePrompt = strings.TrimSpace(cyclePrompt)
-	if missionPrompt == "" {
-		return cyclePrompt
+func composeMissionAndContext(mission string, cycleContext string) string {
+	mission = strings.TrimSpace(mission)
+	cycleContext = strings.TrimSpace(cycleContext)
+	if mission == "" {
+		return cycleContext
 	}
-	if cyclePrompt == "" {
-		return missionPrompt
+	if cycleContext == "" {
+		return mission
 	}
-	return fmt.Sprintf("Primary mission:\n%s\n\nCurrent cycle:\n%s", missionPrompt, cyclePrompt)
+	return fmt.Sprintf("Primary mission:\n%s\n\nCurrent cycle:\n%s", mission, cycleContext)
 }
 
-func composePromptWithServices(missionPrompt string, cyclePrompt string, services []ServiceConfig) string {
-	base := composePrompt(missionPrompt, cyclePrompt)
+func composeFullPrompt(mission string, cycleContext string, services []ServiceConfig) string {
+	base := composeMissionAndContext(mission, cycleContext)
 	servicesSection := FormatServicesPromptSection(services)
 	if servicesSection == "" {
 		return base
@@ -1314,12 +1314,12 @@ func composePromptWithServices(missionPrompt string, cyclePrompt string, service
 	return fmt.Sprintf("%s\n\n%s", base, servicesSection)
 }
 
-func displayPrompt(missionPrompt string, cyclePrompt string) string {
-	cyclePrompt = strings.TrimSpace(cyclePrompt)
-	if cyclePrompt != "" {
-		return cyclePrompt
+func displayCycleLabel(mission string, cycleContext string) string {
+	cycleContext = strings.TrimSpace(cycleContext)
+	if cycleContext != "" {
+		return cycleContext
 	}
-	return strings.TrimSpace(missionPrompt)
+	return strings.TrimSpace(mission)
 }
 
 func SleepWithContext(ctx context.Context, d time.Duration) error {

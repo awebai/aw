@@ -135,11 +135,11 @@ type ServiceSupervisor interface {
 }
 
 type DispatchDecision struct {
-	MissionPrompt string
-	Prompt        string
-	UserPrompt    string
-	WaitSeconds   int
-	Skip          bool
+	Mission      string
+	CycleContext string
+	UserPrompt   string
+	WaitSeconds  int
+	Skip         bool
 }
 
 type Dispatcher interface {
@@ -152,7 +152,7 @@ type SleepFunc func(ctx context.Context, d time.Duration) error
 
 type LoopOptions struct {
 	InitialPrompt       string
-	Prompt              string
+	BasePrompt          string
 	WaitSeconds         int
 	IdleWaitSeconds     int
 	MaxRuns             int

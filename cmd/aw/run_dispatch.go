@@ -43,16 +43,16 @@ func (d runDispatcher) Next(ctx context.Context, autofeed bool, wakeEvent *awid.
 			}
 		}
 		return awrun.DispatchDecision{
-			Prompt:      joinPromptSections(formatCommsWakePrompt(*wakeEvent), d.commsPromptSuffix),
-			WaitSeconds: awrun.DefaultWaitSeconds,
+			CycleContext: joinPromptSections(formatCommsWakePrompt(*wakeEvent), d.commsPromptSuffix),
+			WaitSeconds:  awrun.DefaultWaitSeconds,
 		}, nil
 	case awid.AgentEventWorkAvailable, awid.AgentEventClaimUpdate, awid.AgentEventClaimRemoved:
 		if !autofeed {
 			return awrun.DispatchDecision{Skip: true}, nil
 		}
 		return awrun.DispatchDecision{
-			Prompt:      joinPromptSections(formatWorkWakePrompt(*wakeEvent), d.workPromptSuffix),
-			WaitSeconds: awrun.DefaultWaitSeconds,
+			CycleContext: joinPromptSections(formatWorkWakePrompt(*wakeEvent), d.workPromptSuffix),
+			WaitSeconds:  awrun.DefaultWaitSeconds,
 		}, nil
 	default:
 		return awrun.DispatchDecision{Skip: true}, nil

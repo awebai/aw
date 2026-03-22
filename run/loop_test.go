@@ -148,8 +148,8 @@ func TestLoopMaintainsClaudeSessionContinuity(t *testing.T) {
 	loop.Control = controller
 	loop.Dispatch = &fakeDispatcher{
 		decisions: []DispatchDecision{
-			{MissionPrompt: "persistent mission", WaitSeconds: 1},
-			{MissionPrompt: "persistent mission", WaitSeconds: 1},
+			{Mission: "persistent mission", WaitSeconds: 1},
+			{Mission: "persistent mission", WaitSeconds: 1},
 		},
 	}
 
@@ -183,8 +183,8 @@ func TestLoopMaintainsCodexSessionContinuity(t *testing.T) {
 	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
 	loop.Dispatch = &fakeDispatcher{
 		decisions: []DispatchDecision{
-			{MissionPrompt: "persistent mission", WaitSeconds: 1},
-			{MissionPrompt: "persistent mission", WaitSeconds: 1},
+			{Mission: "persistent mission", WaitSeconds: 1},
+			{Mission: "persistent mission", WaitSeconds: 1},
 		},
 	}
 
@@ -327,7 +327,7 @@ func TestLoopBasePromptDoesNotAutoRerunWithoutWake(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- loop.Run(ctx, LoopOptions{
-			Prompt:      "persistent mission",
+			BasePrompt:  "persistent mission",
 			WaitSeconds: 1,
 		})
 	}()
@@ -463,7 +463,7 @@ func TestAutoCompactShowsDistinctLabel(t *testing.T) {
 	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
 	loop.Dispatch = &fakeDispatcher{
 		decisions: []DispatchDecision{
-			{MissionPrompt: "work", WaitSeconds: 0},
+			{Mission: "work", WaitSeconds: 0},
 		},
 	}
 
@@ -511,8 +511,8 @@ func TestAutoCompactDoesNotCountTowardMaxRuns(t *testing.T) {
 	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
 	loop.Dispatch = &fakeDispatcher{
 		decisions: []DispatchDecision{
-			{MissionPrompt: "work", WaitSeconds: 0},
-			{MissionPrompt: "work", WaitSeconds: 0},
+			{Mission: "work", WaitSeconds: 0},
+			{Mission: "work", WaitSeconds: 0},
 		},
 	}
 
@@ -542,8 +542,8 @@ func TestRunSeparatorAppearsBetweenRuns(t *testing.T) {
 	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
 	loop.Dispatch = &fakeDispatcher{
 		decisions: []DispatchDecision{
-			{MissionPrompt: "first", WaitSeconds: 0},
-			{MissionPrompt: "second", WaitSeconds: 0},
+			{Mission: "first", WaitSeconds: 0},
+			{Mission: "second", WaitSeconds: 0},
 		},
 	}
 
@@ -577,7 +577,7 @@ func TestNoSeparatorBeforeFirstRun(t *testing.T) {
 	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
 	loop.Dispatch = &fakeDispatcher{
 		decisions: []DispatchDecision{
-			{MissionPrompt: "first", WaitSeconds: 0},
+			{Mission: "first", WaitSeconds: 0},
 		},
 	}
 
@@ -648,8 +648,8 @@ func TestLoopContinuesViaTimeoutWhenBusDisconnected(t *testing.T) {
 	}
 	loop.Dispatch = &fakeDispatcher{
 		decisions: []DispatchDecision{
-			{MissionPrompt: "first", WaitSeconds: 1},
-			{MissionPrompt: "second", WaitSeconds: 1},
+			{Mission: "first", WaitSeconds: 1},
+			{Mission: "second", WaitSeconds: 1},
 		},
 	}
 
@@ -721,7 +721,7 @@ func TestLoopEventBusWakesOnMailMessage(t *testing.T) {
 
 func TestNextPromptConsumesWakeEventAfterDispatch(t *testing.T) {
 	dispatcher := &recordingDispatcher{
-		decision: DispatchDecision{Prompt: "handle wake"},
+		decision: DispatchDecision{CycleContext: "handle wake"},
 	}
 	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
 	loop.Dispatch = dispatcher
@@ -736,7 +736,7 @@ func TestNextPromptConsumesWakeEventAfterDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nextPrompt returned error: %v", err)
 	}
-	if first.Prompt != "handle wake" {
+	if first.CycleContext != "handle wake" {
 		t.Fatalf("unexpected first decision: %+v", first)
 	}
 	if st.LastWakeEvent != nil {
@@ -756,7 +756,7 @@ func TestNextPromptConsumesWakeEventAfterDispatch(t *testing.T) {
 	if dispatcher.events[1] != nil {
 		t.Fatalf("expected second dispatch to receive nil wake event, got %+v", dispatcher.events[1])
 	}
-	if second.Prompt != "handle wake" {
+	if second.CycleContext != "handle wake" {
 		t.Fatalf("unexpected second decision: %+v", second)
 	}
 }
@@ -770,7 +770,7 @@ func TestNextPromptRunsBasePromptBeforeDispatchOnFirstCycle(t *testing.T) {
 
 	st := &state{}
 	opts := LoopOptions{
-		Prompt:          "persistent mission",
+		BasePrompt:      "persistent mission",
 		WaitSeconds:     5,
 		IdleWaitSeconds: 9,
 	}
@@ -779,7 +779,7 @@ func TestNextPromptRunsBasePromptBeforeDispatchOnFirstCycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nextPrompt returned error: %v", err)
 	}
-	if decision.MissionPrompt != "persistent mission" {
+	if decision.Mission != "persistent mission" {
 		t.Fatalf("expected first cycle to run base prompt, got %+v", decision)
 	}
 	if len(dispatcher.events) != 0 {
@@ -990,7 +990,7 @@ func TestLoopEventBusBasePromptWaitsForEvents(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- loop.Run(ctx, LoopOptions{
-			Prompt:      "persistent mission",
+			BasePrompt:  "persistent mission",
 			WaitSeconds: 1,
 		})
 	}()
@@ -1740,9 +1740,9 @@ func TestLoopRecoversFromMissingFollowUpSessionID(t *testing.T) {
 	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
 	loop.Dispatch = &fakeDispatcher{
 		decisions: []DispatchDecision{
-			{MissionPrompt: "persistent mission", WaitSeconds: 1},
-			{MissionPrompt: "persistent mission", WaitSeconds: 1},
-			{MissionPrompt: "persistent mission", WaitSeconds: 1},
+			{Mission: "persistent mission", WaitSeconds: 1},
+			{Mission: "persistent mission", WaitSeconds: 1},
+			{Mission: "persistent mission", WaitSeconds: 1},
 		},
 	}
 
@@ -1788,9 +1788,9 @@ func TestLoopRecoversFromSessionIDMismatch(t *testing.T) {
 	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
 	loop.Dispatch = &fakeDispatcher{
 		decisions: []DispatchDecision{
-			{MissionPrompt: "persistent mission", WaitSeconds: 1},
-			{MissionPrompt: "persistent mission", WaitSeconds: 1},
-			{MissionPrompt: "persistent mission", WaitSeconds: 1},
+			{Mission: "persistent mission", WaitSeconds: 1},
+			{Mission: "persistent mission", WaitSeconds: 1},
+			{Mission: "persistent mission", WaitSeconds: 1},
 		},
 	}
 
