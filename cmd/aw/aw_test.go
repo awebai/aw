@@ -477,13 +477,10 @@ func TestAwInitRetriesWhenSuggestedAliasAlreadyExists(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode: %v", err)
 			}
-			_, hasAuth := r.Header["Authorization"]
-			if hasAuth {
-				t.Fatalf("unexpected auth header on init")
-			}
 
 			switch initCalls {
 			case 1:
+				// First call: unauthenticated (HEADLESS fallback from 404)
 				if payload["alias"] != "alice" {
 					t.Fatalf("first alias=%v", payload["alias"])
 				}
@@ -499,6 +496,11 @@ func TestAwInitRetriesWhenSuggestedAliasAlreadyExists(t *testing.T) {
 				})
 				return
 			case 2:
+				// Retry: authenticated with aw_sk_alice (HEADLESS→PROJECT_KEY transition)
+				auth := r.Header.Get("Authorization")
+				if auth != "Bearer aw_sk_alice" {
+					t.Fatalf("retry should use returned key, got auth=%q", auth)
+				}
 				if _, ok := payload["alias"]; ok {
 					t.Fatalf("expected alias omitted on retry, got %v", payload["alias"])
 				}
@@ -1346,6 +1348,8 @@ func TestAwInitCloudModeRequiresCloudToken(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "alice", "roles": []string{}})
 		case "/v1/init":
 			http.NotFound(w, r)
 		default:
@@ -1397,6 +1401,8 @@ func TestAwInitCloudModeSkipsInitProbe(t *testing.T) {
 	var cloudCalls int
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "researcher", "roles": []string{}})
 		case "/v1/init":
 			initCalls++
 			t.Fatalf("unexpected /v1/init probe in --cloud mode")
@@ -1631,6 +1637,8 @@ func TestAwInitCloudTokenResolutionFromConfiguredServerKey(t *testing.T) {
 	var cloudCalls int
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "researcher", "roles": []string{}})
 		case "/v1/init":
 			http.NotFound(w, r)
 		case "/api/v1/agents/bootstrap":
@@ -1714,31 +1722,17 @@ default_account: cloud-acct
 	}
 }
 
-func TestAwInitCloudWithExistingAPIKey(t *testing.T) {
+func TestAwInitCloudWithOnlyProjectKeyInConfigErrors(t *testing.T) {
 	t.Parallel()
 
-	var cloudCalls int
+	// --cloud with only an aw_sk_ key in config (no cloud JWT) should error.
+	// aw_sk_ keys are project keys and go through flowProjectKey, not cloud.
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "bob", "roles": []string{}})
 		case "/api/v1/agents/bootstrap":
-			cloudCalls++
-			if got := r.Header.Get("Authorization"); got != "Bearer aw_sk_existing" {
-				t.Fatalf("auth=%q", got)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"org_id":             "org-1",
-				"org_slug":           "juan",
-				"org_name":           "Juan",
-				"project_id":         "proj-1",
-				"project_slug":       "default",
-				"project_name":       "Default",
-				"server_url":         "https://app.aweb.ai",
-				"bootstrap_endpoint": "/api/v1/agents/bootstrap",
-				"api_key":            "aw_sk_newagent",
-				"agent_id":           "agent-bob",
-				"alias":              "bob",
-				"created":            true,
-			})
+			t.Fatal("aw_sk_ key should not reach cloud bootstrap")
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
@@ -1776,7 +1770,7 @@ default_account: existing-acct
 	}
 
 	run := exec.CommandContext(ctx, bin, "init", "--cloud", "--namespace", "demo",
-		"--alias", "bob", "--print-exports=false", "--write-context=false", "--server-url", server.URL, "--json")
+		"--alias", "bob", "--print-exports=false", "--write-context=false", "--server-url", server.URL)
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1786,19 +1780,11 @@ default_account: existing-acct
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
-	if err != nil {
-		t.Fatalf("run failed: %v\n%s", err, string(out))
+	if err == nil {
+		t.Fatalf("expected error (no cloud token), got success:\n%s", string(out))
 	}
-
-	var got map[string]any
-	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
-		t.Fatalf("invalid json: %v\n%s", err, string(out))
-	}
-	if got["api_key"] != "aw_sk_newagent" {
-		t.Fatalf("api_key=%v", got["api_key"])
-	}
-	if cloudCalls != 1 {
-		t.Fatalf("cloudCalls=%d", cloudCalls)
+	if !strings.Contains(string(out), "cloud-token") {
+		t.Fatalf("expected cloud token guidance, got: %s", string(out))
 	}
 }
 
@@ -5724,6 +5710,8 @@ func TestAwInitCloudPrefersExplicitEnvProjectKeyOverConfigToken(t *testing.T) {
 	var bootstrapAuth string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "coordinator", "roles": []string{}})
 		case "/api/v1/agents/bootstrap":
 			bootstrapAuth = r.Header.Get("Authorization")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -5779,6 +5767,7 @@ default_account: old-cloud
 	run := exec.CommandContext(ctx, bin, "init",
 		"--server-url", server.URL,
 		"--cloud",
+		"--namespace", "livepub",
 		"--alias", "coordinator",
 		"--write-context=false",
 	)
@@ -7480,6 +7469,8 @@ func TestInitDefaultServerUsedWhenNoURLProvided(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "alice", "roles": []string{}})
 		case "/api/v1/bootstrap/headless-agent":
 			http.NotFound(w, r)
 		case "/v1/init":

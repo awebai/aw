@@ -26,6 +26,8 @@ func TestAwInitHeadlessBootstrapAgainstHosted(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "deploy-bot", "roles": []string{}})
 		case "/api/v1/bootstrap/headless-agent":
 			gotPath = r.URL.Path
 			gotAuth = r.Header.Get("Authorization")
@@ -167,6 +169,8 @@ func TestAwInitIgnoresExistingConfigKeys(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "reviewer", "roles": []string{}})
 		case "/api/v1/bootstrap/headless-agent":
 			gotPath = r.URL.Path
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -259,6 +263,8 @@ func TestAwInitSelfHostedStillUsesV1Init(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "deploy-bot", "roles": []string{}})
 		case "/api/v1/bootstrap/headless-agent":
 			// Self-hosted server doesn't have this endpoint.
 			http.NotFound(w, r)

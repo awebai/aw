@@ -17,6 +17,8 @@ func TestAwInitInjectDocsAndSetupHooks(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "reviewer", "roles": []string{}})
 		case "/api/v1/bootstrap/headless-agent":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"org_id":       "org-1",

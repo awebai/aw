@@ -326,7 +326,12 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(os.Stderr, "Initializing aw...")
 		}
 
+		flow := flowProjectKey
+		if !strings.HasPrefix(sourceAPIKey, "aw_sk_") {
+			flow = flowCloudJWT
+		}
 		initOpts := initOptions{
+			Flow:            flow,
 			WorkingDir:      worktreePath,
 			BaseURL:         sourceBaseURL,
 			ServerName:      sourceServerName,
@@ -339,18 +344,11 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 			SaveConfig:      true,
 			SetDefault:      false,
 			WriteContext:    true,
-			CloudMode:       !strings.HasPrefix(sourceAPIKey, "aw_sk_"),
-			CloudToken:      "",
+			AuthToken:       sourceAPIKey,
 			TargetNamespace: "",
-			BootstrapAPIKey: "",
 			AccountName:     "",
 			WorkspaceRole:   role,
 			Lifetime:        awid.LifetimeEphemeral,
-		}
-		if strings.HasPrefix(sourceAPIKey, "aw_sk_") {
-			initOpts.BootstrapAPIKey = sourceAPIKey
-		} else {
-			initOpts.CloudToken = sourceAPIKey
 		}
 
 		_, initErr := executeInit(initOpts)
