@@ -44,6 +44,7 @@ var (
 	initCloudToken      string
 	initCloudMode       bool
 	initTargetNamespace string
+	initRole            string
 )
 
 type initOptions struct {
@@ -74,6 +75,7 @@ type initResult struct {
 	Response        *awid.InitResponse
 	AccountName     string
 	ServerName      string
+	Role            string
 	AttachResult    *contextAttachResult
 	ExportBaseURL   string
 	ExportNamespace string
@@ -98,6 +100,7 @@ func init() {
 	initCmd.Flags().StringVar(&initCloudToken, "cloud-token", "", "Cloud auth bearer token for hosted aweb-cloud bootstrap (default: AWEB_CLOUD_TOKEN, then AWEB_API_KEY if non-aw_sk_, then existing aw_sk_ keys from config)")
 	initCmd.Flags().BoolVar(&initCloudMode, "cloud", false, "Force hosted aweb-cloud bootstrap mode (skip probing /v1/init)")
 	initCmd.Flags().StringVar(&initTargetNamespace, "target-namespace", "", "Create agent in a specific namespace (forces cloud mode; requires --alias)")
+	initCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (default: AWEB_ROLE or prompt in TTY, fallback: developer)")
 
 	rootCmd.AddCommand(initCmd)
 }
@@ -130,7 +133,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if jsonFlag {
 		printJSON(result.Response)
 	} else {
-		printInitSummary(result.Response, result.AccountName, result.ServerName, result.AttachResult, result.JoinedViaInvite)
+		printInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.JoinedViaInvite)
 	}
 	if initPrintExports {
 		fmt.Println("")
@@ -283,22 +286,48 @@ func collectInitOptions() (initOptions, error) {
 		}
 	}
 
+	// Fetch alias suggestion and available roles from the server.
+	// For the project-key flow (cloudMode with aw_sk_ token), use an
+	// authenticated client so the server can infer the project.
+	var suggestedRoles []string
 	aliasWasDefaultSuggestion := false
 	if !aliasExplicit && inviteToken == "" {
-		bootstrapClient, err := aweb.New(baseURL)
+		suggestion := fetchInitSuggestion(baseURL, nsSlug, cloudToken)
+		if strings.TrimSpace(suggestion.NamePrefix) != "" {
+			alias = suggestion.NamePrefix
+		} else {
+			alias = "alice"
+		}
+		suggestedRoles = suggestion.Roles
+		aliasWasDefaultSuggestion = true
+	}
+
+	// Resolve role: --role flag > AWEB_ROLE env > TTY prompt > default "developer"
+	role := strings.TrimSpace(initRole)
+	if role == "" {
+		role = strings.TrimSpace(os.Getenv("AWEB_ROLE"))
+	}
+	if role != "" {
+		role = normalizeWorkspaceRole(role)
+		if !isValidWorkspaceRole(role) {
+			return initOptions{}, usageError("invalid role: use 1-2 words (letters/numbers) with hyphens/underscores allowed; max 50 chars")
+		}
+	} else if isTTY() && inviteToken == "" && !aliasExplicit {
+		defaultRole := "developer"
+		if len(suggestedRoles) > 0 {
+			defaultRole = suggestedRoles[0]
+			fmt.Fprintf(os.Stderr, "Available roles: %s\n", strings.Join(suggestedRoles, ", "))
+		}
+		v, err := promptString("Role", defaultRole)
 		if err != nil {
 			return initOptions{}, err
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		suggestion, err := bootstrapClient.SuggestAliasPrefix(ctx, nsSlug)
-		if err != nil || strings.TrimSpace(suggestion.NamePrefix) == "" {
-			alias = "alice"
-		} else {
-			alias = suggestion.NamePrefix
+		role = normalizeWorkspaceRole(strings.TrimSpace(v))
+		if role == "" {
+			role = "developer"
 		}
-		aliasWasDefaultSuggestion = true
+	} else {
+		role = "developer"
 	}
 
 	if isTTY() && !aliasExplicit && inviteToken == "" {
@@ -334,7 +363,40 @@ func collectInitOptions() (initOptions, error) {
 		BootstrapAPIKey:               "",
 		InviteToken:                   inviteToken,
 		AccountName:                   accountName,
+		WorkspaceRole:                 role,
 	}, nil
+}
+
+// fetchInitSuggestion calls the suggest-alias-prefix endpoint, using an
+// authenticated client when a project API key is available (so the server
+// can infer the project without a namespace slug).
+func fetchInitSuggestion(baseURL, nsSlug, cloudToken string) *awid.SuggestAliasPrefixResponse {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// When we have a project key, use it for auth so the server can
+	// infer the project and suggest a project-specific alias.
+	if strings.HasPrefix(cloudToken, "aw_sk_") && strings.TrimSpace(nsSlug) == "" {
+		client, err := aweb.NewWithAPIKey(baseURL, cloudToken)
+		if err != nil {
+			return &awid.SuggestAliasPrefixResponse{}
+		}
+		suggestion, err := client.SuggestAliasPrefix(ctx, "")
+		if err != nil {
+			return &awid.SuggestAliasPrefixResponse{}
+		}
+		return suggestion
+	}
+
+	client, err := aweb.New(baseURL)
+	if err != nil {
+		return &awid.SuggestAliasPrefixResponse{}
+	}
+	suggestion, err := client.SuggestAliasPrefix(ctx, nsSlug)
+	if err != nil {
+		return &awid.SuggestAliasPrefixResponse{}
+	}
+	return suggestion
 }
 
 func executeInit(opts initOptions) (*initResult, error) {
@@ -501,6 +563,7 @@ func executeInit(opts initOptions) (*initResult, error) {
 		Response:        resp,
 		AccountName:     accountName,
 		ServerName:      opts.ServerName,
+		Role:            opts.WorkspaceRole,
 		AttachResult:    attachResult,
 		ExportBaseURL:   exportBaseURL,
 		ExportNamespace: namespaceSlug,
@@ -508,7 +571,7 @@ func executeInit(opts initOptions) (*initResult, error) {
 	}, nil
 }
 
-func printInitSummary(resp *awid.InitResponse, accountName, serverName string, attachResult *contextAttachResult, joinedViaInvite bool) {
+func printInitSummary(resp *awid.InitResponse, accountName, serverName, role string, attachResult *contextAttachResult, joinedViaInvite bool) {
 	if resp == nil {
 		return
 	}
@@ -526,6 +589,9 @@ func printInitSummary(resp *awid.InitResponse, accountName, serverName string, a
 	}
 	if strings.TrimSpace(resp.NamespaceSlug) != "" {
 		fmt.Printf("Namespace:  %s\n", strings.TrimSpace(resp.NamespaceSlug))
+	}
+	if strings.TrimSpace(role) != "" {
+		fmt.Printf("Role:       %s\n", strings.TrimSpace(role))
 	}
 	if strings.TrimSpace(resp.Address) != "" {
 		fmt.Printf("Address:    %s\n", strings.TrimSpace(resp.Address))

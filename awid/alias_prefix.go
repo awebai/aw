@@ -7,9 +7,10 @@ type SuggestAliasPrefixRequest struct {
 }
 
 type SuggestAliasPrefixResponse struct {
-	ProjectSlug string  `json:"project_slug"`
-	ProjectID   *string `json:"project_id"`
-	NamePrefix  string  `json:"name_prefix"`
+	ProjectSlug string   `json:"project_slug"`
+	ProjectID   *string  `json:"project_id"`
+	NamePrefix  string   `json:"name_prefix"`
+	Roles       []string `json:"roles,omitempty"`
 }
 
 // SuggestAliasPrefix suggests the next available classic alias prefix for a project.
