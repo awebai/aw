@@ -333,7 +333,7 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 		l.printf("\ninfo: compacting context\n\n")
 	} else {
 		st.RunLabel = "active"
-		l.printf("\n> %s\n\n", truncateText(display, 80))
+		l.printf("\n> %s\n\n", display)
 	}
 	l.setStatusLine(formatRunStatus(st))
 	l.renderInputPrompt(st)
@@ -974,7 +974,7 @@ func (l *Loop) applyControlEvent(event ControlEvent, st *state, activeRun bool, 
 			l.announceAutofeedState(false, "disabled for manual conversation. use /autofeed on to re-enable.")
 		}
 		if activeRun {
-			l.printf("\nqueued: %s\n", truncateText(newText, 80))
+			l.printf("\nqueued: %s\n", newText)
 			if st.RunLabel != "" {
 				l.setStatusLine(formatRunStatus(st))
 			}
