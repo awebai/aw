@@ -30,9 +30,13 @@ func DefaultWorktreeWorkspaceRelativePath() string {
 func FindWorktreeWorkspacePath(startDir string) (string, error) {
 	dir := filepath.Clean(startDir)
 	for {
-		p := filepath.Join(dir, DefaultWorktreeWorkspaceRelativePath())
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
+		awDir := filepath.Join(dir, ".aw")
+		if info, err := os.Stat(awDir); err == nil && info.IsDir() {
+			wsPath := filepath.Join(awDir, "workspace.yaml")
+			if _, err := os.Stat(wsPath); err == nil {
+				return wsPath, nil
+			}
+			return "", os.ErrNotExist
 		}
 
 		parent := filepath.Dir(dir)

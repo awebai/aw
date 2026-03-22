@@ -63,6 +63,10 @@ func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Se
 		return nil, nil, err
 	}
 
+	if err := checkIdentityMismatch(workingDir, sel); err != nil {
+		return nil, nil, err
+	}
+
 	baseURL, err := resolveAuthenticatedBaseURL(sel.BaseURL)
 	if err != nil {
 		return nil, nil, err
@@ -786,6 +790,38 @@ func networkError(err error, target string) error {
 		return fmt.Errorf("agent not found: %s", target)
 	}
 	return err
+}
+
+// checkIdentityMismatch verifies that the resolved account matches
+// the local workspace identity. Prevents silently running as the
+// wrong agent when .aw/context resolves to a different account than
+// .aw/workspace.yaml expects.
+func checkIdentityMismatch(workingDir string, sel *awconfig.Selection) error {
+	if sel == nil || strings.TrimSpace(sel.AgentAlias) == "" {
+		return nil
+	}
+	ws, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir)
+	if err != nil || ws == nil {
+		return nil
+	}
+	wsAlias := strings.TrimSpace(ws.Alias)
+	selAlias := strings.TrimSpace(sel.AgentAlias)
+	if wsAlias == "" || selAlias == "" {
+		return nil
+	}
+	if wsAlias != selAlias {
+		ctxPath := "(resolved from config)"
+		if p, err := awconfig.FindWorktreeContextPath(workingDir); err == nil {
+			ctxPath = p
+		}
+		wsPath := "(unknown)"
+		if p, err := awconfig.FindWorktreeWorkspacePath(workingDir); err == nil {
+			wsPath = p
+		}
+		return fmt.Errorf("identity mismatch: .aw/context at %s resolves to %q, but .aw/workspace.yaml at %s says %q. Run 'aw init' in this worktree to fix.",
+			ctxPath, selAlias, wsPath, wsAlias)
+	}
+	return nil
 }
 
 func debugLog(format string, args ...any) {

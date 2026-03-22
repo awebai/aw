@@ -23,9 +23,16 @@ func DefaultWorktreeContextRelativePath() string {
 func FindWorktreeContextPath(startDir string) (string, error) {
 	dir := filepath.Clean(startDir)
 	for {
-		p := filepath.Join(dir, DefaultWorktreeContextRelativePath())
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
+		awDir := filepath.Join(dir, ".aw")
+		if info, err := os.Stat(awDir); err == nil && info.IsDir() {
+			// Found an .aw/ directory — this is the identity boundary.
+			// Check for context inside it. If missing, stop here
+			// rather than walking up into a different project.
+			ctxPath := filepath.Join(awDir, "context")
+			if _, err := os.Stat(ctxPath); err == nil {
+				return ctxPath, nil
+			}
+			return "", os.ErrNotExist
 		}
 
 		parent := filepath.Dir(dir)

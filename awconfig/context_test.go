@@ -34,6 +34,68 @@ func TestFindWorktreeContextPathWalksUp(t *testing.T) {
 	}
 }
 
+func TestFindWorktreeContextPathStopsAtAwBoundary(t *testing.T) {
+	t.Parallel()
+
+	// Simulate two sibling worktrees under a parent:
+	//   parent/
+	//     project-bob/.aw/context  (bob's identity)
+	//     project-alice/.aw/workspace.yaml  (alice, but NO .aw/context)
+	//
+	// When searching from project-alice, we must NOT walk up and
+	// find project-bob's context. We should find project-alice's .aw/
+	// directory (which has workspace.yaml but no context) and stop.
+	tmp := t.TempDir()
+
+	bobDir := filepath.Join(tmp, "project-bob")
+	if err := os.MkdirAll(filepath.Join(bobDir, ".aw"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bobDir, ".aw", "context"), []byte("default_account: bob\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	aliceDir := filepath.Join(tmp, "project-alice")
+	if err := os.MkdirAll(filepath.Join(aliceDir, ".aw"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(aliceDir, ".aw", "workspace.yaml"), []byte("alias: alice\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Searching from alice's dir should NOT find bob's context
+	_, err := FindWorktreeContextPath(aliceDir)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected ErrNotExist (alice has .aw/ but no context), got err=%v", err)
+	}
+}
+
+func TestFindWorktreeContextPathStopsAtParentAwDir(t *testing.T) {
+	t.Parallel()
+
+	// parent/.aw/context exists, but child also has .aw/ (without context).
+	// Should NOT cross the child's .aw/ boundary to find parent's.
+	tmp := t.TempDir()
+
+	parentDir := filepath.Join(tmp, "parent")
+	if err := os.MkdirAll(filepath.Join(parentDir, ".aw"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parentDir, ".aw", "context"), []byte("default_account: parent\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	childDir := filepath.Join(parentDir, "child-worktree")
+	if err := os.MkdirAll(filepath.Join(childDir, ".aw"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := FindWorktreeContextPath(childDir)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("should not cross .aw/ boundary to parent, got err=%v", err)
+	}
+}
+
 func TestFindWorktreeContextPathMissing(t *testing.T) {
 	t.Parallel()
 
