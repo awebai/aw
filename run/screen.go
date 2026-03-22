@@ -766,16 +766,16 @@ func (s *ScreenController) handleExitConfirmed() {
 func newScreenStyles() screenStyles {
 	return screenStyles{
 		prompt:    lipgloss.NewStyle().Bold(true),
-		separator: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "247", Dark: "245"}),
-		tool:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "245"}),
-		result:    lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "245"}),
+		separator: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "247", Dark: "248"}),
+		tool:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "252"}),
+		result:    lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "250"}),
 		done:      lipgloss.NewStyle(),
-		info:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "245"}),
+		info:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "248"}),
 		status: lipgloss.NewStyle().
 			Foreground(lipgloss.AdaptiveColor{Light: "236", Dark: "252"}).
 			Background(lipgloss.AdaptiveColor{Light: "252", Dark: "236"}).
 			Padding(0, 1),
-		hint: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "245"}),
+		hint: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "240", Dark: "248"}),
 	}
 }
 
