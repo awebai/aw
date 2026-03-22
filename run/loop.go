@@ -961,7 +961,12 @@ func (l *Loop) applyControlEvent(event ControlEvent, st *state, activeRun bool, 
 	case ControlPrompt:
 		st.PendingInput = false
 		st.InputBuffer = ""
-		st.NextPrompt = strings.TrimSpace(event.Text)
+		newText := strings.TrimSpace(event.Text)
+		if existing := strings.TrimSpace(st.NextPrompt); existing != "" && newText != "" {
+			st.NextPrompt = existing + "\n\n" + newText
+		} else {
+			st.NextPrompt = newText
+		}
 		st.Paused = false
 		st.PauseNoticeShown = false
 		if st.Autofeed {
@@ -969,7 +974,7 @@ func (l *Loop) applyControlEvent(event ControlEvent, st *state, activeRun bool, 
 			l.announceAutofeedState(false, "disabled for manual conversation. use /autofeed on to re-enable.")
 		}
 		if activeRun {
-			l.printf("\nqueued prompt override: %s\n", truncateText(st.NextPrompt, 80))
+			l.printf("\nqueued: %s\n", truncateText(newText, 80))
 			if st.RunLabel != "" {
 				l.setStatusLine(formatRunStatus(st))
 			}
