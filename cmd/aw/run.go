@@ -14,6 +14,7 @@ import (
 	aweb "github.com/awebai/aw"
 	awrun "github.com/awebai/aw/run"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -165,7 +166,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	if runContinueMode {
-		if recap := loadRunContinueRecap(workingDir); recap != "" {
+		if recap := loadRunContinueRecap(workingDir, writerSupportsANSI(cmd.OutOrStdout())); recap != "" {
 			fmt.Fprint(cmd.OutOrStdout(), recap)
 		}
 	}
@@ -193,12 +194,20 @@ func runRun(cmd *cobra.Command, args []string) error {
 	return err
 }
 
-func loadRunContinueRecap(workingDir string) string {
+func loadRunContinueRecap(workingDir string, ansi bool) string {
 	entries, err := readInteractionLog(interactionLogPath(workingDir), 8)
 	if err != nil {
 		return ""
 	}
-	return formatInteractionRecap(entries, 8)
+	return formatInteractionRecapStyled(entries, 8, ansi)
+}
+
+func writerSupportsANSI(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	return term.IsTerminal(int(f.Fd()))
 }
 
 func runDetectRepoSlug(dir string) string {

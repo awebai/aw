@@ -734,14 +734,17 @@ func TestRunContinuePrintsRecentInteractionRecap(t *testing.T) {
 		t.Fatalf("runRun returned error: %v", err)
 	}
 	out := stdout.String()
-	if !strings.Contains(out, "Recent interactions:") {
+	if !strings.Contains(out, "Recent interactions") {
 		t.Fatalf("expected interaction recap, got %q", out)
 	}
-	if !strings.Contains(out, "you: please fix the continue UX") {
+	if !strings.Contains(out, "> please fix the continue UX") {
 		t.Fatalf("expected user recap line, got %q", out)
 	}
-	if !strings.Contains(out, "agent: I can add a compact recap") {
+	if !strings.Contains(out, "I can add a compact recap") {
 		t.Fatalf("expected agent recap line, got %q", out)
+	}
+	if strings.Contains(out, "[10:00]") {
+		t.Fatalf("did not expect timestamps in recap, got %q", out)
 	}
 }
 

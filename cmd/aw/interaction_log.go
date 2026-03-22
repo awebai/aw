@@ -141,6 +141,10 @@ func readInteractionLog(path string, limit int) ([]InteractionEntry, error) {
 }
 
 func formatInteractionRecap(entries []InteractionEntry, limit int) string {
+	return formatInteractionRecapStyled(entries, limit, false)
+}
+
+func formatInteractionRecapStyled(entries []InteractionEntry, limit int, ansi bool) string {
 	if len(entries) == 0 {
 		return ""
 	}
@@ -149,9 +153,17 @@ func formatInteractionRecap(entries []InteractionEntry, limit int) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("Recent interactions:\n")
+	sb.WriteString("Recent interactions\n\n")
 	for _, entry := range entries {
-		sb.WriteString(fmt.Sprintf("- [%s] %s\n", formatInteractionTime(entry.Timestamp), formatInteractionEntry(entry)))
+		line := strings.TrimSpace(formatInteractionEntry(entry))
+		if line == "" {
+			continue
+		}
+		if entry.Kind == interactionKindUser {
+			line = maybeBoldANSI(line, ansi)
+		}
+		sb.WriteString(line)
+		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
 	return sb.String()
@@ -161,23 +173,23 @@ func formatInteractionEntry(entry InteractionEntry) string {
 	text := summarizeInteractionText(entry.Text, 140)
 	switch entry.Kind {
 	case interactionKindUser:
-		return fmt.Sprintf("you: %s", text)
+		return fmt.Sprintf("> %s", text)
 	case interactionKindAgent:
-		return fmt.Sprintf("agent: %s", text)
+		return text
 	case interactionKindChatIn:
-		return fmt.Sprintf("<- chat from %s: %s", interactionParty(entry.From, "someone"), text)
+		return fmt.Sprintf("<- %s: %s", interactionParty(entry.From, "someone"), text)
 	case interactionKindChatOut:
-		return fmt.Sprintf("-> chat to %s: %s", interactionParty(entry.To, "someone"), text)
+		return fmt.Sprintf("-> %s: %s", interactionParty(entry.To, "someone"), text)
 	case interactionKindMailIn:
 		if subject := strings.TrimSpace(entry.Subject); subject != "" {
-			return fmt.Sprintf("<- mail from %s: %s — %s", interactionParty(entry.From, "someone"), subject, text)
+			return fmt.Sprintf("<- %s (mail): %s — %s", interactionParty(entry.From, "someone"), subject, text)
 		}
-		return fmt.Sprintf("<- mail from %s: %s", interactionParty(entry.From, "someone"), text)
+		return fmt.Sprintf("<- %s (mail): %s", interactionParty(entry.From, "someone"), text)
 	case interactionKindMailOut:
 		if subject := strings.TrimSpace(entry.Subject); subject != "" {
-			return fmt.Sprintf("-> mail to %s: %s — %s", interactionParty(entry.To, "someone"), subject, text)
+			return fmt.Sprintf("-> %s (mail): %s — %s", interactionParty(entry.To, "someone"), subject, text)
 		}
-		return fmt.Sprintf("-> mail to %s: %s", interactionParty(entry.To, "someone"), text)
+		return fmt.Sprintf("-> %s (mail): %s", interactionParty(entry.To, "someone"), text)
 	default:
 		return text
 	}
@@ -195,17 +207,17 @@ func summarizeInteractionText(text string, limit int) string {
 	return text
 }
 
-func formatInteractionTime(raw string) string {
-	if t, err := time.Parse(time.RFC3339, raw); err == nil {
-		return t.Format("15:04")
-	}
-	return strings.TrimSpace(raw)
-}
-
 func interactionParty(value, fallback string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return fallback
 	}
 	return value
+}
+
+func maybeBoldANSI(text string, ansi bool) string {
+	if !ansi || strings.TrimSpace(text) == "" {
+		return text
+	}
+	return "\x1b[1m" + text + "\x1b[0m"
 }
