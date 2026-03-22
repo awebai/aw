@@ -233,12 +233,16 @@ func collectInitOptions() (initOptions, error) {
 		}
 	}
 
-	// When we have a project API key and no namespace, derive it from
-	// the key via the authenticated suggestion endpoint.
-	if nsSlug == "" && !cloudMode && inviteToken == "" && bootstrapAPIKey != "" {
-		suggestion := fetchInitSuggestion(baseURL, "", bootstrapAPIKey)
-		if slug := strings.TrimSpace(suggestion.ProjectSlug); slug != "" {
-			nsSlug = slug
+	// When we have a project API key, fetch suggestions early — we get
+	// namespace, alias, and roles in one call.
+	var earlySuggestion *awid.SuggestAliasPrefixResponse
+	if !cloudMode && inviteToken == "" && bootstrapAPIKey != "" {
+		s := fetchInitSuggestion(baseURL, nsSlug, bootstrapAPIKey)
+		earlySuggestion = s
+		if nsSlug == "" {
+			if slug := strings.TrimSpace(s.ProjectSlug); slug != "" {
+				nsSlug = slug
+			}
 		}
 	}
 	if nsSlug == "" && !cloudMode && inviteToken == "" {
@@ -303,16 +307,16 @@ func collectInitOptions() (initOptions, error) {
 	}
 
 	// Fetch alias suggestion and available roles from the server.
-	// Use the project key for auth when available so the server can
-	// infer the project and return project-specific suggestions.
-	authToken := cloudToken
-	if authToken == "" {
-		authToken = bootstrapAPIKey
-	}
 	var suggestedRoles []string
 	aliasWasDefaultSuggestion := false
 	if !aliasExplicit && inviteToken == "" {
-		suggestion := fetchInitSuggestion(baseURL, nsSlug, authToken)
+		var suggestion *awid.SuggestAliasPrefixResponse
+		if earlySuggestion != nil {
+			suggestion = earlySuggestion
+		} else {
+			authToken := cloudToken
+			suggestion = fetchInitSuggestion(baseURL, nsSlug, authToken)
+		}
 		if strings.TrimSpace(suggestion.NamePrefix) != "" {
 			alias = suggestion.NamePrefix
 		} else {
@@ -395,8 +399,8 @@ func fetchInitSuggestion(baseURL, nsSlug, cloudToken string) *awid.SuggestAliasP
 	defer cancel()
 
 	// When we have a project key, use it for auth so the server can
-	// infer the project and suggest a project-specific alias.
-	if strings.HasPrefix(cloudToken, "aw_sk_") && strings.TrimSpace(nsSlug) == "" {
+	// infer the project and suggest a project-specific alias and roles.
+	if strings.HasPrefix(cloudToken, "aw_sk_") {
 		client, err := aweb.NewWithAPIKey(baseURL, cloudToken)
 		if err != nil {
 			return &awid.SuggestAliasPrefixResponse{}
