@@ -224,6 +224,23 @@ func collectInitOptions() (initOptions, error) {
 		}
 	}
 
+	// Resolve aw_sk_ project key from AWEB_API_KEY early — needed for
+	// namespace derivation and alias suggestion.
+	bootstrapAPIKey := ""
+	if !cloudMode {
+		if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); strings.HasPrefix(v, "aw_sk_") {
+			bootstrapAPIKey = v
+		}
+	}
+
+	// When we have a project API key and no namespace, derive it from
+	// the key via the authenticated suggestion endpoint.
+	if nsSlug == "" && !cloudMode && inviteToken == "" && bootstrapAPIKey != "" {
+		suggestion := fetchInitSuggestion(baseURL, "", bootstrapAPIKey)
+		if slug := strings.TrimSpace(suggestion.ProjectSlug); slug != "" {
+			nsSlug = slug
+		}
+	}
 	if nsSlug == "" && !cloudMode && inviteToken == "" {
 		if isTTY() {
 			suggested := sanitizeSlug(filepath.Base(workingDir))
@@ -275,23 +292,14 @@ func collectInitOptions() (initOptions, error) {
 	}
 
 	cloudToken := ""
-	bootstrapAPIKey := ""
 	if cloudMode {
 		cloudToken = resolveCloudToken(baseURL, serverName, accountName, explicitCloudToken, global)
 		if !aliasExplicit && strings.HasPrefix(cloudToken, "aw_sk_") && !isTTY() {
 			return initOptions{}, usageError("--alias is required when bootstrapping a new agent with an existing API key (non-interactive)")
 		}
 	}
-	// aw_sk_ keys from AWEB_API_KEY env are project API keys — route through
-	// OSS init, not cloud bootstrap. Stored config keys are NOT used here;
-	// they belong to existing agents and should not bootstrap new ones.
-	if !cloudMode {
-		if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); strings.HasPrefix(v, "aw_sk_") {
-			bootstrapAPIKey = v
-			if !aliasExplicit && !isTTY() {
-				return initOptions{}, usageError("--alias is required when bootstrapping a new agent with an existing API key (non-interactive)")
-			}
-		}
+	if bootstrapAPIKey != "" && !aliasExplicit && !isTTY() {
+		return initOptions{}, usageError("--alias is required when bootstrapping a new agent with an existing API key (non-interactive)")
 	}
 
 	// Fetch alias suggestion and available roles from the server.
