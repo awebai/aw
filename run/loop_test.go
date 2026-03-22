@@ -264,7 +264,7 @@ func TestLoopDoesNotSuppressBdhSpecificEchoText(t *testing.T) {
 	}, &out)
 	st := &state{}
 
-	loop.handleOutputLine("ignored", &presenterState{}, st, nil)
+	loop.handleOutputLine("ignored", &presenterState{}, st, nil, nil)
 
 	got := out.String()
 	if !strings.Contains(got, "AGENTS.md instructions") {
@@ -432,12 +432,12 @@ func TestHandleOutputLineAccumulatesCost(t *testing.T) {
 	presenter := &presenterState{}
 	sid := ""
 
-	loop.handleOutputLine("event1", presenter, st, &sid)
+	loop.handleOutputLine("event1", presenter, st, &sid, nil)
 	if st.CumulativeCostUSD != 0.05 {
 		t.Fatalf("expected 0.05, got %f", st.CumulativeCostUSD)
 	}
 
-	loop.handleOutputLine("event2", presenter, st, &sid)
+	loop.handleOutputLine("event2", presenter, st, &sid, nil)
 	if st.CumulativeCostUSD != 0.10 {
 		t.Fatalf("expected 0.10, got %f", st.CumulativeCostUSD)
 	}
@@ -872,6 +872,45 @@ func TestLoopSkipsFreshStartGreetingInContinueMode(t *testing.T) {
 	}
 	if ui.sawOutputContaining("The aweb agent runner") {
 		t.Fatal("did not expect startup greeting in continue mode")
+	}
+}
+
+func TestLoopEmitsInteractionCallbacksForExplicitPrompt(t *testing.T) {
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		onLine(`{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"I checked the wake path. "}}}`)
+		onLine(`{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"The fix is small."}}}`)
+		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
+		return nil
+	}
+
+	var prompts []string
+	var summaries []RunSummary
+	loop.OnUserPrompt = func(text string) { prompts = append(prompts, text) }
+	loop.OnRunComplete = func(summary RunSummary) { summaries = append(summaries, summary) }
+
+	if err := loop.Run(context.Background(), LoopOptions{
+		InitialPrompt: "debug the continue UX",
+		WaitSeconds:   1,
+		MaxRuns:       1,
+	}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(prompts) != 1 || prompts[0] != "debug the continue UX" {
+		t.Fatalf("unexpected prompts: %#v", prompts)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(summaries))
+	}
+	if summaries[0].SessionID != "sess-42" {
+		t.Fatalf("session_id=%q", summaries[0].SessionID)
+	}
+	if summaries[0].UserPrompt != "debug the continue UX" {
+		t.Fatalf("user_prompt=%q", summaries[0].UserPrompt)
+	}
+	if summaries[0].AgentText != "I checked the wake path. The fix is small." {
+		t.Fatalf("agent_text=%q", summaries[0].AgentText)
 	}
 }
 
@@ -1316,7 +1355,7 @@ func TestRemoteInterruptDuringIdleDoesNotLeakIntoNextRun(t *testing.T) {
 		t.Fatal("expected RunInterrupted=false after idle interrupt handling")
 	}
 
-	if err := loop.runOnce(context.Background(), LoopOptions{}, st, "review", "review"); err != nil {
+	if err := loop.runOnce(context.Background(), LoopOptions{}, st, "review", "review", "review"); err != nil {
 		t.Fatalf("runOnce returned error: %v", err)
 	}
 
@@ -1434,7 +1473,7 @@ func TestRunOnceSurfacesProviderStderr(t *testing.T) {
 		return nil
 	}
 
-	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", "review"); err != nil {
+	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", "review", "review"); err != nil {
 		t.Fatalf("runOnce returned error: %v", err)
 	}
 
@@ -1457,7 +1496,7 @@ func TestRunOnceSurfacesProviderStdoutPartial(t *testing.T) {
 		return nil
 	}
 
-	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", "review"); err != nil {
+	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", "review", "review"); err != nil {
 		t.Fatalf("runOnce returned error: %v", err)
 	}
 
@@ -1474,7 +1513,7 @@ func TestHandleRawProviderChunkPTYStartsOnFreshLineWithoutLabel(t *testing.T) {
 	presenter := &presenterState{}
 	st := &state{}
 
-	loop.handleOutputLine("ignored", presenter, st, nil)
+	loop.handleOutputLine("ignored", presenter, st, nil, nil)
 	loop.handleRawProviderChunk("", "Allow? [y/N]", presenter)
 
 	got := out.String()

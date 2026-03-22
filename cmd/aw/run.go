@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"time"
 
 	aweb "github.com/awebai/aw"
 	awrun "github.com/awebai/aw/run"
@@ -147,6 +148,27 @@ func runRun(cmd *cobra.Command, args []string) error {
 	loop.Control = screen
 	loop.Dispatch = newRunDispatcher(settings, newRunWakeValidator(client))
 	loop.StatusIdentity = statusIdentity
+	loop.OnUserPrompt = func(text string) {
+		appendInteractionLogForDir(workingDir, &InteractionEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Kind:      interactionKindUser,
+			Text:      text,
+		})
+	}
+	loop.OnRunComplete = func(summary awrun.RunSummary) {
+		appendInteractionLogForDir(workingDir, &InteractionEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Kind:      interactionKindAgent,
+			SessionID: summary.SessionID,
+			Text:      summary.AgentText,
+		})
+	}
+
+	if runContinueMode {
+		if recap := loadRunContinueRecap(workingDir); recap != "" {
+			fmt.Fprint(cmd.OutOrStdout(), recap)
+		}
+	}
 
 	opts := awrun.LoopOptions{
 		InitialPrompt:       initialPrompt,
@@ -169,6 +191,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	return err
+}
+
+func loadRunContinueRecap(workingDir string) string {
+	entries, err := readInteractionLog(interactionLogPath(workingDir), 8)
+	if err != nil {
+		return ""
+	}
+	return formatInteractionRecap(entries, 8)
 }
 
 func runDetectRepoSlug(dir string) string {

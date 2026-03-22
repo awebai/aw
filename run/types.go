@@ -15,6 +15,13 @@ type UsageStats struct {
 	ContextWindowSize        int
 }
 
+type RunSummary struct {
+	UserPrompt string
+	SessionID  string
+	AgentText  string
+	Failed     bool
+}
+
 type ServiceConfig struct {
 	Name        string `json:"name"`
 	Command     string `json:"command"`
@@ -130,6 +137,7 @@ type ServiceSupervisor interface {
 type DispatchDecision struct {
 	MissionPrompt string
 	Prompt        string
+	UserPrompt    string
 	WaitSeconds   int
 	Skip          bool
 }

@@ -28,6 +28,8 @@ type Loop struct {
 	Now               func() time.Time
 	InputPromptLabel  string
 	StatusIdentity    string
+	OnUserPrompt      func(string)
+	OnRunComplete     func(RunSummary)
 
 	writeMu sync.Mutex
 }
@@ -212,7 +214,7 @@ func (l *Loop) Run(ctx context.Context, opts LoopOptions) error {
 			return fmt.Errorf("prompt cannot be empty")
 		}
 		state.Run++
-		if err := l.runOnce(ctx, opts, state, prompt, displayPrompt); err != nil {
+		if err := l.runOnce(ctx, opts, state, prompt, displayPrompt, decision.UserPrompt); err != nil {
 			if state.StopRequested && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 				return nil
 			}
@@ -263,7 +265,7 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 		explicitMissionPrompt = strings.TrimSpace(opts.InitialPrompt)
 	}
 	if explicitMissionPrompt != "" {
-		return DispatchDecision{MissionPrompt: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
+		return DispatchDecision{MissionPrompt: explicitMissionPrompt, UserPrompt: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
 	}
 	if st.Run == 0 && strings.TrimSpace(opts.Prompt) != "" {
 		return DispatchDecision{MissionPrompt: strings.TrimSpace(opts.Prompt), WaitSeconds: opts.WaitSeconds}, nil
@@ -293,11 +295,14 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 	return DispatchDecision{MissionPrompt: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
 }
 
-func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt string, display string) error {
+func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt string, display string, userPrompt string) error {
 	l.clearStatusLine()
 	st.LastRunError = ""
 	st.LastRunUsage = UsageStats{}
 	st.HasRunUsage = false
+	if text := strings.TrimSpace(userPrompt); text != "" && l.OnUserPrompt != nil {
+		l.OnUserPrompt(text)
+	}
 	expectedSessionID := strings.TrimSpace(st.SessionID)
 	followUpRun := st.RanOnce
 	buildOpts := BuildOptions{
@@ -336,11 +341,25 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 	presenter := &presenterState{}
 	st.StructuredOut = false
 	observedSessionID := ""
+	var agentText strings.Builder
 	providerInput := &providerInputState{}
 	st.ProviderInput = providerInput
 	defer func() {
 		providerInput.Clear()
 		st.ProviderInput = nil
+		if l.OnRunComplete == nil || display == "/compact" {
+			return
+		}
+		text := strings.TrimSpace(agentText.String())
+		if text == "" {
+			return
+		}
+		l.OnRunComplete(RunSummary{
+			UserPrompt: strings.TrimSpace(userPrompt),
+			SessionID:  strings.TrimSpace(st.SessionID),
+			AgentText:  text,
+			Failed:     strings.TrimSpace(st.LastRunError) != "",
+		})
 	}()
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -376,7 +395,7 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 
 	go func() {
 		errCh <- l.Runner(runCtx, opts.WorkingDir, argv, func(line string) {
-			l.handleOutputLine(line, presenter, st, &observedSessionID)
+			l.handleOutputLine(line, presenter, st, &observedSessionID, &agentText)
 		}, sinks)
 	}()
 
@@ -446,7 +465,7 @@ func (l *Loop) maybeAutoCompact(ctx context.Context, opts LoopOptions, st *state
 	}
 	st.CompactRuns++
 	l.printf("\ninfo: context %.1f%% exceeds %d%%; running compact\n", pct, opts.CompactThresholdPct)
-	if err := l.runOnce(ctx, opts, st, "/compact", "/compact"); err != nil {
+	if err := l.runOnce(ctx, opts, st, "/compact", "/compact", ""); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -463,7 +482,7 @@ func (l *Loop) drainPendingControlEvents(st *state, activeRun bool) {
 	}
 }
 
-func (l *Loop) handleOutputLine(line string, presenter *presenterState, st *state, observedSessionID *string) {
+func (l *Loop) handleOutputLine(line string, presenter *presenterState, st *state, observedSessionID *string, agentText *strings.Builder) {
 	event, err := l.Provider.ParseOutput(line)
 	if err != nil {
 		l.runPresenterEnsureTextSpacing(presenter)
@@ -494,6 +513,9 @@ func (l *Loop) handleOutputLine(line string, presenter *presenterState, st *stat
 	}
 	switch event.Type {
 	case EventText:
+		if agentText != nil {
+			agentText.WriteString(event.Text)
+		}
 		l.runPresenterEnsureTextSpacing(presenter)
 		l.print(event.Text)
 		presenter.lastWasText = true

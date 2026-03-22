@@ -32,12 +32,20 @@ func chatSend(ctx context.Context, toAlias, message string, opts chat.SendOption
 // logChatEvent logs a single chat event to the communication log.
 func logChatEvent(logsDir, accountName, myAddress string, ev chat.Event) {
 	dir := "recv"
+	kind := interactionKindChatIn
+	from := ev.FromAddress
+	if from == "" {
+		from = ev.FromAgent
+	}
+	to := ev.ToAddress
 	if ev.FromAddress != "" {
 		if ev.FromAddress == myAddress {
 			dir = "send"
+			kind = interactionKindChatOut
 		}
 	} else if ev.FromAgent == myAddress {
 		dir = "send"
+		kind = interactionKindChatOut
 	}
 	appendCommLog(logsDir, accountName, &CommLogEntry{
 		Timestamp:    ev.Timestamp,
@@ -45,8 +53,8 @@ func logChatEvent(logsDir, accountName, myAddress string, ev chat.Event) {
 		Channel:      "chat",
 		MessageID:    ev.MessageID,
 		SessionID:    ev.SessionID,
-		From:         ev.FromAddress,
-		To:           ev.ToAddress,
+		From:         from,
+		To:           to,
 		Body:         ev.Body,
 		FromDID:      ev.FromDID,
 		ToDID:        ev.ToDID,
@@ -55,6 +63,15 @@ func logChatEvent(logsDir, accountName, myAddress string, ev chat.Event) {
 		Signature:    ev.Signature,
 		SigningKeyID: ev.SigningKeyID,
 		Verification: string(ev.VerificationStatus),
+	})
+	appendInteractionLogForCWD(&InteractionEntry{
+		Timestamp: ev.Timestamp,
+		Kind:      kind,
+		MessageID: ev.MessageID,
+		SessionID: ev.SessionID,
+		From:      from,
+		To:        to,
+		Text:      ev.Body,
 	})
 }
 
@@ -104,6 +121,13 @@ var chatSendAndWaitCmd = &cobra.Command{
 			To:        args[0],
 			Body:      args[1],
 		})
+		appendInteractionLogForCWD(&InteractionEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Kind:      interactionKindChatOut,
+			SessionID: result.SessionID,
+			To:        args[0],
+			Text:      args[1],
+		})
 		// Log any reply events.
 		logChatEvents(logsDir, sel.AccountName, myAddr, result.Events)
 		printOutput(result, formatChatSend)
@@ -137,6 +161,13 @@ var chatSendAndLeaveCmd = &cobra.Command{
 			From:      deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias),
 			To:        args[0],
 			Body:      args[1],
+		})
+		appendInteractionLogForCWD(&InteractionEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Kind:      interactionKindChatOut,
+			SessionID: result.SessionID,
+			To:        args[0],
+			Text:      args[1],
 		})
 		printOutput(result, formatChatSend)
 		return nil
@@ -244,6 +275,13 @@ var chatExtendWaitCmd = &cobra.Command{
 			From:      deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias),
 			To:        result.TargetAgent,
 			Body:      args[1],
+		})
+		appendInteractionLogForCWD(&InteractionEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Kind:      interactionKindChatOut,
+			SessionID: result.SessionID,
+			To:        result.TargetAgent,
+			Text:      args[1],
 		})
 		printOutput(result, formatChatExtendWait)
 		return nil

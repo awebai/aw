@@ -17,7 +17,7 @@ var mailCmd = &cobra.Command{
 // mail send
 
 var (
-	mailSendTo  string
+	mailSendTo       string
 	mailSendSubject  string
 	mailSendBody     string
 	mailSendPriority string
@@ -61,6 +61,14 @@ var mailSendCmd = &cobra.Command{
 			To:        mailSendTo,
 			Subject:   mailSendSubject,
 			Body:      mailSendBody,
+		})
+		appendInteractionLogForCWD(&InteractionEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Kind:      interactionKindMailOut,
+			MessageID: resp.MessageID,
+			To:        mailSendTo,
+			Subject:   mailSendSubject,
+			Text:      mailSendBody,
 		})
 		if jsonFlag {
 			printJSON(resp)
@@ -118,6 +126,15 @@ var mailInboxCmd = &cobra.Command{
 				Signature:    msg.Signature,
 				SigningKeyID: msg.SigningKeyID,
 				Verification: string(msg.VerificationStatus),
+			})
+			appendInteractionLogForCWD(&InteractionEntry{
+				Timestamp: msg.CreatedAt,
+				Kind:      interactionKindMailIn,
+				MessageID: msg.MessageID,
+				From:      msg.FromAddress,
+				To:        msg.ToAddress,
+				Subject:   msg.Subject,
+				Text:      msg.Body,
 			})
 		}
 		printOutput(resp, formatMailInbox)

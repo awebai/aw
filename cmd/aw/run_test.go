@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -174,6 +176,9 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 	}
 	if capturedLoop.Dispatch == nil {
 		t.Fatal("expected run loop to have a dispatcher")
+	}
+	if capturedLoop.OnUserPrompt == nil || capturedLoop.OnRunComplete == nil {
+		t.Fatal("expected interaction log hooks on loop")
 	}
 	if capturedOpts.InitialPrompt != "finish the migration" {
 		t.Fatalf("initial prompt=%q", capturedOpts.InitialPrompt)
@@ -664,6 +669,82 @@ func TestRunUsesActionableWakeEventToTriggerSecondCycle(t *testing.T) {
 	}
 	if len(builds) != 2 || !builds[1].ContinueSession || builds[1].SessionID != "sess-42" {
 		t.Fatalf("expected second run to continue session sess-42, got %+v", builds)
+	}
+}
+
+func TestRunContinuePrintsRecentInteractionRecap(t *testing.T) {
+	initRunCommandVars()
+
+	oldLoad := runLoadUserConfig
+	oldResolveSettings := runResolveSettings
+	oldNewProvider := runNewProvider
+	oldResolveClient := runResolveClientForDir
+	oldNewLoop := runNewLoop
+	oldExecuteLoop := runExecuteLoop
+	oldNewEventBus := runNewEventBus
+	oldNewScreen := runNewScreenController
+	t.Cleanup(func() {
+		runLoadUserConfig = oldLoad
+		runResolveSettings = oldResolveSettings
+		runNewProvider = oldNewProvider
+		runResolveClientForDir = oldResolveClient
+		runNewLoop = oldNewLoop
+		runExecuteLoop = oldExecuteLoop
+		runNewEventBus = oldNewEventBus
+		runNewScreenController = oldNewScreen
+		initRunCommandVars()
+	})
+
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".aw"), 0o755); err != nil {
+		t.Fatalf("mkdir .aw: %v", err)
+	}
+	appendInteractionLogForDir(tmp, &InteractionEntry{
+		Timestamp: "2026-03-22T10:00:00Z",
+		Kind:      interactionKindUser,
+		Text:      "please fix the continue UX",
+	})
+	appendInteractionLogForDir(tmp, &InteractionEntry{
+		Timestamp: "2026-03-22T10:01:00Z",
+		Kind:      interactionKindAgent,
+		Text:      "I can add a compact recap without touching provider history.",
+	})
+
+	runLoadUserConfig = func(dir string) (awrun.UserConfig, error) { return awrun.UserConfig{}, nil }
+	runResolveSettings = func(cfg awrun.UserConfig, overrides awrun.SettingOverrides) (awrun.Settings, error) {
+		return awrun.Settings{BasePrompt: "persistent mission", WaitSeconds: 5, IdleWaitSeconds: 5}, nil
+	}
+	runNewProvider = func(name string) (awrun.Provider, error) { return awrun.ClaudeProvider{}, nil }
+	runResolveClientForDir = func(string) (*aweb.Client, *awconfig.Selection, error) {
+		return &aweb.Client{}, &awconfig.Selection{NamespaceSlug: "team", AgentAlias: "rose"}, nil
+	}
+	runNewEventBus = func(client *aweb.Client) *awrun.EventBus { return nil }
+	runNewScreenController = func(in io.Reader, out io.Writer) *awrun.ScreenController { return nil }
+	runNewLoop = func(provider awrun.Provider, out io.Writer) *awrun.Loop {
+		return awrun.NewLoop(provider, out)
+	}
+	runExecuteLoop = func(loop *awrun.Loop, ctx context.Context, opts awrun.LoopOptions) error { return nil }
+
+	cmd := &cobraCommandClone{Command: *runCmd}
+	cmd.ResetFlagsForTest()
+	cmd.Command.SetContext(context.Background())
+	runContinueMode = true
+	runWorkingDir = tmp
+	var stdout, stderr bytes.Buffer
+	setRunCommandIO(&cmd.Command, strings.NewReader(""), &stdout, &stderr)
+
+	if err := runRun(&cmd.Command, []string{"continue"}); err != nil {
+		t.Fatalf("runRun returned error: %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "Recent interactions:") {
+		t.Fatalf("expected interaction recap, got %q", out)
+	}
+	if !strings.Contains(out, "you: please fix the continue UX") {
+		t.Fatalf("expected user recap line, got %q", out)
+	}
+	if !strings.Contains(out, "agent: I can add a compact recap") {
+		t.Fatalf("expected agent recap line, got %q", out)
 	}
 }
 

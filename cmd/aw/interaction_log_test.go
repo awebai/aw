@@ -1,0 +1,54 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestAppendInteractionLogForDirDedupesByMessageID(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".aw"), 0o755); err != nil {
+		t.Fatalf("mkdir .aw: %v", err)
+	}
+
+	entry := &InteractionEntry{
+		Timestamp: "2026-03-22T10:00:00Z",
+		Kind:      interactionKindMailIn,
+		MessageID: "m-1",
+		From:      "rose",
+		Text:      "please review the patch",
+	}
+	appendInteractionLogForDir(tmp, entry)
+	appendInteractionLogForDir(tmp, entry)
+
+	entries, err := readInteractionLog(interactionLogPath(tmp), 0)
+	if err != nil {
+		t.Fatalf("readInteractionLog: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+}
+
+func TestFormatInteractionRecapRendersConversationLikeSummary(t *testing.T) {
+	recap := formatInteractionRecap([]InteractionEntry{
+		{Timestamp: "2026-03-22T10:00:00Z", Kind: interactionKindUser, Text: "please fix the continue UX"},
+		{Timestamp: "2026-03-22T10:01:00Z", Kind: interactionKindAgent, Text: "I can do that with a small local recap."},
+		{Timestamp: "2026-03-22T10:02:00Z", Kind: interactionKindChatIn, From: "rose", Text: "please keep it narrow"},
+	}, 8)
+
+	if !strings.Contains(recap, "Recent interactions:") {
+		t.Fatalf("expected heading, got %q", recap)
+	}
+	if !strings.Contains(recap, "you: please fix the continue UX") {
+		t.Fatalf("expected user line, got %q", recap)
+	}
+	if !strings.Contains(recap, "agent: I can do that with a small local recap.") {
+		t.Fatalf("expected agent line, got %q", recap)
+	}
+	if !strings.Contains(recap, "rose (chat): please keep it narrow") {
+		t.Fatalf("expected chat line, got %q", recap)
+	}
+}
