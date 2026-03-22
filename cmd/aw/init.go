@@ -538,7 +538,9 @@ func executeInit(opts initOptions) (*initResult, error) {
 		if err == nil && opts.RetrySuggestedAliasOnConflict && !resp.Created {
 			if strings.TrimSpace(resp.APIKey) != "" {
 				retryClient, retryErr := aweb.NewWithAPIKey(opts.BaseURL, resp.APIKey)
-				if retryErr == nil {
+				if retryErr != nil {
+					err = retryErr
+				} else {
 					req.Alias = nil
 					resp, err = retryClient.Init(ctx, req)
 				}
@@ -920,65 +922,6 @@ func resolveInitLifetime(explicit string) string {
 		return strings.TrimSpace(explicit)
 	}
 	return awid.LifetimePersistent
-}
-
-func resolveInitAPIKey(baseURL, serverName, accountName string, global *awconfig.GlobalConfig) string {
-	if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); strings.HasPrefix(v, "aw_sk_") {
-		return v
-	}
-	if global == nil {
-		return ""
-	}
-
-	candidates := make([]string, 0, 4)
-	if v := strings.TrimSpace(accountName); v != "" {
-		candidates = append(candidates, v)
-	}
-	for _, name := range sortedAccountNames(global) {
-		acct := global.Accounts[name]
-		if strings.TrimSpace(serverName) != "" && strings.TrimSpace(acct.Server) == strings.TrimSpace(serverName) {
-			candidates = append(candidates, name)
-		}
-	}
-	baseHost := hostFromBaseURL(baseURL)
-	if baseHost != "" {
-		for _, name := range sortedAccountNames(global) {
-			acct := global.Accounts[name]
-			srv, ok := global.Servers[strings.TrimSpace(acct.Server)]
-			if !ok || strings.TrimSpace(srv.URL) == "" {
-				continue
-			}
-			if hostFromBaseURL(srv.URL) == baseHost {
-				candidates = append(candidates, name)
-			}
-		}
-	}
-	if v := strings.TrimSpace(global.DefaultAccount); v != "" {
-		candidates = append(candidates, v)
-	}
-
-	seen := map[string]struct{}{}
-	for _, accountName := range candidates {
-		if _, dup := seen[accountName]; dup {
-			continue
-		}
-		seen[accountName] = struct{}{}
-		acct, ok := global.Accounts[accountName]
-		if !ok {
-			continue
-		}
-		if token := strings.TrimSpace(acct.APIKey); strings.HasPrefix(token, "aw_sk_") {
-			return token
-		}
-	}
-
-	for _, name := range sortedAccountNames(global) {
-		if token := strings.TrimSpace(global.Accounts[name].APIKey); strings.HasPrefix(token, "aw_sk_") {
-			return token
-		}
-	}
-
-	return ""
 }
 
 func resolveCloudToken(baseURL, serverName, accountName, explicitToken string, global *awconfig.GlobalConfig) string {
