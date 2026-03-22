@@ -280,8 +280,9 @@ func buildMessages(messages []awid.ChatMessage) []Event {
 			ToStableID:           m.ToStableID,
 			Signature:            m.Signature,
 			SigningKeyID:         m.SigningKeyID,
-			RotationAnnouncement: m.RotationAnnouncement,
-			VerificationStatus:   m.VerificationStatus,
+			RotationAnnouncement:    m.RotationAnnouncement,
+			ReplacementAnnouncement: m.ReplacementAnnouncement,
+			VerificationStatus:      m.VerificationStatus,
 			IsContact:            m.IsContact,
 		}
 	}
