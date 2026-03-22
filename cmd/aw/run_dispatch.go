@@ -10,19 +10,24 @@ import (
 	awrun "github.com/awebai/aw/run"
 )
 
-type runWakeValidator func(context.Context, awid.AgentEvent) (bool, error)
+type runWakeResolution struct {
+	Skip         bool
+	CycleContext string
+}
+
+type runWakeResolver func(context.Context, awid.AgentEvent) (runWakeResolution, error)
 
 type runDispatcher struct {
 	workPromptSuffix  string
 	commsPromptSuffix string
-	validateWake      runWakeValidator
+	resolveWake       runWakeResolver
 }
 
-func newRunDispatcher(settings awrun.Settings, validateWake runWakeValidator) awrun.Dispatcher {
+func newRunDispatcher(settings awrun.Settings, resolveWake runWakeResolver) awrun.Dispatcher {
 	return runDispatcher{
 		workPromptSuffix:  strings.TrimSpace(settings.WorkPromptSuffix),
 		commsPromptSuffix: strings.TrimSpace(settings.CommsPromptSuffix),
-		validateWake:      validateWake,
+		resolveWake:       resolveWake,
 	}
 }
 
@@ -33,17 +38,21 @@ func (d runDispatcher) Next(ctx context.Context, autofeed bool, wakeEvent *awid.
 
 	switch wakeEvent.Type {
 	case awid.AgentEventMailMessage, awid.AgentEventChatMessage, awid.AgentEventActionableMail, awid.AgentEventActionableChat:
-		if d.validateWake != nil && wakeEvent.IsActionableCoordination() {
-			ok, err := d.validateWake(ctx, *wakeEvent)
+		resolved := runWakeResolution{
+			CycleContext: formatFallbackCommsContext(*wakeEvent),
+		}
+		if d.resolveWake != nil {
+			var err error
+			resolved, err = d.resolveWake(ctx, *wakeEvent)
 			if err != nil {
 				return awrun.DispatchDecision{}, err
 			}
-			if !ok {
-				return awrun.DispatchDecision{Skip: true, WaitSeconds: awrun.DefaultWaitSeconds}, nil
-			}
+		}
+		if resolved.Skip {
+			return awrun.DispatchDecision{Skip: true, WaitSeconds: awrun.DefaultWaitSeconds}, nil
 		}
 		return awrun.DispatchDecision{
-			CycleContext: joinPromptSections(formatCommsWakePrompt(*wakeEvent), d.commsPromptSuffix),
+			CycleContext: joinPromptSections(resolved.CycleContext, d.commsPromptSuffix),
 			WaitSeconds:  awrun.DefaultWaitSeconds,
 		}, nil
 	case awid.AgentEventWorkAvailable, awid.AgentEventClaimUpdate, awid.AgentEventClaimRemoved:
@@ -59,54 +68,70 @@ func (d runDispatcher) Next(ctx context.Context, autofeed bool, wakeEvent *awid.
 	}
 }
 
-func newRunWakeValidator(client *aweb.Client) runWakeValidator {
+func newRunWakeValidator(client *aweb.Client) runWakeResolver {
 	if client == nil || client.Client == nil {
 		return nil
 	}
-	return func(ctx context.Context, evt awid.AgentEvent) (bool, error) {
+	return func(ctx context.Context, evt awid.AgentEvent) (runWakeResolution, error) {
 		switch evt.Type {
-		case awid.AgentEventActionableChat:
-			return validateActionableChatWake(ctx, client, evt)
-		case awid.AgentEventActionableMail:
-			return validateActionableMailWake(ctx, client, evt)
+		case awid.AgentEventChatMessage, awid.AgentEventActionableChat:
+			return resolveChatWake(ctx, client, evt)
+		case awid.AgentEventMailMessage, awid.AgentEventActionableMail:
+			return resolveMailWake(ctx, client, evt)
+		case awid.AgentEventWorkAvailable, awid.AgentEventClaimUpdate, awid.AgentEventClaimRemoved:
+			return runWakeResolution{CycleContext: formatWorkWakePrompt(evt)}, nil
 		default:
-			return true, nil
+			return runWakeResolution{}, nil
 		}
 	}
 }
 
-func validateActionableChatWake(ctx context.Context, client *aweb.Client, evt awid.AgentEvent) (bool, error) {
+func resolveChatWake(ctx context.Context, client *aweb.Client, evt awid.AgentEvent) (runWakeResolution, error) {
 	sessionID := strings.TrimSpace(evt.SessionID)
 	if sessionID == "" {
-		return true, nil
+		return runWakeResolution{CycleContext: formatFallbackCommsContext(evt)}, nil
 	}
 	resp, err := client.ChatPending(ctx)
 	if err != nil {
-		return false, fmt.Errorf("check pending chat for wake %s: %w", sessionID, err)
+		return runWakeResolution{}, fmt.Errorf("check pending chat for wake %s: %w", sessionID, err)
 	}
 	for _, pending := range resp.Pending {
-		if strings.TrimSpace(pending.SessionID) == sessionID {
-			return true, nil
+		if strings.TrimSpace(pending.SessionID) != sessionID {
+			continue
 		}
+		alias := strings.TrimSpace(evt.FromAlias)
+		if alias == "" {
+			alias = strings.TrimSpace(pending.LastFrom)
+		}
+		return runWakeResolution{
+			CycleContext: formatIncomingChatContext(alias, pending.LastMessage),
+		}, nil
 	}
-	return false, nil
+	return runWakeResolution{Skip: true}, nil
 }
 
-func validateActionableMailWake(ctx context.Context, client *aweb.Client, evt awid.AgentEvent) (bool, error) {
+func resolveMailWake(ctx context.Context, client *aweb.Client, evt awid.AgentEvent) (runWakeResolution, error) {
 	messageID := strings.TrimSpace(evt.MessageID)
-	if messageID == "" {
-		return true, nil
-	}
 	resp, err := client.Inbox(ctx, awid.InboxParams{UnreadOnly: true})
 	if err != nil {
-		return false, fmt.Errorf("check unread mail for wake %s: %w", messageID, err)
+		return runWakeResolution{}, fmt.Errorf("check unread mail for wake %s: %w", messageID, err)
 	}
 	for _, msg := range resp.Messages {
-		if strings.TrimSpace(msg.MessageID) == messageID {
-			return true, nil
+		if messageID != "" && strings.TrimSpace(msg.MessageID) != messageID {
+			continue
 		}
+		alias := strings.TrimSpace(msg.FromAlias)
+		if alias == "" {
+			alias = strings.TrimSpace(evt.FromAlias)
+		}
+		return runWakeResolution{
+			CycleContext: formatIncomingMailContext(alias, msg.Subject, msg.Body),
+		}, nil
 	}
-	return false, nil
+	if messageID == "" {
+		return runWakeResolution{CycleContext: formatFallbackCommsContext(evt)}, nil
+	}
+	return runWakeResolution{Skip: true}, nil
 }
 
 func joinPromptSections(parts ...string) string {
@@ -120,65 +145,40 @@ func joinPromptSections(parts ...string) string {
 	return strings.Join(filtered, "\n\n")
 }
 
-func formatCommsWakePrompt(evt awid.AgentEvent) string {
+func formatFallbackCommsContext(evt awid.AgentEvent) string {
 	switch evt.Type {
-	case awid.AgentEventMailMessage, awid.AgentEventActionableMail:
-		wakeMode := effectiveWakeMode(evt)
-		parts := []string{
-			fmt.Sprintf("Wake reason: new mail from %s.", formatWakeAlias(evt.FromAlias)),
-			"Open your inbox, read the new mail, respond if needed, and update any relevant coordination state.",
-		}
-		if evt.Type == awid.AgentEventActionableMail {
-			parts[0] = fmt.Sprintf("Wake reason: unread mail from %s.", formatWakeAlias(evt.FromAlias))
-			if wakeMode == "interrupt" {
-				parts[0] = fmt.Sprintf("Wake reason: urgent mail from %s.", formatWakeAlias(evt.FromAlias))
-				parts[1] = "A coordination message needs immediate attention. Check unread mail first, respond to the blocking item, and then return to your prior task."
-			}
-		}
-		if subject := strings.TrimSpace(evt.Subject); subject != "" {
-			parts[0] = fmt.Sprintf("%s Subject: %q.", parts[0], subject)
-		}
-		if evt.UnreadCount > 0 {
-			parts[0] = fmt.Sprintf("%s Unread: %d.", parts[0], evt.UnreadCount)
-		}
-		return strings.Join(parts, " ")
-	case awid.AgentEventChatMessage, awid.AgentEventActionableChat:
-		wakeMode := effectiveWakeMode(evt)
-		parts := []string{
-			fmt.Sprintf("Wake reason: new chat activity from %s.", formatWakeAlias(evt.FromAlias)),
-			"Open the active chat, answer what is blocking them, and then continue your current work if nothing else changed.",
-		}
-		if evt.Type == awid.AgentEventActionableChat {
-			parts[0] = fmt.Sprintf("Wake reason: chat from %s.", formatWakeAlias(evt.FromAlias))
-			switch {
-			case wakeMode == "interrupt":
-				parts[0] = fmt.Sprintf("Wake reason: urgent chat from %s.", formatWakeAlias(evt.FromAlias))
-				parts[1] = "Another agent is explicitly waiting on you. Open the chat immediately, unblock them, and then resume your work."
-			case wakeMode == "idle":
-				parts[1] = "Review the chat state when convenient, respond if needed, and then continue your current work."
-			}
-		}
-		if sessionID := strings.TrimSpace(evt.SessionID); sessionID != "" {
-			parts[0] = fmt.Sprintf("%s Session: %s.", parts[0], sessionID)
-		}
-		if evt.UnreadCount > 0 {
-			parts[0] = fmt.Sprintf("%s Unread: %d.", parts[0], evt.UnreadCount)
-		}
-		return strings.Join(parts, " ")
+	case awid.AgentEventActionableChat, awid.AgentEventChatMessage:
+		return formatIncomingChatContext(evt.FromAlias, "")
+	case awid.AgentEventActionableMail, awid.AgentEventMailMessage:
+		return formatIncomingMailContext(evt.FromAlias, evt.Subject, "")
 	default:
 		return ""
 	}
 }
 
-func effectiveWakeMode(evt awid.AgentEvent) string {
-	mode := strings.ToLower(strings.TrimSpace(evt.WakeMode))
-	if mode != "" {
-		return mode
+func formatIncomingChatContext(fromAlias string, body string) string {
+	alias := formatWakeAlias(fromAlias)
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return fmt.Sprintf("<- %s", alias)
 	}
-	if evt.Type == awid.AgentEventActionableChat && evt.SenderWaiting {
-		return "interrupt"
+	return fmt.Sprintf("<- %s: %s", alias, body)
+}
+
+func formatIncomingMailContext(fromAlias string, subject string, body string) string {
+	alias := formatWakeAlias(fromAlias)
+	subject = strings.TrimSpace(subject)
+	body = strings.TrimSpace(body)
+	switch {
+	case subject != "" && body != "":
+		return fmt.Sprintf("<- %s (mail): %s — %s", alias, subject, body)
+	case subject != "":
+		return fmt.Sprintf("<- %s (mail): %s", alias, subject)
+	case body != "":
+		return fmt.Sprintf("<- %s (mail): %s", alias, body)
+	default:
+		return fmt.Sprintf("<- %s (mail)", alias)
 	}
-	return ""
 }
 
 func formatWorkWakePrompt(evt awid.AgentEvent) string {

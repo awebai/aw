@@ -1505,6 +1505,29 @@ func TestRunOnceSurfacesProviderStdoutPartial(t *testing.T) {
 	}
 }
 
+func TestRunOnceRendersIncomingCycleWithoutPromptMarker(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(fakeProvider{
+		event: &Event{Type: EventDone},
+	}, &out)
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		onLine("done")
+		return nil
+	}
+
+	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", "<- architect: can you review the retry path?", ""); err != nil {
+		t.Fatalf("runOnce returned error: %v", err)
+	}
+
+	got := out.String()
+	if strings.Contains(got, "> <- architect: can you review the retry path?") {
+		t.Fatalf("expected inbound cycle to avoid prompt marker, got %q", got)
+	}
+	if !strings.Contains(got, "\n<- architect: can you review the retry path?\n") {
+		t.Fatalf("expected inbound cycle line, got %q", got)
+	}
+}
+
 func TestHandleRawProviderChunkPTYStartsOnFreshLineWithoutLabel(t *testing.T) {
 	var out bytes.Buffer
 	loop := NewLoop(fakeProvider{
