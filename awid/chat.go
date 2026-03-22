@@ -207,6 +207,7 @@ type ChatMessage struct {
 	SigningKeyID         string                `json:"signing_key_id,omitempty"`
 	SignedPayload        string                `json:"signed_payload,omitempty"`
 	RotationAnnouncement *RotationAnnouncement `json:"rotation_announcement,omitempty"`
+	ReplacementAnnouncement *ReplacementAnnouncement `json:"replacement_announcement,omitempty"`
 	VerificationStatus   VerificationStatus    `json:"verification_status,omitempty"`
 	IsContact            *bool                 `json:"is_contact,omitempty"`
 }
@@ -261,7 +262,7 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 			}
 			m.VerificationStatus, _ = VerifyMessage(env)
 		}
-		m.VerificationStatus = c.CheckTOFUPin(ctx, m.VerificationStatus, from, m.FromDID, m.FromStableID, m.RotationAnnouncement)
+		m.VerificationStatus = c.CheckTOFUPin(ctx, m.VerificationStatus, from, m.FromDID, m.FromStableID, m.RotationAnnouncement, m.ReplacementAnnouncement)
 	}
 	return &out, nil
 }

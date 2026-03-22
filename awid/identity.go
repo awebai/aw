@@ -15,6 +15,7 @@ type AgentIdentity struct {
 	StableID    string
 	AgentID     string // server-assigned UUID
 	Address     string // namespace/alias
+	ControllerDID string
 	Handle      string // @alice
 	PublicKey   ed25519.PublicKey
 	ServerURL   string
@@ -57,6 +58,7 @@ type serverResolveResponse struct {
 	Handle    string `json:"handle"`
 	Server    string `json:"server"`
 	PublicKey string `json:"public_key"`
+	ControllerDID string `json:"controller_did"`
 	Custody   string `json:"custody"`
 	Lifetime  string `json:"lifetime"`
 	Status    string `json:"status"`
@@ -78,6 +80,7 @@ func (r *ServerResolver) Resolve(ctx context.Context, identifier string) (*Agent
 		StableID:    resp.StableID,
 		AgentID:     resp.AgentID,
 		Address:     resp.Address,
+		ControllerDID: resp.ControllerDID,
 		Handle:      resp.Handle,
 		ServerURL:   resp.Server,
 		Custody:     resp.Custody,

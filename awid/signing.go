@@ -27,6 +27,17 @@ type RotationAnnouncement struct {
 	OldKeySignature string `json:"old_key_signature"`
 }
 
+// ReplacementAnnouncement is attached when a public address has been
+// controller-authorized onto a fresh identity after loss or migration.
+type ReplacementAnnouncement struct {
+	Address             string `json:"address"`
+	OldDID              string `json:"old_did"`
+	NewDID              string `json:"new_did"`
+	ControllerDID       string `json:"controller_did"`
+	Timestamp           string `json:"timestamp"`
+	ControllerSignature string `json:"controller_signature"`
+}
+
 // MessageEnvelope holds the fields used for signing and verification.
 // Transport-only fields (Signature, SigningKeyID) are not part of the
 // signed payload but are carried here for convenience.
@@ -124,6 +135,48 @@ func VerifySignedPayload(signedPayload, signatureB64, fromDID, signingKeyID stri
 	}
 
 	return Verified, nil
+}
+
+// CanonicalReplacementJSON builds the canonical JSON for controller-authorized
+// address replacement signing.
+func CanonicalReplacementJSON(address, controllerDID, oldDID, newDID, timestamp string) string {
+	type field struct {
+		key   string
+		value string
+	}
+	fields := []field{
+		{"address", address},
+		{"controller_did", controllerDID},
+		{"new_did", newDID},
+		{"old_did", oldDID},
+		{"timestamp", timestamp},
+	}
+	sort.Slice(fields, func(i, j int) bool { return fields[i].key < fields[j].key })
+
+	var b strings.Builder
+	b.WriteByte('{')
+	for i, f := range fields {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte('"')
+		b.WriteString(f.key)
+		b.WriteString(`":"`)
+		writeEscapedString(&b, f.value)
+		b.WriteByte('"')
+	}
+	b.WriteByte('}')
+	return b.String()
+}
+
+// VerifyReplacementSignature verifies a controller-authorized replacement announcement.
+func VerifyReplacementSignature(controllerPub ed25519.PublicKey, address, controllerDID, oldDID, newDID, timestamp, signature string) (bool, error) {
+	sig, err := base64.RawStdEncoding.DecodeString(signature)
+	if err != nil {
+		return false, err
+	}
+	payload := CanonicalReplacementJSON(address, controllerDID, oldDID, newDID, timestamp)
+	return ed25519.Verify(controllerPub, []byte(payload), sig), nil
 }
 
 // CanonicalJSON builds the canonical JSON payload for message signing.

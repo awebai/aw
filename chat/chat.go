@@ -159,6 +159,27 @@ func parseSSEEvent(sseEvent *awid.SSEEvent) Event {
 			ev.RotationAnnouncement.OldKeySignature = v
 		}
 	}
+	if replData, ok := data["replacement_announcement"].(map[string]any); ok {
+		ev.ReplacementAnnouncement = &awid.ReplacementAnnouncement{}
+		if v, ok := replData["address"].(string); ok {
+			ev.ReplacementAnnouncement.Address = v
+		}
+		if v, ok := replData["old_did"].(string); ok {
+			ev.ReplacementAnnouncement.OldDID = v
+		}
+		if v, ok := replData["new_did"].(string); ok {
+			ev.ReplacementAnnouncement.NewDID = v
+		}
+		if v, ok := replData["controller_did"].(string); ok {
+			ev.ReplacementAnnouncement.ControllerDID = v
+		}
+		if v, ok := replData["timestamp"].(string); ok {
+			ev.ReplacementAnnouncement.Timestamp = v
+		}
+		if v, ok := replData["controller_signature"].(string); ok {
+			ev.ReplacementAnnouncement.ControllerSignature = v
+		}
+	}
 
 	// Verify message signature when identity fields are present.
 	from := ev.FromAgent
@@ -356,7 +377,7 @@ func waitForMessage(ctx context.Context, client *awid.Client, openStream streamO
 			if chatEvent.FromAddress != "" {
 				tofuFrom = chatEvent.FromAddress
 			}
-			chatEvent.VerificationStatus = client.CheckTOFUPin(ctx, chatEvent.VerificationStatus, tofuFrom, chatEvent.FromDID, chatEvent.FromStableID, chatEvent.RotationAnnouncement)
+			chatEvent.VerificationStatus = client.CheckTOFUPin(ctx, chatEvent.VerificationStatus, tofuFrom, chatEvent.FromDID, chatEvent.FromStableID, chatEvent.RotationAnnouncement, chatEvent.ReplacementAnnouncement)
 
 			if chatEvent.Type == "read_receipt" {
 				result.Events = append(result.Events, chatEvent)

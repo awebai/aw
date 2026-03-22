@@ -248,7 +248,7 @@ func (c *Client) resolveAgentMeta(ctx context.Context, address string) *agentMet
 // When fromStableID is present, pins are keyed by stable_id instead of did:key.
 // The pin stores the last observed did:key for that stable identity, so a
 // stable_id can survive key rotation while still enforcing continuity.
-func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fromAlias, fromDID, fromStableID string, ra *RotationAnnouncement) VerificationStatus {
+func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fromAlias, fromDID, fromStableID string, ra *RotationAnnouncement, repl *ReplacementAnnouncement) VerificationStatus {
 	if c.pinStore == nil || (status != Verified && status != VerifiedCustodial) || fromDID == "" || fromAlias == "" {
 		return status
 	}
@@ -295,7 +295,8 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 	case PinOK:
 		if fromStableID != "" {
 			if pin, ok := c.pinStore.Pins[pinKey]; ok && strings.TrimSpace(pin.DIDKey) != "" && pin.DIDKey != fromDID {
-				if ra == nil || !c.verifyRotationAnnouncement(ra, fromDID, pin.DIDKey) {
+				if (ra == nil || !c.verifyRotationAnnouncement(ra, fromDID, pin.DIDKey)) &&
+					(repl == nil || !c.verifyReplacementAnnouncement(ctx, fromAlias, repl, fromDID, pin.DIDKey)) {
 					return IdentityMismatch
 				}
 			}
@@ -316,7 +317,9 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 					c.savePinStore()
 					return status
 				}
-				if strings.TrimSpace(pin.DIDKey) != "" && ra != nil && c.verifyRotationAnnouncement(ra, fromDID, pin.DIDKey) {
+				if strings.TrimSpace(pin.DIDKey) != "" &&
+					((ra != nil && c.verifyRotationAnnouncement(ra, fromDID, pin.DIDKey)) ||
+						(repl != nil && c.verifyReplacementAnnouncement(ctx, fromAlias, repl, fromDID, pin.DIDKey))) {
 					c.pinStore.StorePin(pinnedKey, fromAlias, "", "")
 					c.pinStore.Pins[pinnedKey].StableID = fromStableID
 					c.pinStore.Pins[pinnedKey].DIDKey = fromDID
@@ -325,7 +328,8 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 				}
 			}
 		}
-		if ra != nil && c.verifyRotationAnnouncement(ra, fromDID, pinnedKey) {
+		if (ra != nil && c.verifyRotationAnnouncement(ra, fromDID, pinnedKey)) ||
+			(repl != nil && c.verifyReplacementAnnouncement(ctx, fromAlias, repl, fromDID, pinnedKey)) {
 			delete(c.pinStore.Pins, pinnedKey)
 			c.pinStore.StorePin(pinKey, fromAlias, "", "")
 			if fromStableID != "" {
@@ -363,6 +367,34 @@ func (c *Client) verifyRotationAnnouncement(ra *RotationAnnouncement, messageDID
 		return false
 	}
 	ok, err := VerifyRotationSignature(oldPub, ra.OldDID, ra.NewDID, ra.Timestamp, ra.OldKeySignature)
+	return err == nil && ok
+}
+
+func (c *Client) verifyReplacementAnnouncement(ctx context.Context, address string, repl *ReplacementAnnouncement, messageDID, pinnedDID string) bool {
+	if repl == nil {
+		return false
+	}
+	if repl.Address == "" || repl.OldDID == "" || repl.NewDID == "" || repl.ControllerDID == "" || repl.Timestamp == "" || repl.ControllerSignature == "" {
+		return false
+	}
+	if repl.Address != address || repl.NewDID != messageDID || repl.OldDID != pinnedDID {
+		return false
+	}
+	if c.resolver == nil {
+		return false
+	}
+	identity, err := c.resolver.Resolve(ctx, address)
+	if err != nil {
+		return false
+	}
+	if identity.ControllerDID == "" || identity.ControllerDID != repl.ControllerDID {
+		return false
+	}
+	controllerPub, err := ExtractPublicKey(repl.ControllerDID)
+	if err != nil {
+		return false
+	}
+	ok, err := VerifyReplacementSignature(controllerPub, repl.Address, repl.ControllerDID, repl.OldDID, repl.NewDID, repl.Timestamp, repl.ControllerSignature)
 	return err == nil && ok
 }
 

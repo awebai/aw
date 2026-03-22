@@ -32,6 +32,7 @@ type Event struct {
 	Signature              string                    `json:"signature,omitempty"`
 	SigningKeyID           string                    `json:"signing_key_id,omitempty"`
 	RotationAnnouncement   *awid.RotationAnnouncement `json:"rotation_announcement,omitempty"`
+	ReplacementAnnouncement *awid.ReplacementAnnouncement `json:"replacement_announcement,omitempty"`
 	VerificationStatus     awid.VerificationStatus    `json:"verification_status,omitempty"`
 	IsContact              *bool                      `json:"is_contact,omitempty"`
 }

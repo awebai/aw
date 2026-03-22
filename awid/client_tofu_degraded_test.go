@@ -26,7 +26,7 @@ func TestCheckTOFUPinStablePinDegradedAcceptsKnownDIDKey(t *testing.T) {
 	ps.Pins[stableID].StableID = stableID
 	ps.Pins[stableID].DIDKey = did
 
-	status := c.CheckTOFUPin(context.Background(), Verified, addr, did, stableID, nil)
+	status := c.CheckTOFUPin(context.Background(), Verified, addr, did, stableID, nil, nil)
 	if status != Verified {
 		t.Fatalf("status=%q, want %q", status, Verified)
 	}
@@ -50,7 +50,7 @@ func TestCheckTOFUPinStablePinDegradedRejectsChangedDIDKey(t *testing.T) {
 	ps.Pins[stableID].StableID = stableID
 	ps.Pins[stableID].DIDKey = didPinned
 
-	status := c.CheckTOFUPin(context.Background(), Verified, addr, didNew, stableID, nil)
+	status := c.CheckTOFUPin(context.Background(), Verified, addr, didNew, stableID, nil, nil)
 	if status != IdentityMismatch {
 		t.Fatalf("status=%q, want %q", status, IdentityMismatch)
 	}

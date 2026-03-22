@@ -3545,7 +3545,7 @@ func TestCheckTOFUPinUpgradeOnFirstSight(t *testing.T) {
 	c.SetPinStore(ps, "")
 
 	// Step 1: First message without stable_id → pin by did:key (Phase-1).
-	status := c.CheckTOFUPin(context.Background(), Verified, "myco/sender", senderDID, "", nil)
+	status := c.CheckTOFUPin(context.Background(), Verified, "myco/sender", senderDID, "", nil, nil)
 	if status != Verified {
 		t.Fatalf("step 1: status=%q, want %q", status, Verified)
 	}
@@ -3554,7 +3554,7 @@ func TestCheckTOFUPinUpgradeOnFirstSight(t *testing.T) {
 	}
 
 	// Step 2: Next message WITH stable_id and matching did:key → upgrade pin.
-	status = c.CheckTOFUPin(context.Background(), Verified, "myco/sender", senderDID, stableID, nil)
+	status = c.CheckTOFUPin(context.Background(), Verified, "myco/sender", senderDID, stableID, nil, nil)
 	if status != Verified {
 		t.Fatalf("step 2: status=%q, want %q", status, Verified)
 	}
