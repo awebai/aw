@@ -268,6 +268,10 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 	if sourceBaseURL == "" {
 		return fmt.Errorf("selected account missing server URL")
 	}
+	// Resolve the base URL for hosted servers (may need /api suffix).
+	if resolved, err := resolveWorkingBaseURL(sourceBaseURL); err == nil {
+		sourceBaseURL = resolved
+	}
 	sourceServerName := strings.TrimSpace(sel.ServerName)
 	if sourceServerName == "" {
 		derived, derr := awconfig.DeriveServerNameFromURL(sourceBaseURL)
