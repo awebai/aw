@@ -86,13 +86,17 @@ func deleteCurrentEphemeralIdentity(ctx context.Context, client *aweb.Client) er
 }
 
 func deleteEphemeralIdentityByWorkspace(ctx context.Context, client *aweb.Client, ws aweb.WorkspaceInfo) (bool, error) {
+	namespaceSlug := strings.TrimSpace(derefString(ws.NamespaceSlug))
 	projectSlug := strings.TrimSpace(derefString(ws.ProjectSlug))
 	alias := strings.TrimSpace(ws.Alias)
-	if projectSlug == "" || alias == "" {
-		return false, nil
+	if namespaceSlug == "" {
+		namespaceSlug = projectSlug
+	}
+	if namespaceSlug == "" || alias == "" {
+		return false, fmt.Errorf("missing namespace/project slug or alias for gone workspace %s", strings.TrimSpace(ws.WorkspaceID))
 	}
 
-	address := deriveAgentAddress("", projectSlug, alias)
+	address := deriveAgentAddress(namespaceSlug, "", alias)
 	resolver := &awid.ServerResolver{Client: client.Client}
 	identity, err := resolver.Resolve(ctx, address)
 	if err != nil {
@@ -107,7 +111,7 @@ func deleteEphemeralIdentityByWorkspace(ctx context.Context, client *aweb.Client
 	if awid.IdentityClassFromLifetime(identity.Lifetime) != awid.IdentityClassEphemeral {
 		return false, nil
 	}
-	if err := client.DeregisterAgent(ctx, projectSlug, alias); err != nil {
+	if err := client.DeregisterAgent(ctx, namespaceSlug, alias); err != nil {
 		if code, ok := awid.HTTPStatusCode(err); ok && code == 404 {
 			return true, nil
 		}

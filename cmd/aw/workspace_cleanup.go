@@ -14,9 +14,11 @@ type goneWorkspace struct {
 	WorkspaceID      string
 	Alias            string
 	ProjectSlug      string
+	NamespaceSlug    string
 	WorkspacePath    string
 	IdentityDeleted  bool
 	WorkspaceDeleted bool
+	CleanupBlocked   string
 }
 
 // detectGoneWorkspaces checks for workspaces on this hostname whose paths
@@ -58,23 +60,25 @@ func detectGoneWorkspaces(client *aweb.Client, selfWorkspaceID string) []goneWor
 			WorkspaceID:   ws.WorkspaceID,
 			Alias:         ws.Alias,
 			ProjectSlug:   derefString(ws.ProjectSlug),
+			NamespaceSlug: derefString(ws.NamespaceSlug),
 			WorkspacePath: path,
 		}
 
 		deleteIdentityCtx, deleteIdentityCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		identityDeleted, deleteIdentityErr := deleteEphemeralIdentityByWorkspace(deleteIdentityCtx, client, ws)
 		deleteIdentityCancel()
-		if deleteIdentityErr == nil {
-			g.IdentityDeleted = identityDeleted
+		if deleteIdentityErr != nil {
+			g.CleanupBlocked = deleteIdentityErr.Error()
+			gone = append(gone, g)
+			continue
 		}
+		g.IdentityDeleted = identityDeleted
 
 		deleteWorkspaceCtx, deleteWorkspaceCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		deleteWorkspaceErr := client.WorkspaceDelete(deleteWorkspaceCtx, ws.WorkspaceID)
 		deleteWorkspaceCancel()
 		if deleteWorkspaceErr != nil {
-			if !g.IdentityDeleted {
-				continue
-			}
+			g.CleanupBlocked = deleteWorkspaceErr.Error()
 		} else {
 			g.WorkspaceDeleted = true
 		}
@@ -91,7 +95,7 @@ func formatGoneWorkspaces(gone []goneWorkspace) string {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString("Cleaned up gone workspaces:\n")
+	sb.WriteString("Gone workspace checks:\n")
 	for _, g := range gone {
 		details := make([]string, 0, 2)
 		if g.IdentityDeleted {
@@ -102,6 +106,9 @@ func formatGoneWorkspaces(gone []goneWorkspace) string {
 		}
 		if len(details) == 0 {
 			details = append(details, "detected gone workspace")
+		}
+		if g.CleanupBlocked != "" {
+			details = append(details, "left workspace record intact: "+g.CleanupBlocked)
 		}
 		sb.WriteString(fmt.Sprintf("  %s (%s) — %s\n", g.Alias, abbreviateUserHome(g.WorkspacePath), strings.Join(details, ", ")))
 	}
