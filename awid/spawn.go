@@ -15,19 +15,19 @@ type SpawnInviteCreateRequest struct {
 
 // SpawnInviteCreateResponse is returned by POST /api/v1/spawn/create-invite.
 type SpawnInviteCreateResponse struct {
-	InviteID    string `json:"invite_id"`
-	Token       string `json:"token"`
-	TokenPrefix string `json:"token_prefix"`
-	AliasHint   string `json:"alias_hint,omitempty"`
-	AccessMode  string `json:"access_mode"`
-	MaxUses     int    `json:"max_uses"`
-	ExpiresAt   string `json:"expires_at"`
+	InviteID      string `json:"invite_id"`
+	Token         string `json:"token"`
+	TokenPrefix   string `json:"token_prefix"`
+	AliasHint     string `json:"alias_hint,omitempty"`
+	AccessMode    string `json:"access_mode"`
+	MaxUses       int    `json:"max_uses"`
+	ExpiresAt     string `json:"expires_at"`
 	NamespaceSlug string `json:"namespace_slug,omitempty"`
-	Namespace   string `json:"namespace"`
-	ServerURL   string `json:"server_url"`
+	Namespace     string `json:"namespace"`
+	ServerURL     string `json:"server_url"`
 }
 
-// SpawnInviteListItem is returned by GET /api/v1/spawn/create-invite.
+// SpawnInviteListItem is returned by GET /api/v1/spawn/invites.
 type SpawnInviteListItem struct {
 	InviteID    string `json:"invite_id"`
 	TokenPrefix string `json:"token_prefix"`
@@ -40,7 +40,7 @@ type SpawnInviteListItem struct {
 	CreatedAt   string `json:"created_at"`
 }
 
-// SpawnInviteListResponse is returned by GET /api/v1/spawn/create-invite.
+// SpawnInviteListResponse is returned by GET /api/v1/spawn/invites.
 type SpawnInviteListResponse struct {
 	Invites []SpawnInviteListItem `json:"invites"`
 }
@@ -75,7 +75,7 @@ func (c *Client) SpawnCreateInvite(ctx context.Context, req *SpawnInviteCreateRe
 // ListSpawnInvites returns the caller's active spawn invites.
 func (c *Client) ListSpawnInvites(ctx context.Context) (*SpawnInviteListResponse, error) {
 	var out SpawnInviteListResponse
-	if err := c.Get(ctx, "/api/v1/spawn/create-invite", &out); err != nil {
+	if err := c.Get(ctx, "/api/v1/spawn/invites", &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -86,7 +86,7 @@ func (c *Client) RevokeSpawnInvite(ctx context.Context, inviteID string) error {
 	if inviteID == "" {
 		return fmt.Errorf("aweb: invite_id is required")
 	}
-	return c.Delete(ctx, "/api/v1/spawn/create-invite/"+urlPathEscape(inviteID))
+	return c.Delete(ctx, "/api/v1/spawn/invites/"+urlPathEscape(inviteID))
 }
 
 // SpawnAcceptInvite accepts a spawn invite token and bootstraps a new

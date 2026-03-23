@@ -26,16 +26,16 @@ func TestSpawnInviteCreate(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"invite_id":    "inv-1",
-			"token":        "aw_inv_test",
-			"token_prefix": "test1234",
-			"alias_hint":   "reviewer",
-			"access_mode":  "owner_only",
-			"max_uses":     5,
-			"expires_at":   "2026-03-27T18:00:00Z",
+			"invite_id":      "inv-1",
+			"token":          "aw_inv_test",
+			"token_prefix":   "test1234",
+			"alias_hint":     "reviewer",
+			"access_mode":    "owner_only",
+			"max_uses":       5,
+			"expires_at":     "2026-03-27T18:00:00Z",
 			"namespace_slug": "myteam",
-			"namespace":    "myteam.aweb.ai",
-			"server_url":   "https://app.aweb.ai/api",
+			"namespace":      "myteam.aweb.ai",
+			"server_url":     "https://app.aweb.ai/api",
 		})
 	}))
 	t.Cleanup(server.Close)
@@ -84,7 +84,7 @@ func TestSpawnInviteListAndRevoke(t *testing.T) {
 	var gotDeletePath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/spawn/create-invite":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/spawn/invites":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"invites": []map[string]any{
 					{
@@ -99,7 +99,7 @@ func TestSpawnInviteListAndRevoke(t *testing.T) {
 					},
 				},
 			})
-		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/spawn/create-invite/inv-1":
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/spawn/invites/inv-1":
 			gotDeletePath = r.URL.Path
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -127,7 +127,7 @@ func TestSpawnInviteListAndRevoke(t *testing.T) {
 	if err := c.RevokeSpawnInvite(context.Background(), "inv-1"); err != nil {
 		t.Fatal(err)
 	}
-	if gotDeletePath != "/api/v1/spawn/create-invite/inv-1" {
+	if gotDeletePath != "/api/v1/spawn/invites/inv-1" {
 		t.Fatalf("delete path=%q", gotDeletePath)
 	}
 }
@@ -149,21 +149,21 @@ func TestSpawnAcceptInvite(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"project_id":   "proj-1",
-			"project_slug": "myteam",
+			"project_id":     "proj-1",
+			"project_slug":   "myteam",
 			"namespace_slug": "myteam",
-			"namespace":    "myteam.aweb.ai",
-			"identity_id":  "identity-1",
-			"alias":        "reviewer",
-			"address":      "myteam.aweb.ai/reviewer",
-			"api_key":      "aw_sk_invited",
-			"server_url":   "https://app.aweb.ai/api",
-			"did":          "did:key:z6MkInvite",
-			"stable_id":    "did:aw:invite",
-			"custody":      "self",
-			"lifetime":     "persistent",
-			"access_mode":  "owner_only",
-			"created":      true,
+			"namespace":      "myteam.aweb.ai",
+			"identity_id":    "identity-1",
+			"alias":          "reviewer",
+			"address":        "myteam.aweb.ai/reviewer",
+			"api_key":        "aw_sk_invited",
+			"server_url":     "https://app.aweb.ai/api",
+			"did":            "did:key:z6MkInvite",
+			"stable_id":      "did:aw:invite",
+			"custody":        "self",
+			"lifetime":       "persistent",
+			"access_mode":    "owner_only",
+			"created":        true,
 		})
 	}))
 	t.Cleanup(server.Close)

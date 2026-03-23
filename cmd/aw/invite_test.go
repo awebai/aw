@@ -169,7 +169,7 @@ func TestAwInviteListAndRevoke(t *testing.T) {
 	var gotDeletePath string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/spawn/create-invite":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/spawn/invites":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"invites": []map[string]any{
 					{
@@ -184,7 +184,7 @@ func TestAwInviteListAndRevoke(t *testing.T) {
 					},
 				},
 			})
-		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/spawn/create-invite/inv-1":
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/spawn/invites/inv-1":
 			gotDeletePath = r.URL.Path
 			w.WriteHeader(http.StatusNoContent)
 		case r.URL.Path == "/v1/agents/heartbeat":
@@ -242,7 +242,7 @@ default_account: acct
 	if err != nil {
 		t.Fatalf("invite revoke failed: %v\n%s", err, string(revokeOut))
 	}
-	if gotDeletePath != "/api/v1/spawn/create-invite/inv-1" {
+	if gotDeletePath != "/api/v1/spawn/invites/inv-1" {
 		t.Fatalf("delete path=%q", gotDeletePath)
 	}
 	if !strings.Contains(string(revokeOut), "Spawn invite 7f3k9x2m revoked") {
