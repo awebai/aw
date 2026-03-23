@@ -38,7 +38,7 @@ func TestAwProjectCreateAgainstHosted(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id":     "proj-1",
 				"project_slug":   "default",
-				"namespace_slug": "myteam.aweb.ai",
+				"namespace_slug": "myteam",
 				"namespace":      "myteam.aweb.ai",
 				"identity_id":    "identity-1",
 				"alias":          "deploy-bot",
@@ -152,7 +152,7 @@ func TestAwProjectCreateAgainstHosted(t *testing.T) {
 			if acct.AgentAlias != "deploy-bot" {
 				t.Fatalf("agent_alias=%q", acct.AgentAlias)
 			}
-			if acct.NamespaceSlug != "myteam.aweb.ai" {
+			if acct.NamespaceSlug != "myteam" {
 				t.Fatalf("namespace_slug=%q", acct.NamespaceSlug)
 			}
 			break
@@ -179,7 +179,7 @@ func TestAwInitPermanentRequestsPersistentIdentity(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id":     "proj-1",
 				"project_slug":   "default",
-				"namespace_slug": "myteam.aweb.ai",
+				"namespace_slug": "myteam",
 				"namespace":      "myteam.aweb.ai",
 				"identity_id":    "identity-1",
 				"alias":          "maintainer",
@@ -261,7 +261,7 @@ func TestAwInitPermanentRequestsPersistentIdentity(t *testing.T) {
 	for _, acct := range cfg.Accounts {
 		if acct.APIKey == "aw_sk_permanent_test" {
 			found = true
-			if acct.NamespaceSlug != "myteam.aweb.ai" {
+			if acct.NamespaceSlug != "myteam" {
 				t.Fatalf("namespace_slug=%q", acct.NamespaceSlug)
 			}
 			break
@@ -288,6 +288,7 @@ func TestAwInitIgnoresExistingConfigKeys(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id":   "proj-1",
 				"project_slug": "default",
+				"namespace_slug": "myteam",
 				"namespace":    "myteam.aweb.ai",
 				"identity_id":  "identity-2",
 				"alias":        "reviewer",
@@ -379,7 +380,7 @@ func TestAwProjectCreateUsesCreateProjectOnSelfHosted(t *testing.T) {
 				"status":        "ok",
 				"project_id":    "proj-1",
 				"project_slug":  "default",
-				"namespace_slug": "myteam.aweb.ai",
+				"namespace_slug": "myteam",
 				"namespace":     "myteam.aweb.ai",
 				"identity_id":   "identity-1",
 				"alias":         "deploy-bot",
@@ -466,6 +467,7 @@ func TestAwProjectCreateWithAPIMount(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"project_id":   "proj-1",
 			"project_slug": "default",
+			"namespace_slug": "myteam",
 			"namespace":    "myteam.aweb.ai",
 			"identity_id":  "identity-1",
 			"alias":        "deploy-bot",

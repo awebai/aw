@@ -140,13 +140,13 @@ func TestAwWorkActiveShowsOwnersFromClaimsAndAgents(t *testing.T) {
 				},
 				"has_more": false,
 			})
-		case "/v1/agents":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id": "proj-1",
-				"agents": []map[string]any{
-					{"agent_id": "agent-native", "alias": "alice", "online": true},
-				},
-			})
+			case "/v1/agents":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"project_id": "proj-1",
+					"identities": []map[string]any{
+						{"agent_id": "agent-native", "alias": "alice", "online": true},
+					},
+				})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
 		default:

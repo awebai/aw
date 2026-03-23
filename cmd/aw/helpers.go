@@ -570,6 +570,29 @@ func promptString(label, defaultValue string) (string, error) {
 	return line, nil
 }
 
+func promptRequiredString(label, suggestedValue string) (string, error) {
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		if strings.TrimSpace(suggestedValue) != "" {
+			fmt.Fprintf(os.Stderr, "%s [%s]: ", label, suggestedValue)
+		} else {
+			fmt.Fprintf(os.Stderr, "%s: ", label)
+		}
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line, nil
+		}
+		if strings.TrimSpace(suggestedValue) != "" {
+			return strings.TrimSpace(suggestedValue), nil
+		}
+		fmt.Fprintf(os.Stderr, "%s is required.\n", label)
+	}
+}
+
 func promptIndexedChoice(label string, options []string, defaultIndex int, in io.Reader, out io.Writer) (string, error) {
 	if len(options) == 0 {
 		return "", fmt.Errorf("no options available")
@@ -654,6 +677,20 @@ func deriveIdentityAddress(namespaceSlug, projectSlug, handle string) string {
 		return projectSlug + "/" + handle
 	}
 	return handle
+}
+
+func handleFromAddress(address string) string {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return ""
+	}
+	if idx := strings.LastIndexByte(address, '/'); idx >= 0 && idx+1 < len(address) {
+		return strings.TrimSpace(address[idx+1:])
+	}
+	if idx := strings.LastIndexByte(address, '~'); idx >= 0 && idx+1 < len(address) {
+		return strings.TrimSpace(address[idx+1:])
+	}
+	return address
 }
 
 func writeOrUpdateContext(serverName, accountName string) error {

@@ -24,14 +24,11 @@ type identityPatchOutput struct {
 }
 
 // resolveCurrentIdentityID resolves the current identity's server ID via
-// introspect, falling back to the configured agent_id field in the selection.
-func resolveCurrentIdentityID(ctx context.Context, client *aweb.Client, sel *awconfig.Selection) (string, error) {
+// introspect.
+func resolveCurrentIdentityID(ctx context.Context, client *aweb.Client, _ *awconfig.Selection) (string, error) {
 	intro, err := client.Introspect(ctx)
 	if err != nil {
 		return "", err
-	}
-	if intro.AgentID == "" && sel.AgentID != "" {
-		return sel.AgentID, nil
 	}
 	if intro.AgentID == "" {
 		return "", fmt.Errorf("cannot determine identity id: API key is not bound to an identity")
@@ -90,7 +87,7 @@ var agentAccessModeCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			for _, a := range identities.Items() {
+			for _, a := range identities.Identities {
 				if a.AgentID == agentID {
 					printOutput(map[string]string{
 						"agent_id":    a.AgentID,
@@ -152,7 +149,7 @@ var identityReachabilityCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			for _, a := range identities.Items() {
+			for _, a := range identities.Identities {
 				if a.AgentID == agentID {
 					printOutput(map[string]string{
 						"agent_id":             a.AgentID,

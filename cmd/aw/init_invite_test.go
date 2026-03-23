@@ -32,7 +32,7 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id":     "proj-1",
 				"project_slug":   "myteam",
-				"namespace_slug": "myteam.aweb.ai",
+				"namespace_slug": "myteam",
 				"namespace":      "myteam.aweb.ai",
 				"identity_id":    "identity-1",
 				"alias":          "reviewer",
@@ -130,7 +130,7 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 			if acct.AgentAlias != "reviewer" {
 				t.Fatalf("agent_alias=%q", acct.AgentAlias)
 			}
-			if acct.NamespaceSlug != "myteam.aweb.ai" {
+			if acct.NamespaceSlug != "myteam" {
 				t.Fatalf("namespace_slug=%q", acct.NamespaceSlug)
 			}
 		}
@@ -153,6 +153,7 @@ func TestAwInitInviteAcceptUsesServerProvidedAliasHint(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id":   "proj-1",
 				"project_slug": "myteam",
+				"namespace_slug": "myteam",
 				"namespace":    "myteam.aweb.ai",
 				"identity_id":  "identity-1",
 				"alias":        "reviewer",
@@ -229,6 +230,7 @@ func TestAwInitInviteAcceptPermanentUsesExplicitName(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id":   "proj-1",
 				"project_slug": "myteam",
+				"namespace_slug": "myteam",
 				"namespace":    "myteam.aweb.ai",
 				"identity_id":  "identity-1",
 				"name":         "maintainer",
@@ -305,6 +307,7 @@ func TestAwInitInviteAcceptRequiresAPIKeyInResponse(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id":   "proj-1",
 				"project_slug": "myteam",
+				"namespace_slug": "myteam",
 				"namespace":    "myteam.aweb.ai",
 				"identity_id":  "identity-1",
 				"alias":        "reviewer",
@@ -417,6 +420,7 @@ func TestAwInitInviteTextOutputSaysJoined(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id":   "proj-1",
 				"project_slug": "myteam",
+				"namespace_slug": "myteam",
 				"namespace":    "myteam.aweb.ai",
 				"identity_id":  "identity-1",
 				"alias":        "reviewer",

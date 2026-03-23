@@ -344,7 +344,7 @@ func formatAgentsList(v any) string {
 	}
 
 	var online, offline []awid.IdentityView
-	for _, agent := range resp.Items() {
+	for _, agent := range resp.Identities {
 		if agent.Online {
 			online = append(online, agent)
 		} else {

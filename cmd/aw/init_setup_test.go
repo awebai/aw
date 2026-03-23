@@ -23,6 +23,7 @@ func TestAwInitInjectDocsAndSetupHooks(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id":   "proj-1",
 				"project_slug": "default",
+				"namespace_slug": "myteam",
 				"namespace":    "myteam.aweb.ai",
 				"identity_id":  "identity-1",
 				"alias":        "reviewer",

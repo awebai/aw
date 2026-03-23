@@ -280,8 +280,6 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 			}
 			if suggestion != nil && strings.TrimSpace(suggestion.NamePrefix) != "" {
 				alias = strings.TrimSpace(suggestion.NamePrefix)
-			} else {
-				alias = "alice"
 			}
 		}
 	}
@@ -294,14 +292,14 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 
 	if !initPermanent {
 		if isTTY() && !aliasExplicit {
-			v, err := promptString("Alias", alias)
+			v, err := promptRequiredString("Alias", alias)
 			if err != nil {
 				return initOptions{}, err
 			}
 			alias = strings.TrimSpace(v)
-			if alias == "" {
-				alias = "alice"
-			}
+		}
+		if strings.TrimSpace(alias) == "" {
+			return initOptions{}, usageError("alias is required (use --alias or accept a server-suggested alias)")
 		}
 	}
 
@@ -532,16 +530,16 @@ func executeInit(opts initOptions) (*initResult, error) {
 
 	namespaceSlug := strings.TrimSpace(resp.NamespaceSlug)
 	if namespaceSlug == "" {
-		namespaceSlug = strings.TrimSpace(resp.ProjectSlug)
-	}
-	if namespaceSlug == "" {
-		namespaceSlug = strings.TrimSpace(opts.NamespaceSlug)
-	}
-	if resp.Namespace != "" {
-		namespaceSlug = resp.Namespace
+		return nil, fmt.Errorf("identity bootstrap failed: missing namespace_slug in response")
 	}
 
 	handle := strings.TrimSpace(resp.IdentityHandle())
+	if handle == "" {
+		handle = handleFromAddress(resp.Address)
+	}
+	if handle == "" {
+		return nil, fmt.Errorf("identity bootstrap failed: missing identity handle in response")
+	}
 	accountName := strings.TrimSpace(opts.AccountName)
 	if accountName == "" {
 		accountName = deriveAccountName(opts.ServerName, namespaceSlug, handle)
@@ -549,7 +547,7 @@ func executeInit(opts initOptions) (*initResult, error) {
 
 	address := resp.Address
 	if address == "" {
-		address = deriveIdentityAddress(resp.NamespaceSlug, resp.ProjectSlug, handle)
+		address = deriveIdentityAddress(namespaceSlug, "", handle)
 	}
 	cfgPath, err := defaultGlobalPath()
 	if err != nil {

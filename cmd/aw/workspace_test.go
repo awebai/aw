@@ -1156,7 +1156,8 @@ func TestAwWorkspaceAddWorktreeCreatesSiblingWorktree(t *testing.T) {
 				"access_mode":  "open",
 				"max_uses":     1,
 				"expires_at":   "2099-01-01T00:00:00Z",
-				"namespace":    "demo",
+					"namespace_slug": "demo",
+					"namespace":    "demo",
 				"server_url":   srvURL,
 			})
 		case "/api/v1/spawn/accept-invite":
@@ -1171,7 +1172,8 @@ func TestAwWorkspaceAddWorktreeCreatesSiblingWorktree(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id":   "proj-1",
 				"project_slug": "demo",
-				"namespace":    "demo",
+					"namespace_slug": "demo",
+					"namespace":    "demo",
 				"identity_id":  newID,
 				"alias":        "bob",
 				"api_key":      "aw_sk_new",
@@ -1486,7 +1488,7 @@ func TestAwWorkspaceAddWorktreeExplicitAliasCreatesSiblingWorktree(t *testing.T)
 			srvURL := "http://" + r.Host
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"invite_id": "inv-1", "token": "aw_inv_carol", "token_prefix": "aw_inv_c",
-				"max_uses": 1, "expires_at": "2099-01-01T00:00:00Z", "namespace": "demo", "server_url": srvURL, "access_mode": "open",
+					"max_uses": 1, "expires_at": "2099-01-01T00:00:00Z", "namespace_slug": "demo", "namespace": "demo", "server_url": srvURL, "access_mode": "open",
 			})
 		case "/api/v1/spawn/accept-invite":
 			srvURL := "http://" + r.Host
@@ -1497,7 +1499,7 @@ func TestAwWorkspaceAddWorktreeExplicitAliasCreatesSiblingWorktree(t *testing.T)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id": "proj-1", "project_slug": "demo",
-				"namespace": "demo", "identity_id": newID, "alias": "carol", "api_key": "aw_sk_new",
+					"namespace_slug": "demo", "namespace": "demo", "identity_id": newID, "alias": "carol", "api_key": "aw_sk_new",
 				"address": "demo/carol", "server_url": srvURL, "created": true,
 				"did": "did:key:z6Mktest", "custody": "self", "lifetime": "ephemeral", "access_mode": "open",
 			})
@@ -1751,7 +1753,7 @@ func TestAwWorkspaceAddWorktreeRetriesAliasTakenSuggestion(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"invite_id": fmt.Sprintf("inv-%d", initCalls), "token": fmt.Sprintf("aw_inv_test_%d", initCalls),
 				"token_prefix": "aw_inv_t", "max_uses": 1, "expires_at": "2099-01-01T00:00:00Z",
-				"namespace": "demo", "server_url": srvURL, "access_mode": "open",
+					"namespace_slug": "demo", "namespace": "demo", "server_url": srvURL, "access_mode": "open",
 			})
 		case "/api/v1/spawn/accept-invite":
 			var req map[string]any
@@ -1771,7 +1773,7 @@ func TestAwWorkspaceAddWorktreeRetriesAliasTakenSuggestion(t *testing.T) {
 			case alias == "bob-3":
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"project_id": "proj-1", "project_slug": "demo",
-					"namespace": "demo", "identity_id": newID, "alias": "bob-3", "api_key": "aw_sk_new",
+						"namespace_slug": "demo", "namespace": "demo", "identity_id": newID, "alias": "bob-3", "api_key": "aw_sk_new",
 					"address": "demo/bob-3", "server_url": srvURL, "created": true,
 					"did": "did:key:z6Mktest", "custody": "self", "lifetime": "ephemeral", "access_mode": "open",
 				})

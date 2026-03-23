@@ -70,7 +70,13 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		return usageError("server did not return namespace_slug for the current identity; cannot import addressable identity state safely")
 	}
 
-	alias := strings.TrimSpace(resp.Alias)
+	handle := handleFromAddress(resp.Address)
+	if handle == "" {
+		handle = strings.TrimSpace(resp.Alias)
+	}
+	if handle == "" {
+		return usageError("server did not return an addressable identity handle; cannot import identity state safely")
+	}
 	agentID := strings.TrimSpace(resp.AgentID)
 
 	// Derive account name from server + agent_id (stable across alias changes).
@@ -104,7 +110,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	lifetime := existingLifetime
 	if identityDID == "" || stableID == "" || custody == "" || lifetime == "" {
 		serverDID, serverStableID, serverCustody, serverLifetime := resolveServerIdentityState(
-			ctx, client, namespaceSlug, alias, strings.TrimSpace(resp.Address),
+			ctx, client, namespaceSlug, handle, strings.TrimSpace(resp.Address),
 		)
 		if strings.TrimSpace(serverDID) != "" {
 			identityDID = strings.TrimSpace(serverDID)
@@ -148,7 +154,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 			Server:        serverName,
 			APIKey:        apiKey,
 			AgentID:       agentID,
-			AgentAlias:    alias,
+			AgentAlias:    handle,
 			NamespaceSlug: namespaceSlug,
 			DID:           identityDID,
 			StableID:      stableID,
@@ -173,7 +179,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	identityLabel := alias
+	identityLabel := handle
 	if address := strings.TrimSpace(resp.Address); address != "" {
 		identityLabel = address
 	}

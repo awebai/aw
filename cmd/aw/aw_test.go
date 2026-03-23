@@ -759,7 +759,7 @@ func TestAwAgents(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id": "proj-123",
-				"agents": []map[string]any{
+				"identities": []map[string]any{
 					{
 						"agent_id":   "agent-1",
 						"alias":      "alice",
@@ -837,11 +837,11 @@ default_account: acct
 	if got["project_id"] != "proj-123" {
 		t.Fatalf("project_id=%v", got["project_id"])
 	}
-	agents, ok := got["agents"].([]any)
-	if !ok || len(agents) != 2 {
-		t.Fatalf("agents=%v", got["agents"])
-	}
-	first := agents[0].(map[string]any)
+		identities, ok := got["identities"].([]any)
+		if !ok || len(identities) != 2 {
+			t.Fatalf("identities=%v", got["identities"])
+		}
+		first := identities[0].(map[string]any)
 	if first["alias"] != "alice" {
 		t.Fatalf("first alias=%v", first["alias"])
 	}
@@ -1514,10 +1514,10 @@ func TestAwInitStoresFullDomainAddress(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing accounts.acct")
 	}
-	// The config should store the full domain from the server response,
-	// not the bare slug.
-	if acct["namespace_slug"] != "myteam.aweb.ai" {
-		t.Fatalf("namespace_slug=%v, want myteam.aweb.ai", acct["namespace_slug"])
+	// The config should store the authoritative namespace slug, not the
+	// full domain label.
+	if acct["namespace_slug"] != "myteam" {
+		t.Fatalf("namespace_slug=%v, want myteam", acct["namespace_slug"])
 	}
 }
 
@@ -1973,7 +1973,7 @@ func TestAwAgentAccessModeGet(t *testing.T) {
 		case "/v1/agents":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id": "proj-1",
-				"agents": []map[string]any{
+				"identities": []map[string]any{
 					{
 						"agent_id":    "agent-1",
 						"alias":       "alice",
@@ -2701,7 +2701,7 @@ func TestAwInitProjectKeyPermanentRequestsPersistentIdentity(t *testing.T) {
 				"status":         "ok",
 				"project_id":     "proj-1",
 				"project_slug":   "default",
-				"namespace_slug": "myteam.aweb.ai",
+				"namespace_slug": "myteam",
 				"namespace":      "myteam.aweb.ai",
 				"identity_id":    "identity-new",
 				"name":           "Alice",
@@ -2788,8 +2788,8 @@ func TestAwInitProjectKeyPermanentRequestsPersistentIdentity(t *testing.T) {
 	for _, acct := range cfg.Accounts {
 		if acct["api_key"] == "aw_sk_new" {
 			found = true
-			if acct["namespace_slug"] != "myteam.aweb.ai" {
-				t.Fatalf("namespace_slug=%v, want myteam.aweb.ai", acct["namespace_slug"])
+			if acct["namespace_slug"] != "myteam" {
+				t.Fatalf("namespace_slug=%v, want myteam", acct["namespace_slug"])
 			}
 			if acct["lifetime"] != "persistent" {
 				t.Fatalf("lifetime=%v, want persistent", acct["lifetime"])
@@ -3677,7 +3677,7 @@ func TestAwConnectUsesServerStableID(t *testing.T) {
 				"project_id":     "proj-123",
 				"agent_id":       "agent-1",
 				"namespace_slug": "myco",
-				"alias":          "alice",
+				"address":        "myco/alice",
 				"agent_type":     "agent",
 			})
 		case "/v1/agents/resolve/myco/alice":

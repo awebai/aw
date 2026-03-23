@@ -21,17 +21,6 @@ type IdentityView struct {
 type ListIdentitiesResponse struct {
 	ProjectID  string         `json:"project_id"`
 	Identities []IdentityView `json:"identities,omitempty"`
-	Agents     []IdentityView `json:"agents,omitempty"`
-}
-
-func (r *ListIdentitiesResponse) Items() []IdentityView {
-	if r == nil {
-		return nil
-	}
-	if len(r.Identities) > 0 {
-		return r.Identities
-	}
-	return r.Agents
 }
 
 func (c *Client) ListIdentities(ctx context.Context) (*ListIdentitiesResponse, error) {
