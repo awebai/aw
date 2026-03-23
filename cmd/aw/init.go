@@ -399,12 +399,16 @@ func resolveRole(suggestedRoles []string, allowPrompt bool) string {
 		return role
 	}
 	if allowPrompt && isTTY() {
-		defaultRole := "developer"
 		if len(suggestedRoles) > 0 {
-			defaultRole = suggestedRoles[0]
-			fmt.Fprintf(os.Stderr, "Available roles: %s\n", strings.Join(suggestedRoles, ", "))
+			role, err := promptIndexedChoice("Role", suggestedRoles, 0, os.Stdin, os.Stderr)
+			if err == nil {
+				role = normalizeWorkspaceRole(strings.TrimSpace(role))
+				if role != "" {
+					return role
+				}
+			}
 		}
-		v, _ := promptString("Role", defaultRole)
+		v, _ := promptString("Role", "developer")
 		role = normalizeWorkspaceRole(strings.TrimSpace(v))
 		if role != "" {
 			return role

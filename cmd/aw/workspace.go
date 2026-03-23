@@ -699,12 +699,14 @@ func resolveWorkspaceAddRole(client *aweb.Client, args []string) (string, error)
 	}
 
 	if isTTY() {
-		defaultRole := ""
 		if len(roles) > 0 {
-			defaultRole = roles[0]
-			fmt.Fprintf(os.Stderr, "Available roles: %s\n", strings.Join(roles, ", "))
+			role, err := promptIndexedChoice("Role", roles, 0, os.Stdin, os.Stderr)
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(role), nil
 		}
-		role, err := promptString("Role", defaultRole)
+		role, err := promptString("Role", "")
 		if err != nil {
 			return "", err
 		}
