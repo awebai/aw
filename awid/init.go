@@ -9,6 +9,7 @@ import "context"
 type InitRequest struct {
 	ProjectSlug string  `json:"project_slug"`
 	ProjectName string  `json:"project_name,omitempty"`
+	RepoOrigin  string  `json:"repo_origin,omitempty"`
 	Alias       *string `json:"alias,omitempty"`
 	HumanName   string  `json:"human_name,omitempty"`
 	AgentType   string  `json:"agent_type,omitempty"`

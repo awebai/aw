@@ -583,21 +583,22 @@ func TestAwWorkspaceAddWorktreeCreatesSiblingWorktree(t *testing.T) {
 				"project_slug": "demo",
 				"name_prefix":  "bob",
 			})
-		case "/api/v1/agents/bootstrap":
+		case "/v1/init":
 			initAuth = r.Header.Get("Authorization")
 			var req map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode bootstrap request: %v", err)
+				t.Fatalf("decode init request: %v", err)
 			}
 			if req["alias"] != "bob" {
 				t.Fatalf("alias=%v", req["alias"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"org_id":       "org-1",
-				"org_slug":     "demo",
-				"project_id":   "proj-1",
-				"project_slug": "demo",
-				"namespace":    "demo",
+				"status":         "ok",
+				"created_at":     "2026-03-10T10:00:00Z",
+				"project_id":     "proj-1",
+				"project_slug":   "demo",
+				"namespace_slug": "demo",
+				"namespace":      "demo",
 				"agent_id":     newID,
 				"alias":        "bob",
 				"api_key":      "aw_sk_new",
@@ -899,20 +900,21 @@ func TestAwWorkspaceAddWorktreeExplicitAliasCreatesSiblingWorktree(t *testing.T)
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/agents/bootstrap":
+		case "/v1/init":
 			var req map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode bootstrap request: %v", err)
+				t.Fatalf("decode init request: %v", err)
 			}
 			if req["alias"] != "carol" {
 				t.Fatalf("alias=%v", req["alias"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"org_id":       "org-1",
-				"org_slug":     "demo",
-				"project_id":   "proj-1",
-				"project_slug": "demo",
-				"namespace":    "demo",
+				"status":         "ok",
+				"created_at":     "2026-03-10T10:00:00Z",
+				"project_id":     "proj-1",
+				"project_slug":   "demo",
+				"namespace_slug": "demo",
+				"namespace":      "demo",
 				"agent_id":     newID,
 				"alias":        "carol",
 				"api_key":      "aw_sk_new",
@@ -1025,7 +1027,7 @@ func TestAwWorkspaceAddWorktreeCleansUpOnInitFailure(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/agents/bootstrap":
+		case "/v1/init":
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"error": map[string]any{
@@ -1145,11 +1147,11 @@ func TestAwWorkspaceAddWorktreeRetriesAliasTakenSuggestion(t *testing.T) {
 			default:
 				t.Fatalf("unexpected suggest call %d", suggestCalls)
 			}
-		case "/api/v1/agents/bootstrap":
+		case "/v1/init":
 			initCalls++
 			var req map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode bootstrap request: %v", err)
+				t.Fatalf("decode init request: %v", err)
 			}
 			switch initCalls {
 			case 1:
