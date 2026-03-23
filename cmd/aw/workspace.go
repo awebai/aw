@@ -268,10 +268,6 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 	if sourceBaseURL == "" {
 		return fmt.Errorf("selected account missing server URL")
 	}
-	// Resolve the base URL for hosted servers (may need /api suffix).
-	if resolved, err := resolveWorkingBaseURL(sourceBaseURL); err == nil {
-		sourceBaseURL = resolved
-	}
 	sourceServerName := strings.TrimSpace(sel.ServerName)
 	if sourceServerName == "" {
 		derived, derr := awconfig.DeriveServerNameFromURL(sourceBaseURL)
@@ -330,36 +326,30 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(os.Stderr, "Initializing aw...")
 		}
 
-		// Resolve the git remote origin for the new worktree — the server
-		// uses this to identify the project when the key is agent-scoped.
-		worktreeOrigin, _ := resolveWorkspaceRepoOrigin(worktreePath, "")
-		if worktreeOrigin == "" {
-			worktreeOrigin, _ = resolveWorkspaceRepoOrigin(root, "")
+		// Create a short-lived invite with the parent agent's key,
+		// then accept it to bootstrap the new agent. This is the
+		// supported hosted path for "agent creates agent."
+		inviteToken, initErr := createWorktreeInvite(client, alias)
+		if initErr == nil {
+			initOpts := initOptions{
+				Flow:          flowInvite,
+				WorkingDir:    worktreePath,
+				BaseURL:       sourceBaseURL,
+				ServerName:    sourceServerName,
+				Alias:         alias,
+				AliasExplicit: true,
+				HumanName:     humanName,
+				AgentType:     "agent",
+				SaveConfig:    true,
+				SetDefault:    false,
+				WriteContext:  true,
+				InviteToken:   inviteToken,
+				AccountName:   "",
+				WorkspaceRole: role,
+				Lifetime:      awid.LifetimeEphemeral,
+			}
+			_, initErr = executeInit(initOpts)
 		}
-
-		initOpts := initOptions{
-			Flow:            flowProjectKey,
-			WorkingDir:      worktreePath,
-			BaseURL:         sourceBaseURL,
-			ServerName:      sourceServerName,
-			NamespaceSlug:   namespaceSlug,
-			NamespaceName:   "",
-			Alias:           alias,
-			AliasExplicit:   true,
-			HumanName:       humanName,
-			AgentType:       "agent",
-			SaveConfig:      true,
-			SetDefault:      false,
-			WriteContext:    true,
-			AuthToken:       sourceAPIKey,
-			TargetNamespace: "",
-			AccountName:     "",
-			WorkspaceRole:   role,
-			RepoOrigin:      worktreeOrigin,
-			Lifetime:        awid.LifetimeEphemeral,
-		}
-
-		_, initErr := executeInit(initOpts)
 		if initErr != nil {
 			if !wantJSON {
 				fmt.Fprintln(os.Stderr)
@@ -814,6 +804,24 @@ func cleanupWorkspaceWorktree(repoPath, worktreePath, branchName string, deleteB
 			}
 		}
 	}
+}
+
+// createWorktreeInvite creates a single-use, short-lived CLI invite for
+// bootstrapping a worktree agent. The parent agent's authenticated client
+// creates the invite; the new worktree then accepts it via flowInvite.
+func createWorktreeInvite(client *aweb.Client, aliasHint string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := client.InviteCreate(ctx, &awid.InviteCreateRequest{
+		AliasHint:        aliasHint,
+		MaxUses:          1,
+		ExpiresInSeconds: 300, // 5 minutes
+	})
+	if err != nil {
+		return "", fmt.Errorf("creating worktree invite: %w", err)
+	}
+	return resp.Token, nil
 }
 
 func isWorkspaceAliasTakenError(err error) bool {
