@@ -133,6 +133,10 @@ accounts:
 default_account: local-alice
 ```
 
+These persisted config keys are internal compatibility fields. The user-facing
+CLI model is identity-first; use `aw whoami` and the identity commands rather
+than reasoning from `agent_id` / `agent_alias` directly.
+
 ### Local context
 
 Per-directory identity defaults live in `.aw/context`:

@@ -20,7 +20,7 @@ var (
 
 var publishCmd = &cobra.Command{
 	Use:   "publish",
-	Short: "Publish an agent to the network directory",
+	Short: "Publish the current identity to the network directory",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -31,7 +31,7 @@ var publishCmd = &cobra.Command{
 		}
 		agentID := sel.AgentID
 		if agentID == "" {
-			return usageError("No agent_id in config; run 'aw init' first")
+			return usageError("No identity is bound in this workspace; run 'aw init' first")
 		}
 
 		var caps []string
@@ -63,7 +63,7 @@ var unpublishAlias string
 
 var unpublishCmd = &cobra.Command{
 	Use:   "unpublish",
-	Short: "Remove an agent from the network directory",
+	Short: "Remove an identity from the network directory",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -103,7 +103,7 @@ var (
 
 var directoryCmd = &cobra.Command{
 	Use:   "directory [org-slug/alias]",
-	Short: "Search or look up agents in the network directory",
+	Short: "Search or look up identities in the network directory",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
