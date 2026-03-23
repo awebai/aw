@@ -55,20 +55,24 @@ var namespaceAddCmd = &cobra.Command{
 			return err
 		}
 
-		printOutput(resp, func(v any) string {
-			r := v.(*awid.NamespaceSummary)
-			var b strings.Builder
-			fmt.Fprintf(&b, "Domain %s added.\n\n", r.FullName)
-			fmt.Fprintf(&b, "Add this DNS TXT record to verify ownership:\n\n")
-			fmt.Fprintf(&b, "  Name:  %s\n", r.DnsTxtName)
-			fmt.Fprintf(&b, "  Type:  TXT\n")
-			fmt.Fprintf(&b, "  Value: %s\n\n", r.DnsTxtValue)
-			fmt.Fprintf(&b, "Then run: aw project namespace verify %s\n", r.FullName)
-			return b.String()
-		})
-		return nil
-	},
-}
+			printOutput(resp, func(v any) string {
+				r := v.(*awid.NamespaceSummary)
+				var b strings.Builder
+				fmt.Fprintf(&b, "Domain %s added.\n\n", r.FullName)
+				fmt.Fprintf(&b, "Add this DNS TXT record to verify ownership:\n\n")
+				fmt.Fprintf(&b, "  Name:  %s\n", r.DnsTxtName)
+				fmt.Fprintf(&b, "  Type:  TXT\n")
+				fmt.Fprintf(&b, "  Value: %s\n\n", r.DnsTxtValue)
+				fmt.Fprintf(&b, "Next:\n")
+				fmt.Fprintf(&b, "  1. Add the TXT record in your DNS provider.\n")
+				fmt.Fprintf(&b, "  2. Wait for DNS propagation.\n")
+				fmt.Fprintf(&b, "  3. Run: aw project namespace verify %s\n\n", r.FullName)
+				fmt.Fprintf(&b, "If verification does not succeed immediately, wait a few minutes and run the verify command again.\n")
+				return b.String()
+			})
+			return nil
+		},
+	}
 
 var namespaceVerifyCmd = &cobra.Command{
 	Use:   "verify <domain>",

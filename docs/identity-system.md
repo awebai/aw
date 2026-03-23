@@ -105,7 +105,7 @@ Spawn is delegated creation of another workspace identity in the same project.
 - default child identity is ephemeral
 - `--permanent` allows explicit self-custodial permanent spawn
 
-### `aw id create-permanent`
+### `aw identity create-permanent`
 
 Creates a durable self-custodial permanent identity in the current workspace.
 
@@ -158,7 +158,7 @@ Permanent identities are not treated as disposable.
 
 Relevant operations:
 
-- `aw id rotate-key`
+- `aw identity rotate-key`
 
 Archive and replacement belong to the permanent identity model, but this CLI
 intentionally omits a fake successor-based command for them.
@@ -209,7 +209,7 @@ Preferred CLI language:
 - `aw project create`: create a project and first workspace
 - `aw init`: initialize this directory as a workspace in an existing project
 - `aw spawn`: authorize another workspace to join the same project
-- `aw id create-permanent`: create a durable self-custodial identity
+- `aw identity create-permanent`: create a durable self-custodial identity
 - `aw identity decommission`: delete the current ephemeral identity
 
 Language to avoid:

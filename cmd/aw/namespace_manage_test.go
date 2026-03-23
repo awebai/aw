@@ -156,6 +156,9 @@ func TestAwNamespaceAddTextOutput(t *testing.T) {
 	if !strings.Contains(output, "aw project namespace verify") {
 		t.Fatalf("expected verify instruction in output:\n%s", output)
 	}
+	if !strings.Contains(output, "Wait for DNS propagation") {
+		t.Fatalf("expected DNS propagation guidance in output:\n%s", output)
+	}
 }
 
 func TestAwNamespaceList(t *testing.T) {

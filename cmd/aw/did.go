@@ -14,19 +14,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var idCmd = &cobra.Command{
-	Use:   "id",
-	Short: "Identity and key management commands",
-}
-
-var idRotateKeyCmd = &cobra.Command{
+var identityRotateKeyCmd = &cobra.Command{
 	Use:   "rotate-key",
 	Short: "Rotate the identity signing key",
 	Long:  "Generate a new Ed25519 keypair, sign the rotation with the old key, and update the server and local config.",
 	RunE:  runDidRotateKey,
 }
 
-var idLogCmd = &cobra.Command{
+var identityLogCmd = &cobra.Command{
 	Use:   "log [address]",
 	Short: "Show an identity log",
 	Long:  "Display rotation and status history. Without arguments, shows your own log.",
@@ -34,37 +29,36 @@ var idLogCmd = &cobra.Command{
 	RunE:  runDidLog,
 }
 
-var idCreatePermanentCmd = &cobra.Command{
+var identityCreatePermanentCmd = &cobra.Command{
 	Use:   "create-permanent",
 	Short: "Create a durable self-custodial identity in the current workspace",
-	RunE:  runIDCreatePermanent,
+	RunE:  runIdentityCreatePermanent,
 }
 
 var rotateKeySelfCustody bool
 
 func init() {
-	idCreatePermanentCmd.Flags().StringVar(&initAlias, "alias", "", "Permanent identity address name or routing alias")
-	idCreatePermanentCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
-	idCreatePermanentCmd.Flags().StringVar(&initAgentType, "agent-type", "", "Runtime type (default: AWEB_AGENT_TYPE or agent)")
-	idCreatePermanentCmd.Flags().BoolVar(&initSaveConfig, "save-config", true, "Write/update ~/.config/aw/config.yaml with the new credentials")
-	idCreatePermanentCmd.Flags().BoolVar(&initSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
-	idCreatePermanentCmd.Flags().BoolVar(&initWriteContext, "write-context", true, "Write/update .aw/context in the current directory (non-secret pointer)")
-	idCreatePermanentCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
-	idCreatePermanentCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (default: AWEB_ROLE or prompt in TTY, fallback: developer)")
-	idCmd.AddCommand(idCreatePermanentCmd)
-	idRotateKeyCmd.Flags().BoolVar(&rotateKeySelfCustody, "self-custody", false, "Graduate from custodial to self-custody")
-	idCmd.AddCommand(idRotateKeyCmd)
-	idCmd.AddCommand(idLogCmd)
-	rootCmd.AddCommand(idCmd)
+	identityCreatePermanentCmd.Flags().StringVar(&initAlias, "alias", "", "Permanent identity address name or routing alias")
+	identityCreatePermanentCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
+	identityCreatePermanentCmd.Flags().StringVar(&initAgentType, "agent-type", "", "Runtime type (default: AWEB_AGENT_TYPE or agent)")
+	identityCreatePermanentCmd.Flags().BoolVar(&initSaveConfig, "save-config", true, "Write/update ~/.config/aw/config.yaml with the new credentials")
+	identityCreatePermanentCmd.Flags().BoolVar(&initSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
+	identityCreatePermanentCmd.Flags().BoolVar(&initWriteContext, "write-context", true, "Write/update .aw/context in the current directory (non-secret pointer)")
+	identityCreatePermanentCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
+	identityCreatePermanentCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (default: AWEB_ROLE or prompt in TTY, fallback: developer)")
+	identityCmd.AddCommand(identityCreatePermanentCmd)
+	identityRotateKeyCmd.Flags().BoolVar(&rotateKeySelfCustody, "self-custody", false, "Graduate from custodial to self-custody")
+	identityCmd.AddCommand(identityRotateKeyCmd)
+	identityCmd.AddCommand(identityLogCmd)
 }
 
-func runIDCreatePermanent(cmd *cobra.Command, args []string) error {
+func runIdentityCreatePermanent(cmd *cobra.Command, args []string) error {
 	workingDir, err := os.Getwd()
 	if err != nil {
 		return err
 	}
 	if _, _, err := awconfig.LoadWorktreeContextFromDir(workingDir); err != nil {
-		return usageError("aw id create-permanent requires an initialized workspace; run `aw init` or `aw project create` first")
+		return usageError("aw identity create-permanent requires an initialized workspace; run `aw init` or `aw project create` first")
 	}
 	c, sel, err := resolveAPIKeyOnly()
 	if err != nil {

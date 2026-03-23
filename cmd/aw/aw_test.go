@@ -287,6 +287,50 @@ default_account: acct
 	}
 }
 
+func TestAwIdentityCommandSurface(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+
+	identityHelp := exec.CommandContext(ctx, bin, "identity", "--help")
+	identityHelp.Dir = tmp
+	identityOut, err := identityHelp.CombinedOutput()
+	if err != nil {
+		t.Fatalf("identity help failed: %v\n%s", err, string(identityOut))
+	}
+
+	identityText := string(identityOut)
+	for _, want := range []string{
+		"create-permanent",
+		"rotate-key",
+		"log",
+		"access-mode",
+		"privacy",
+		"decommission",
+	} {
+		if !strings.Contains(identityText, want) {
+			t.Fatalf("identity help missing %q:\n%s", want, identityText)
+		}
+	}
+
+	idHelp := exec.CommandContext(ctx, bin, "id", "--help")
+	idHelp.Dir = tmp
+	idOut, err := idHelp.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected aw id --help to fail, got success:\n%s", string(idOut))
+	}
+
+	idText := string(idOut)
+	if !strings.Contains(idText, `unknown command "id"`) {
+		t.Fatalf("expected unknown command error for aw id --help:\n%s", idText)
+	}
+}
+
 func TestAwIntrospectServerFlagSelectsConfiguredServer(t *testing.T) {
 	t.Parallel()
 

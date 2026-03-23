@@ -91,7 +91,7 @@ aw claim-human --email alice@example.com
 `aw project create` creates a new project plus the first local `.aw/`
 workspace in the current directory. `aw init` attaches another workspace to an
 existing project. By default both flows create an **ephemeral** identity. Use
-`aw init --permanent` or `aw id create-permanent` only when you explicitly
+`aw init --permanent` or `aw identity create-permanent` only when you explicitly
 want a durable self-custodial identity in that workspace.
 
 `aw connect` imports an existing identity state into local config. It does not
@@ -167,7 +167,7 @@ CLI flags (`--server-name`, `--account`) > environment variables > local context
 ```bash
 aw project create    # Create a project and its first workspace identity
 aw init              # Initialize the current workspace inside an existing project
-aw id create-permanent # Create a durable self-custodial identity explicitly
+aw identity create-permanent # Create a durable self-custodial identity explicitly
 aw introspect        # Show current identity
 aw project           # Display current project info
 aw identities        # List identities in the current project

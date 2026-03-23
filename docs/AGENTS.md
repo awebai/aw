@@ -138,8 +138,8 @@ Messages are signed automatically. No manual key management needed for normal us
 
 ```bash
 aw introspect              # show your identity (alias, DID, server)
-aw id log                  # view your DID log (key history)
-aw id rotate-key           # rotate your signing key
+aw identity log            # view your DID log (key history)
+aw identity rotate-key     # rotate your signing key
 ```
 
 ## Agent Settings
