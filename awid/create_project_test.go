@@ -8,14 +8,14 @@ import (
 	"testing"
 )
 
-func TestHeadlessBootstrap(t *testing.T) {
+func TestCreateProject(t *testing.T) {
 	t.Parallel()
 
 	var gotBody map[string]any
 	var gotAuth string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/bootstrap/headless-agent" {
+		if r.URL.Path != "/api/v1/create-project" {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		if r.Method != http.MethodPost {
@@ -24,12 +24,11 @@ func TestHeadlessBootstrap(t *testing.T) {
 		gotAuth = r.Header.Get("Authorization")
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"org_id":       "org-1",
-			"org_slug":     "myteam",
 			"project_id":   "proj-1",
 			"project_slug": "default",
+			"namespace_slug": "myteam",
 			"namespace":    "myteam.aweb.ai",
-			"agent_id":     "agent-1",
+			"identity_id":  "identity-1",
 			"alias":        "deploy-bot",
 			"address":      "myteam.aweb.ai/deploy-bot",
 			"api_key":      "aw_sk_headless_test",
@@ -42,20 +41,22 @@ func TestHeadlessBootstrap(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	// Unauthenticated client — headless bootstrap requires no credentials.
+	// Unauthenticated client — create-project requires no credentials.
 	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	resp, err := c.HeadlessBootstrap(context.Background(), &HeadlessBootstrapRequest{
+	alias := "deploy-bot"
+	resp, err := c.CreateProject(context.Background(), &CreateProjectRequest{
+		ProjectSlug: "default",
 		NamespaceSlug: "myteam",
-		Alias:         "deploy-bot",
-		AgentType:     "agent",
-		DID:           "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-		PublicKey:     "Lm/M42cB3HkUiODQsXRcweM6TByfzEHGO9ND274JcOY",
-		Custody:       CustodySelf,
-		Lifetime:      LifetimePersistent,
+		Alias:       &alias,
+		AgentType:   "agent",
+		DID:         "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+		PublicKey:   "Lm/M42cB3HkUiODQsXRcweM6TByfzEHGO9ND274JcOY",
+		Custody:     CustodySelf,
+		Lifetime:    LifetimePersistent,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -90,11 +91,11 @@ func TestHeadlessBootstrap(t *testing.T) {
 	}
 
 	// Verify response.
-	if resp.OrgID != "org-1" {
-		t.Fatalf("org_id=%q", resp.OrgID)
+	if resp.IdentityID != "identity-1" {
+		t.Fatalf("identity_id=%q", resp.IdentityID)
 	}
-	if resp.OrgSlug != "myteam" {
-		t.Fatalf("org_slug=%q", resp.OrgSlug)
+	if resp.NamespaceSlug != "myteam" {
+		t.Fatalf("namespace_slug=%q", resp.NamespaceSlug)
 	}
 	if resp.Namespace != "myteam.aweb.ai" {
 		t.Fatalf("namespace=%q", resp.Namespace)
@@ -125,7 +126,7 @@ func TestHeadlessBootstrap(t *testing.T) {
 	}
 }
 
-func TestHeadlessBootstrapHTTPError(t *testing.T) {
+func TestCreateProjectHTTPError(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -139,9 +140,11 @@ func TestHeadlessBootstrapHTTPError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = c.HeadlessBootstrap(context.Background(), &HeadlessBootstrapRequest{
+	alias := "deploy-bot"
+	_, err = c.CreateProject(context.Background(), &CreateProjectRequest{
+		ProjectSlug: "default",
 		NamespaceSlug: "myteam",
-		Alias:         "deploy-bot",
+		Alias:       &alias,
 	})
 	if err == nil {
 		t.Fatal("expected error")

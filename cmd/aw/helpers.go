@@ -85,7 +85,7 @@ func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Se
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid identity configuration: %w", err)
 		}
-		c.SetAddress(deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias))
+		c.SetAddress(deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias))
 		c.SetProjectSlug(sel.DefaultProject)
 		if sel.StableID != "" {
 			c.SetStableID(sel.StableID)
@@ -640,20 +640,20 @@ func sanitizeKeyComponent(s string) string {
 	return out
 }
 
-func deriveAccountName(serverName, namespaceSlug, alias string) string {
-	return "acct-" + sanitizeKeyComponent(serverName) + "__" + sanitizeKeyComponent(namespaceSlug) + "__" + sanitizeKeyComponent(alias)
+func deriveAccountName(serverName, namespaceSlug, handle string) string {
+	return "acct-" + sanitizeKeyComponent(serverName) + "__" + sanitizeKeyComponent(namespaceSlug) + "__" + sanitizeKeyComponent(handle)
 }
 
-// deriveAgentAddress builds the agent address (namespace/alias) from
-// registration response fields. Prefers namespace_slug over project_slug.
-func deriveAgentAddress(namespaceSlug, projectSlug, alias string) string {
+// deriveIdentityAddress builds the canonical external identity address from
+// namespace/project context plus the local routing handle or permanent name.
+func deriveIdentityAddress(namespaceSlug, projectSlug, handle string) string {
 	if namespaceSlug != "" {
-		return namespaceSlug + "/" + alias
+		return namespaceSlug + "/" + handle
 	}
 	if projectSlug != "" {
-		return projectSlug + "/" + alias
+		return projectSlug + "/" + handle
 	}
-	return alias
+	return handle
 }
 
 func writeOrUpdateContext(serverName, accountName string) error {

@@ -117,13 +117,13 @@ func runWorkActive(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	agentsResp, err := client.ListAgents(ctx)
+	agentsResp, err := client.ListIdentities(ctx)
 	if err != nil {
 		return err
 	}
 
 	agentAliases := map[string]string{}
-	for _, agent := range agentsResp.Agents {
+	for _, agent := range agentsResp.Items() {
 		if strings.TrimSpace(agent.AgentID) != "" && strings.TrimSpace(agent.Alias) != "" {
 			agentAliases[agent.AgentID] = agent.Alias
 		}

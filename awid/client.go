@@ -516,6 +516,9 @@ func (c *Client) DoRaw(ctx context.Context, method, path, accept string, in any)
 		body = bytes.NewReader(data)
 	}
 
+	if strings.HasSuffix(c.baseURL, "/api") && strings.HasPrefix(path, "/api/") {
+		path = strings.TrimPrefix(path, "/api")
+	}
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
 		return nil, err

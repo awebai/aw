@@ -139,18 +139,18 @@ func TestDeleteContact(t *testing.T) {
 	}
 }
 
-func TestPatchAgent(t *testing.T) {
+func TestPatchIdentity(t *testing.T) {
 	t.Parallel()
 
 	var gotMethod, gotPath string
-	var gotBody PatchAgentRequest
+	var gotBody PatchIdentityRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatal(err)
 		}
-		_ = json.NewEncoder(w).Encode(PatchAgentResponse{
+		_ = json.NewEncoder(w).Encode(PatchIdentityResponse{
 			AgentID:    "agent-1",
 			AccessMode: "contacts_only",
 		})
@@ -161,7 +161,7 @@ func TestPatchAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := c.PatchAgent(context.Background(), "agent-1", &PatchAgentRequest{
+	resp, err := c.PatchIdentity(context.Background(), "agent-1", &PatchIdentityRequest{
 		AccessMode: "contacts_only",
 	})
 	if err != nil {

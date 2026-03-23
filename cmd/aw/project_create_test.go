@@ -17,7 +17,7 @@ import (
 	"github.com/awebai/aw/awconfig"
 )
 
-func TestAwInitHeadlessBootstrapAgainstHosted(t *testing.T) {
+func TestAwProjectCreateAgainstHosted(t *testing.T) {
 	t.Parallel()
 
 	var gotPath string
@@ -28,7 +28,7 @@ func TestAwInitHeadlessBootstrapAgainstHosted(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "deploy-bot", "roles": []string{}})
-		case "/api/v1/bootstrap/headless-agent":
+		case "/api/v1/create-project":
 			gotPath = r.URL.Path
 			gotAuth = r.Header.Get("Authorization")
 			if r.Method != http.MethodPost {
@@ -36,13 +36,11 @@ func TestAwInitHeadlessBootstrapAgainstHosted(t *testing.T) {
 			}
 			_ = json.NewDecoder(r.Body).Decode(&gotBody)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"org_id":         "org-1",
-				"org_slug":       "myteam",
 				"project_id":     "proj-1",
 				"project_slug":   "default",
 				"namespace_slug": "myteam.aweb.ai",
 				"namespace":      "myteam.aweb.ai",
-				"agent_id":       "agent-1",
+				"identity_id":    "identity-1",
 				"alias":          "deploy-bot",
 				"address":        "myteam.aweb.ai/deploy-bot",
 				"api_key":        "aw_sk_headless_test",
@@ -98,9 +96,9 @@ func TestAwInitHeadlessBootstrapAgainstHosted(t *testing.T) {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 
-	// Should have hit the headless endpoint.
-	if gotPath != "/api/v1/bootstrap/headless-agent" {
-		t.Fatalf("expected headless endpoint, got path=%q", gotPath)
+	// Should have hit the create-project endpoint.
+	if gotPath != "/api/v1/create-project" {
+		t.Fatalf("expected create-project endpoint, got path=%q", gotPath)
 	}
 
 	// Should be unauthenticated.
@@ -174,18 +172,16 @@ func TestAwInitPermanentRequestsPersistentIdentity(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "maintainer", "roles": []string{}})
-		case "/api/v1/bootstrap/headless-agent":
+		case "/api/v1/create-project":
 			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 				t.Fatal(err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"org_id":         "org-1",
-				"org_slug":       "myteam",
 				"project_id":     "proj-1",
 				"project_slug":   "default",
 				"namespace_slug": "myteam.aweb.ai",
 				"namespace":      "myteam.aweb.ai",
-				"agent_id":       "agent-1",
+				"identity_id":    "identity-1",
 				"alias":          "maintainer",
 				"address":        "myteam.aweb.ai/maintainer",
 				"api_key":        "aw_sk_permanent_test",
@@ -287,15 +283,13 @@ func TestAwInitIgnoresExistingConfigKeys(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "reviewer", "roles": []string{}})
-		case "/api/v1/bootstrap/headless-agent":
+		case "/api/v1/create-project":
 			gotPath = r.URL.Path
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"org_id":       "org-1",
-				"org_slug":     "myteam",
 				"project_id":   "proj-1",
 				"project_slug": "default",
 				"namespace":    "myteam.aweb.ai",
-				"agent_id":     "agent-2",
+				"identity_id":  "identity-2",
 				"alias":        "reviewer",
 				"address":      "myteam.aweb.ai/reviewer",
 				"api_key":      "aw_sk_new_agent",
@@ -364,13 +358,13 @@ default_account: existing
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 
-	// Should have used headless, NOT /v1/init with existing key.
-	if gotPath != "/api/v1/bootstrap/headless-agent" {
-		t.Fatalf("expected headless bootstrap, got path=%q", gotPath)
+	// Should have used create-project, ignoring existing config credentials.
+	if gotPath != "/api/v1/create-project" {
+		t.Fatalf("expected create-project, got path=%q", gotPath)
 	}
 }
 
-func TestAwInitSelfHostedStillUsesV1Init(t *testing.T) {
+func TestAwProjectCreateUsesCreateProjectOnSelfHosted(t *testing.T) {
 	t.Parallel()
 
 	var gotPath string
@@ -379,22 +373,21 @@ func TestAwInitSelfHostedStillUsesV1Init(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "deploy-bot", "roles": []string{}})
-		case "/api/v1/bootstrap/headless-agent":
-			// Self-hosted server doesn't have this endpoint.
-			http.NotFound(w, r)
-		case "/v1/init":
+		case "/api/v1/create-project":
 			gotPath = r.URL.Path
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":       "ok",
-				"project_id":   "proj-1",
-				"project_slug": "default",
-				"agent_id":     "agent-1",
-				"alias":        "deploy-bot",
-				"api_key":      "aw_sk_selfhost",
-				"created":      true,
-				"did":          "did:key:z6MkTest3",
-				"custody":      "self",
-				"lifetime":     "ephemeral",
+				"status":        "ok",
+				"project_id":    "proj-1",
+				"project_slug":  "default",
+				"namespace_slug": "myteam.aweb.ai",
+				"namespace":     "myteam.aweb.ai",
+				"identity_id":   "identity-1",
+				"alias":         "deploy-bot",
+				"api_key":       "aw_sk_selfhost",
+				"created":       true,
+				"did":           "did:key:z6MkTest3",
+				"custody":       "self",
+				"lifetime":      "ephemeral",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -421,7 +414,8 @@ func TestAwInitSelfHostedStillUsesV1Init(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	// Explicit --server-url to non-hosted server, no config → self-hosted /v1/init.
+	// Explicit --server-url to a self-hosted server should still use
+	// create-project, not the existing-project workspace init path.
 	run := exec.CommandContext(ctx, bin, "project", "create",
 		"--server-url", server.URL,
 		"--project", "myteam",
@@ -443,124 +437,13 @@ func TestAwInitSelfHostedStillUsesV1Init(t *testing.T) {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 
-	if gotPath != "/v1/init" {
-		t.Fatalf("expected /v1/init, got path=%q", gotPath)
+	if gotPath != "/api/v1/create-project" {
+		t.Fatalf("expected /api/v1/create-project, got path=%q", gotPath)
 	}
 }
 
-func TestAwInitHeadlessRetryOnAliasCollision(t *testing.T) {
-	t.Parallel()
 
-	// On a hosted server: headless bootstrap succeeds for the first call
-	// with a suggested alias, but the alias is already taken (created=false
-	// shouldn't happen with headless — it would 409 — but the retry logic
-	// must still handle the self-hosted fallback case where /v1/init returns
-	// created=false). The retry should go directly to /v1/init with nil alias.
-	initCalls := 0
-
-	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/bootstrap/headless-agent":
-			http.NotFound(w, r)
-		case "/v1/agents/suggest-alias-prefix":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_slug": "myteam",
-				"project_id":   nil,
-				"name_prefix":  "alice",
-			})
-		case "/v1/init":
-			initCalls++
-			var payload map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&payload)
-
-			if payload["alias"] != nil {
-				// First call: alias "alice" collides.
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"status":       "ok",
-					"project_id":   "proj-1",
-					"project_slug": "myteam",
-					"agent_id":     "agent-1",
-					"alias":        "alice",
-					"api_key":      "aw_sk_test",
-					"created":      false,
-					"did":          "did:key:z6MkTest",
-					"custody":      "self",
-					"lifetime":     "ephemeral",
-				})
-			} else {
-				// Retry: server allocates alias.
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"status":       "ok",
-					"project_id":   "proj-1",
-					"project_slug": "myteam",
-					"agent_id":     "agent-2",
-					"alias":        "alice-2",
-					"api_key":      "aw_sk_retry",
-					"created":      true,
-					"did":          "did:key:z6MkTest2",
-					"custody":      "self",
-					"lifetime":     "ephemeral",
-				})
-			}
-		case "/v1/agents/heartbeat":
-			w.WriteHeader(http.StatusOK)
-		default:
-			t.Fatalf("unexpected path=%s", r.URL.Path)
-		}
-	}))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "aw")
-	cfgPath := filepath.Join(tmp, "config.yaml")
-
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, string(out))
-	}
-
-	// No --alias, no API key → headless 404s → /v1/init with suggested alias → collision → retry.
-	run := exec.CommandContext(ctx, bin, "project", "create",
-		"--project", "myteam",
-		"--json",
-		"--write-context=false",
-		"--print-exports=false",
-	)
-	run.Stdin = strings.NewReader("")
-	run.Env = append(os.Environ(),
-		"AWEB_URL="+server.URL,
-		"AW_CONFIG_PATH="+cfgPath,
-		"AWEB_API_KEY=",
-		"AWEB_ALIAS=",
-	)
-	run.Dir = tmp
-	out, err := run.CombinedOutput()
-	if err != nil {
-		t.Fatalf("run failed: %v\n%s", err, string(out))
-	}
-
-	if initCalls != 2 {
-		t.Fatalf("expected 2 /v1/init calls (first + retry), got %d", initCalls)
-	}
-
-	var resp map[string]any
-	if err := json.Unmarshal(extractJSON(t, out), &resp); err != nil {
-		t.Fatalf("invalid json: %v\n%s", err, string(out))
-	}
-	if resp["alias"] != "alice-2" {
-		t.Fatalf("alias=%v, want alice-2 (server-allocated)", resp["alias"])
-	}
-}
-
-func TestAwInitHeadlessWithAPIMount(t *testing.T) {
+func TestAwProjectCreateWithAPIMount(t *testing.T) {
 	t.Parallel()
 
 	// Server where the aweb API is mounted at /api. resolveWorkingBaseURL
@@ -578,15 +461,13 @@ func TestAwInitHeadlessWithAPIMount(t *testing.T) {
 	mux.HandleFunc("/api/v1/agents/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	})
-	mux.HandleFunc("/api/v1/bootstrap/headless-agent", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/create-project", func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"org_id":       "org-1",
-			"org_slug":     "myteam",
 			"project_id":   "proj-1",
 			"project_slug": "default",
 			"namespace":    "myteam.aweb.ai",
-			"agent_id":     "agent-1",
+			"identity_id":  "identity-1",
 			"alias":        "deploy-bot",
 			"address":      "myteam.aweb.ai/deploy-bot",
 			"api_key":      "aw_sk_api_mount",
@@ -640,8 +521,8 @@ func TestAwInitHeadlessWithAPIMount(t *testing.T) {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 
-	if gotPath != "/api/v1/bootstrap/headless-agent" {
-		t.Fatalf("expected /api/v1/bootstrap/headless-agent, got path=%q", gotPath)
+	if gotPath != "/api/v1/create-project" {
+		t.Fatalf("expected /api/v1/create-project, got path=%q", gotPath)
 	}
 
 	var resp map[string]any

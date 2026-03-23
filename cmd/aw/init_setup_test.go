@@ -19,14 +19,12 @@ func TestAwInitInjectDocsAndSetupHooks(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "reviewer", "roles": []string{}})
-		case "/api/v1/bootstrap/headless-agent":
+		case "/api/v1/create-project":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"org_id":       "org-1",
-				"org_slug":     "myteam",
 				"project_id":   "proj-1",
 				"project_slug": "default",
 				"namespace":    "myteam.aweb.ai",
-				"agent_id":     "agent-1",
+				"identity_id":  "identity-1",
 				"alias":        "reviewer",
 				"address":      "myteam.aweb.ai/reviewer",
 				"api_key":      "aw_sk_headless_test",

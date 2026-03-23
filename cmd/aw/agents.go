@@ -13,13 +13,13 @@ import (
 
 // agentsListOutput wraps the server response with local config fields for display.
 type agentsListOutput struct {
-	*awid.ListAgentsResponse
+	*awid.ListIdentitiesResponse
 	ProjectSlug string `json:"project_slug,omitempty"`
 }
 
 // identityPatchOutput wraps the server response with the identity alias for display.
 type identityPatchOutput struct {
-	*awid.PatchAgentResponse
+	*awid.PatchIdentityResponse
 	Alias string `json:"alias,omitempty"`
 }
 
@@ -50,12 +50,12 @@ var identitiesCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		resp, err := client.ListAgents(ctx)
+		resp, err := client.ListIdentities(ctx)
 		if err != nil {
 			return err
 		}
 		printOutput(agentsListOutput{
-			ListAgentsResponse: resp,
+			ListIdentitiesResponse: resp,
 			ProjectSlug:        sel.NamespaceSlug,
 		}, formatAgentsList)
 		return nil
@@ -86,15 +86,15 @@ var agentAccessModeCmd = &cobra.Command{
 
 		if len(args) == 0 {
 			// GET: list agents, find self, print access_mode.
-			agents, err := client.ListAgents(ctx)
+			identities, err := client.ListIdentities(ctx)
 			if err != nil {
 				return err
 			}
-			for _, a := range agents.Agents {
+			for _, a := range identities.Items() {
 				if a.AgentID == agentID {
 					printOutput(map[string]string{
 						"agent_id":    a.AgentID,
-						"alias":       a.Alias,
+						"alias":       firstNonEmpty(a.Name, a.Alias),
 						"access_mode": a.AccessMode,
 					}, formatAgentAccessMode)
 					return nil
@@ -109,23 +109,23 @@ var agentAccessModeCmd = &cobra.Command{
 			return fmt.Errorf("invalid access mode: %s (must be \"open\" or \"contacts_only\")", mode)
 		}
 
-		resp, err := client.PatchAgent(ctx, agentID, &awid.PatchAgentRequest{
+		resp, err := client.PatchIdentity(ctx, agentID, &awid.PatchIdentityRequest{
 			AccessMode: mode,
 		})
 		if err != nil {
 			return err
 		}
 		printOutput(identityPatchOutput{
-			PatchAgentResponse: resp,
+			PatchIdentityResponse: resp,
 			Alias:              sel.AgentAlias,
 		}, formatAgentPatch)
 		return nil
 	},
 }
 
-var agentPrivacyCmd = &cobra.Command{
-	Use:   "privacy [public|private]",
-	Short: "Get or set identity privacy",
+var identityReachabilityCmd = &cobra.Command{
+	Use:   "reachability [private|org-visible|contacts-only|public]",
+	Short: "Get or set permanent address reachability",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -135,42 +135,49 @@ var agentPrivacyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		lifetime, _, err := resolveSelectionIdentityState(ctx, client, sel)
+		if err != nil {
+			return err
+		}
+		if awid.IdentityClassFromLifetime(lifetime) != awid.IdentityClassPermanent {
+			return fmt.Errorf("reachability is only defined for permanent identities")
+		}
 		agentID, err := resolveCurrentIdentityID(ctx, client, sel)
 		if err != nil {
 			return err
 		}
 
 		if len(args) == 0 {
-			agents, err := client.ListAgents(ctx)
+			identities, err := client.ListIdentities(ctx)
 			if err != nil {
 				return err
 			}
-			for _, a := range agents.Agents {
+			for _, a := range identities.Items() {
 				if a.AgentID == agentID {
 					printOutput(map[string]string{
-						"agent_id": a.AgentID,
-						"alias":    a.Alias,
-						"privacy":  a.Privacy,
-					}, formatAgentPrivacy)
+						"agent_id":             a.AgentID,
+						"alias":                firstNonEmpty(a.Name, a.Alias),
+						"address_reachability": a.AddressReachability,
+					}, formatIdentityReachability)
 					return nil
 				}
 			}
 			return fmt.Errorf("identity %s not found in identities list", agentID)
 		}
 
-		privacy := args[0]
-		if privacy != "public" && privacy != "private" {
-			return fmt.Errorf("invalid privacy: %s (must be \"public\" or \"private\")", privacy)
+		reachability := normalizeAddressReachability(args[0])
+		if reachability == "" {
+			return fmt.Errorf("invalid reachability: %s (must be \"private\", \"org-visible\", \"contacts-only\", or \"public\")", args[0])
 		}
 
-		resp, err := client.PatchAgent(ctx, agentID, &awid.PatchAgentRequest{
-			Privacy: privacy,
+		resp, err := client.PatchIdentity(ctx, agentID, &awid.PatchIdentityRequest{
+			AddressReachability: reachability,
 		})
 		if err != nil {
 			return err
 		}
 		printOutput(identityPatchOutput{
-			PatchAgentResponse: resp,
+			PatchIdentityResponse: resp,
 			Alias:              sel.AgentAlias,
 		}, formatAgentPatch)
 		return nil
@@ -180,6 +187,15 @@ var agentPrivacyCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(identitiesCmd)
 	identityCmd.AddCommand(agentAccessModeCmd)
-	identityCmd.AddCommand(agentPrivacyCmd)
+	identityCmd.AddCommand(identityReachabilityCmd)
 	rootCmd.AddCommand(identityCmd)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

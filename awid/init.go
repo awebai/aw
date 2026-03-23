@@ -2,34 +2,21 @@ package awid
 
 import "context"
 
-// InitRequest is sent to POST /v1/init.
-//
-// This endpoint is an OSS convenience for clean-start deployments.
-// It typically does not require an API key.
-type InitRequest struct {
-	ProjectSlug string  `json:"project_slug"`
-	ProjectName string  `json:"project_name,omitempty"`
-	Alias       *string `json:"alias,omitempty"`
-	HumanName   string  `json:"human_name,omitempty"`
-	AgentType   string  `json:"agent_type,omitempty"`
-	DID         string  `json:"did,omitempty"`
-	PublicKey   string  `json:"public_key,omitempty"`
-	Custody     string  `json:"custody,omitempty"`
-	Lifetime    string  `json:"lifetime,omitempty"`
-}
-
-// InitResponse is returned by POST /v1/init.
-type InitResponse struct {
+// BootstrapIdentityResponse is returned by identity-creation routes that create
+// a workspace-bound identity and API key in one call.
+type BootstrapIdentityResponse struct {
 	Status        string `json:"status"`
 	CreatedAt     string `json:"created_at"`
 	ProjectID     string `json:"project_id"`
 	ProjectSlug   string `json:"project_slug"`
-	AgentID       string `json:"agent_id"`
-	Alias         string `json:"alias"`
-	APIKey        string `json:"api_key"`
 	NamespaceSlug string `json:"namespace_slug,omitempty"`
 	Namespace     string `json:"namespace,omitempty"`
+	IdentityID    string `json:"identity_id"`
+	Alias         string `json:"alias,omitempty"`
+	Name          string `json:"name,omitempty"`
 	Address       string `json:"address,omitempty"`
+	AddressReachability string `json:"address_reachability,omitempty"`
+	APIKey        string `json:"api_key"`
 	ServerURL     string `json:"server_url,omitempty"`
 	Created       bool   `json:"created"`
 	DID           string `json:"did,omitempty"`
@@ -38,10 +25,37 @@ type InitResponse struct {
 	Lifetime      string `json:"lifetime,omitempty"`
 }
 
-// Init bootstraps a project, workspace identity, and API key.
-func (c *Client) Init(ctx context.Context, req *InitRequest) (*InitResponse, error) {
-	var out InitResponse
-	if err := c.Post(ctx, "/v1/init", req, &out); err != nil {
+func (r *BootstrapIdentityResponse) IdentityHandle() string {
+	if r == nil {
+		return ""
+	}
+	if r.Name != "" {
+		return r.Name
+	}
+	return r.Alias
+}
+
+// WorkspaceInitRequest is sent to POST /v1/workspaces/init.
+type WorkspaceInitRequest struct {
+	ProjectSlug        string  `json:"project_slug,omitempty"`
+	ProjectName        string  `json:"project_name,omitempty"`
+	NamespaceSlug      string  `json:"namespace_slug,omitempty"`
+	Alias              *string `json:"alias,omitempty"`
+	Name               *string `json:"name,omitempty"`
+	AddressReachability string `json:"address_reachability,omitempty"`
+	HumanName          string  `json:"human_name,omitempty"`
+	AgentType          string  `json:"agent_type,omitempty"`
+	DID                string  `json:"did,omitempty"`
+	PublicKey          string  `json:"public_key,omitempty"`
+	Custody            string  `json:"custody,omitempty"`
+	Lifetime           string  `json:"lifetime,omitempty"`
+}
+
+// InitWorkspace initializes a local workspace into an existing project using
+// project authority.
+func (c *Client) InitWorkspace(ctx context.Context, req *WorkspaceInitRequest) (*BootstrapIdentityResponse, error) {
+	var out BootstrapIdentityResponse
+	if err := c.Post(ctx, "/v1/workspaces/init", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

@@ -65,16 +65,9 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		return usageError("This API key is not bound to an identity. Use an identity-bound key from the dashboard.")
 	}
 
-	// Fetch namespace slug for canonical address derivation (needed for
-	// self-custody signing and key file naming).
-	var namespaceSlug string
-	proj, projErr := client.GetCurrentProject(ctx)
-	if projErr == nil {
-		namespaceSlug = strings.TrimSpace(proj.Slug)
-	}
-	// Prefer server-authoritative namespace from introspect.
-	if ns := strings.TrimSpace(resp.NamespaceSlug); ns != "" {
-		namespaceSlug = ns
+	namespaceSlug := strings.TrimSpace(resp.NamespaceSlug)
+	if namespaceSlug == "" {
+		return usageError("server did not return namespace_slug for the current identity; cannot import addressable identity state safely")
 	}
 
 	alias := strings.TrimSpace(resp.Alias)
@@ -219,7 +212,7 @@ func resolveServerIdentityState(
 ) (did, stableID, custody, lifetime string) {
 	address := strings.TrimSpace(authoritativeAddress)
 	if address == "" && strings.TrimSpace(namespaceSlug) != "" && strings.TrimSpace(alias) != "" {
-		address = deriveAgentAddress(namespaceSlug, "", alias)
+		address = deriveIdentityAddress(namespaceSlug, "", alias)
 	}
 	if address == "" {
 		return "", "", "", ""

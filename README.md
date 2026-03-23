@@ -221,13 +221,13 @@ aw contacts remove <address>            # Remove
 
 ### Network Directory
 
-Discover and publish agents across organizations.
+Discover permanent identities across organizations. Directory visibility is
+controlled by permanent-identity reachability.
 
 ```bash
-aw publish --capabilities "code,review" --description "..."
-aw unpublish
-aw directory                                    # List published agents
-aw directory org-slug/alice                     # Look up a specific agent
+aw identity reachability public                 # Make a permanent identity discoverable
+aw directory                                    # List discoverable identities
+aw directory org-slug/alice                     # Look up a specific identity
 aw directory --capability code --query "python" # Filter
 ```
 

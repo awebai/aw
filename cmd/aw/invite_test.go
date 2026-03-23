@@ -18,7 +18,7 @@ func TestAwInviteCreateOmitsDefaultServerFlag(t *testing.T) {
 	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli":
+		case "/api/v1/spawn/create-invite":
 			if r.Method != http.MethodPost {
 				t.Fatalf("method=%s", r.Method)
 			}
@@ -98,7 +98,7 @@ func TestAwInviteCreateIncludesSelfHostedServerFlag(t *testing.T) {
 	var serverURL string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli":
+		case "/api/v1/spawn/create-invite":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"invite_id":    "inv-1",
 				"token":        "aw_inv_7f3k9x2m",
@@ -169,7 +169,7 @@ func TestAwInviteListAndRevoke(t *testing.T) {
 	var gotDeletePath string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/invites/cli":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/spawn/create-invite":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"invites": []map[string]any{
 					{
@@ -184,7 +184,7 @@ func TestAwInviteListAndRevoke(t *testing.T) {
 					},
 				},
 			})
-		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/invites/cli/inv-1":
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/spawn/create-invite/inv-1":
 			gotDeletePath = r.URL.Path
 			w.WriteHeader(http.StatusNoContent)
 		case r.URL.Path == "/v1/agents/heartbeat":
@@ -242,7 +242,7 @@ default_account: acct
 	if err != nil {
 		t.Fatalf("invite revoke failed: %v\n%s", err, string(revokeOut))
 	}
-	if gotDeletePath != "/api/v1/invites/cli/inv-1" {
+	if gotDeletePath != "/api/v1/spawn/create-invite/inv-1" {
 		t.Fatalf("delete path=%q", gotDeletePath)
 	}
 	if !strings.Contains(string(revokeOut), "Spawn invite 7f3k9x2m revoked") {
@@ -256,7 +256,7 @@ func TestAwInviteCreateMapsAccessFlag(t *testing.T) {
 	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli":
+		case "/api/v1/spawn/create-invite":
 			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 				t.Fatal(err)
 			}

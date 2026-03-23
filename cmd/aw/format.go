@@ -337,14 +337,14 @@ func formatChatExtendWait(v any) string {
 
 func formatAgentsList(v any) string {
 	out := v.(agentsListOutput)
-	resp := out.ListAgentsResponse
+	resp := out.ListIdentitiesResponse
 	var sb strings.Builder
 	if out.ProjectSlug != "" {
 		sb.WriteString(fmt.Sprintf("Project: %s\n\n", out.ProjectSlug))
 	}
 
-	var online, offline []awid.AgentView
-	for _, agent := range resp.Agents {
+	var online, offline []awid.IdentityView
+	for _, agent := range resp.Items() {
 		if agent.Online {
 			online = append(online, agent)
 		} else {
@@ -382,11 +382,11 @@ func formatAgentAccessMode(v any) string {
 	return sb.String()
 }
 
-func formatAgentPrivacy(v any) string {
+func formatIdentityReachability(v any) string {
 	m := v.(map[string]string)
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Identity: %s\n", m["alias"]))
-	sb.WriteString(fmt.Sprintf("Privacy: %s\n", m["privacy"]))
+	sb.WriteString(fmt.Sprintf("Reachability: %s\n", m["address_reachability"]))
 	return sb.String()
 }
 
@@ -401,8 +401,8 @@ func formatAgentPatch(v any) string {
 	if out.AccessMode != "" {
 		sb.WriteString(fmt.Sprintf("Access mode: %s\n", out.AccessMode))
 	}
-	if out.Privacy != "" {
-		sb.WriteString(fmt.Sprintf("Privacy:     %s\n", out.Privacy))
+	if out.AddressReachability != "" {
+		sb.WriteString(fmt.Sprintf("Reachability: %s\n", out.AddressReachability))
 	}
 	return sb.String()
 }
@@ -478,15 +478,14 @@ func formatProject(v any) string {
 
 // --- network ---
 
-func formatPublish(v any) string {
-	resp := v.(*awid.NetworkPublishResponse)
-	return fmt.Sprintf("Published %s\n", resp.Alias)
-}
-
 func formatDirectoryGet(v any) string {
 	resp := v.(*awid.NetworkDirectoryAgent)
+	handle := resp.Alias
+	if resp.Name != "" {
+		handle = resp.Name
+	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Agent:        %s/%s\n", resp.OrgSlug, resp.Alias))
+	sb.WriteString(fmt.Sprintf("Identity:     %s/%s\n", resp.OrgSlug, handle))
 	if resp.Description != "" {
 		sb.WriteString(fmt.Sprintf("Description:  %s\n", resp.Description))
 	}
@@ -499,15 +498,19 @@ func formatDirectoryGet(v any) string {
 func formatDirectorySearch(v any) string {
 	resp := v.(*awid.NetworkDirectoryResponse)
 	if len(resp.Agents) == 0 {
-		return "No agents found.\n"
+		return "No identities found.\n"
 	}
 	var sb strings.Builder
 	for _, a := range resp.Agents {
+		handle := a.Alias
+		if a.Name != "" {
+			handle = a.Name
+		}
 		desc := ""
 		if a.Description != "" {
 			desc = " — " + a.Description
 		}
-		sb.WriteString(fmt.Sprintf("- %s/%s%s\n", a.OrgSlug, a.Alias, desc))
+		sb.WriteString(fmt.Sprintf("- %s/%s%s\n", a.OrgSlug, handle, desc))
 	}
 	return sb.String()
 }

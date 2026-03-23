@@ -309,7 +309,7 @@ func TestAwIdentityCommandSurface(t *testing.T) {
 		"rotate-key",
 		"log",
 		"access-mode",
-		"privacy",
+		"reachability",
 		"delete",
 	} {
 		if !strings.Contains(identityText, want) {
@@ -665,14 +665,33 @@ default_account: acct
 	}
 }
 
-func TestAwInitRetriesWhenSuggestedAliasAlreadyExists(t *testing.T) {
+func TestAwProjectCreateUsesSuggestedAliasWhenNotExplicit(t *testing.T) {
 	t.Parallel()
 
-	var initCalls int
+	var createCalls int
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/bootstrap/headless-agent":
-			http.NotFound(w, r)
+		case "/api/v1/create-project":
+			createCalls++
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if payload["alias"] != "alice" {
+				t.Fatalf("alias=%v", payload["alias"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":         "ok",
+				"created_at":     "now",
+				"project_id":     "proj-1",
+				"project_slug":   "demo",
+				"namespace_slug": "demo",
+				"identity_id":    "identity-alice",
+				"alias":          "alice",
+				"api_key":        "aw_sk_alice",
+				"created":        true,
+			})
+			return
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_slug": "demo",
@@ -680,53 +699,6 @@ func TestAwInitRetriesWhenSuggestedAliasAlreadyExists(t *testing.T) {
 				"name_prefix":  "alice",
 			})
 			return
-		case "/v1/init":
-			initCalls++
-			var payload map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				t.Fatalf("decode: %v", err)
-			}
-
-			switch initCalls {
-			case 1:
-				// First call: unauthenticated (HEADLESS fallback from 404)
-				if payload["alias"] != "alice" {
-					t.Fatalf("first alias=%v", payload["alias"])
-				}
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"status":       "ok",
-					"created_at":   "now",
-					"project_id":   "proj-1",
-					"project_slug": "demo",
-					"agent_id":     "agent-alice",
-					"alias":        "alice",
-					"api_key":      "aw_sk_alice",
-					"created":      false,
-				})
-				return
-			case 2:
-				// Retry: authenticated with aw_sk_alice (HEADLESS→PROJECT_KEY transition)
-				auth := r.Header.Get("Authorization")
-				if auth != "Bearer aw_sk_alice" {
-					t.Fatalf("retry should use returned key, got auth=%q", auth)
-				}
-				if _, ok := payload["alias"]; ok {
-					t.Fatalf("expected alias omitted on retry, got %v", payload["alias"])
-				}
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"status":       "ok",
-					"created_at":   "now",
-					"project_id":   "proj-1",
-					"project_slug": "demo",
-					"agent_id":     "agent-bob",
-					"alias":        "bob",
-					"api_key":      "aw_sk_bob",
-					"created":      true,
-				})
-				return
-			default:
-				t.Fatalf("unexpected init call %d", initCalls)
-			}
 		default:
 			t.Fatalf("path=%s", r.URL.Path)
 		}
@@ -768,11 +740,11 @@ func TestAwInitRetriesWhenSuggestedAliasAlreadyExists(t *testing.T) {
 	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
-	if got["alias"] != "bob" {
+	if got["alias"] != "alice" {
 		t.Fatalf("alias=%v", got["alias"])
 	}
-	if initCalls != 2 {
-		t.Fatalf("initCalls=%d", initCalls)
+	if createCalls != 1 {
+		t.Fatalf("createCalls=%d", createCalls)
 	}
 }
 
@@ -1363,8 +1335,6 @@ func TestAwInitWritesConfig(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/bootstrap/headless-agent":
-			http.NotFound(w, r)
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_slug": "demo",
@@ -1372,13 +1342,14 @@ func TestAwInitWritesConfig(t *testing.T) {
 				"name_prefix":  "alice",
 			})
 			return
-		case "/v1/init":
+		case "/v1/workspaces/init":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":       "ok",
 				"created_at":   "now",
 				"project_id":   "proj-1",
 				"project_slug": "demo",
-				"agent_id":     "agent-alice",
+				"namespace_slug": "demo",
+				"identity_id":  "identity-alice",
 				"alias":        "alice",
 				"api_key":      "aw_sk_alice",
 				"created":      true,
@@ -1408,10 +1379,11 @@ func TestAwInitWritesConfig(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "project", "create", "--project", "demo", "--server-name", "local", "--server-url", server.URL, "--account", "acct", "--print-exports=false", "--write-context=false", "--json")
+	run := exec.CommandContext(ctx, bin, "init", "--alias", "alice", "--server-name", "local", "--server-url", server.URL, "--account", "acct", "--print-exports=false", "--write-context=false", "--json")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_API_KEY=aw_sk_project_test",
 	)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1462,7 +1434,7 @@ func TestAwInitWritesConfig(t *testing.T) {
 	if acct["namespace_slug"] != "demo" {
 		t.Fatalf("accounts.acct.namespace_slug=%v", acct["namespace_slug"])
 	}
-	if acct["agent_id"] != "agent-alice" {
+	if acct["agent_id"] != "identity-alice" {
 		t.Fatalf("accounts.acct.agent_id=%v", acct["agent_id"])
 	}
 	if acct["agent_alias"] != "alice" {
@@ -1479,21 +1451,18 @@ func TestAwInitStoresFullDomainAddress(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/bootstrap/headless-agent":
-			http.NotFound(w, r)
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_slug": "myteam",
-				"project_id":   nil,
 				"name_prefix":  "deploy-bot",
 			})
-		case "/v1/init":
+		case "/api/v1/create-project":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":         "ok",
 				"created_at":     "now",
 				"project_id":     "proj-1",
 				"project_slug":   "myteam",
-				"agent_id":       "agent-1",
+				"identity_id":    "identity-1",
 				"alias":          "deploy-bot",
 				"api_key":        "aw_sk_test",
 				"namespace_slug": "myteam",
@@ -2266,7 +2235,7 @@ default_account: acct
 	}
 }
 
-func TestAwAgentPrivacyGet(t *testing.T) {
+func TestAwIdentityReachabilityGet(t *testing.T) {
 	t.Parallel()
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2275,17 +2244,25 @@ func TestAwAgentPrivacyGet(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id": "proj-1",
 				"agent_id":   "agent-1",
+				"namespace_slug": "demo",
 				"alias":      "alice",
+				"address":    "demo/alice",
+			})
+		case "/v1/agents/resolve/demo/alice":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"address":    "demo/alice",
+				"lifetime":   "persistent",
+				"custody":    "self",
 			})
 		case "/v1/agents":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id": "proj-1",
-				"agents": []map[string]any{
+				"identities": []map[string]any{
 					{
-						"agent_id": "agent-1",
-						"alias":    "alice",
-						"online":   true,
-						"privacy":  "private",
+						"agent_id":             "agent-1",
+						"alias":                "alice",
+						"online":               true,
+						"address_reachability": "private",
 					},
 				},
 			})
@@ -2327,7 +2304,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "identity", "privacy", "--json")
+	run := exec.CommandContext(ctx, bin, "identity", "reachability", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -2346,12 +2323,12 @@ default_account: acct
 	if got["agent_id"] != "agent-1" {
 		t.Fatalf("agent_id=%v", got["agent_id"])
 	}
-	if got["privacy"] != "private" {
-		t.Fatalf("privacy=%v", got["privacy"])
+	if got["address_reachability"] != "private" {
+		t.Fatalf("address_reachability=%v", got["address_reachability"])
 	}
 }
 
-func TestAwAgentPrivacySet(t *testing.T) {
+func TestAwIdentityReachabilitySet(t *testing.T) {
 	t.Parallel()
 
 	var patchBody map[string]any
@@ -2362,7 +2339,15 @@ func TestAwAgentPrivacySet(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id": "proj-1",
 				"agent_id":   "agent-1",
+				"namespace_slug": "demo",
 				"alias":      "alice",
+				"address":    "demo/alice",
+			})
+		case r.URL.Path == "/v1/agents/resolve/demo/alice":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"address":    "demo/alice",
+				"lifetime":   "persistent",
+				"custody":    "self",
 			})
 		case strings.HasPrefix(r.URL.Path, "/v1/agents/") && r.Method == http.MethodPatch:
 			patchPath = r.URL.Path
@@ -2370,8 +2355,8 @@ func TestAwAgentPrivacySet(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"agent_id": "agent-1",
-				"privacy":  patchBody["privacy"],
+				"agent_id":             "agent-1",
+				"address_reachability": patchBody["address_reachability"],
 			})
 		case r.URL.Path == "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -2411,7 +2396,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "identity", "privacy", "private", "--json")
+	run := exec.CommandContext(ctx, bin, "identity", "reachability", "private", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -2430,18 +2415,18 @@ default_account: acct
 	if got["agent_id"] != "agent-1" {
 		t.Fatalf("agent_id=%v", got["agent_id"])
 	}
-	if got["privacy"] != "private" {
-		t.Fatalf("privacy=%v", got["privacy"])
+	if got["address_reachability"] != "private" {
+		t.Fatalf("address_reachability=%v", got["address_reachability"])
 	}
 	if patchPath != "/v1/agents/agent-1" {
 		t.Fatalf("patch path=%s", patchPath)
 	}
-	if patchBody["privacy"] != "private" {
-		t.Fatalf("patch privacy=%v", patchBody["privacy"])
+	if patchBody["address_reachability"] != "private" {
+		t.Fatalf("patch address_reachability=%v", patchBody["address_reachability"])
 	}
 	// Verify access_mode is NOT sent (omitempty should suppress it).
 	if _, hasAccessMode := patchBody["access_mode"]; hasAccessMode {
-		t.Fatalf("access_mode should not be in patch body when only setting privacy, got: %v", patchBody)
+		t.Fatalf("access_mode should not be in patch body when only setting reachability, got: %v", patchBody)
 	}
 }
 
@@ -2535,18 +2520,18 @@ default_account: acct
 func TestAwInitProjectKeyRoutesToOSSInit(t *testing.T) {
 	t.Parallel()
 
-	// aw_sk_ keys from AWEB_API_KEY should route through /v1/init (OSS path),
-	// not /api/v1/agents/bootstrap (cloud path).
+	// aw_sk_ keys from AWEB_API_KEY should route through /v1/workspaces/init.
 	var initAuth string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/init":
+		case "/v1/workspaces/init":
 			initAuth = r.Header.Get("Authorization")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":       "ok",
 				"project_id":   "proj-1",
 				"project_slug": "live-publication-project",
-				"agent_id":     "agent-new",
+				"namespace_slug": "livepub",
+				"identity_id":  "identity-new",
 				"alias":        "coordinator",
 				"api_key":      "aw_sk_new",
 				"created":      true,
@@ -2556,8 +2541,6 @@ func TestAwInitProjectKeyRoutesToOSSInit(t *testing.T) {
 			})
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "coordinator", "roles": []string{}})
-		case "/api/v1/agents/bootstrap":
-			t.Fatal("aw_sk_ key should not hit the legacy hosted bootstrap endpoint")
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
@@ -2638,13 +2621,13 @@ func TestAwInitProjectKeyRequiresExplicitRoleInNonTTYRepo(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "coordinator", "roles": []string{"coordinator", "developer"}})
-		case "/v1/init":
+		case "/v1/workspaces/init":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":         "ok",
 				"project_id":     "proj-1",
 				"project_slug":   "demo",
 				"namespace_slug": "demo",
-				"agent_id":       "agent-new",
+				"identity_id":    "identity-new",
 				"alias":          "coordinator",
 				"api_key":        "aw_sk_new",
 				"created":        true,
@@ -2710,7 +2693,7 @@ func TestAwInitProjectKeyPermanentRequestsPersistentIdentity(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "Alice", "roles": []string{}})
-		case "/v1/init":
+		case "/v1/workspaces/init":
 			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 				t.Fatal(err)
 			}
@@ -2720,8 +2703,8 @@ func TestAwInitProjectKeyPermanentRequestsPersistentIdentity(t *testing.T) {
 				"project_slug":   "default",
 				"namespace_slug": "myteam.aweb.ai",
 				"namespace":      "myteam.aweb.ai",
-				"agent_id":       "agent-new",
-				"alias":          "Alice",
+				"identity_id":    "identity-new",
+				"name":           "Alice",
 				"address":        "myteam.aweb.ai/Alice",
 				"api_key":        "aw_sk_new",
 				"created":        true,
@@ -2779,8 +2762,8 @@ func TestAwInitProjectKeyPermanentRequestsPersistentIdentity(t *testing.T) {
 	if gotBody["lifetime"] != "persistent" {
 		t.Fatalf("lifetime=%v", gotBody["lifetime"])
 	}
-	if gotBody["alias"] != "Alice" {
-		t.Fatalf("alias=%v", gotBody["alias"])
+	if gotBody["name"] != "Alice" {
+		t.Fatalf("name=%v", gotBody["name"])
 	}
 
 	var resp map[string]any
@@ -3119,6 +3102,7 @@ func TestAwConnect(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id": "proj-123",
 				"agent_id":   "agent-1",
+				"namespace_slug": "myco",
 				"alias":      "alice",
 				"human_name": "Alice",
 				"agent_type": "agent",
@@ -3260,6 +3244,7 @@ func TestAwConnectPreservesExistingIdentity(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id": "proj-123",
 				"agent_id":   "agent-1",
+				"namespace_slug": "myco",
 				"alias":      "alice",
 				"agent_type": "agent",
 			})
@@ -3370,6 +3355,7 @@ func TestAwConnectDoesNotOverrideExistingContextDefaultWithoutSetDefault(t *test
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id": "proj-123",
 				"agent_id":   "agent-1",
+				"namespace_slug": "myco",
 				"alias":      "alice",
 				"agent_type": "agent",
 			})
@@ -3688,15 +3674,11 @@ func TestAwConnectUsesServerStableID(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/auth/introspect":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id": "proj-123",
-				"agent_id":   "agent-1",
-				"alias":      "alice",
-				"agent_type": "agent",
-			})
-		case "/v1/projects/current":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id": "proj-123",
-				"slug":       "myco",
+				"project_id":     "proj-123",
+				"agent_id":       "agent-1",
+				"namespace_slug": "myco",
+				"alias":          "alice",
+				"agent_type":     "agent",
 			})
 		case "/v1/agents/resolve/myco/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -4058,15 +4040,13 @@ func TestInitDefaultServerUsedWhenNoURLProvided(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "alice", "roles": []string{}})
-		case "/api/v1/bootstrap/headless-agent":
-			http.NotFound(w, r)
-		case "/v1/init":
+		case "/api/v1/create-project":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":         "ok",
 				"created_at":     "2026-03-16T10:00:00Z",
 				"project_id":     "proj-1",
 				"project_slug":   "demo",
-				"agent_id":       "agent-1",
+				"identity_id":    "identity-1",
 				"alias":          "alice",
 				"api_key":        "aw_sk_test",
 				"namespace_slug": "demo",
@@ -4119,19 +4099,17 @@ func TestInitDefaultServerUsedWhenNoURLProvided(t *testing.T) {
 func TestInitWorkspaceAttachNonFatal(t *testing.T) {
 	t.Parallel()
 
-	// Server handles /v1/init but returns 404 for /v1/workspaces/register.
+	// Server handles create-project but returns 404 for /v1/workspaces/register.
 	// Init should succeed with a warning, not fail.
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/bootstrap/headless-agent":
-			http.NotFound(w, r)
-		case "/v1/init":
+		case "/api/v1/create-project":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":         "ok",
 				"created_at":     "2026-03-16T10:00:00Z",
 				"project_id":     "proj-1",
 				"project_slug":   "demo",
-				"agent_id":       "agent-1",
+				"identity_id":    "identity-1",
 				"alias":          "alice",
 				"api_key":        "aw_sk_test",
 				"namespace_slug": "demo",

@@ -110,7 +110,7 @@ var chatSendAndWaitCmd = &cobra.Command{
 			return networkError(err, args[0])
 		}
 		logsDir := defaultLogsDir()
-		myAddr := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
+		myAddr := deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
 		// Log the sent message.
 		appendCommLog(logsDir, sel.AccountName, &CommLogEntry{
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
@@ -158,7 +158,7 @@ var chatSendAndLeaveCmd = &cobra.Command{
 			Dir:       "send",
 			Channel:   "chat",
 			SessionID: result.SessionID,
-			From:      deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias),
+			From:      deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias),
 			To:        args[0],
 			Body:      args[1],
 		})
@@ -215,7 +215,7 @@ var chatOpenCmd = &cobra.Command{
 			return err
 		}
 		logsDir := defaultLogsDir()
-		myAddr := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
+		myAddr := deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
 		for _, m := range result.Messages {
 			logChatEvent(logsDir, sel.AccountName, myAddr, m)
 		}
@@ -272,7 +272,7 @@ var chatExtendWaitCmd = &cobra.Command{
 			Dir:       "send",
 			Channel:   "chat",
 			SessionID: result.SessionID,
-			From:      deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias),
+			From:      deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias),
 			To:        result.TargetAgent,
 			Body:      args[1],
 		})
@@ -308,7 +308,7 @@ var chatListenCmd = &cobra.Command{
 			return err
 		}
 		logsDir := defaultLogsDir()
-		myAddr := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
+		myAddr := deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
 		logChatEvents(logsDir, sel.AccountName, myAddr, result.Events)
 		printOutput(result, formatChatSend)
 		return nil
@@ -334,7 +334,7 @@ var chatShowPendingCmd = &cobra.Command{
 			return err
 		}
 		logsDir := defaultLogsDir()
-		myAddr := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
+		myAddr := deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
 		logChatEvents(logsDir, sel.AccountName, myAddr, result.Events)
 		printOutput(result, formatChatSend)
 		return nil

@@ -78,8 +78,6 @@ func init() {
 	mailCmd.GroupID = groupNetwork
 	contactsCmd.GroupID = groupNetwork
 	directoryCmd.GroupID = groupNetwork
-	publishCmd.GroupID = groupNetwork
-	unpublishCmd.GroupID = groupNetwork
 	heartbeatCmd.GroupID = groupNetwork
 	eventsCmd.GroupID = groupNetwork
 	controlCmd.GroupID = groupNetwork

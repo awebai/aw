@@ -96,7 +96,7 @@ func deleteEphemeralIdentityByWorkspace(ctx context.Context, client *aweb.Client
 		return false, fmt.Errorf("missing namespace/project slug or alias for gone workspace %s", strings.TrimSpace(ws.WorkspaceID))
 	}
 
-	address := deriveAgentAddress(namespaceSlug, "", alias)
+	address := deriveIdentityAddress(namespaceSlug, "", alias)
 	resolver := &awid.ServerResolver{Client: client.Client}
 	identity, err := resolver.Resolve(ctx, address)
 	if err != nil {
@@ -136,7 +136,7 @@ func resolveSelectionIdentityState(ctx context.Context, client *aweb.Client, sel
 	}
 	address := strings.TrimSpace(intro.Address)
 	if address == "" && namespaceSlug != "" && alias != "" {
-		address = deriveAgentAddress(namespaceSlug, "", alias)
+		address = deriveIdentityAddress(namespaceSlug, "", alias)
 	}
 	if address == "" {
 		return "", "", fmt.Errorf("could not determine the current identity address from server state")

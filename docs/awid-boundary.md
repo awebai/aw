@@ -50,9 +50,10 @@ implementation of aw-9sf.2.
 | `util.go` | URL escaping, UUID generation | — |
 | `alias_prefix.go` | Alias prefix suggestion | `GET /v1/agents/suggest-alias-prefix` |
 | `auth.go` | Authentication utilities | `GET /v1/auth/introspect` |
-| `init.go` | Workspace identity initialization | `POST /v1/init` |
-| `headless_bootstrap.go` | Project creation bootstrap | `POST /api/v1/bootstrap/headless-agent` |
-| `agents.go` | Agent listing/patching | `GET /v1/agents`, `PATCH /v1/agents/{id}` |
+| `init.go` | Workspace identity initialization | `POST /v1/workspaces/init` |
+| `create_project.go` | Project creation bootstrap | `POST /api/v1/create-project` |
+| `spawn.go` | Spawn invite create/list/revoke/accept | `POST/GET/DELETE /api/v1/spawn/*` |
+| `agents.go` | Identity listing/patching | `GET /v1/agents`, `PATCH /v1/agents/{id}` |
 | `mail.go` | Local project mail | `POST /v1/messages` |
 | `chat.go` | Chat sessions/messages | `GET/POST /v1/chat/*` |
 | `network.go` | Network directory | `GET /v1/network/directory` |
@@ -172,8 +173,8 @@ delegate to the awid library.
 | `connect.go` | `aw connect` |
 | `mail.go` | `aw mail send`, `aw mail inbox` |
 | `chat.go` | `aw chat *` |
-| `network.go` | `aw network *` |
-| `agents.go` | `aw identities`, `aw identity access-mode`, `aw identity privacy` |
+| `network.go` | `aw directory` |
+| `agents.go` | `aw identities`, `aw identity access-mode`, `aw identity reachability`, `aw identity delete` |
 | `contacts.go` | `aw contacts` |
 | `did.go` | `aw identity log`, `aw identity rotate-key` |
 | `heartbeat.go` | `aw heartbeat` |

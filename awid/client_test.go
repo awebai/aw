@@ -562,7 +562,7 @@ func TestInitRequestIncludesIdentityFields(t *testing.T) {
 			"status":       "ok",
 			"project_id":   "proj-1",
 			"project_slug": "default",
-			"agent_id":     "agent-1",
+			"identity_id":  "identity-1",
 			"alias":        "alice",
 			"api_key":      "aw_sk_test",
 			"created":      true,
@@ -578,7 +578,7 @@ func TestInitRequestIncludesIdentityFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	alias := "alice"
-	resp, err := c.Init(context.Background(), &InitRequest{
+	resp, err := c.InitWorkspace(context.Background(), &WorkspaceInitRequest{
 		ProjectSlug: "default",
 		Alias:       &alias,
 		DID:         "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
@@ -784,7 +784,7 @@ func TestDeregisterAgent(t *testing.T) {
 	}
 }
 
-func TestPatchAgentAccessMode(t *testing.T) {
+func TestPatchIdentityAccessMode(t *testing.T) {
 	t.Parallel()
 
 	var gotMethod, gotPath, gotContentType string
@@ -807,7 +807,7 @@ func TestPatchAgentAccessMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := c.PatchAgent(context.Background(), "agent-1", &PatchAgentRequest{
+	resp, err := c.PatchIdentity(context.Background(), "agent-1", &PatchIdentityRequest{
 		AccessMode: "open",
 	})
 	if err != nil {

@@ -20,7 +20,7 @@ var (
 )
 
 type inviteCreateOutput struct {
-	*awid.InviteCreateResponse
+	*awid.SpawnInviteCreateResponse
 	InitCommand string `json:"init_command"`
 }
 
@@ -58,7 +58,7 @@ var spawnCreateInviteCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := client.InviteCreate(ctx, &awid.InviteCreateRequest{
+		resp, err := client.SpawnCreateInvite(ctx, &awid.SpawnInviteCreateRequest{
 			AliasHint:        strings.TrimSpace(inviteAlias),
 			AccessMode:       accessMode,
 			MaxUses:          inviteUses,
@@ -69,8 +69,8 @@ var spawnCreateInviteCmd = &cobra.Command{
 		}
 
 		out := inviteCreateOutput{
-			InviteCreateResponse: resp,
-			InitCommand:          buildInviteInitCommand(resp.ServerURL, resp.Token, resp.AliasHint),
+			SpawnInviteCreateResponse: resp,
+			InitCommand:               buildInviteInitCommand(resp.ServerURL, resp.Token, resp.AliasHint),
 		}
 		printOutput(out, formatInviteCreate)
 		return nil
@@ -88,7 +88,7 @@ var spawnListInvitesCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := client.InviteList(ctx)
+		resp, err := client.ListSpawnInvites(ctx)
 		if err != nil {
 			return err
 		}
@@ -114,7 +114,7 @@ var spawnRevokeInviteCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		list, err := client.InviteList(ctx)
+		list, err := client.ListSpawnInvites(ctx)
 		if err != nil {
 			return err
 		}
@@ -122,7 +122,7 @@ var spawnRevokeInviteCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := client.InviteRevoke(ctx, match.InviteID); err != nil {
+		if err := client.RevokeSpawnInvite(ctx, match.InviteID); err != nil {
 			return err
 		}
 		printOutput(inviteRevokeOutput{
@@ -150,6 +150,7 @@ func init() {
 	spawnAcceptInviteCmd.Flags().StringVar(&initServerURL, "server", "", "Base URL for the aweb server (alias for --server-url)")
 	spawnAcceptInviteCmd.Flags().StringVar(&initAlias, "alias", "", "Ephemeral identity routing alias (optional; default: invite or server-suggested)")
 	spawnAcceptInviteCmd.Flags().StringVar(&initName, "name", "", "Permanent identity name (required with --permanent)")
+	spawnAcceptInviteCmd.Flags().StringVar(&initReachability, "reachability", "", "Permanent address reachability (private|org-visible|contacts-only|public)")
 	spawnAcceptInviteCmd.Flags().BoolVar(&initInjectDocs, "inject-docs", false, "Inject aw coordination instructions into CLAUDE.md and AGENTS.md")
 	spawnAcceptInviteCmd.Flags().BoolVar(&initSetupHooks, "setup-hooks", false, "Set up Claude Code PostToolUse hook for aw notify")
 	spawnAcceptInviteCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
@@ -244,7 +245,7 @@ func formatInviteCreate(v any) string {
 }
 
 func formatInviteList(v any) string {
-	resp := v.(*awid.InviteListResponse)
+	resp := v.(*awid.SpawnInviteListResponse)
 	if len(resp.Invites) == 0 {
 		return "No spawn invites.\n"
 	}
@@ -279,8 +280,8 @@ func formatInviteRevoke(v any) string {
 	return fmt.Sprintf("Spawn invite %s revoked\n", out.TokenPrefix)
 }
 
-func findInviteByPrefix(invites []awid.InviteListItem, prefix string) (*awid.InviteListItem, error) {
-	var matches []awid.InviteListItem
+func findInviteByPrefix(invites []awid.SpawnInviteListItem, prefix string) (*awid.SpawnInviteListItem, error) {
+	var matches []awid.SpawnInviteListItem
 	for i := range invites {
 		if strings.HasPrefix(invites[i].TokenPrefix, prefix) {
 			matches = append(matches, invites[i])
@@ -321,11 +322,12 @@ func runSpawnAcceptInvite(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	handle := strings.TrimSpace(initName)
+	alias := ""
+	name := strings.TrimSpace(initName)
 	if !initPermanent {
-		handle = strings.TrimSpace(initAlias)
-		if handle == "" {
-			handle = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
+		alias = strings.TrimSpace(initAlias)
+		if alias == "" {
+			alias = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
 		}
 	}
 
@@ -334,8 +336,9 @@ func runSpawnAcceptInvite(cmd *cobra.Command, args []string) error {
 		WorkingDir:             workingDir,
 		BaseURL:                baseURL,
 		ServerName:             serverName,
-		IdentityHandle:         handle,
-		IdentityHandleExplicit: strings.TrimSpace(handle) != "",
+		IdentityAlias:          alias,
+		IdentityName:           name,
+		AddressReachability:    normalizeAddressReachability(strings.TrimSpace(initReachability)),
 		HumanName:              resolveHumanName(),
 		AgentType:              resolveAgentType(),
 		SaveConfig:             initSaveConfig,
@@ -362,7 +365,9 @@ func runSpawnAcceptInvite(cmd *cobra.Command, args []string) error {
 		fmt.Println("export AWEB_URL=" + result.ExportBaseURL)
 		fmt.Println("export AWEB_API_KEY=" + result.Response.APIKey)
 		fmt.Println("export AWEB_PROJECT=" + result.ExportNamespace)
-		fmt.Println("export AWEB_ALIAS=" + result.Response.Alias)
+		if result.Response.Alias != "" {
+			fmt.Println("export AWEB_ALIAS=" + result.Response.Alias)
+		}
 	}
 	repoRoot := resolveRepoRoot(opts.WorkingDir)
 	if initInjectDocs {

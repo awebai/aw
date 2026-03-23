@@ -208,9 +208,7 @@ func TestAwInitAutoAttachesRepoContext(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "alice", "roles": []string{}})
-		case "/api/v1/bootstrap/headless-agent":
-			http.NotFound(w, r)
-		case "/v1/init":
+		case "/v1/workspaces/init":
 			if r.Method != http.MethodPost {
 				t.Fatalf("method=%s", r.Method)
 			}
@@ -219,7 +217,7 @@ func TestAwInitAutoAttachesRepoContext(t *testing.T) {
 				"created_at":     "2026-03-10T10:00:00Z",
 				"project_id":     projectID,
 				"project_slug":   "demo",
-				"agent_id":       workspaceID,
+				"identity_id":    workspaceID,
 				"alias":          "alice",
 				"api_key":        "aw_sk_test",
 				"namespace_slug": "demo",
@@ -276,11 +274,12 @@ func TestAwInitAutoAttachesRepoContext(t *testing.T) {
 	initGitRepoWithOrigin(t, repo, origin)
 	buildAwBinary(t, ctx, bin)
 
-	run := exec.CommandContext(ctx, bin, "project", "create", "--project", "demo", "--alias", "alice", "--role", "developer")
+	run := exec.CommandContext(ctx, bin, "init", "--alias", "alice", "--role", "developer")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL="+server.URL,
+		"AWEB_API_KEY=aw_sk_project_test",
 		"AW_DID_REGISTRY_URL=http://127.0.0.1:1",
 	)
 	run.Dir = repo
@@ -1146,7 +1145,7 @@ func TestAwWorkspaceAddWorktreeCreatesSiblingWorktree(t *testing.T) {
 				"project_slug": "demo",
 				"name_prefix":  "bob",
 			})
-		case "/api/v1/invites/cli":
+		case "/api/v1/spawn/create-invite":
 			initAuth = r.Header.Get("Authorization")
 			srvURL := "http://" + r.Host
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1160,7 +1159,7 @@ func TestAwWorkspaceAddWorktreeCreatesSiblingWorktree(t *testing.T) {
 				"namespace":    "demo",
 				"server_url":   srvURL,
 			})
-		case "/api/v1/invites/cli/accept":
+		case "/api/v1/spawn/accept-invite":
 			srvURL := "http://" + r.Host
 			var req map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1170,12 +1169,10 @@ func TestAwWorkspaceAddWorktreeCreatesSiblingWorktree(t *testing.T) {
 				t.Fatalf("alias=%v", req["alias"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"org_id":       "org-1",
-				"org_slug":     "demo",
 				"project_id":   "proj-1",
 				"project_slug": "demo",
 				"namespace":    "demo",
-				"agent_id":     newID,
+				"identity_id":  newID,
 				"alias":        "bob",
 				"api_key":      "aw_sk_new",
 				"address":      "demo/bob",
@@ -1485,13 +1482,13 @@ func TestAwWorkspaceAddWorktreeExplicitAliasCreatesSiblingWorktree(t *testing.T)
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli":
+		case "/api/v1/spawn/create-invite":
 			srvURL := "http://" + r.Host
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"invite_id": "inv-1", "token": "aw_inv_carol", "token_prefix": "aw_inv_c",
 				"max_uses": 1, "expires_at": "2099-01-01T00:00:00Z", "namespace": "demo", "server_url": srvURL, "access_mode": "open",
 			})
-		case "/api/v1/invites/cli/accept":
+		case "/api/v1/spawn/accept-invite":
 			srvURL := "http://" + r.Host
 			var req map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&req)
@@ -1499,8 +1496,8 @@ func TestAwWorkspaceAddWorktreeExplicitAliasCreatesSiblingWorktree(t *testing.T)
 				t.Fatalf("alias=%v", req["alias"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"org_id": "org-1", "org_slug": "demo", "project_id": "proj-1", "project_slug": "demo",
-				"namespace": "demo", "agent_id": newID, "alias": "carol", "api_key": "aw_sk_new",
+				"project_id": "proj-1", "project_slug": "demo",
+				"namespace": "demo", "identity_id": newID, "alias": "carol", "api_key": "aw_sk_new",
 				"address": "demo/carol", "server_url": srvURL, "created": true,
 				"did": "did:key:z6Mktest", "custody": "self", "lifetime": "ephemeral", "access_mode": "open",
 			})
@@ -1621,7 +1618,7 @@ func TestAwWorkspaceAddWorktreeCleansUpOnInitFailure(t *testing.T) {
 					"developer": map[string]any{"title": "Developer"},
 				},
 			})
-		case "/api/v1/invites/cli":
+		case "/api/v1/spawn/create-invite":
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"error": map[string]any{
@@ -1748,7 +1745,7 @@ func TestAwWorkspaceAddWorktreeRetriesAliasTakenSuggestion(t *testing.T) {
 			default:
 				t.Fatalf("unexpected suggest call %d", suggestCalls)
 			}
-		case "/api/v1/invites/cli":
+		case "/api/v1/spawn/create-invite":
 			initCalls++
 			srvURL := "http://" + r.Host
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1756,7 +1753,7 @@ func TestAwWorkspaceAddWorktreeRetriesAliasTakenSuggestion(t *testing.T) {
 				"token_prefix": "aw_inv_t", "max_uses": 1, "expires_at": "2099-01-01T00:00:00Z",
 				"namespace": "demo", "server_url": srvURL, "access_mode": "open",
 			})
-		case "/api/v1/invites/cli/accept":
+		case "/api/v1/spawn/accept-invite":
 			var req map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			alias, _ := req["alias"].(string)
@@ -1773,8 +1770,8 @@ func TestAwWorkspaceAddWorktreeRetriesAliasTakenSuggestion(t *testing.T) {
 				})
 			case alias == "bob-3":
 				_ = json.NewEncoder(w).Encode(map[string]any{
-					"org_id": "org-1", "org_slug": "demo", "project_id": "proj-1", "project_slug": "demo",
-					"namespace": "demo", "agent_id": newID, "alias": "bob-3", "api_key": "aw_sk_new",
+					"project_id": "proj-1", "project_slug": "demo",
+					"namespace": "demo", "identity_id": newID, "alias": "bob-3", "api_key": "aw_sk_new",
 					"address": "demo/bob-3", "server_url": srvURL, "created": true,
 					"did": "did:key:z6Mktest", "custody": "self", "lifetime": "ephemeral", "access_mode": "open",
 				})

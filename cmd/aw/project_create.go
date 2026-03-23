@@ -19,6 +19,7 @@ func init() {
 	projectCreateCmd.Flags().StringVar(&initNamespaceName, "project-name", "", "Project display name (default: AWEB_PROJECT_NAME or project slug)")
 	projectCreateCmd.Flags().StringVar(&initAlias, "alias", "", "Ephemeral identity routing alias (optional; default: server-suggested)")
 	projectCreateCmd.Flags().StringVar(&initName, "name", "", "Permanent identity name (required with --permanent)")
+	projectCreateCmd.Flags().StringVar(&initReachability, "reachability", "", "Permanent address reachability (private|org-visible|contacts-only|public)")
 	projectCreateCmd.Flags().BoolVar(&initInjectDocs, "inject-docs", false, "Inject aw coordination instructions into CLAUDE.md and AGENTS.md")
 	projectCreateCmd.Flags().BoolVar(&initSetupHooks, "setup-hooks", false, "Set up Claude Code PostToolUse hook for aw notify")
 	projectCreateCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
@@ -53,7 +54,9 @@ func runProjectCreate(cmd *cobra.Command, args []string) error {
 		fmt.Println("export AWEB_URL=" + result.ExportBaseURL)
 		fmt.Println("export AWEB_API_KEY=" + result.Response.APIKey)
 		fmt.Println("export AWEB_PROJECT=" + result.ExportNamespace)
-		fmt.Println("export AWEB_ALIAS=" + result.Response.Alias)
+		if result.Response.Alias != "" {
+			fmt.Println("export AWEB_ALIAS=" + result.Response.Alias)
+		}
 	}
 	repoRoot := resolveRepoRoot(opts.WorkingDir)
 	if initInjectDocs {

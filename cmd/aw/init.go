@@ -33,6 +33,7 @@ var (
 	initNamespaceName string
 	initAlias         string
 	initName          string
+	initReachability  string
 	initInjectDocs    bool
 	initSetupHooks    bool
 	initHumanName     string
@@ -67,9 +68,9 @@ type initOptions struct {
 	ServerName                     string
 	NamespaceSlug                  string
 	NamespaceName                  string
-	IdentityHandle                 string
-	IdentityHandleExplicit         bool
-	RetrySuggestedHandleOnConflict bool
+	IdentityAlias                  string
+	IdentityName                   string
+	AddressReachability            string
 	HumanName                      string
 	AgentType                      string
 	SaveConfig                     bool
@@ -83,7 +84,7 @@ type initOptions struct {
 }
 
 type initResult struct {
-	Response        *awid.InitResponse
+	Response        *awid.BootstrapIdentityResponse
 	AccountName     string
 	ServerName      string
 	Role            string
@@ -99,6 +100,7 @@ func init() {
 	initCmd.Flags().StringVar(&initServerURL, "server", "", "Base URL for the aweb server (alias for --server-url)")
 	initCmd.Flags().StringVar(&initAlias, "alias", "", "Ephemeral identity routing alias (optional; default: server-suggested)")
 	initCmd.Flags().StringVar(&initName, "name", "", "Permanent identity name (required with --permanent)")
+	initCmd.Flags().StringVar(&initReachability, "reachability", "", "Permanent address reachability (private|org-visible|contacts-only|public)")
 	initCmd.Flags().BoolVar(&initInjectDocs, "inject-docs", false, "Inject aw coordination instructions into CLAUDE.md and AGENTS.md")
 	initCmd.Flags().BoolVar(&initSetupHooks, "setup-hooks", false, "Set up Claude Code PostToolUse hook for aw notify")
 	initCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
@@ -153,7 +155,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Println("export AWEB_URL=" + result.ExportBaseURL)
 		fmt.Println("export AWEB_API_KEY=" + result.Response.APIKey)
 		fmt.Println("export AWEB_PROJECT=" + result.ExportNamespace)
-		fmt.Println("export AWEB_ALIAS=" + result.Response.Alias)
+		if strings.TrimSpace(result.Response.Alias) != "" {
+			fmt.Println("export AWEB_ALIAS=" + result.Response.Alias)
+		}
 	}
 	repoRoot := resolveRepoRoot(opts.WorkingDir)
 	if initInjectDocs {
@@ -172,7 +176,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 // initNeedsFullInit returns true if the user passed flags that require the
 // full init flow, or if no .aw/context exists yet (first-time init).
 func initNeedsFullInit() bool {
-	if initServerURL != "" || initAlias != "" || initName != "" || initRole != "" || initPermanent {
+	if initServerURL != "" || initAlias != "" || initName != "" || initReachability != "" || initRole != "" || initPermanent {
 		return true
 	}
 	if strings.TrimSpace(os.Getenv("AWEB_API_KEY")) != "" {
@@ -256,29 +260,28 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 	humanName := resolveHumanName()
 	agentType := resolveAgentType()
 
-	// --- Alias ---
+	// --- Identity handle ---
 
-	handle := ""
-	handleExplicit := false
-	retrySuggestedHandleOnConflict := false
+	alias := ""
+	aliasExplicit := false
+	name := ""
 	if initPermanent {
-		handle = strings.TrimSpace(initName)
-		handleExplicit = true
+		name = strings.TrimSpace(initName)
 	} else {
-		handle = strings.TrimSpace(initAlias)
-		handleExplicit = handle != ""
-		if !handleExplicit {
-			handle = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
-			handleExplicit = handle != ""
+		alias = strings.TrimSpace(initAlias)
+		aliasExplicit = alias != ""
+		if !aliasExplicit {
+			alias = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
+			aliasExplicit = alias != ""
 		}
-		if !handleExplicit {
+		if !aliasExplicit {
 			if !isTTY() && flow == flowProjectKey {
 				return initOptions{}, usageError("--alias is required when initializing an existing project workspace non-interactively")
 			}
 			if suggestion != nil && strings.TrimSpace(suggestion.NamePrefix) != "" {
-				handle = strings.TrimSpace(suggestion.NamePrefix)
+				alias = strings.TrimSpace(suggestion.NamePrefix)
 			} else {
-				handle = "alice"
+				alias = "alice"
 			}
 		}
 	}
@@ -290,20 +293,16 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 	// --- TTY prompts for alias (after role, so prompts are in logical order) ---
 
 	if !initPermanent {
-		handleWasDefaultSuggestion := !handleExplicit
-		if isTTY() && !handleExplicit {
-			v, err := promptString("Alias", handle)
+		if isTTY() && !aliasExplicit {
+			v, err := promptString("Alias", alias)
 			if err != nil {
 				return initOptions{}, err
 			}
-			handleWasDefaultSuggestion = v == handle
-			handle = strings.TrimSpace(v)
-			if handle == "" {
-				handle = "alice"
-				handleWasDefaultSuggestion = true
+			alias = strings.TrimSpace(v)
+			if alias == "" {
+				alias = "alice"
 			}
 		}
-		retrySuggestedHandleOnConflict = handleWasDefaultSuggestion && !handleExplicit
 	}
 
 	return initOptions{
@@ -313,9 +312,9 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 		ServerName:                     serverName,
 		NamespaceSlug:                  nsSlug,
 		NamespaceName:                  nsName,
-		IdentityHandle:                 handle,
-		IdentityHandleExplicit:         handleExplicit,
-		RetrySuggestedHandleOnConflict: retrySuggestedHandleOnConflict,
+		IdentityAlias:                  alias,
+		IdentityName:                   name,
+		AddressReachability:            normalizeAddressReachability(strings.TrimSpace(initReachability)),
 		HumanName:                      humanName,
 		AgentType:                      agentType,
 		SaveConfig:                     initSaveConfig,
@@ -331,6 +330,10 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 func validateInitIdentityFlags() error {
 	alias := strings.TrimSpace(initAlias)
 	name := strings.TrimSpace(initName)
+	reachability := normalizeAddressReachability(strings.TrimSpace(initReachability))
+	if initReachability != "" && reachability == "" {
+		return usageError("invalid --reachability (use private|org-visible|contacts-only|public)")
+	}
 	if initPermanent {
 		if alias != "" {
 			return usageError("--alias cannot be used with --permanent; use --name")
@@ -343,7 +346,27 @@ func validateInitIdentityFlags() error {
 	if name != "" {
 		return usageError("--name can only be used with --permanent")
 	}
+	if reachability != "" {
+		return usageError("--reachability can only be used with --permanent")
+	}
 	return nil
+}
+
+func normalizeAddressReachability(raw string) string {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "":
+		return ""
+	case "private":
+		return "private"
+	case "org-visible":
+		return "org-visible"
+	case "contacts-only":
+		return "contacts-only"
+	case "public":
+		return "public"
+	default:
+		return ""
+	}
 }
 
 func resolveNamespaceSlug() string {
@@ -443,25 +466,10 @@ func executeInit(opts initOptions) (*initResult, error) {
 		lifetime = resolveInitLifetime(initPermanent)
 	}
 
-	req := &awid.InitRequest{
-		ProjectSlug: opts.NamespaceSlug,
-		ProjectName: namespaceName,
-		HumanName:   opts.HumanName,
-		AgentType:   opts.AgentType,
-		DID:         did,
-		PublicKey:   pubKeyB64,
-		Custody:     awid.CustodySelf,
-		Lifetime:    lifetime,
-	}
-	if strings.TrimSpace(opts.IdentityHandle) != "" {
-		handle := strings.TrimSpace(opts.IdentityHandle)
-		req.Alias = &handle
-	}
-
-	var resp *awid.InitResponse
+	var resp *awid.BootstrapIdentityResponse
 	switch opts.Flow {
 	case flowInvite:
-		resp, err = acceptInviteViaCloud(ctx, opts.BaseURL, opts.InviteToken, opts.IdentityHandle, opts.HumanName, opts.AgentType, did, pubKeyB64, lifetime)
+		resp, err = acceptInviteViaCloud(ctx, opts.BaseURL, opts.InviteToken, opts.IdentityAlias, opts.IdentityName, opts.AddressReachability, opts.HumanName, opts.AgentType, did, pubKeyB64, lifetime)
 
 	case flowProjectKey:
 		var client *aweb.Client
@@ -469,7 +477,26 @@ func executeInit(opts initOptions) (*initResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		resp, err = client.Init(ctx, req)
+		req := &awid.WorkspaceInitRequest{
+			ProjectSlug:         opts.NamespaceSlug,
+			ProjectName:         namespaceName,
+			HumanName:           opts.HumanName,
+			AgentType:           opts.AgentType,
+			DID:                 did,
+			PublicKey:           pubKeyB64,
+			Custody:             awid.CustodySelf,
+			Lifetime:            lifetime,
+			AddressReachability: opts.AddressReachability,
+		}
+		if strings.TrimSpace(opts.IdentityAlias) != "" {
+			alias := strings.TrimSpace(opts.IdentityAlias)
+			req.Alias = &alias
+		}
+		if strings.TrimSpace(opts.IdentityName) != "" {
+			name := strings.TrimSpace(opts.IdentityName)
+			req.Name = &name
+		}
+		resp, err = client.InitWorkspace(ctx, req)
 
 	case flowHeadless:
 		var client *aweb.Client
@@ -477,20 +504,27 @@ func executeInit(opts initOptions) (*initResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		resp, err = tryHeadlessOrInit(ctx, client, req, opts.BaseURL)
-		// On alias conflict, transition HEADLESS → PROJECT_KEY: use the
-		// returned aw_sk_ key for authenticated retry via /v1/init.
-		if err == nil && opts.RetrySuggestedHandleOnConflict && !resp.Created {
-			if strings.TrimSpace(resp.APIKey) != "" {
-				retryClient, retryErr := aweb.NewWithAPIKey(opts.BaseURL, resp.APIKey)
-				if retryErr != nil {
-					err = retryErr
-				} else {
-					req.Alias = nil
-					resp, err = retryClient.Init(ctx, req)
-				}
-			}
+		createReq := &awid.CreateProjectRequest{
+			ProjectSlug:         opts.NamespaceSlug,
+			ProjectName:         namespaceName,
+			NamespaceSlug:       opts.NamespaceSlug,
+			HumanName:           opts.HumanName,
+			AgentType:           opts.AgentType,
+			DID:                 did,
+			PublicKey:           pubKeyB64,
+			Custody:             awid.CustodySelf,
+			Lifetime:            lifetime,
+			AddressReachability: opts.AddressReachability,
 		}
+		if strings.TrimSpace(opts.IdentityAlias) != "" {
+			alias := strings.TrimSpace(opts.IdentityAlias)
+			createReq.Alias = &alias
+		}
+		if strings.TrimSpace(opts.IdentityName) != "" {
+			name := strings.TrimSpace(opts.IdentityName)
+			createReq.Name = &name
+		}
+		resp, err = client.CreateProject(ctx, createReq)
 	}
 	if err != nil {
 		return nil, err
@@ -507,14 +541,15 @@ func executeInit(opts initOptions) (*initResult, error) {
 		namespaceSlug = resp.Namespace
 	}
 
+	handle := strings.TrimSpace(resp.IdentityHandle())
 	accountName := strings.TrimSpace(opts.AccountName)
 	if accountName == "" {
-		accountName = deriveAccountName(opts.ServerName, namespaceSlug, resp.Alias)
+		accountName = deriveAccountName(opts.ServerName, namespaceSlug, handle)
 	}
 
 	address := resp.Address
 	if address == "" {
-		address = deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
+		address = deriveIdentityAddress(resp.NamespaceSlug, resp.ProjectSlug, handle)
 	}
 	cfgPath, err := defaultGlobalPath()
 	if err != nil {
@@ -543,8 +578,8 @@ func executeInit(opts initOptions) (*initResult, error) {
 			cfg.Accounts[accountName] = awconfig.Account{Account: awid.Account{
 				Server:        opts.ServerName,
 				APIKey:        resp.APIKey,
-				AgentID:       resp.AgentID,
-				AgentAlias:    resp.Alias,
+				AgentID:       resp.IdentityID,
+				AgentAlias:    handle,
 				NamespaceSlug: namespaceSlug,
 				DID:           resp.DID,
 				StableID:      stableID,
@@ -620,7 +655,7 @@ func shouldWarnOnWorkspaceAttach(err error) bool {
 	return false
 }
 
-func printInitSummary(resp *awid.InitResponse, accountName, serverName, role string, attachResult *contextAttachResult, signingKeyPath, headline string) {
+func printInitSummary(resp *awid.BootstrapIdentityResponse, accountName, serverName, role string, attachResult *contextAttachResult, signingKeyPath, headline string) {
 	if resp == nil {
 		return
 	}
@@ -635,12 +670,13 @@ func printInitSummary(resp *awid.InitResponse, accountName, serverName, role str
 		headline = "Initialized workspace"
 	}
 	fmt.Println(headline)
-	if strings.TrimSpace(resp.Alias) != "" {
+	handle := strings.TrimSpace(resp.IdentityHandle())
+	if handle != "" {
 		label := "Alias"
 		if awid.IdentityClassFromLifetime(resp.Lifetime) == awid.IdentityClassPermanent {
 			label = "Name"
 		}
-		fmt.Printf("%-11s %s\n", label+":", strings.TrimSpace(resp.Alias))
+		fmt.Printf("%-11s %s\n", label+":", handle)
 	}
 	if identityClass := describeIdentityClass(strings.TrimSpace(resp.Lifetime)); identityClass != "" {
 		fmt.Printf("Identity:   %s\n", identityClass)
@@ -663,6 +699,9 @@ func printInitSummary(resp *awid.InitResponse, accountName, serverName, role str
 			label = "Routing"
 		}
 		fmt.Printf("%-10s %s\n", label+":", strings.TrimSpace(resp.Address))
+	}
+	if awid.IdentityClassFromLifetime(resp.Lifetime) == awid.IdentityClassPermanent && strings.TrimSpace(resp.AddressReachability) != "" {
+		fmt.Printf("Reachability: %s\n", strings.TrimSpace(resp.AddressReachability))
 	}
 	if strings.TrimSpace(serverName) != "" {
 		fmt.Printf("Server:     %s\n", strings.TrimSpace(serverName))
@@ -696,119 +735,50 @@ func printInitNextSteps(didInjectDocs, didSetupHooks bool) {
 	}
 }
 
-// tryHeadlessOrInit attempts anonymous headless bootstrap first. If the
-// server does not support the endpoint (404), falls back to /v1/init.
-// baseURL is the resolved base URL (may end in /api); needed to construct
-// a separate client for /api/v1/... endpoints that expect the host root.
-func tryHeadlessOrInit(
-	ctx context.Context,
-	client *aweb.Client,
-	initReq *awid.InitRequest,
-	baseURL string,
-) (*awid.InitResponse, error) {
-	alias := ""
-	if initReq.Alias != nil {
-		alias = *initReq.Alias
-	}
-	// Headless bootstrap requires an explicit identifier. For ephemeral
-	// identities that is a routing alias; for permanent identities the CLI
-	// requires --name and maps it into the transport field here.
-	// Without an explicit identifier, fall back to /v1/init which supports
-	// server-allocated ephemeral aliases. If that also fails, surface an
-	// error asking the user to specify --alias explicitly.
-	if alias == "" {
-		resp, initErr := client.Init(ctx, initReq)
-		if initErr == nil {
-			return resp, nil
-		}
-		if code, ok := awid.HTTPStatusCode(initErr); ok && code == 404 {
-			return nil, fmt.Errorf("server requires an alias; specify one with --alias")
-		}
-		return nil, initErr
-	}
-	headlessReq := &awid.HeadlessBootstrapRequest{
-		NamespaceSlug: initReq.ProjectSlug,
-		Alias:         alias,
-		AgentType:     initReq.AgentType,
-		HumanName:     initReq.HumanName,
-		DID:           initReq.DID,
-		PublicKey:     initReq.PublicKey,
-		Custody:       initReq.Custody,
-		Lifetime:      initReq.Lifetime,
-	}
-
-	// The headless endpoint is at /api/v1/... which is relative to the
-	// host root, not to the resolved base URL. Strip any /api suffix
-	// to avoid doubling (e.g. host/api + /api/v1/... → host/api/api/...).
-	rootURL, err := cloudRootBaseURL(baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid base URL for headless bootstrap: %w", err)
-	}
-	headlessClient, err := aweb.New(rootURL)
-	if err != nil {
-		return nil, err
-	}
-
-	headlessResp, err := headlessClient.HeadlessBootstrap(ctx, headlessReq)
-	if err != nil {
-		// If the server doesn't support headless bootstrap, fall back to /v1/init.
-		if code, ok := awid.HTTPStatusCode(err); ok && code == 404 {
-			debugLog("headless bootstrap not supported (404), falling back to /v1/init")
-			return client.Init(ctx, initReq)
-		}
-		return nil, err
-	}
-
-	// Convert HeadlessBootstrapResponse to InitResponse for uniform handling.
-	return &awid.InitResponse{
-		Status:        "ok",
-		ProjectID:     headlessResp.ProjectID,
-		ProjectSlug:   headlessResp.ProjectSlug,
-		AgentID:       headlessResp.AgentID,
-		Alias:         headlessResp.Alias,
-		APIKey:        headlessResp.APIKey,
-		ServerURL:     headlessResp.ServerURL,
-		NamespaceSlug: firstNonEmptyString(headlessResp.NamespaceSlug, headlessResp.OrgSlug),
-		Namespace:     headlessResp.Namespace,
-		Address:       headlessResp.Address,
-		Created:       headlessResp.Created,
-		DID:           headlessResp.DID,
-		StableID:      headlessResp.StableID,
-		Custody:       headlessResp.Custody,
-		Lifetime:      headlessResp.Lifetime,
-	}, nil
-}
-
 func acceptInviteViaCloud(
 	ctx context.Context,
 	baseURL string,
 	token string,
 	alias string,
+	name string,
+	addressReachability string,
 	humanName string,
 	agentType string,
 	did string,
 	publicKey string,
 	lifetime string,
-) (*awid.InitResponse, error) {
+) (*awid.BootstrapIdentityResponse, error) {
 	client, err := newUnauthenticatedCloudClient(baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("invite accept requires a valid URL: %w", err)
 	}
-	req := &awid.InviteAcceptRequest{
-		Token:     token,
-		Alias:     strings.TrimSpace(alias),
-		HumanName: humanName,
-		AgentType: agentType,
-		DID:       did,
-		PublicKey: publicKey,
-		Custody:   awid.CustodySelf,
-		Lifetime:  lifetime,
+	req := &awid.SpawnAcceptInviteRequest{
+		Token:               token,
+		AddressReachability: addressReachability,
+		HumanName:           humanName,
+		AgentType:           agentType,
+		DID:                 did,
+		PublicKey:           publicKey,
+		Custody:             awid.CustodySelf,
+		Lifetime:            lifetime,
 	}
-	resp, err := client.InviteAccept(ctx, req)
+	if trimmed := strings.TrimSpace(alias); trimmed != "" {
+		req.Alias = &trimmed
+	}
+	if trimmed := strings.TrimSpace(name); trimmed != "" {
+		req.Name = &trimmed
+	}
+	resp, err := client.SpawnAcceptInvite(ctx, req)
 	if err != nil {
-		if code, ok := awid.HTTPStatusCode(err); ok && code == 422 && strings.TrimSpace(alias) == "" {
-			if body, ok := awid.HTTPErrorBody(err); ok && strings.Contains(strings.ToLower(body), "alias") {
-				return nil, usageError("alias is required (use --alias)")
+		if code, ok := awid.HTTPStatusCode(err); ok && code == 422 {
+			if body, ok := awid.HTTPErrorBody(err); ok {
+				lower := strings.ToLower(body)
+				if strings.TrimSpace(alias) == "" && strings.Contains(lower, "alias") {
+					return nil, usageError("alias is required (use --alias)")
+				}
+				if strings.TrimSpace(name) == "" && strings.Contains(lower, "name") {
+					return nil, usageError("name is required (use --name)")
+				}
 			}
 		}
 		return nil, err
@@ -816,24 +786,7 @@ func acceptInviteViaCloud(
 	if strings.TrimSpace(resp.APIKey) == "" {
 		return nil, fmt.Errorf("invite accept failed: missing api_key in response")
 	}
-	return &awid.InitResponse{
-		Status:        "ok",
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
-		ProjectID:     resp.ProjectID,
-		ProjectSlug:   resp.ProjectSlug,
-		AgentID:       resp.AgentID,
-		Alias:         resp.Alias,
-		APIKey:        resp.APIKey,
-		ServerURL:     resp.ServerURL,
-		NamespaceSlug: firstNonEmptyString(resp.NamespaceSlug, resp.OrgSlug),
-		Namespace:     resp.Namespace,
-		Address:       resp.Address,
-		Created:       resp.Created,
-		DID:           resp.DID,
-		StableID:      resp.StableID,
-		Custody:       resp.Custody,
-		Lifetime:      resp.Lifetime,
-	}, nil
+	return resp, nil
 }
 
 func resolveInitLifetime(permanent bool) string {
@@ -841,15 +794,6 @@ func resolveInitLifetime(permanent bool) string {
 		return awid.LifetimePersistent
 	}
 	return awid.LifetimeEphemeral
-}
-
-func firstNonEmptyString(values ...string) string {
-	for _, value := range values {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
 }
 
 func describeIdentityClass(lifetime string) string {

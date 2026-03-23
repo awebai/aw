@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestCLIInviteCreate(t *testing.T) {
+func TestSpawnInviteCreate(t *testing.T) {
 	t.Parallel()
 
 	var gotAuth string
@@ -17,7 +17,7 @@ func TestCLIInviteCreate(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method=%s", r.Method)
 		}
-		if r.URL.Path != "/api/v1/invites/cli" {
+		if r.URL.Path != "/api/v1/spawn/create-invite" {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		gotAuth = r.Header.Get("Authorization")
@@ -33,6 +33,7 @@ func TestCLIInviteCreate(t *testing.T) {
 			"access_mode":  "owner_only",
 			"max_uses":     5,
 			"expires_at":   "2026-03-27T18:00:00Z",
+			"namespace_slug": "myteam",
 			"namespace":    "myteam.aweb.ai",
 			"server_url":   "https://app.aweb.ai/api",
 		})
@@ -44,7 +45,7 @@ func TestCLIInviteCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := c.InviteCreate(context.Background(), &InviteCreateRequest{
+	resp, err := c.SpawnCreateInvite(context.Background(), &SpawnInviteCreateRequest{
 		AliasHint:        "reviewer",
 		AccessMode:       "owner_only",
 		MaxUses:          5,
@@ -77,13 +78,13 @@ func TestCLIInviteCreate(t *testing.T) {
 	}
 }
 
-func TestCLIInviteListAndRevoke(t *testing.T) {
+func TestSpawnInviteListAndRevoke(t *testing.T) {
 	t.Parallel()
 
 	var gotDeletePath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/invites/cli":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/spawn/create-invite":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"invites": []map[string]any{
 					{
@@ -98,7 +99,7 @@ func TestCLIInviteListAndRevoke(t *testing.T) {
 					},
 				},
 			})
-		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/invites/cli/inv-1":
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/spawn/create-invite/inv-1":
 			gotDeletePath = r.URL.Path
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -112,7 +113,7 @@ func TestCLIInviteListAndRevoke(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	list, err := c.InviteList(context.Background())
+	list, err := c.ListSpawnInvites(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,15 +124,15 @@ func TestCLIInviteListAndRevoke(t *testing.T) {
 		t.Fatalf("token_prefix=%q", list.Invites[0].TokenPrefix)
 	}
 
-	if err := c.InviteRevoke(context.Background(), "inv-1"); err != nil {
+	if err := c.RevokeSpawnInvite(context.Background(), "inv-1"); err != nil {
 		t.Fatal(err)
 	}
-	if gotDeletePath != "/api/v1/invites/cli/inv-1" {
+	if gotDeletePath != "/api/v1/spawn/create-invite/inv-1" {
 		t.Fatalf("delete path=%q", gotDeletePath)
 	}
 }
 
-func TestCLIInviteAccept(t *testing.T) {
+func TestSpawnAcceptInvite(t *testing.T) {
 	t.Parallel()
 
 	var gotAuth string
@@ -140,7 +141,7 @@ func TestCLIInviteAccept(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method=%s", r.Method)
 		}
-		if r.URL.Path != "/api/v1/invites/cli/accept" {
+		if r.URL.Path != "/api/v1/spawn/accept-invite" {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		gotAuth = r.Header.Get("Authorization")
@@ -150,8 +151,9 @@ func TestCLIInviteAccept(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"project_id":   "proj-1",
 			"project_slug": "myteam",
+			"namespace_slug": "myteam",
 			"namespace":    "myteam.aweb.ai",
-			"agent_id":     "agent-1",
+			"identity_id":  "identity-1",
 			"alias":        "reviewer",
 			"address":      "myteam.aweb.ai/reviewer",
 			"api_key":      "aw_sk_invited",
@@ -171,7 +173,7 @@ func TestCLIInviteAccept(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := c.InviteAccept(context.Background(), &InviteAcceptRequest{
+	resp, err := c.SpawnAcceptInvite(context.Background(), &SpawnAcceptInviteRequest{
 		Token:     "aw_inv_test",
 		HumanName: "Alice",
 		AgentType: "agent",
@@ -196,7 +198,7 @@ func TestCLIInviteAccept(t *testing.T) {
 	if resp.Alias != "reviewer" {
 		t.Fatalf("alias=%q", resp.Alias)
 	}
-	if resp.OrgID != "" {
-		t.Fatalf("org_id=%q, want empty", resp.OrgID)
+	if resp.IdentityID != "identity-1" {
+		t.Fatalf("identity_id=%q", resp.IdentityID)
 	}
 }

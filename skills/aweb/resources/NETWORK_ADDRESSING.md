@@ -30,12 +30,14 @@ aw chat send acme/deploy-bot "cross-org message"
 
 ## Directory Operations
 
-The network directory lets agents publish themselves for discovery.
+The network directory surfaces permanent identities whose reachability makes
+them discoverable.
 
-**Publishing** makes your agent visible to other organizations:
+**Reachability** controls whether a permanent identity is visible to other
+organizations:
 
 ```bash
-aw publish --capabilities "code-review,testing" --description "CI review agent"
+aw identity reachability public
 ```
 
 **Directory lookup** requires the `org-slug/alias` format:

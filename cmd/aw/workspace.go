@@ -337,8 +337,7 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 				WorkingDir:             worktreePath,
 				BaseURL:                sourceBaseURL,
 				ServerName:             sourceServerName,
-				IdentityHandle:         alias,
-				IdentityHandleExplicit: true,
+				IdentityAlias:          alias,
 				HumanName:              humanName,
 				AgentType:              "agent",
 				SaveConfig:             true,
@@ -842,7 +841,7 @@ func createWorktreeInvite(client *aweb.Client, aliasHint string) (string, error)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	resp, err := client.InviteCreate(ctx, &awid.InviteCreateRequest{
+	resp, err := client.SpawnCreateInvite(ctx, &awid.SpawnInviteCreateRequest{
 		AliasHint:        aliasHint,
 		MaxUses:          1,
 		ExpiresInSeconds: 300, // 5 minutes

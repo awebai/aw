@@ -22,7 +22,7 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 	var serverURL string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli/accept":
+		case "/api/v1/spawn/accept-invite":
 			if r.Method != http.MethodPost {
 				t.Fatalf("method=%s", r.Method)
 			}
@@ -34,7 +34,7 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 				"project_slug":   "myteam",
 				"namespace_slug": "myteam.aweb.ai",
 				"namespace":      "myteam.aweb.ai",
-				"agent_id":       "agent-1",
+				"identity_id":    "identity-1",
 				"alias":          "reviewer",
 				"address":        "myteam.aweb.ai/reviewer",
 				"api_key":        "aw_sk_invited",
@@ -146,7 +146,7 @@ func TestAwInitInviteAcceptUsesServerProvidedAliasHint(t *testing.T) {
 	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli/accept":
+		case "/api/v1/spawn/accept-invite":
 			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 				t.Fatal(err)
 			}
@@ -154,7 +154,7 @@ func TestAwInitInviteAcceptUsesServerProvidedAliasHint(t *testing.T) {
 				"project_id":   "proj-1",
 				"project_slug": "myteam",
 				"namespace":    "myteam.aweb.ai",
-				"agent_id":     "agent-1",
+				"identity_id":  "identity-1",
 				"alias":        "reviewer",
 				"address":      "myteam.aweb.ai/reviewer",
 				"api_key":      "aw_sk_invited",
@@ -222,7 +222,7 @@ func TestAwInitInviteAcceptPermanentUsesExplicitName(t *testing.T) {
 	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli/accept":
+		case "/api/v1/spawn/accept-invite":
 			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 				t.Fatal(err)
 			}
@@ -230,8 +230,8 @@ func TestAwInitInviteAcceptPermanentUsesExplicitName(t *testing.T) {
 				"project_id":   "proj-1",
 				"project_slug": "myteam",
 				"namespace":    "myteam.aweb.ai",
-				"agent_id":     "agent-1",
-				"alias":        "maintainer",
+				"identity_id":  "identity-1",
+				"name":         "maintainer",
 				"address":      "myteam.aweb.ai/maintainer",
 				"api_key":      "aw_sk_invited",
 				"server_url":   "https://app.aweb.ai/api",
@@ -285,8 +285,8 @@ func TestAwInitInviteAcceptPermanentUsesExplicitName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
-	if gotBody["alias"] != "maintainer" {
-		t.Fatalf("alias=%v", gotBody["alias"])
+	if gotBody["name"] != "maintainer" {
+		t.Fatalf("name=%v", gotBody["name"])
 	}
 	if gotBody["lifetime"] != "persistent" {
 		t.Fatalf("lifetime=%v", gotBody["lifetime"])
@@ -301,12 +301,12 @@ func TestAwInitInviteAcceptRequiresAPIKeyInResponse(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli/accept":
+		case "/api/v1/spawn/accept-invite":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id":   "proj-1",
 				"project_slug": "myteam",
 				"namespace":    "myteam.aweb.ai",
-				"agent_id":     "agent-1",
+				"identity_id":  "identity-1",
 				"alias":        "reviewer",
 				"address":      "myteam.aweb.ai/reviewer",
 				"server_url":   "https://app.aweb.ai/api",
@@ -360,7 +360,7 @@ func TestAwInitInviteAliasErrorOnlyMapsAliasValidation(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli/accept":
+		case "/api/v1/spawn/accept-invite":
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			_, _ = w.Write([]byte(`{"detail":"Invalid public_key"}`))
 		case "/v1/agents/heartbeat":
@@ -413,12 +413,12 @@ func TestAwInitInviteTextOutputSaysJoined(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli/accept":
+		case "/api/v1/spawn/accept-invite":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id":   "proj-1",
 				"project_slug": "myteam",
 				"namespace":    "myteam.aweb.ai",
-				"agent_id":     "agent-1",
+				"identity_id":  "identity-1",
 				"alias":        "reviewer",
 				"address":      "myteam.aweb.ai/reviewer",
 				"api_key":      "aw_sk_invited",
