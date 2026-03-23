@@ -107,7 +107,7 @@ func init() {
 	initCmd.Flags().BoolVar(&initSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
 	initCmd.Flags().BoolVar(&initWriteContext, "write-context", true, "Write/update .aw/context in the current directory (non-secret pointer)")
 	initCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
-	initCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (default: AWEB_ROLE or prompt in TTY, fallback: developer)")
+	initCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (must match a role in the active project policy)")
 	initCmd.Flags().BoolVar(&initPermanent, "permanent", false, "Create a durable self-custodial identity instead of the default ephemeral identity")
 
 	rootCmd.AddCommand(initCmd)
@@ -285,11 +285,7 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 
 	// --- Role ---
 
-	var suggestedRoles []string
-	if suggestion != nil {
-		suggestedRoles = suggestion.Roles
-	}
-	role := resolveRole(suggestedRoles, true)
+	role := resolveRequestedRole()
 
 	// --- TTY prompts for alias (after role, so prompts are in logical order) ---
 
@@ -389,32 +385,12 @@ func resolveAgentType() string {
 	return "agent"
 }
 
-func resolveRole(suggestedRoles []string, allowPrompt bool) string {
+func resolveRequestedRole() string {
 	role := strings.TrimSpace(initRole)
 	if role == "" {
 		role = strings.TrimSpace(os.Getenv("AWEB_ROLE"))
 	}
-	if role != "" {
-		role = normalizeWorkspaceRole(role)
-		return role
-	}
-	if allowPrompt && isTTY() {
-		if len(suggestedRoles) > 0 {
-			role, err := promptIndexedChoice("Role", suggestedRoles, 0, os.Stdin, os.Stderr)
-			if err == nil {
-				role = normalizeWorkspaceRole(strings.TrimSpace(role))
-				if role != "" {
-					return role
-				}
-			}
-		}
-		v, _ := promptString("Role", "developer")
-		role = normalizeWorkspaceRole(strings.TrimSpace(v))
-		if role != "" {
-			return role
-		}
-	}
-	return "developer"
+	return normalizeWorkspaceRole(role)
 }
 
 // fetchInitSuggestion calls the suggest-alias-prefix endpoint.
@@ -601,10 +577,19 @@ func executeInit(opts initOptions) (*initResult, error) {
 		if err == nil {
 			attachResult, err = autoAttachContext(opts.WorkingDir, authClient, strings.TrimSpace(opts.WorkspaceRole))
 			if err != nil {
-				debugLog("workspace attach: %v", err)
-				fmt.Fprintf(os.Stderr, "Warning: could not attach workspace context (coordination may not be available on this server)\n")
+				if shouldWarnOnWorkspaceAttach(err) {
+					debugLog("workspace attach: %v", err)
+					fmt.Fprintf(os.Stderr, "Warning: could not attach workspace context (coordination may not be available on this server)\n")
+				} else {
+					return nil, err
+				}
 			}
 		}
+	}
+
+	finalRole := strings.TrimSpace(opts.WorkspaceRole)
+	if attachResult != nil && attachResult.Workspace != nil && strings.TrimSpace(attachResult.Workspace.Role) != "" {
+		finalRole = strings.TrimSpace(attachResult.Workspace.Role)
 	}
 
 	exportBaseURL := opts.BaseURL
@@ -616,13 +601,23 @@ func executeInit(opts initOptions) (*initResult, error) {
 		Response:        resp,
 		AccountName:     accountName,
 		ServerName:      opts.ServerName,
-		Role:            opts.WorkspaceRole,
+		Role:            finalRole,
 		AttachResult:    attachResult,
 		SigningKeyPath:  signingKeyPath,
 		ExportBaseURL:   exportBaseURL,
 		ExportNamespace: namespaceSlug,
 		JoinedViaInvite: opts.InviteToken != "",
 	}, nil
+}
+
+func shouldWarnOnWorkspaceAttach(err error) bool {
+	if err == nil {
+		return false
+	}
+	if code, ok := awid.HTTPStatusCode(err); ok && code == 404 {
+		return true
+	}
+	return false
 }
 
 func printInitSummary(resp *awid.InitResponse, accountName, serverName, role string, attachResult *contextAttachResult, signingKeyPath, headline string) {

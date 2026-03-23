@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -451,6 +452,10 @@ func registerWorkspaceForRoot(root string, client *aweb.Client, roleOverride str
 	if role == "" && existingState != nil {
 		role = strings.TrimSpace(existingState.Role)
 	}
+	role, err = resolveWorkspacePolicyRole(client, role, isTTY(), os.Stdin, os.Stderr)
+	if err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -689,34 +694,11 @@ func isValidWorkspaceRole(role string) bool {
 }
 
 func resolveWorkspaceAddRole(client *aweb.Client, args []string) (string, error) {
+	requested := ""
 	if len(args) > 0 {
-		return strings.TrimSpace(args[0]), nil
+		requested = strings.TrimSpace(args[0])
 	}
-
-	roles, err := fetchWorkspacePolicyRoles(client)
-	if err != nil {
-		return "", err
-	}
-
-	if isTTY() {
-		if len(roles) > 0 {
-			role, err := promptIndexedChoice("Role", roles, 0, os.Stdin, os.Stderr)
-			if err != nil {
-				return "", err
-			}
-			return strings.TrimSpace(role), nil
-		}
-		role, err := promptString("Role", "")
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(role), nil
-	}
-
-	if len(roles) > 0 {
-		return "", usageError("no role specified; available roles: %s. Pass role as argument: aw workspace add-worktree <role>", strings.Join(roles, ", "))
-	}
-	return "", usageError("no role specified. Pass role as argument: aw workspace add-worktree <role>")
+	return resolveWorkspacePolicyRole(client, requested, isTTY() && requested == "", os.Stdin, os.Stderr)
 }
 
 func fetchWorkspacePolicyRoles(client *aweb.Client) ([]string, error) {
@@ -734,6 +716,50 @@ func fetchWorkspacePolicyRoles(client *aweb.Client) ([]string, error) {
 	}
 	sort.Strings(roles)
 	return roles, nil
+}
+
+func resolveWorkspacePolicyRole(client *aweb.Client, requested string, allowPrompt bool, in io.Reader, out io.Writer) (string, error) {
+	roles, err := fetchWorkspacePolicyRoles(client)
+	if err != nil {
+		return "", err
+	}
+	return selectRoleFromAvailableRoles(requested, roles, allowPrompt, in, out)
+}
+
+func selectRoleFromAvailableRoles(requested string, roles []string, allowPrompt bool, in io.Reader, out io.Writer) (string, error) {
+	if len(roles) == 0 {
+		return "", usageError("no roles defined in the active project policy")
+	}
+
+	normalizedRoles := make(map[string]string, len(roles))
+	for _, role := range roles {
+		normalized := normalizeWorkspaceRole(role)
+		if normalized != "" {
+			normalizedRoles[normalized] = role
+		}
+	}
+
+	requested = normalizeWorkspaceRole(requested)
+	if requested != "" {
+		if role, ok := normalizedRoles[requested]; ok {
+			return role, nil
+		}
+		return "", usageError("invalid role %q; available roles: %s", requested, strings.Join(roles, ", "))
+	}
+
+	if !allowPrompt {
+		return "", usageError("no role specified; available roles: %s", strings.Join(roles, ", "))
+	}
+
+	role, err := promptIndexedChoice("Role", roles, -1, in, out)
+	if err != nil {
+		return "", err
+	}
+	role = normalizeWorkspaceRole(role)
+	if selected, ok := normalizedRoles[role]; ok {
+		return selected, nil
+	}
+	return "", usageError("invalid role %q; available roles: %s", role, strings.Join(roles, ", "))
 }
 
 func deriveWorkspaceAddWorktreePath(mainRepo, branchName string) (string, error) {

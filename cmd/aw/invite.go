@@ -158,7 +158,7 @@ func init() {
 	spawnAcceptInviteCmd.Flags().BoolVar(&initSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
 	spawnAcceptInviteCmd.Flags().BoolVar(&initWriteContext, "write-context", true, "Write/update .aw/context in the current directory (non-secret pointer)")
 	spawnAcceptInviteCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
-	spawnAcceptInviteCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (default: AWEB_ROLE or prompt in TTY, fallback: developer)")
+	spawnAcceptInviteCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (must match a role in the active project policy)")
 	spawnAcceptInviteCmd.Flags().BoolVar(&initPermanent, "permanent", false, "Create a durable self-custodial identity instead of the default ephemeral identity")
 
 	spawnCmd.AddCommand(spawnCreateInviteCmd)
@@ -342,7 +342,7 @@ func runSpawnAcceptInvite(cmd *cobra.Command, args []string) error {
 		SetDefault:             initSetDefault,
 		WriteContext:           initWriteContext,
 		InviteToken:            token,
-		WorkspaceRole:          resolveRole(nil, false),
+		WorkspaceRole:          resolveRequestedRole(),
 		Lifetime:               resolveInitLifetime(initPermanent),
 	}
 

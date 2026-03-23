@@ -2631,6 +2631,77 @@ func TestAwInitProjectKeyRoutesToOSSInit(t *testing.T) {
 	}
 }
 
+func TestAwInitProjectKeyRequiresExplicitRoleInNonTTYRepo(t *testing.T) {
+	t.Parallel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "coordinator", "roles": []string{"coordinator", "developer"}})
+		case "/v1/init":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":         "ok",
+				"project_id":     "proj-1",
+				"project_slug":   "demo",
+				"namespace_slug": "demo",
+				"agent_id":       "agent-new",
+				"alias":          "coordinator",
+				"api_key":        "aw_sk_new",
+				"created":        true,
+				"did":            "did:key:z6MkTest",
+				"custody":        "self",
+				"lifetime":       "ephemeral",
+			})
+		case "/v1/policies/active":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"policy_id": "pol-1",
+				"roles": map[string]any{
+					"coordinator": map[string]any{"title": "Coordinator"},
+					"developer":   map[string]any{"title": "Developer"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepoWithOrigin(t, repo, "https://github.com/acme/repo.git")
+
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	buildAwBinary(t, ctx, bin)
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "init",
+		"--server-url", server.URL,
+		"--alias", "coordinator",
+	)
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=aw_sk_project",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Dir = repo
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected missing-role error, got success:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "no role specified; available roles: coordinator, developer") {
+		t.Fatalf("unexpected error output:\n%s", string(out))
+	}
+}
+
 func TestAwInitProjectKeyPermanentRequestsPersistentIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -4070,6 +4141,9 @@ func TestInitWorkspaceAttachNonFatal(t *testing.T) {
 				"lifetime":       "ephemeral",
 			})
 		case "/v1/workspaces/register":
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
+		case "/v1/policies/active":
 			w.WriteHeader(http.StatusNotFound)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
 		default:

@@ -86,6 +86,13 @@ func TestAwWorkspaceInitWritesWorkspaceState(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/policies/active":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"policy_id": "pol-1",
+				"roles": map[string]any{
+					"developer": map[string]any{"title": "Developer"},
+				},
+			})
 		case "/v1/workspaces/register":
 			if r.Method != http.MethodPost {
 				t.Fatalf("method=%s", r.Method)
@@ -242,6 +249,13 @@ func TestAwInitAutoAttachesRepoContext(t *testing.T) {
 				"human_name":       "Alice",
 				"created":          true,
 			})
+		case "/v1/policies/active":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"policy_id": "pol-1",
+				"roles": map[string]any{
+					"developer": map[string]any{"title": "Developer"},
+				},
+			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -262,7 +276,7 @@ func TestAwInitAutoAttachesRepoContext(t *testing.T) {
 	initGitRepoWithOrigin(t, repo, origin)
 	buildAwBinary(t, ctx, bin)
 
-	run := exec.CommandContext(ctx, bin, "project", "create", "--project", "demo", "--alias", "alice")
+	run := exec.CommandContext(ctx, bin, "project", "create", "--project", "demo", "--alias", "alice", "--role", "developer")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1397,6 +1411,13 @@ func TestAwWorkspaceAddWorktreeRejectsInvalidExplicitAlias(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/policies/active":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"policy_id": "pol-1",
+				"roles": map[string]any{
+					"developer": map[string]any{"title": "Developer"},
+				},
+			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -1504,6 +1525,13 @@ func TestAwWorkspaceAddWorktreeExplicitAliasCreatesSiblingWorktree(t *testing.T)
 				"human_name":       "Wendy",
 				"created":          true,
 			})
+		case "/v1/policies/active":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"policy_id": "pol-1",
+				"roles": map[string]any{
+					"developer": map[string]any{"title": "Developer"},
+				},
+			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
 		case "/v1/agents/suggest-alias-prefix":
@@ -1586,6 +1614,13 @@ func TestAwWorkspaceAddWorktreeCleansUpOnInitFailure(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/policies/active":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"policy_id": "pol-1",
+				"roles": map[string]any{
+					"developer": map[string]any{"title": "Developer"},
+				},
+			})
 		case "/api/v1/invites/cli":
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1690,6 +1725,13 @@ func TestAwWorkspaceAddWorktreeRetriesAliasTakenSuggestion(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/policies/active":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"policy_id": "pol-1",
+				"roles": map[string]any{
+					"developer": map[string]any{"title": "Developer"},
+				},
+			})
 		case "/v1/agents/suggest-alias-prefix":
 			suggestCalls++
 			switch suggestCalls {

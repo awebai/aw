@@ -574,8 +574,9 @@ func promptIndexedChoice(label string, options []string, defaultIndex int, in io
 	if len(options) == 0 {
 		return "", fmt.Errorf("no options available")
 	}
-	if defaultIndex < 0 || defaultIndex >= len(options) {
-		defaultIndex = 0
+	hasDefault := defaultIndex >= 0 && defaultIndex < len(options)
+	if !hasDefault {
+		defaultIndex = -1
 	}
 
 	for i, option := range options {
@@ -584,14 +585,22 @@ func promptIndexedChoice(label string, options []string, defaultIndex int, in io
 
 	reader := bufio.NewReader(in)
 	for {
-		fmt.Fprintf(out, "%s number [%d]: ", label, defaultIndex+1)
+		if hasDefault {
+			fmt.Fprintf(out, "%s number [%d]: ", label, defaultIndex+1)
+		} else {
+			fmt.Fprintf(out, "%s number: ", label)
+		}
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			return "", err
 		}
 		line = strings.TrimSpace(line)
 		if line == "" {
-			return options[defaultIndex], nil
+			if hasDefault {
+				return options[defaultIndex], nil
+			}
+			fmt.Fprintf(out, "Enter a number between 1 and %d.\n", len(options))
+			continue
 		}
 		index, err := strconv.Atoi(line)
 		if err == nil && index >= 1 && index <= len(options) {
