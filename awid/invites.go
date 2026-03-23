@@ -105,7 +105,7 @@ func (c *Client) InviteRevoke(ctx context.Context, inviteID string) error {
 	return c.Delete(ctx, "/api/v1/invites/cli/"+urlPathEscape(inviteID))
 }
 
-// InviteAccept accepts a CLI invite token and bootstraps a new agent.
+// InviteAccept accepts a CLI invite token and bootstraps a new workspace identity.
 func (c *Client) InviteAccept(ctx context.Context, req *InviteAcceptRequest) (*InviteAcceptResponse, error) {
 	if req == nil || req.Token == "" {
 		return nil, fmt.Errorf("aweb: token is required")

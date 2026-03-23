@@ -152,7 +152,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Println("# Copy/paste to configure your shell:")
 		fmt.Println("export AWEB_URL=" + result.ExportBaseURL)
 		fmt.Println("export AWEB_API_KEY=" + result.Response.APIKey)
-		fmt.Println("export AWEB_NAMESPACE=" + result.ExportNamespace)
+		fmt.Println("export AWEB_PROJECT=" + result.ExportNamespace)
 		fmt.Println("export AWEB_AGENT_ID=" + result.Response.AgentID)
 		fmt.Println("export AWEB_AGENT_ALIAS=" + result.Response.Alias)
 	}
@@ -193,11 +193,6 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 
 	// --- Validation ---
 
-	inviteToken := ""
-	if inviteToken != "" && !strings.HasPrefix(inviteToken, "aw_inv_") {
-		return initOptions{}, usageError("invalid --invite token (expected aw_inv_...)")
-	}
-
 	// --- Base URL and server resolution ---
 
 	baseURL, serverName, _, err := resolveBaseURLForInit(initServerURL, serverFlag)
@@ -222,35 +217,29 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 
 	// --- Suggestion (one call, reused for namespace + alias + roles) ---
 
-	var suggestion *awid.SuggestAliasPrefixResponse
-	if flow != flowInvite {
-		nsSlugForSuggestion := resolveNamespaceSlug()
-		suggestion = fetchInitSuggestion(baseURL, nsSlugForSuggestion, authToken)
-	}
+	nsSlugForSuggestion := resolveNamespaceSlug()
+	suggestion := fetchInitSuggestion(baseURL, nsSlugForSuggestion, authToken)
 
-	// --- Namespace ---
+	// --- Project ---
 
 	nsSlug := resolveNamespaceSlug()
 	if nsSlug == "" && suggestion != nil {
 		nsSlug = strings.TrimSpace(suggestion.ProjectSlug)
 	}
-	if nsSlug == "" && flow != flowInvite {
+	if nsSlug == "" {
 		if isTTY() {
 			suggested := sanitizeSlug(filepath.Base(workingDir))
-			v, err := promptString("Namespace", suggested)
+			v, err := promptString("Project", suggested)
 			if err != nil {
 				return initOptions{}, err
 			}
 			nsSlug = v
 		} else {
-			return initOptions{}, usageError("missing namespace (use --namespace or AWEB_NAMESPACE)")
+			return initOptions{}, usageError("missing project slug (use --project or AWEB_PROJECT)")
 		}
 	}
 
 	nsName := strings.TrimSpace(initNamespaceName)
-	if nsName == "" {
-		nsName = strings.TrimSpace(os.Getenv("AWEB_NAMESPACE_NAME"))
-	}
 	if nsName == "" {
 		nsName = strings.TrimSpace(os.Getenv("AWEB_PROJECT_NAME"))
 	}
@@ -268,7 +257,7 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 		alias = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
 		aliasExplicit = alias != ""
 	}
-	if !aliasExplicit && flow != flowInvite {
+	if !aliasExplicit {
 		if !isTTY() && flow == flowProjectKey {
 			return initOptions{}, usageError("--alias is required when initializing an existing project workspace non-interactively")
 		}
@@ -285,13 +274,13 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 	if suggestion != nil {
 		suggestedRoles = suggestion.Roles
 	}
-	role := resolveRole(suggestedRoles, flow != flowInvite)
+	role := resolveRole(suggestedRoles, true)
 
 	// --- TTY prompts for alias (after role, so prompts are in logical order) ---
 
-	aliasWasDefaultSuggestion := !aliasExplicit && flow != flowInvite
-	if isTTY() && !aliasExplicit && flow != flowInvite {
-		v, err := promptString("Agent alias", alias)
+	aliasWasDefaultSuggestion := !aliasExplicit
+	if isTTY() && !aliasExplicit {
+		v, err := promptString("Alias", alias)
 		if err != nil {
 			return initOptions{}, err
 		}
@@ -319,7 +308,6 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 		SetDefault:                    initSetDefault,
 		WriteContext:                  initWriteContext,
 		AuthToken:                     authToken,
-		InviteToken:                   inviteToken,
 		AccountName:                   accountName,
 		WorkspaceRole:                 role,
 		Lifetime:                      resolveInitLifetime(initPermanent),
@@ -328,9 +316,6 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 
 func resolveNamespaceSlug() string {
 	if v := strings.TrimSpace(initNamespaceSlug); v != "" {
-		return v
-	}
-	if v := strings.TrimSpace(os.Getenv("AWEB_NAMESPACE")); v != "" {
 		return v
 	}
 	if v := strings.TrimSpace(os.Getenv("AWEB_PROJECT_SLUG")); v != "" {

@@ -63,6 +63,12 @@ as `Routing`, not `Address`.
 
 ### `aw project create`
 
+Usage:
+
+```bash
+aw project create --project myteam
+```
+
 Creates:
 
 - a project

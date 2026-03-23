@@ -38,7 +38,7 @@ var workspaceStatusCmd = &cobra.Command{
 
 var workspaceAddWorktreeCmd = &cobra.Command{
 	Use:   "add-worktree [role]",
-	Short: "Create a sibling git worktree and initialize a new coordination agent in it",
+	Short: "Create a sibling git worktree and initialize a new coordination workspace in it",
 	Args:  cobra.RangeArgs(0, 1),
 	RunE:  runWorkspaceAddWorktree,
 }
@@ -326,9 +326,9 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(os.Stderr, "Initializing aw...")
 		}
 
-		// Create a short-lived invite with the parent agent's key,
-		// then accept it to bootstrap the new agent. This is the
-		// supported hosted path for "agent creates agent."
+		// Create a short-lived invite from the current workspace,
+		// then accept it in the new worktree. This is the supported
+		// hosted path for one workspace spawning another in the same project.
 		inviteToken, initErr := createWorktreeInvite(client, alias)
 		if initErr == nil {
 			initOpts := initOptions{

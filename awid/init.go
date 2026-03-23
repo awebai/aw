@@ -38,7 +38,7 @@ type InitResponse struct {
 	Lifetime      string `json:"lifetime,omitempty"`
 }
 
-// Init bootstraps a project, agent, and API key.
+// Init bootstraps a project, workspace identity, and API key.
 func (c *Client) Init(ctx context.Context, req *InitRequest) (*InitResponse, error) {
 	var out InitResponse
 	if err := c.Post(ctx, "/v1/init", req, &out); err != nil {

@@ -72,9 +72,7 @@ func TestAwInitInjectDocsAndSetupHooks(t *testing.T) {
 	run.Env = append(os.Environ(),
 		"AWEB_URL="+server.URL,
 		"AW_CONFIG_PATH="+cfgPath,
-		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
-		"AWEB_NAMESPACE=",
 		"AWEB_ALIAS=",
 	)
 	run.Dir = tmp

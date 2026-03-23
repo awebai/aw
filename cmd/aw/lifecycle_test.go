@@ -33,7 +33,7 @@ func TestAwIdentityDecommissionEphemeral(t *testing.T) {
 				"agent_id":   "agent-1",
 				"did":        "did:key:z6MkEphemeral",
 				"address":    "myco/alice",
-				"custody":    "managed",
+				"custody":    "custodial",
 				"lifetime":   "ephemeral",
 				"public_key": "",
 			})
@@ -66,7 +66,7 @@ accounts:
     agent_id: agent-1
     agent_alias: alice
     namespace_slug: myco
-    custody: managed
+    custody: custodial
     lifetime: ephemeral
 default_account: acct
 `) + "\n"
@@ -171,7 +171,7 @@ accounts:
     agent_id: agent-1
     agent_alias: alice
     namespace_slug: myco
-    custody: managed
+    custody: custodial
     lifetime: ephemeral
     did: did:key:z6MkWrongLocalState
 default_account: acct

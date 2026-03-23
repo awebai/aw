@@ -88,9 +88,7 @@ func TestAwInitHeadlessBootstrapAgainstHosted(t *testing.T) {
 	run.Env = append(os.Environ(),
 		"AWEB_URL="+server.URL,
 		"AW_CONFIG_PATH="+cfgPath,
-		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
-		"AWEB_NAMESPACE=",
 		"AWEB_ALIAS=",
 	)
 	run.Dir = tmp
@@ -229,9 +227,7 @@ func TestAwInitPermanentRequestsPersistentIdentity(t *testing.T) {
 	run.Env = append(os.Environ(),
 		"AWEB_URL="+server.URL,
 		"AW_CONFIG_PATH="+cfgPath,
-		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
-		"AWEB_NAMESPACE=",
 		"AWEB_ALIAS=",
 	)
 	run.Dir = tmp
@@ -332,9 +328,7 @@ default_account: existing
 	run.Env = append(os.Environ(),
 		"AWEB_URL="+server.URL,
 		"AW_CONFIG_PATH="+cfgPath,
-		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
-		"AWEB_NAMESPACE=",
 		"AWEB_ALIAS=",
 	)
 	run.Dir = tmp
@@ -413,9 +407,7 @@ func TestAwInitSelfHostedStillUsesV1Init(t *testing.T) {
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
-		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
-		"AWEB_NAMESPACE=",
 		"AWEB_ALIAS=",
 	)
 	run.Dir = tmp
@@ -519,9 +511,7 @@ func TestAwInitHeadlessRetryOnAliasCollision(t *testing.T) {
 	run.Env = append(os.Environ(),
 		"AWEB_URL="+server.URL,
 		"AW_CONFIG_PATH="+cfgPath,
-		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
-		"AWEB_NAMESPACE=",
 		"AWEB_ALIAS=",
 	)
 	run.Dir = tmp
@@ -614,9 +604,7 @@ func TestAwInitHeadlessWithAPIMount(t *testing.T) {
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL="+server.URL,
-		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
-		"AWEB_NAMESPACE=",
 		"AWEB_ALIAS=",
 	)
 	run.Dir = tmp

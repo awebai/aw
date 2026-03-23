@@ -7,7 +7,7 @@ import (
 
 // HeadlessBootstrapRequest is sent to POST /api/v1/bootstrap/headless-agent.
 // This endpoint is unauthenticated and rate-limited. It creates a free org,
-// managed namespace, default project, and first agent in one call.
+// managed namespace, default project, first workspace, and first identity in one call.
 type HeadlessBootstrapRequest struct {
 	NamespaceSlug string `json:"namespace_slug"`
 	Alias         string `json:"alias"`
@@ -38,7 +38,7 @@ type HeadlessBootstrapResponse struct {
 	Created     bool   `json:"created"`
 }
 
-// HeadlessBootstrap creates an agent via anonymous headless bootstrap.
+// HeadlessBootstrap creates the first workspace and identity via anonymous headless bootstrap.
 func (c *Client) HeadlessBootstrap(ctx context.Context, req *HeadlessBootstrapRequest) (*HeadlessBootstrapResponse, error) {
 	if req.NamespaceSlug == "" {
 		return nil, fmt.Errorf("aweb: namespace_slug is required for headless bootstrap")
