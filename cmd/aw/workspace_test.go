@@ -714,7 +714,7 @@ default_account: acct-source
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 	text := string(out)
-	if !strings.Contains(text, "Agent worktree created at") {
+	if !strings.Contains(text, "Worktree created at") {
 		t.Fatalf("unexpected output:\n%s", text)
 	}
 	if !strings.Contains(text, "Alias:    bob") {

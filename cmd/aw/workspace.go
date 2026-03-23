@@ -32,7 +32,7 @@ var workspaceInitCmd = &cobra.Command{
 
 var workspaceStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show coordination status for the current agent/context and team",
+	Short: "Show coordination status for the current workspace/identity and team",
 	RunE:  runWorkspaceStatus,
 }
 
@@ -332,21 +332,21 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 		inviteToken, initErr := createWorktreeInvite(client, alias)
 		if initErr == nil {
 			initOpts := initOptions{
-				Flow:          flowInvite,
-				WorkingDir:    worktreePath,
-				BaseURL:       sourceBaseURL,
-				ServerName:    sourceServerName,
-				Alias:         alias,
-				AliasExplicit: true,
-				HumanName:     humanName,
-				AgentType:     "agent",
-				SaveConfig:    true,
-				SetDefault:    false,
-				WriteContext:  true,
-				InviteToken:   inviteToken,
-				AccountName:   "",
-				WorkspaceRole: role,
-				Lifetime:      awid.LifetimeEphemeral,
+				Flow:                   flowInvite,
+				WorkingDir:             worktreePath,
+				BaseURL:                sourceBaseURL,
+				ServerName:             sourceServerName,
+				IdentityHandle:         alias,
+				IdentityHandleExplicit: true,
+				HumanName:              humanName,
+				AgentType:              "agent",
+				SaveConfig:             true,
+				SetDefault:             false,
+				WriteContext:           true,
+				InviteToken:            inviteToken,
+				AccountName:            "",
+				WorkspaceRole:          role,
+				Lifetime:               awid.LifetimeEphemeral,
 			}
 			_, initErr = executeInit(initOpts)
 		}
@@ -626,7 +626,7 @@ func formatWorkspaceInit(v any) string {
 	}
 	sb.WriteString(fmt.Sprintf("%s workspace %s\n", action, out.Alias))
 	sb.WriteString(fmt.Sprintf("Workspace ID: %s\n", out.WorkspaceID))
-	sb.WriteString(fmt.Sprintf("Namespace:    %s\n", out.ProjectSlug))
+	sb.WriteString(fmt.Sprintf("Project:      %s\n", out.ProjectSlug))
 	sb.WriteString(fmt.Sprintf("Repo:         %s\n", out.CanonicalOrigin))
 	if out.Role != "" {
 		sb.WriteString(fmt.Sprintf("Role:         %s\n", out.Role))
@@ -640,7 +640,7 @@ func formatWorkspaceInit(v any) string {
 func formatWorkspaceAddWorktree(v any) string {
 	out := v.(workspaceAddWorktreeOutput)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Agent worktree created at %s\n", abbreviateUserHome(out.WorktreePath)))
+	sb.WriteString(fmt.Sprintf("Worktree created at %s\n", abbreviateUserHome(out.WorktreePath)))
 	sb.WriteString(fmt.Sprintf("Alias:    %s\n", out.Alias))
 	sb.WriteString(fmt.Sprintf("Role:     %s\n", out.Role))
 	sb.WriteString(fmt.Sprintf("Branch:   %s\n", out.Branch))
@@ -807,8 +807,9 @@ func cleanupWorkspaceWorktree(repoPath, worktreePath, branchName string, deleteB
 }
 
 // createWorktreeInvite creates a single-use, short-lived CLI invite for
-// bootstrapping a worktree agent. The parent agent's authenticated client
-// creates the invite; the new worktree then accepts it via flowInvite.
+// bootstrapping another workspace identity in a sibling worktree. The current
+// workspace's authenticated client creates the invite; the new worktree then
+// accepts it via flowInvite.
 func createWorktreeInvite(client *aweb.Client, aliasHint string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

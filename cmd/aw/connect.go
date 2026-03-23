@@ -62,7 +62,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	}
 
 	if strings.TrimSpace(resp.AgentID) == "" {
-		return usageError("This API key is not bound to an identity (no agent_id). Use an identity-bound key from the dashboard.")
+		return usageError("This API key is not bound to an identity. Use an identity-bound key from the dashboard.")
 	}
 
 	// Fetch namespace slug for canonical address derivation (needed for

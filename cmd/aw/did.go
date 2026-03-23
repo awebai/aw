@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	aweb "github.com/awebai/aw"
@@ -29,129 +28,12 @@ var identityLogCmd = &cobra.Command{
 	RunE:  runDidLog,
 }
 
-var identityCreatePermanentCmd = &cobra.Command{
-	Use:   "create-permanent",
-	Short: "Create a durable self-custodial identity in the current workspace",
-	RunE:  runIdentityCreatePermanent,
-}
-
 var rotateKeySelfCustody bool
 
 func init() {
-	identityCreatePermanentCmd.Flags().StringVar(&initAlias, "alias", "", "Permanent identity address name or routing alias")
-	identityCreatePermanentCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
-	identityCreatePermanentCmd.Flags().StringVar(&initAgentType, "agent-type", "", "Runtime type (default: AWEB_AGENT_TYPE or agent)")
-	identityCreatePermanentCmd.Flags().BoolVar(&initSaveConfig, "save-config", true, "Write/update ~/.config/aw/config.yaml with the new credentials")
-	identityCreatePermanentCmd.Flags().BoolVar(&initSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
-	identityCreatePermanentCmd.Flags().BoolVar(&initWriteContext, "write-context", true, "Write/update .aw/context in the current directory (non-secret pointer)")
-	identityCreatePermanentCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
-	identityCreatePermanentCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (default: AWEB_ROLE or prompt in TTY, fallback: developer)")
-	identityCmd.AddCommand(identityCreatePermanentCmd)
 	identityRotateKeyCmd.Flags().BoolVar(&rotateKeySelfCustody, "self-custody", false, "Graduate from custodial to self-custody")
 	identityCmd.AddCommand(identityRotateKeyCmd)
 	identityCmd.AddCommand(identityLogCmd)
-}
-
-func runIdentityCreatePermanent(cmd *cobra.Command, args []string) error {
-	workingDir, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	if _, _, err := awconfig.LoadWorktreeContextFromDir(workingDir); err != nil {
-		return usageError("aw identity create-permanent requires an initialized workspace; run `aw init` or `aw project create` first")
-	}
-	c, sel, err := resolveAPIKeyOnly()
-	if err != nil {
-		return err
-	}
-
-	projectSlug := strings.TrimSpace(sel.NamespaceSlug)
-	if projectSlug == "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		project, err := c.GetCurrentProject(ctx)
-		if err != nil {
-			return err
-		}
-		projectSlug = strings.TrimSpace(project.Slug)
-	}
-	if projectSlug == "" {
-		return fmt.Errorf("could not determine the current project for permanent identity creation")
-	}
-
-	suggestion := fetchInitSuggestion(sel.BaseURL, projectSlug, sel.APIKey)
-	suggestedRoles := []string(nil)
-	if suggestion != nil {
-		suggestedRoles = suggestion.Roles
-	}
-	role := resolveRole(suggestedRoles, true)
-
-	alias := strings.TrimSpace(initAlias)
-	aliasExplicit := alias != ""
-	if !aliasExplicit {
-		alias = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
-		aliasExplicit = alias != ""
-	}
-	if !aliasExplicit {
-		if suggestion != nil && strings.TrimSpace(suggestion.NamePrefix) != "" {
-			alias = strings.TrimSpace(suggestion.NamePrefix)
-		} else {
-			alias = "alice"
-		}
-	}
-	aliasWasDefaultSuggestion := !aliasExplicit
-	if isTTY() && !aliasExplicit {
-		value, err := promptString("Permanent identity name", alias)
-		if err != nil {
-			return err
-		}
-		aliasWasDefaultSuggestion = value == alias
-		alias = strings.TrimSpace(value)
-		if alias == "" {
-			alias = "alice"
-			aliasWasDefaultSuggestion = true
-		}
-	}
-
-	opts := initOptions{
-		Flow:                          flowProjectKey,
-		WorkingDir:                    workingDir,
-		BaseURL:                       sel.BaseURL,
-		ServerName:                    sel.ServerName,
-		NamespaceSlug:                 projectSlug,
-		Alias:                         alias,
-		AliasExplicit:                 aliasExplicit,
-		RetrySuggestedAliasOnConflict: aliasWasDefaultSuggestion && !aliasExplicit,
-		HumanName:                     resolveHumanName(),
-		AgentType:                     resolveAgentType(),
-		SaveConfig:                    initSaveConfig,
-		SetDefault:                    initSetDefault,
-		WriteContext:                  initWriteContext,
-		AuthToken:                     sel.APIKey,
-		WorkspaceRole:                 role,
-		Lifetime:                      awid.LifetimePersistent,
-	}
-
-	result, err := executeInit(opts)
-	if err != nil {
-		return err
-	}
-
-	if jsonFlag {
-		printJSON(result.Response)
-	} else {
-		printInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.SigningKeyPath, "Created permanent self-custodial identity")
-	}
-	if initPrintExports {
-		fmt.Println("")
-		fmt.Println("# Copy/paste to configure your shell:")
-		fmt.Println("export AWEB_URL=" + result.ExportBaseURL)
-		fmt.Println("export AWEB_API_KEY=" + result.Response.APIKey)
-		fmt.Println("export AWEB_PROJECT=" + result.ExportNamespace)
-		fmt.Println("export AWEB_AGENT_ID=" + result.Response.AgentID)
-		fmt.Println("export AWEB_AGENT_ALIAS=" + result.Response.Alias)
-	}
-	return nil
 }
 
 func runDidRotateKey(cmd *cobra.Command, args []string) error {

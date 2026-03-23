@@ -217,8 +217,8 @@ func TestAwInitPermanentRequestsPersistentIdentity(t *testing.T) {
 
 	run := exec.CommandContext(ctx, bin, "project", "create",
 		"--project", "myteam",
-		"--alias", "maintainer",
 		"--permanent",
+		"--name", "maintainer",
 		"--json",
 		"--write-context=false",
 		"--print-exports=false",

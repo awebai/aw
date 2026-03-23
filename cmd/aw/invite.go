@@ -148,7 +148,8 @@ func init() {
 
 	spawnAcceptInviteCmd.Flags().StringVar(&initServerURL, "server-url", "", "Base URL for the aweb server (or AWEB_URL). Any URL is accepted; aw probes common mounts (including /api).")
 	spawnAcceptInviteCmd.Flags().StringVar(&initServerURL, "server", "", "Base URL for the aweb server (alias for --server-url)")
-	spawnAcceptInviteCmd.Flags().StringVar(&initAlias, "alias", "", "Identity routing alias (optional; default: invite or server-suggested)")
+	spawnAcceptInviteCmd.Flags().StringVar(&initAlias, "alias", "", "Ephemeral identity routing alias (optional; default: invite or server-suggested)")
+	spawnAcceptInviteCmd.Flags().StringVar(&initName, "name", "", "Permanent identity name (required with --permanent)")
 	spawnAcceptInviteCmd.Flags().BoolVar(&initInjectDocs, "inject-docs", false, "Inject aw coordination instructions into CLAUDE.md and AGENTS.md")
 	spawnAcceptInviteCmd.Flags().BoolVar(&initSetupHooks, "setup-hooks", false, "Set up Claude Code PostToolUse hook for aw notify")
 	spawnAcceptInviteCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
@@ -307,6 +308,9 @@ func runSpawnAcceptInvite(cmd *cobra.Command, args []string) error {
 	if !strings.HasPrefix(token, "aw_inv_") {
 		return usageError("invalid invite token (expected aw_inv_...)")
 	}
+	if err := validateInitIdentityFlags(); err != nil {
+		return err
+	}
 
 	workingDir, err := os.Getwd()
 	if err != nil {
@@ -317,25 +321,29 @@ func runSpawnAcceptInvite(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	alias := strings.TrimSpace(initAlias)
-	if alias == "" {
-		alias = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
+	handle := strings.TrimSpace(initName)
+	if !initPermanent {
+		handle = strings.TrimSpace(initAlias)
+		if handle == "" {
+			handle = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
+		}
 	}
 
 	opts := initOptions{
-		Flow:          flowInvite,
-		WorkingDir:    workingDir,
-		BaseURL:       baseURL,
-		ServerName:    serverName,
-		Alias:         alias,
-		HumanName:     resolveHumanName(),
-		AgentType:     resolveAgentType(),
-		SaveConfig:    initSaveConfig,
-		SetDefault:    initSetDefault,
-		WriteContext:  initWriteContext,
-		InviteToken:   token,
-		WorkspaceRole: resolveRole(nil, false),
-		Lifetime:      resolveInitLifetime(initPermanent),
+		Flow:                   flowInvite,
+		WorkingDir:             workingDir,
+		BaseURL:                baseURL,
+		ServerName:             serverName,
+		IdentityHandle:         handle,
+		IdentityHandleExplicit: strings.TrimSpace(handle) != "",
+		HumanName:              resolveHumanName(),
+		AgentType:              resolveAgentType(),
+		SaveConfig:             initSaveConfig,
+		SetDefault:             initSetDefault,
+		WriteContext:           initWriteContext,
+		InviteToken:            token,
+		WorkspaceRole:          resolveRole(nil, false),
+		Lifetime:               resolveInitLifetime(initPermanent),
 	}
 
 	result, err := executeInit(opts)
@@ -354,8 +362,7 @@ func runSpawnAcceptInvite(cmd *cobra.Command, args []string) error {
 		fmt.Println("export AWEB_URL=" + result.ExportBaseURL)
 		fmt.Println("export AWEB_API_KEY=" + result.Response.APIKey)
 		fmt.Println("export AWEB_PROJECT=" + result.ExportNamespace)
-		fmt.Println("export AWEB_AGENT_ID=" + result.Response.AgentID)
-		fmt.Println("export AWEB_AGENT_ALIAS=" + result.Response.Alias)
+		fmt.Println("export AWEB_ALIAS=" + result.Response.Alias)
 	}
 	repoRoot := resolveRepoRoot(opts.WorkingDir)
 	if initInjectDocs {

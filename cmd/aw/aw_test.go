@@ -306,7 +306,6 @@ func TestAwIdentityCommandSurface(t *testing.T) {
 
 	identityText := string(identityOut)
 	for _, want := range []string{
-		"create-permanent",
 		"rotate-key",
 		"log",
 		"access-mode",
@@ -328,6 +327,73 @@ func TestAwIdentityCommandSurface(t *testing.T) {
 	idText := string(idOut)
 	if !strings.Contains(idText, `unknown command "id"`) {
 		t.Fatalf("expected unknown command error for aw id --help:\n%s", idText)
+	}
+	if strings.Contains(identityText, "create-permanent") {
+		t.Fatalf("identity help should not expose create-permanent:\n%s", identityText)
+	}
+}
+
+func TestAwProjectCreatePermanentRequiresName(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+
+	run := exec.CommandContext(ctx, bin, "project", "create", "--project", "demo", "--permanent")
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected project create --permanent to fail without --name:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "--name is required with --permanent") {
+		t.Fatalf("unexpected output:\n%s", string(out))
+	}
+}
+
+func TestAwInitPermanentRequiresName(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+
+	run := exec.CommandContext(ctx, bin, "init", "--permanent")
+	run.Dir = tmp
+	run.Env = append(os.Environ(), "AWEB_API_KEY=aw_sk_project_test")
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected init --permanent to fail without --name:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "--name is required with --permanent") {
+		t.Fatalf("unexpected output:\n%s", string(out))
+	}
+}
+
+func TestAwSpawnAcceptInvitePermanentRequiresName(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+
+	run := exec.CommandContext(ctx, bin, "spawn", "accept-invite", "aw_inv_test", "--permanent")
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected spawn accept-invite --permanent to fail without --name:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "--name is required with --permanent") {
+		t.Fatalf("unexpected output:\n%s", string(out))
 	}
 }
 

@@ -73,7 +73,8 @@ Use one of these flows:
 Both create a local `.aw/` workspace in the current directory and give it a
 default identity.
 - By default that identity is ephemeral.
-- Use `aw id create-permanent` or `aw init --permanent` only when you explicitly want a durable
+- Use `aw project create --permanent --name <name>` or
+  `aw init --permanent --name <name>` only when you explicitly want a durable
   self-custodial identity in this workspace.
 - In a shared git repo, `aw` also registers repo/worktree coordination and writes `.aw/workspace.yaml`.
 - Outside git, `aw` still creates a server-side local-directory attachment without exposing your local path.

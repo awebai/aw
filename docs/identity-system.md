@@ -81,7 +81,7 @@ Default outcome:
 
 Explicit alternative:
 
-- `--permanent` for a self-custodial permanent identity
+- `--permanent --name <name>` for a self-custodial permanent identity
 
 ### `aw init`
 
@@ -97,7 +97,7 @@ Default outcome:
 
 Explicit alternative:
 
-- `aw init --permanent`
+- `aw init --permanent --name <name>`
 
 `aw init` no longer means “create whatever kind of hosted identity happens to
 work with the token.” It is only existing-project workspace init.
@@ -109,18 +109,8 @@ Spawn is delegated creation of another workspace identity in the same project.
 - parent workspace creates a short-lived invite
 - child workspace accepts it
 - default child identity is ephemeral
-- `--permanent` allows explicit self-custodial permanent spawn
-
-### `aw identity create-permanent`
-
-Creates a durable self-custodial permanent identity in the current workspace.
-
-- requires an initialized workspace
-- stores the signing key locally
-- prints the key location
-
-This is the explicit permanent-identity path. Permanent self-custody must not
-be an accidental side effect of default init.
+- `aw spawn accept-invite --permanent --name <name>` allows explicit
+  self-custodial permanent spawn
 
 ### `aw connect`
 
@@ -215,7 +205,10 @@ Preferred CLI language:
 - `aw project create`: create a project and first workspace
 - `aw init`: initialize this directory as a workspace in an existing project
 - `aw spawn`: authorize another workspace to join the same project
-- `aw identity create-permanent`: create a durable self-custodial identity
+- `aw project create --permanent --name <name>`: create a permanent first
+  workspace identity
+- `aw init --permanent --name <name>`: initialize a workspace with a permanent
+  self-custodial identity
 - `aw identity decommission`: delete the current ephemeral identity
 
 Language to avoid:

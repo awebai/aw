@@ -32,6 +32,7 @@ var (
 	initNamespaceSlug string
 	initNamespaceName string
 	initAlias         string
+	initName          string
 	initInjectDocs    bool
 	initSetupHooks    bool
 	initHumanName     string
@@ -60,25 +61,25 @@ const (
 )
 
 type initOptions struct {
-	Flow                          initFlow
-	WorkingDir                    string
-	BaseURL                       string
-	ServerName                    string
-	NamespaceSlug                 string
-	NamespaceName                 string
-	Alias                         string
-	AliasExplicit                 bool
-	RetrySuggestedAliasOnConflict bool
-	HumanName                     string
-	AgentType                     string
-	SaveConfig                    bool
-	SetDefault                    bool
-	WriteContext                  bool
-	AuthToken                     string // Bearer token for the selected flow
-	InviteToken                   string
-	AccountName                   string
-	WorkspaceRole                 string
-	Lifetime                      string // "ephemeral" (default) or "persistent"
+	Flow                           initFlow
+	WorkingDir                     string
+	BaseURL                        string
+	ServerName                     string
+	NamespaceSlug                  string
+	NamespaceName                  string
+	IdentityHandle                 string
+	IdentityHandleExplicit         bool
+	RetrySuggestedHandleOnConflict bool
+	HumanName                      string
+	AgentType                      string
+	SaveConfig                     bool
+	SetDefault                     bool
+	WriteContext                   bool
+	AuthToken                      string // Bearer token for the selected flow
+	InviteToken                    string
+	AccountName                    string
+	WorkspaceRole                  string
+	Lifetime                       string // "ephemeral" (default) or "persistent"
 }
 
 type initResult struct {
@@ -96,7 +97,8 @@ type initResult struct {
 func init() {
 	initCmd.Flags().StringVar(&initServerURL, "server-url", "", "Base URL for the aweb server (or AWEB_URL). Any URL is accepted; aw probes common mounts (including /api).")
 	initCmd.Flags().StringVar(&initServerURL, "server", "", "Base URL for the aweb server (alias for --server-url)")
-	initCmd.Flags().StringVar(&initAlias, "alias", "", "Identity routing alias (optional; default: server-suggested)")
+	initCmd.Flags().StringVar(&initAlias, "alias", "", "Ephemeral identity routing alias (optional; default: server-suggested)")
+	initCmd.Flags().StringVar(&initName, "name", "", "Permanent identity name (required with --permanent)")
 	initCmd.Flags().BoolVar(&initInjectDocs, "inject-docs", false, "Inject aw coordination instructions into CLAUDE.md and AGENTS.md")
 	initCmd.Flags().BoolVar(&initSetupHooks, "setup-hooks", false, "Set up Claude Code PostToolUse hook for aw notify")
 	initCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
@@ -151,8 +153,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Println("export AWEB_URL=" + result.ExportBaseURL)
 		fmt.Println("export AWEB_API_KEY=" + result.Response.APIKey)
 		fmt.Println("export AWEB_PROJECT=" + result.ExportNamespace)
-		fmt.Println("export AWEB_AGENT_ID=" + result.Response.AgentID)
-		fmt.Println("export AWEB_AGENT_ALIAS=" + result.Response.Alias)
+		fmt.Println("export AWEB_ALIAS=" + result.Response.Alias)
 	}
 	repoRoot := resolveRepoRoot(opts.WorkingDir)
 	if initInjectDocs {
@@ -171,7 +172,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 // initNeedsFullInit returns true if the user passed flags that require the
 // full init flow, or if no .aw/context exists yet (first-time init).
 func initNeedsFullInit() bool {
-	if initServerURL != "" || initAlias != "" || initRole != "" || initPermanent {
+	if initServerURL != "" || initAlias != "" || initName != "" || initRole != "" || initPermanent {
 		return true
 	}
 	if strings.TrimSpace(os.Getenv("AWEB_API_KEY")) != "" {
@@ -185,6 +186,9 @@ func initNeedsFullInit() bool {
 func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 	workingDir, err := os.Getwd()
 	if err != nil {
+		return initOptions{}, err
+	}
+	if err := validateInitIdentityFlags(); err != nil {
 		return initOptions{}, err
 	}
 
@@ -254,20 +258,28 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 
 	// --- Alias ---
 
-	alias := strings.TrimSpace(initAlias)
-	aliasExplicit := alias != ""
-	if !aliasExplicit {
-		alias = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
-		aliasExplicit = alias != ""
-	}
-	if !aliasExplicit {
-		if !isTTY() && flow == flowProjectKey {
-			return initOptions{}, usageError("--alias is required when initializing an existing project workspace non-interactively")
+	handle := ""
+	handleExplicit := false
+	retrySuggestedHandleOnConflict := false
+	if initPermanent {
+		handle = strings.TrimSpace(initName)
+		handleExplicit = true
+	} else {
+		handle = strings.TrimSpace(initAlias)
+		handleExplicit = handle != ""
+		if !handleExplicit {
+			handle = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
+			handleExplicit = handle != ""
 		}
-		if suggestion != nil && strings.TrimSpace(suggestion.NamePrefix) != "" {
-			alias = strings.TrimSpace(suggestion.NamePrefix)
-		} else {
-			alias = "alice"
+		if !handleExplicit {
+			if !isTTY() && flow == flowProjectKey {
+				return initOptions{}, usageError("--alias is required when initializing an existing project workspace non-interactively")
+			}
+			if suggestion != nil && strings.TrimSpace(suggestion.NamePrefix) != "" {
+				handle = strings.TrimSpace(suggestion.NamePrefix)
+			} else {
+				handle = "alice"
+			}
 		}
 	}
 
@@ -281,40 +293,61 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 
 	// --- TTY prompts for alias (after role, so prompts are in logical order) ---
 
-	aliasWasDefaultSuggestion := !aliasExplicit
-	if isTTY() && !aliasExplicit {
-		v, err := promptString("Alias", alias)
-		if err != nil {
-			return initOptions{}, err
+	if !initPermanent {
+		handleWasDefaultSuggestion := !handleExplicit
+		if isTTY() && !handleExplicit {
+			v, err := promptString("Alias", handle)
+			if err != nil {
+				return initOptions{}, err
+			}
+			handleWasDefaultSuggestion = v == handle
+			handle = strings.TrimSpace(v)
+			if handle == "" {
+				handle = "alice"
+				handleWasDefaultSuggestion = true
+			}
 		}
-		aliasWasDefaultSuggestion = v == alias
-		alias = strings.TrimSpace(v)
-		if alias == "" {
-			alias = "alice"
-			aliasWasDefaultSuggestion = true
-		}
+		retrySuggestedHandleOnConflict = handleWasDefaultSuggestion && !handleExplicit
 	}
 
 	return initOptions{
-		Flow:                          flow,
-		WorkingDir:                    workingDir,
-		BaseURL:                       baseURL,
-		ServerName:                    serverName,
-		NamespaceSlug:                 nsSlug,
-		NamespaceName:                 nsName,
-		Alias:                         alias,
-		AliasExplicit:                 aliasExplicit,
-		RetrySuggestedAliasOnConflict: aliasWasDefaultSuggestion && !aliasExplicit,
-		HumanName:                     humanName,
-		AgentType:                     agentType,
-		SaveConfig:                    initSaveConfig,
-		SetDefault:                    initSetDefault,
-		WriteContext:                  initWriteContext,
-		AuthToken:                     authToken,
-		AccountName:                   accountName,
-		WorkspaceRole:                 role,
-		Lifetime:                      resolveInitLifetime(initPermanent),
+		Flow:                           flow,
+		WorkingDir:                     workingDir,
+		BaseURL:                        baseURL,
+		ServerName:                     serverName,
+		NamespaceSlug:                  nsSlug,
+		NamespaceName:                  nsName,
+		IdentityHandle:                 handle,
+		IdentityHandleExplicit:         handleExplicit,
+		RetrySuggestedHandleOnConflict: retrySuggestedHandleOnConflict,
+		HumanName:                      humanName,
+		AgentType:                      agentType,
+		SaveConfig:                     initSaveConfig,
+		SetDefault:                     initSetDefault,
+		WriteContext:                   initWriteContext,
+		AuthToken:                      authToken,
+		AccountName:                    accountName,
+		WorkspaceRole:                  role,
+		Lifetime:                       resolveInitLifetime(initPermanent),
 	}, nil
+}
+
+func validateInitIdentityFlags() error {
+	alias := strings.TrimSpace(initAlias)
+	name := strings.TrimSpace(initName)
+	if initPermanent {
+		if alias != "" {
+			return usageError("--alias cannot be used with --permanent; use --name")
+		}
+		if name == "" {
+			return usageError("--name is required with --permanent")
+		}
+		return nil
+	}
+	if name != "" {
+		return usageError("--name can only be used with --permanent")
+	}
+	return nil
 }
 
 func resolveNamespaceSlug() string {
@@ -440,15 +473,15 @@ func executeInit(opts initOptions) (*initResult, error) {
 		Custody:     awid.CustodySelf,
 		Lifetime:    lifetime,
 	}
-	if strings.TrimSpace(opts.Alias) != "" {
-		alias := strings.TrimSpace(opts.Alias)
-		req.Alias = &alias
+	if strings.TrimSpace(opts.IdentityHandle) != "" {
+		handle := strings.TrimSpace(opts.IdentityHandle)
+		req.Alias = &handle
 	}
 
 	var resp *awid.InitResponse
 	switch opts.Flow {
 	case flowInvite:
-		resp, err = acceptInviteViaCloud(ctx, opts.BaseURL, opts.InviteToken, opts.Alias, opts.HumanName, opts.AgentType, did, pubKeyB64, lifetime)
+		resp, err = acceptInviteViaCloud(ctx, opts.BaseURL, opts.InviteToken, opts.IdentityHandle, opts.HumanName, opts.AgentType, did, pubKeyB64, lifetime)
 
 	case flowProjectKey:
 		var client *aweb.Client
@@ -467,7 +500,7 @@ func executeInit(opts initOptions) (*initResult, error) {
 		resp, err = tryHeadlessOrInit(ctx, client, req, opts.BaseURL)
 		// On alias conflict, transition HEADLESS → PROJECT_KEY: use the
 		// returned aw_sk_ key for authenticated retry via /v1/init.
-		if err == nil && opts.RetrySuggestedAliasOnConflict && !resp.Created {
+		if err == nil && opts.RetrySuggestedHandleOnConflict && !resp.Created {
 			if strings.TrimSpace(resp.APIKey) != "" {
 				retryClient, retryErr := aweb.NewWithAPIKey(opts.BaseURL, resp.APIKey)
 				if retryErr != nil {
@@ -604,7 +637,11 @@ func printInitSummary(resp *awid.InitResponse, accountName, serverName, role str
 	}
 	fmt.Println(headline)
 	if strings.TrimSpace(resp.Alias) != "" {
-		fmt.Printf("Alias:      %s\n", strings.TrimSpace(resp.Alias))
+		label := "Alias"
+		if awid.IdentityClassFromLifetime(resp.Lifetime) == awid.IdentityClassPermanent {
+			label = "Name"
+		}
+		fmt.Printf("%-11s %s\n", label+":", strings.TrimSpace(resp.Alias))
 	}
 	if identityClass := describeIdentityClass(strings.TrimSpace(resp.Lifetime)); identityClass != "" {
 		fmt.Printf("Identity:   %s\n", identityClass)
@@ -674,10 +711,12 @@ func tryHeadlessOrInit(
 	if initReq.Alias != nil {
 		alias = *initReq.Alias
 	}
-	// Headless bootstrap requires alias. Without one, fall back to
-	// /v1/init which supports server-allocated aliases. If that also
-	// fails (hosted servers may not expose /v1/init), surface an error
-	// asking the user to specify --alias explicitly.
+	// Headless bootstrap requires an explicit identifier. For ephemeral
+	// identities that is a routing alias; for permanent identities the CLI
+	// requires --name and maps it into the transport field here.
+	// Without an explicit identifier, fall back to /v1/init which supports
+	// server-allocated ephemeral aliases. If that also fails, surface an
+	// error asking the user to specify --alias explicitly.
 	if alias == "" {
 		resp, initErr := client.Init(ctx, initReq)
 		if initErr == nil {
