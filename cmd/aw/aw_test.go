@@ -410,6 +410,27 @@ func TestAwWhoAmIIsCanonicalCommandName(t *testing.T) {
 	}
 }
 
+func TestAwInitRejectsProjectOverrideFlag(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+
+	run := exec.CommandContext(ctx, bin, "init", "--project", "demo")
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected aw init --project to fail, got success:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), `unknown flag: --project`) {
+		t.Fatalf("expected unknown flag error for aw init --project:\n%s", string(out))
+	}
+}
+
 func TestAwIntrospectServerFlagSelectsConfiguredServer(t *testing.T) {
 	t.Parallel()
 
@@ -2500,7 +2521,6 @@ func TestAwInitProjectKeyRoutesToOSSInit(t *testing.T) {
 
 	run := exec.CommandContext(ctx, bin, "init",
 		"--server-url", server.URL,
-		"--project", "livepub",
 		"--alias", "coordinator",
 		"--write-context=false",
 	)

@@ -96,8 +96,6 @@ type initResult struct {
 func init() {
 	initCmd.Flags().StringVar(&initServerURL, "server-url", "", "Base URL for the aweb server (or AWEB_URL). Any URL is accepted; aw probes common mounts (including /api).")
 	initCmd.Flags().StringVar(&initServerURL, "server", "", "Base URL for the aweb server (alias for --server-url)")
-	initCmd.Flags().StringVar(&initNamespaceSlug, "project", "", "Project slug (default: AWEB_PROJECT_SLUG, AWEB_PROJECT, or prompt in TTY)")
-	initCmd.Flags().StringVar(&initNamespaceName, "project-name", "", "Project display name (default: AWEB_PROJECT_NAME or project slug)")
 	initCmd.Flags().StringVar(&initAlias, "alias", "", "Identity routing alias (optional; default: server-suggested)")
 	initCmd.Flags().BoolVar(&initInjectDocs, "inject-docs", false, "Inject aw coordination instructions into CLAUDE.md and AGENTS.md")
 	initCmd.Flags().BoolVar(&initSetupHooks, "setup-hooks", false, "Set up Claude Code PostToolUse hook for aw notify")
@@ -173,8 +171,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 // initNeedsFullInit returns true if the user passed flags that require the
 // full init flow, or if no .aw/context exists yet (first-time init).
 func initNeedsFullInit() bool {
-	if initServerURL != "" || initNamespaceSlug != "" || initAlias != "" ||
-		initRole != "" || initPermanent {
+	if initServerURL != "" || initAlias != "" || initRole != "" || initPermanent {
 		return true
 	}
 	if strings.TrimSpace(os.Getenv("AWEB_API_KEY")) != "" {
@@ -217,16 +214,22 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 
 	// --- Suggestion (one call, reused for namespace + alias + roles) ---
 
-	nsSlugForSuggestion := resolveNamespaceSlug()
+	nsSlugForSuggestion := ""
+	if flow != flowProjectKey {
+		nsSlugForSuggestion = resolveNamespaceSlug()
+	}
 	suggestion := fetchInitSuggestion(baseURL, nsSlugForSuggestion, authToken)
 
 	// --- Project ---
 
-	nsSlug := resolveNamespaceSlug()
+	nsSlug := ""
+	if flow != flowProjectKey {
+		nsSlug = resolveNamespaceSlug()
+	}
 	if nsSlug == "" && suggestion != nil {
 		nsSlug = strings.TrimSpace(suggestion.ProjectSlug)
 	}
-	if nsSlug == "" {
+	if nsSlug == "" && flow != flowProjectKey {
 		if isTTY() {
 			suggested := sanitizeSlug(filepath.Base(workingDir))
 			v, err := promptString("Project", suggested)
@@ -240,7 +243,7 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 	}
 
 	nsName := strings.TrimSpace(initNamespaceName)
-	if nsName == "" {
+	if nsName == "" && flow != flowProjectKey {
 		nsName = strings.TrimSpace(os.Getenv("AWEB_PROJECT_NAME"))
 	}
 

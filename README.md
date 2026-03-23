@@ -75,7 +75,7 @@ aw mail inbox --unread-only
 # Initialize another local workspace inside an existing project
 AWEB_URL=http://localhost:8001 \
 AWEB_API_KEY=aw_sk_project_key \
-aw init --project demo --alias analyst
+aw init --alias analyst
 
 # Accept a delegated spawn invite into a child workspace
 aw spawn accept-invite aw_inv_...
