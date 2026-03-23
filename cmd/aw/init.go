@@ -19,7 +19,7 @@ import (
 
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Create and use an agent",
+	Short: "Initialize a local workspace in an existing project",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		loadDotenvBestEffort()
 		// No heartbeat for init — no credentials yet.
@@ -28,79 +28,70 @@ var initCmd = &cobra.Command{
 }
 
 var (
-	initServerURL       string
-	initNamespaceSlug   string
-	initNamespaceName   string
-	initAlias           string
-	initInviteToken     string
-	initInjectDocs      bool
-	initSetupHooks      bool
-	initHumanName       string
-	initAgentType       string
-	initSaveConfig      bool
-	initSetDefault      bool
-	initWriteContext    bool
-	initPrintExports    bool
-	initCloudToken      string
-	initCloudMode       bool
-	initTargetNamespace string
-	initRole            string
+	initServerURL     string
+	initProjectSlug   string
+	initProjectName   string
+	initNamespaceSlug string
+	initAlias         string
+	initName          string
+	initReachability  string
+	initInjectDocs    bool
+	initSetupHooks    bool
+	initHumanName     string
+	initAgentType     string
+	initSaveConfig    bool
+	initSetDefault    bool
+	initWriteContext  bool
+	initPrintExports  bool
+	initRole          string
+	initPermanent     bool
 )
 
-// initFlow identifies which bootstrap path to use. Determined once at the
-// start of collectInitOptions and never re-evaluated.
+// initFlow identifies which clean-slate workspace/identity creation path to use.
 type initFlow int
 
 const (
-	// flowHeadless is the Tier 1 path: no credentials, creates a new tenant.
-	// Endpoint: /api/v1/bootstrap/headless-agent (hosted) or /v1/init (self-hosted).
+	// flowHeadless creates a project plus its first workspace identity.
 	flowHeadless initFlow = iota
 
-	// flowProjectKey is the Tier 2 path: AWEB_API_KEY=aw_sk_... from the
-	// dashboard. The key is project-scoped; the server creates the agent in
-	// the project the key belongs to.
-	// Endpoint: /v1/init with Bearer aw_sk_...
+	// flowProjectKey initializes a workspace inside an existing project using
+	// project authority.
 	flowProjectKey
 
-	// flowInvite accepts a CLI invite token.
-	// Endpoint: cloud invite accept.
+	// flowInvite accepts a spawn invite into another workspace.
 	flowInvite
-
-	// flowCloudJWT uses a cloud JWT or non-aw_sk_ token for authenticated
-	// bootstrap into an existing org.
-	// Endpoint: /api/v1/agents/bootstrap.
-	flowCloudJWT
 )
 
 type initOptions struct {
-	Flow                          initFlow
-	WorkingDir                    string
-	BaseURL                       string
-	ServerName                    string
-	NamespaceSlug                 string
-	NamespaceName                 string
-	Alias                         string
-	AliasExplicit                 bool
-	RetrySuggestedAliasOnConflict bool
-	HumanName                     string
-	AgentType                     string
-	SaveConfig                    bool
-	SetDefault                    bool
-	WriteContext                  bool
-	AuthToken                     string // Bearer token for the selected flow
-	TargetNamespace               string
-	InviteToken                   string
-	AccountName                   string
-	WorkspaceRole                 string
-	Lifetime                      string // "persistent" (default) or "ephemeral"
+	Flow                initFlow
+	WorkingDir          string
+	BaseURL             string
+	ServerName          string
+	ProjectSlug         string
+	ProjectName         string
+	NamespaceSlug       string
+	IdentityAlias       string
+	IdentityName        string
+	AddressReachability string
+	HumanName           string
+	AgentType           string
+	SaveConfig          bool
+	SetDefault          bool
+	WriteContext        bool
+	AuthToken           string // Bearer token for the selected flow
+	InviteToken         string
+	AccountName         string
+	WorkspaceRole       string
+	Lifetime            string // "ephemeral" (default) or "persistent"
 }
 
 type initResult struct {
-	Response        *awid.InitResponse
+	Response        *awid.BootstrapIdentityResponse
 	AccountName     string
 	ServerName      string
 	Role            string
 	AttachResult    *contextAttachResult
+	SigningKeyPath  string
 	ExportBaseURL   string
 	ExportNamespace string
 	JoinedViaInvite bool
@@ -109,29 +100,26 @@ type initResult struct {
 func init() {
 	initCmd.Flags().StringVar(&initServerURL, "server-url", "", "Base URL for the aweb server (or AWEB_URL). Any URL is accepted; aw probes common mounts (including /api).")
 	initCmd.Flags().StringVar(&initServerURL, "server", "", "Base URL for the aweb server (alias for --server-url)")
-	initCmd.Flags().StringVar(&initNamespaceSlug, "namespace", "", "Namespace slug (default: AWEB_NAMESPACE or prompt in TTY)")
-	initCmd.Flags().StringVar(&initNamespaceName, "namespace-name", "", "Namespace display name (default: AWEB_NAMESPACE_NAME or namespace slug)")
-	initCmd.Flags().StringVar(&initAlias, "alias", "", "Agent alias (optional; default: server-suggested)")
-	initCmd.Flags().StringVar(&initInviteToken, "invite", "", "CLI invite token (aw_inv_...)")
+	initCmd.Flags().StringVar(&initAlias, "alias", "", "Ephemeral identity routing alias (optional; default: server-suggested)")
+	initCmd.Flags().StringVar(&initName, "name", "", "Permanent identity name (required with --permanent)")
+	initCmd.Flags().StringVar(&initReachability, "reachability", "", "Permanent address reachability (private|org-visible|contacts-only|public)")
 	initCmd.Flags().BoolVar(&initInjectDocs, "inject-docs", false, "Inject aw coordination instructions into CLAUDE.md and AGENTS.md")
 	initCmd.Flags().BoolVar(&initSetupHooks, "setup-hooks", false, "Set up Claude Code PostToolUse hook for aw notify")
 	initCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
-	initCmd.Flags().StringVar(&initAgentType, "agent-type", "", "Agent type (default: AWEB_AGENT_TYPE or agent)")
+	initCmd.Flags().StringVar(&initAgentType, "agent-type", "", "Runtime type (default: AWEB_AGENT_TYPE or agent)")
 	initCmd.Flags().BoolVar(&initSaveConfig, "save-config", true, "Write/update ~/.config/aw/config.yaml with the new credentials")
 	initCmd.Flags().BoolVar(&initSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
 	initCmd.Flags().BoolVar(&initWriteContext, "write-context", true, "Write/update .aw/context in the current directory (non-secret pointer)")
 	initCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
-	initCmd.Flags().StringVar(&initCloudToken, "cloud-token", "", "Cloud auth bearer token for hosted aweb-cloud bootstrap (default: AWEB_CLOUD_TOKEN, then AWEB_API_KEY if non-aw_sk_, then existing aw_sk_ keys from config)")
-	initCmd.Flags().BoolVar(&initCloudMode, "cloud", false, "Force hosted aweb-cloud bootstrap mode (skip probing /v1/init)")
-	initCmd.Flags().StringVar(&initTargetNamespace, "target-namespace", "", "Create agent in a specific namespace (forces cloud mode; requires --alias)")
-	initCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (default: AWEB_ROLE or prompt in TTY, fallback: developer)")
+	initCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (must match a role in the active project policy)")
+	initCmd.Flags().BoolVar(&initPermanent, "permanent", false, "Create a durable self-custodial identity instead of the default ephemeral identity")
 
 	rootCmd.AddCommand(initCmd)
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
 	// When only --inject-docs or --setup-hooks are requested, operate on the
-	// existing workspace without running the full init/register flow.
+	// existing workspace without running the full init flow.
 	if (initInjectDocs || initSetupHooks) && !initNeedsFullInit() {
 		wd, _ := os.Getwd()
 		repoRoot := resolveRepoRoot(wd)
@@ -145,7 +133,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	opts, err := collectInitOptions()
+	if strings.TrimSpace(os.Getenv("AWEB_API_KEY")) == "" {
+		return usageError("aw init now initializes a workspace in an existing project; set AWEB_API_KEY to a project-scoped key or use `aw project create`")
+	}
+
+	opts, err := collectInitOptionsForFlow(flowProjectKey)
 	if err != nil {
 		return err
 	}
@@ -157,16 +149,17 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if jsonFlag {
 		printJSON(result.Response)
 	} else {
-		printInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.JoinedViaInvite)
+		printInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.SigningKeyPath, "Initialized workspace")
 	}
 	if initPrintExports {
 		fmt.Println("")
 		fmt.Println("# Copy/paste to configure your shell:")
 		fmt.Println("export AWEB_URL=" + result.ExportBaseURL)
 		fmt.Println("export AWEB_API_KEY=" + result.Response.APIKey)
-		fmt.Println("export AWEB_NAMESPACE=" + result.ExportNamespace)
-		fmt.Println("export AWEB_AGENT_ID=" + result.Response.AgentID)
-		fmt.Println("export AWEB_AGENT_ALIAS=" + result.Response.Alias)
+		fmt.Println("export AWEB_PROJECT=" + result.ExportNamespace)
+		if strings.TrimSpace(result.Response.Alias) != "" {
+			fmt.Println("export AWEB_ALIAS=" + result.Response.Alias)
+		}
 	}
 	repoRoot := resolveRepoRoot(opts.WorkingDir)
 	if initInjectDocs {
@@ -183,15 +176,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 }
 
 // initNeedsFullInit returns true if the user passed flags that require the
-// full register flow, or if no .aw/context exists yet (first-time init).
+// full init flow, or if no .aw/context exists yet (first-time init).
 func initNeedsFullInit() bool {
-	if initServerURL != "" || initNamespaceSlug != "" || initAlias != "" ||
-		initInviteToken != "" || initCloudMode || initCloudToken != "" ||
-		initTargetNamespace != "" || initRole != "" {
+	if initServerURL != "" || initAlias != "" || initName != "" || initReachability != "" || initRole != "" || initPermanent {
 		return true
 	}
-	if strings.TrimSpace(os.Getenv("AWEB_API_KEY")) != "" ||
-		strings.TrimSpace(os.Getenv("AWEB_CLOUD_TOKEN")) != "" {
+	if strings.TrimSpace(os.Getenv("AWEB_API_KEY")) != "" {
 		return true
 	}
 	wd, _ := os.Getwd()
@@ -199,68 +189,20 @@ func initNeedsFullInit() bool {
 	return err != nil
 }
 
-// detectInitFlow determines which bootstrap path to use based on CLI flags
-// and environment variables. Called once at the start of collectInitOptions.
-func detectInitFlow() initFlow {
-	inviteToken := strings.TrimSpace(initInviteToken)
-	if inviteToken != "" {
-		return flowInvite
-	}
-
-	// Explicit cloud mode flags.
-	if initCloudMode || strings.TrimSpace(initTargetNamespace) != "" {
-		return flowCloudJWT
-	}
-	if strings.TrimSpace(initCloudToken) != "" {
-		return flowCloudJWT
-	}
-	if v := strings.TrimSpace(os.Getenv("AWEB_CLOUD_TOKEN")); v != "" {
-		return flowCloudJWT
-	}
-
-	// AWEB_API_KEY distinguishes project key from cloud JWT.
-	if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); v != "" {
-		if strings.HasPrefix(v, "aw_sk_") {
-			return flowProjectKey
-		}
-		return flowCloudJWT
-	}
-
-	return flowHeadless
-}
-
-func collectInitOptions() (initOptions, error) {
+func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 	workingDir, err := os.Getwd()
 	if err != nil {
 		return initOptions{}, err
 	}
-
-	flow := detectInitFlow()
+	if err := validateInitIdentityFlags(); err != nil {
+		return initOptions{}, err
+	}
 
 	// --- Validation ---
 
-	inviteToken := strings.TrimSpace(initInviteToken)
-	targetNamespace := strings.TrimSpace(initTargetNamespace)
-	if inviteToken != "" && !strings.HasPrefix(inviteToken, "aw_inv_") {
-		return initOptions{}, usageError("invalid --invite token (expected aw_inv_...)")
-	}
-	if flow == flowInvite {
-		if targetNamespace != "" || resolveNamespaceSlug() != "" ||
-			strings.TrimSpace(initNamespaceName) != "" || initCloudMode || strings.TrimSpace(initCloudToken) != "" {
-			return initOptions{}, usageError("--invite cannot be combined with namespace/bootstrap flags")
-		}
-	}
-	if targetNamespace != "" {
-		aliasFromFlag := strings.TrimSpace(initAlias)
-		aliasFromEnv := strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
-		if aliasFromFlag == "" && aliasFromEnv == "" {
-			return initOptions{}, usageError("--target-namespace requires --alias (server cannot auto-assign in a specific namespace)")
-		}
-	}
-
 	// --- Base URL and server resolution ---
 
-	baseURL, serverName, global, err := resolveBaseURLForInit(initServerURL, serverFlag)
+	baseURL, serverName, _, err := resolveBaseURLForInit(initServerURL, serverFlag)
 	if err != nil {
 		return initOptions{}, err
 	}
@@ -272,43 +214,55 @@ func collectInitOptions() (initOptions, error) {
 	switch flow {
 	case flowProjectKey:
 		authToken = strings.TrimSpace(os.Getenv("AWEB_API_KEY"))
-	case flowCloudJWT:
-		authToken = resolveCloudToken(baseURL, serverName, accountName, strings.TrimSpace(initCloudToken), global)
-	}
-
-	// --- Suggestion (one call, reused for namespace + alias + roles) ---
-
-	var suggestion *awid.SuggestAliasPrefixResponse
-	if flow != flowInvite {
-		nsSlugForSuggestion := resolveNamespaceSlug()
-		suggestion = fetchInitSuggestion(baseURL, nsSlugForSuggestion, authToken)
-	}
-
-	// --- Namespace ---
-
-	nsSlug := resolveNamespaceSlug()
-	if nsSlug == "" && suggestion != nil {
-		nsSlug = strings.TrimSpace(suggestion.ProjectSlug)
-	}
-	if nsSlug == "" && flow != flowInvite {
-		if isTTY() {
-			suggested := sanitizeSlug(filepath.Base(workingDir))
-			v, err := promptString("Namespace", suggested)
-			if err != nil {
-				return initOptions{}, err
-			}
-			nsSlug = v
-		} else {
-			return initOptions{}, usageError("missing namespace (use --namespace or AWEB_NAMESPACE)")
+		if authToken == "" {
+			return initOptions{}, usageError("aw init requires AWEB_API_KEY with a project-scoped key; use `aw project create` for a new project")
+		}
+		if !strings.HasPrefix(authToken, "aw_sk_") {
+			return initOptions{}, usageError("aw init requires a project-scoped API key (aw_sk_...). Hosted permanent identities are created from the dashboard")
 		}
 	}
 
-	nsName := strings.TrimSpace(initNamespaceName)
-	if nsName == "" {
-		nsName = strings.TrimSpace(os.Getenv("AWEB_NAMESPACE_NAME"))
+	// --- Suggestion (one call, reused for project + alias + roles) ---
+
+	projectSlugForSuggestion := ""
+	if flow != flowProjectKey {
+		projectSlugForSuggestion = resolveProjectSlug()
 	}
-	if nsName == "" {
-		nsName = strings.TrimSpace(os.Getenv("AWEB_PROJECT_NAME"))
+	suggestion := fetchInitSuggestion(baseURL, projectSlugForSuggestion, authToken)
+
+	// --- Project ---
+
+	projectSlug := ""
+	if flow != flowProjectKey {
+		projectSlug = resolveProjectSlug()
+	}
+	if projectSlug == "" && suggestion != nil {
+		projectSlug = strings.TrimSpace(suggestion.ProjectSlug)
+	}
+	if projectSlug == "" && flow != flowProjectKey {
+		if isTTY() {
+			suggested := sanitizeSlug(filepath.Base(workingDir))
+			v, err := promptString("Project", suggested)
+			if err != nil {
+				return initOptions{}, err
+			}
+			projectSlug = v
+		} else {
+			return initOptions{}, usageError("missing project slug (use --project or AWEB_PROJECT)")
+		}
+	}
+
+	projectName := strings.TrimSpace(initProjectName)
+	if projectName == "" && flow != flowProjectKey {
+		projectName = strings.TrimSpace(os.Getenv("AWEB_PROJECT_NAME"))
+	}
+
+	namespaceSlug := ""
+	if flow == flowHeadless {
+		namespaceSlug = resolveExplicitNamespaceSlug()
+		if namespaceSlug == "" {
+			namespaceSlug = projectSlug
+		}
 	}
 
 	// --- Human name and agent type ---
@@ -316,83 +270,132 @@ func collectInitOptions() (initOptions, error) {
 	humanName := resolveHumanName()
 	agentType := resolveAgentType()
 
-	// --- Alias ---
+	// --- Identity handle ---
 
-	alias := strings.TrimSpace(initAlias)
-	aliasExplicit := alias != ""
-	if !aliasExplicit {
-		alias = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
+	alias := ""
+	aliasExplicit := false
+	name := ""
+	if initPermanent {
+		name = strings.TrimSpace(initName)
+	} else {
+		alias = strings.TrimSpace(initAlias)
 		aliasExplicit = alias != ""
-	}
-	if !aliasExplicit && flow != flowInvite {
-		if !isTTY() && (flow == flowProjectKey || flow == flowCloudJWT) {
-			return initOptions{}, usageError("--alias is required when bootstrapping with an API key (non-interactive)")
+		if !aliasExplicit {
+			alias = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
+			aliasExplicit = alias != ""
 		}
-		if suggestion != nil && strings.TrimSpace(suggestion.NamePrefix) != "" {
-			alias = strings.TrimSpace(suggestion.NamePrefix)
-		} else {
-			alias = "alice"
+		if !aliasExplicit {
+			if !isTTY() && flow == flowProjectKey {
+				return initOptions{}, usageError("--alias is required when initializing an existing project workspace non-interactively")
+			}
+			if suggestion != nil && strings.TrimSpace(suggestion.NamePrefix) != "" {
+				alias = strings.TrimSpace(suggestion.NamePrefix)
+			}
 		}
 	}
 
 	// --- Role ---
 
-	var suggestedRoles []string
-	if suggestion != nil {
-		suggestedRoles = suggestion.Roles
-	}
-	role := resolveRole(suggestedRoles, flow != flowInvite)
+	role := resolveRequestedRole()
 
 	// --- TTY prompts for alias (after role, so prompts are in logical order) ---
 
-	aliasWasDefaultSuggestion := !aliasExplicit && flow != flowInvite
-	if isTTY() && !aliasExplicit && flow != flowInvite {
-		v, err := promptString("Agent alias", alias)
-		if err != nil {
-			return initOptions{}, err
+	if !initPermanent {
+		if isTTY() && !aliasExplicit {
+			v, err := promptRequiredString("Alias", alias)
+			if err != nil {
+				return initOptions{}, err
+			}
+			alias = strings.TrimSpace(v)
 		}
-		aliasWasDefaultSuggestion = v == alias
-		alias = strings.TrimSpace(v)
-		if alias == "" {
-			alias = "alice"
-			aliasWasDefaultSuggestion = true
+		if strings.TrimSpace(alias) == "" {
+			return initOptions{}, usageError("alias is required (use --alias or accept a server-suggested alias)")
 		}
 	}
 
 	return initOptions{
-		Flow:                          flow,
-		WorkingDir:                    workingDir,
-		BaseURL:                       baseURL,
-		ServerName:                    serverName,
-		NamespaceSlug:                 nsSlug,
-		NamespaceName:                 nsName,
-		Alias:                         alias,
-		AliasExplicit:                 aliasExplicit,
-		RetrySuggestedAliasOnConflict: aliasWasDefaultSuggestion && !aliasExplicit,
-		HumanName:                     humanName,
-		AgentType:                     agentType,
-		SaveConfig:                    initSaveConfig,
-		SetDefault:                    initSetDefault,
-		WriteContext:                  initWriteContext,
-		AuthToken:                     authToken,
-		TargetNamespace:               targetNamespace,
-		InviteToken:                   inviteToken,
-		AccountName:                   accountName,
-		WorkspaceRole:                 role,
+		Flow:                flow,
+		WorkingDir:          workingDir,
+		BaseURL:             baseURL,
+		ServerName:          serverName,
+		ProjectSlug:         projectSlug,
+		ProjectName:         projectName,
+		NamespaceSlug:       namespaceSlug,
+		IdentityAlias:       alias,
+		IdentityName:        name,
+		AddressReachability: normalizeAddressReachability(strings.TrimSpace(initReachability)),
+		HumanName:           humanName,
+		AgentType:           agentType,
+		SaveConfig:          initSaveConfig,
+		SetDefault:          initSetDefault,
+		WriteContext:        initWriteContext,
+		AuthToken:           authToken,
+		AccountName:         accountName,
+		WorkspaceRole:       role,
+		Lifetime:            resolveInitLifetime(initPermanent),
 	}, nil
 }
 
-func resolveNamespaceSlug() string {
-	if v := strings.TrimSpace(initNamespaceSlug); v != "" {
-		return v
+func validateInitIdentityFlags() error {
+	alias := strings.TrimSpace(initAlias)
+	name := strings.TrimSpace(initName)
+	reachability := normalizeAddressReachability(strings.TrimSpace(initReachability))
+	if initReachability != "" && reachability == "" {
+		return usageError("invalid --reachability (use private|org-visible|contacts-only|public)")
 	}
-	if v := strings.TrimSpace(os.Getenv("AWEB_NAMESPACE")); v != "" {
+	if initPermanent {
+		if alias != "" {
+			return usageError("--alias cannot be used with --permanent; use --name")
+		}
+		if name == "" {
+			return usageError("--name is required with --permanent")
+		}
+		return nil
+	}
+	if name != "" {
+		return usageError("--name can only be used with --permanent")
+	}
+	if reachability != "" {
+		return usageError("--reachability can only be used with --permanent")
+	}
+	return nil
+}
+
+func normalizeAddressReachability(raw string) string {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "":
+		return ""
+	case "private":
+		return "private"
+	case "org-visible":
+		return "org-visible"
+	case "contacts-only":
+		return "contacts-only"
+	case "public":
+		return "public"
+	default:
+		return ""
+	}
+}
+
+func resolveProjectSlug() string {
+	if v := strings.TrimSpace(initProjectSlug); v != "" {
 		return v
 	}
 	if v := strings.TrimSpace(os.Getenv("AWEB_PROJECT_SLUG")); v != "" {
 		return v
 	}
 	if v := strings.TrimSpace(os.Getenv("AWEB_PROJECT")); v != "" {
+		return v
+	}
+	return ""
+}
+
+func resolveExplicitNamespaceSlug() string {
+	if v := strings.TrimSpace(initNamespaceSlug); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("AWEB_NAMESPACE_SLUG")); v != "" {
 		return v
 	}
 	return ""
@@ -424,28 +427,12 @@ func resolveAgentType() string {
 	return "agent"
 }
 
-func resolveRole(suggestedRoles []string, allowPrompt bool) string {
+func resolveRequestedRole() string {
 	role := strings.TrimSpace(initRole)
 	if role == "" {
 		role = strings.TrimSpace(os.Getenv("AWEB_ROLE"))
 	}
-	if role != "" {
-		role = normalizeWorkspaceRole(role)
-		return role
-	}
-	if allowPrompt && isTTY() {
-		defaultRole := "developer"
-		if len(suggestedRoles) > 0 {
-			defaultRole = suggestedRoles[0]
-			fmt.Fprintf(os.Stderr, "Available roles: %s\n", strings.Join(suggestedRoles, ", "))
-		}
-		v, _ := promptString("Role", defaultRole)
-		role = normalizeWorkspaceRole(strings.TrimSpace(v))
-		if role != "" {
-			return role
-		}
-	}
-	return "developer"
+	return normalizeWorkspaceRole(role)
 }
 
 // fetchInitSuggestion calls the suggest-alias-prefix endpoint.
@@ -489,34 +476,19 @@ func executeInit(opts initOptions) (*initResult, error) {
 	did := awid.ComputeDIDKey(pub)
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
-	namespaceName := strings.TrimSpace(opts.NamespaceName)
-	if namespaceName == "" {
-		namespaceName = strings.TrimSpace(opts.NamespaceSlug)
+	projectName := strings.TrimSpace(opts.ProjectName)
+	if projectName == "" {
+		projectName = strings.TrimSpace(opts.ProjectSlug)
 	}
-	lifetime := resolveInitLifetime(opts.Lifetime)
-
-	req := &awid.InitRequest{
-		ProjectSlug: opts.NamespaceSlug,
-		ProjectName: namespaceName,
-		HumanName:   opts.HumanName,
-		AgentType:   opts.AgentType,
-		DID:         did,
-		PublicKey:   pubKeyB64,
-		Custody:     awid.CustodySelf,
-		Lifetime:    lifetime,
-	}
-	if strings.TrimSpace(opts.Alias) != "" {
-		alias := strings.TrimSpace(opts.Alias)
-		req.Alias = &alias
+	lifetime := strings.TrimSpace(opts.Lifetime)
+	if lifetime == "" {
+		lifetime = resolveInitLifetime(initPermanent)
 	}
 
-	var resp *awid.InitResponse
+	var resp *awid.BootstrapIdentityResponse
 	switch opts.Flow {
 	case flowInvite:
-		resp, err = acceptInviteViaCloud(ctx, opts.BaseURL, opts.InviteToken, opts.Alias, opts.HumanName, opts.AgentType, did, pubKeyB64, lifetime)
-
-	case flowCloudJWT:
-		resp, err = bootstrapViaCloud(ctx, opts.BaseURL, opts.AuthToken, req, opts.TargetNamespace)
+		resp, err = acceptInviteViaCloud(ctx, opts.BaseURL, opts.InviteToken, opts.IdentityAlias, opts.IdentityName, opts.AddressReachability, opts.HumanName, opts.AgentType, did, pubKeyB64, lifetime)
 
 	case flowProjectKey:
 		var client *aweb.Client
@@ -524,7 +496,26 @@ func executeInit(opts initOptions) (*initResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		resp, err = client.Init(ctx, req)
+		req := &awid.WorkspaceInitRequest{
+			ProjectSlug:         opts.ProjectSlug,
+			ProjectName:         projectName,
+			HumanName:           opts.HumanName,
+			AgentType:           opts.AgentType,
+			DID:                 did,
+			PublicKey:           pubKeyB64,
+			Custody:             awid.CustodySelf,
+			Lifetime:            lifetime,
+			AddressReachability: opts.AddressReachability,
+		}
+		if strings.TrimSpace(opts.IdentityAlias) != "" {
+			alias := strings.TrimSpace(opts.IdentityAlias)
+			req.Alias = &alias
+		}
+		if strings.TrimSpace(opts.IdentityName) != "" {
+			name := strings.TrimSpace(opts.IdentityName)
+			req.Name = &name
+		}
+		resp, err = client.InitWorkspace(ctx, req)
 
 	case flowHeadless:
 		var client *aweb.Client
@@ -532,53 +523,52 @@ func executeInit(opts initOptions) (*initResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		resp, err = tryHeadlessOrInit(ctx, client, req, opts.BaseURL)
-		// On alias conflict, transition HEADLESS → PROJECT_KEY: use the
-		// returned aw_sk_ key for authenticated retry via /v1/init.
-		if err == nil && opts.RetrySuggestedAliasOnConflict && !resp.Created {
-			if strings.TrimSpace(resp.APIKey) != "" {
-				retryClient, retryErr := aweb.NewWithAPIKey(opts.BaseURL, resp.APIKey)
-				if retryErr != nil {
-					err = retryErr
-				} else {
-					req.Alias = nil
-					resp, err = retryClient.Init(ctx, req)
-				}
-			}
+		createReq := &awid.CreateProjectRequest{
+			ProjectSlug:         opts.ProjectSlug,
+			ProjectName:         projectName,
+			NamespaceSlug:       opts.NamespaceSlug,
+			HumanName:           opts.HumanName,
+			AgentType:           opts.AgentType,
+			DID:                 did,
+			PublicKey:           pubKeyB64,
+			Custody:             awid.CustodySelf,
+			Lifetime:            lifetime,
+			AddressReachability: opts.AddressReachability,
 		}
+		if strings.TrimSpace(opts.IdentityAlias) != "" {
+			alias := strings.TrimSpace(opts.IdentityAlias)
+			createReq.Alias = &alias
+		}
+		if strings.TrimSpace(opts.IdentityName) != "" {
+			name := strings.TrimSpace(opts.IdentityName)
+			createReq.Name = &name
+		}
+		resp, err = client.CreateProject(ctx, createReq)
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	// For cloud JWT retry on alias conflict, stay in cloud path.
-	if opts.Flow == flowCloudJWT && opts.RetrySuggestedAliasOnConflict && !resp.Created {
-		req.Alias = nil
-		resp, err = bootstrapViaCloud(ctx, opts.BaseURL, opts.AuthToken, req, opts.TargetNamespace)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	namespaceSlug := strings.TrimSpace(resp.NamespaceSlug)
 	if namespaceSlug == "" {
-		namespaceSlug = strings.TrimSpace(resp.ProjectSlug)
-	}
-	if namespaceSlug == "" {
-		namespaceSlug = strings.TrimSpace(opts.NamespaceSlug)
-	}
-	if resp.Namespace != "" {
-		namespaceSlug = resp.Namespace
+		return nil, fmt.Errorf("identity bootstrap failed: missing namespace_slug in response")
 	}
 
+	handle := strings.TrimSpace(resp.IdentityHandle())
+	if handle == "" {
+		handle = handleFromAddress(resp.Address)
+	}
+	if handle == "" {
+		return nil, fmt.Errorf("identity bootstrap failed: missing identity handle in response")
+	}
 	accountName := strings.TrimSpace(opts.AccountName)
 	if accountName == "" {
-		accountName = deriveAccountName(opts.ServerName, namespaceSlug, resp.Alias)
+		accountName = deriveAccountName(opts.ServerName, namespaceSlug, handle)
 	}
 
 	address := resp.Address
 	if address == "" {
-		address = deriveAgentAddress(resp.NamespaceSlug, resp.ProjectSlug, resp.Alias)
+		address = deriveIdentityAddress(namespaceSlug, "", handle)
 	}
 	cfgPath, err := defaultGlobalPath()
 	if err != nil {
@@ -605,16 +595,16 @@ func executeInit(opts initOptions) (*initResult, error) {
 			}
 			cfg.Servers[opts.ServerName] = awconfig.Server{URL: serverURL}
 			cfg.Accounts[accountName] = awconfig.Account{Account: awid.Account{
-				Server:        opts.ServerName,
-				APIKey:        resp.APIKey,
-				AgentID:       resp.AgentID,
-				AgentAlias:    resp.Alias,
-				NamespaceSlug: namespaceSlug,
-				DID:           resp.DID,
-				StableID:      stableID,
-				SigningKey:    signingKeyPath,
-				Custody:       resp.Custody,
-				Lifetime:      resp.Lifetime,
+				Server:         opts.ServerName,
+				APIKey:         resp.APIKey,
+				IdentityID:     resp.IdentityID,
+				IdentityHandle: handle,
+				NamespaceSlug:  namespaceSlug,
+				DID:            resp.DID,
+				StableID:       stableID,
+				SigningKey:     signingKeyPath,
+				Custody:        resp.Custody,
+				Lifetime:       resp.Lifetime,
 			}}
 			if strings.TrimSpace(cfg.DefaultAccount) == "" || opts.SetDefault {
 				cfg.DefaultAccount = accountName
@@ -641,10 +631,19 @@ func executeInit(opts initOptions) (*initResult, error) {
 		if err == nil {
 			attachResult, err = autoAttachContext(opts.WorkingDir, authClient, strings.TrimSpace(opts.WorkspaceRole))
 			if err != nil {
-				debugLog("workspace attach: %v", err)
-				fmt.Fprintf(os.Stderr, "Warning: could not attach workspace context (coordination may not be available on this server)\n")
+				if shouldWarnOnWorkspaceAttach(err) {
+					debugLog("workspace attach: %v", err)
+					fmt.Fprintf(os.Stderr, "Warning: could not attach workspace context (coordination may not be available on this server)\n")
+				} else {
+					return nil, err
+				}
 			}
 		}
+	}
+
+	finalRole := strings.TrimSpace(opts.WorkspaceRole)
+	if attachResult != nil && attachResult.Workspace != nil && strings.TrimSpace(attachResult.Workspace.Role) != "" {
+		finalRole = strings.TrimSpace(attachResult.Workspace.Role)
 	}
 
 	exportBaseURL := opts.BaseURL
@@ -656,41 +655,78 @@ func executeInit(opts initOptions) (*initResult, error) {
 		Response:        resp,
 		AccountName:     accountName,
 		ServerName:      opts.ServerName,
-		Role:            opts.WorkspaceRole,
+		Role:            finalRole,
 		AttachResult:    attachResult,
+		SigningKeyPath:  signingKeyPath,
 		ExportBaseURL:   exportBaseURL,
 		ExportNamespace: namespaceSlug,
 		JoinedViaInvite: opts.InviteToken != "",
 	}, nil
 }
 
-func printInitSummary(resp *awid.InitResponse, accountName, serverName, role string, attachResult *contextAttachResult, joinedViaInvite bool) {
+func shouldWarnOnWorkspaceAttach(err error) bool {
+	if err == nil {
+		return false
+	}
+	if code, ok := awid.HTTPStatusCode(err); ok && code == 404 {
+		return true
+	}
+	return false
+}
+
+func printInitSummary(resp *awid.BootstrapIdentityResponse, accountName, serverName, role string, attachResult *contextAttachResult, signingKeyPath, headline string) {
 	if resp == nil {
 		return
 	}
-	if joinedViaInvite {
-		namespace := strings.TrimSpace(resp.Namespace)
-		if namespace == "" {
-			namespace = strings.TrimSpace(resp.NamespaceSlug)
-		}
-		if namespace == "" {
-			namespace = strings.TrimSpace(resp.ProjectSlug)
-		}
-		fmt.Printf("Joined %s as %s\n", namespace, resp.Alias)
-	} else {
-		fmt.Printf("Initialized agent %s\n", resp.Alias)
+	project := strings.TrimSpace(resp.ProjectSlug)
+	namespace := strings.TrimSpace(resp.Namespace)
+	if namespace == "" {
+		namespace = strings.TrimSpace(resp.NamespaceSlug)
 	}
-	if strings.TrimSpace(resp.NamespaceSlug) != "" {
-		fmt.Printf("Namespace:  %s\n", strings.TrimSpace(resp.NamespaceSlug))
+
+	headline = strings.TrimSpace(headline)
+	if headline == "" {
+		headline = "Initialized workspace"
+	}
+	fmt.Println(headline)
+	handle := strings.TrimSpace(resp.IdentityHandle())
+	if handle != "" {
+		label := "Alias"
+		if awid.IdentityClassFromLifetime(resp.Lifetime) == awid.IdentityClassPermanent {
+			label = "Name"
+		}
+		fmt.Printf("%-11s %s\n", label+":", handle)
+	}
+	if identityClass := describeIdentityClass(strings.TrimSpace(resp.Lifetime)); identityClass != "" {
+		fmt.Printf("Identity:   %s\n", identityClass)
+	}
+	if strings.TrimSpace(resp.Custody) != "" {
+		fmt.Printf("Custody:    %s\n", strings.TrimSpace(resp.Custody))
+	}
+	if project != "" {
+		fmt.Printf("Project:    %s\n", project)
+	}
+	if namespace != "" && namespace != project {
+		fmt.Printf("Namespace:  %s\n", namespace)
 	}
 	if strings.TrimSpace(role) != "" {
 		fmt.Printf("Role:       %s\n", strings.TrimSpace(role))
 	}
 	if strings.TrimSpace(resp.Address) != "" {
-		fmt.Printf("Address:    %s\n", strings.TrimSpace(resp.Address))
+		label := "Address"
+		if strings.TrimSpace(resp.Lifetime) == awid.LifetimeEphemeral {
+			label = "Routing"
+		}
+		fmt.Printf("%-10s %s\n", label+":", strings.TrimSpace(resp.Address))
+	}
+	if awid.IdentityClassFromLifetime(resp.Lifetime) == awid.IdentityClassPermanent && strings.TrimSpace(resp.AddressReachability) != "" {
+		fmt.Printf("Reachability: %s\n", strings.TrimSpace(resp.AddressReachability))
 	}
 	if strings.TrimSpace(serverName) != "" {
 		fmt.Printf("Server:     %s\n", strings.TrimSpace(serverName))
+	}
+	if awid.IdentityClassFromLifetime(resp.Lifetime) == awid.IdentityClassPermanent && strings.TrimSpace(signingKeyPath) != "" {
+		fmt.Printf("Key:        %s\n", strings.TrimSpace(signingKeyPath))
 	}
 	if attachResult != nil {
 		switch strings.TrimSpace(attachResult.ContextKind) {
@@ -718,178 +754,50 @@ func printInitNextSteps(didInjectDocs, didSetupHooks bool) {
 	}
 }
 
-// tryHeadlessOrInit attempts anonymous headless bootstrap first. If the
-// server does not support the endpoint (404), falls back to /v1/init.
-// baseURL is the resolved base URL (may end in /api); needed to construct
-// a separate client for /api/v1/... endpoints that expect the host root.
-func tryHeadlessOrInit(
-	ctx context.Context,
-	client *aweb.Client,
-	initReq *awid.InitRequest,
-	baseURL string,
-) (*awid.InitResponse, error) {
-	alias := ""
-	if initReq.Alias != nil {
-		alias = *initReq.Alias
-	}
-	// Headless bootstrap requires alias. Without one, fall back to
-	// /v1/init which supports server-allocated aliases. If that also
-	// fails (hosted servers may not expose /v1/init), surface an error
-	// asking the user to specify --alias explicitly.
-	if alias == "" {
-		resp, initErr := client.Init(ctx, initReq)
-		if initErr == nil {
-			return resp, nil
-		}
-		if code, ok := awid.HTTPStatusCode(initErr); ok && code == 404 {
-			return nil, fmt.Errorf("server requires an alias; specify one with --alias")
-		}
-		return nil, initErr
-	}
-	headlessReq := &awid.HeadlessBootstrapRequest{
-		NamespaceSlug: initReq.ProjectSlug,
-		Alias:         alias,
-		AgentType:     initReq.AgentType,
-		HumanName:     initReq.HumanName,
-		DID:           initReq.DID,
-		PublicKey:     initReq.PublicKey,
-		Custody:       initReq.Custody,
-		Lifetime:      initReq.Lifetime,
-	}
-
-	// The headless endpoint is at /api/v1/... which is relative to the
-	// host root, not to the resolved base URL. Strip any /api suffix
-	// to avoid doubling (e.g. host/api + /api/v1/... → host/api/api/...).
-	rootURL, err := cloudRootBaseURL(baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid base URL for headless bootstrap: %w", err)
-	}
-	headlessClient, err := aweb.New(rootURL)
-	if err != nil {
-		return nil, err
-	}
-
-	headlessResp, err := headlessClient.HeadlessBootstrap(ctx, headlessReq)
-	if err != nil {
-		// If the server doesn't support headless bootstrap, fall back to /v1/init.
-		if code, ok := awid.HTTPStatusCode(err); ok && code == 404 {
-			debugLog("headless bootstrap not supported (404), falling back to /v1/init")
-			return client.Init(ctx, initReq)
-		}
-		return nil, err
-	}
-
-	// Convert HeadlessBootstrapResponse to InitResponse for uniform handling.
-	return &awid.InitResponse{
-		Status:        "ok",
-		ProjectID:     headlessResp.ProjectID,
-		ProjectSlug:   headlessResp.ProjectSlug,
-		AgentID:       headlessResp.AgentID,
-		Alias:         headlessResp.Alias,
-		APIKey:        headlessResp.APIKey,
-		ServerURL:     headlessResp.ServerURL,
-		NamespaceSlug: headlessResp.OrgSlug,
-		Namespace:     headlessResp.Namespace,
-		Address:       headlessResp.Address,
-		Created:       headlessResp.Created,
-		DID:           headlessResp.DID,
-		StableID:      headlessResp.StableID,
-		Custody:       headlessResp.Custody,
-		Lifetime:      headlessResp.Lifetime,
-	}, nil
-}
-
-func bootstrapViaCloud(
-	ctx context.Context,
-	baseURL string,
-	token string,
-	req *awid.InitRequest,
-	namespaceSlug string,
-) (*awid.InitResponse, error) {
-	if strings.TrimSpace(token) == "" {
-		return nil, fmt.Errorf("hosted Cloud bootstrap requires --cloud-token, AWEB_CLOUD_TOKEN, or an existing aw_sk_ key in config")
-	}
-
-	cloudBaseURL, err := cloudRootBaseURL(baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("hosted Cloud bootstrap requires a valid URL: %w", err)
-	}
-
-	cloudClient, err := aweb.NewWithAPIKey(cloudBaseURL, token)
-	if err != nil {
-		return nil, err
-	}
-
-	cloudReq := &awid.CloudBootstrapAgentRequest{
-		Alias:         req.Alias,
-		HumanName:     req.HumanName,
-		AgentType:     req.AgentType,
-		NamespaceSlug: namespaceSlug,
-		DID:           req.DID,
-		PublicKey:     req.PublicKey,
-		Custody:       req.Custody,
-		Lifetime:      req.Lifetime,
-	}
-
-	cloudResp, err := cloudClient.CloudBootstrapAgent(ctx, cloudReq)
-	if err != nil {
-		return nil, fmt.Errorf("cloud bootstrap failed: %w", err)
-	}
-
-	if strings.TrimSpace(cloudResp.APIKey) == "" {
-		return nil, fmt.Errorf("cloud bootstrap failed: missing api_key in response")
-	}
-
-	return &awid.InitResponse{
-		Status:        "ok",
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
-		ProjectID:     cloudResp.ProjectID,
-		ProjectSlug:   cloudResp.ProjectSlug,
-		AgentID:       cloudResp.AgentID,
-		Alias:         cloudResp.Alias,
-		APIKey:        cloudResp.APIKey,
-		NamespaceSlug: cloudResp.OrgSlug,
-		Namespace:     cloudResp.Namespace,
-		Address:       cloudResp.Address,
-		ServerURL:     cloudResp.ServerURL,
-		Created:       cloudResp.Created,
-		DID:           cloudResp.DID,
-		StableID:      cloudResp.StableID,
-		Custody:       cloudResp.Custody,
-		Lifetime:      cloudResp.Lifetime,
-	}, nil
-}
-
 func acceptInviteViaCloud(
 	ctx context.Context,
 	baseURL string,
 	token string,
 	alias string,
+	name string,
+	addressReachability string,
 	humanName string,
 	agentType string,
 	did string,
 	publicKey string,
 	lifetime string,
-) (*awid.InitResponse, error) {
+) (*awid.BootstrapIdentityResponse, error) {
 	client, err := newUnauthenticatedCloudClient(baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("invite accept requires a valid URL: %w", err)
 	}
-	req := &awid.InviteAcceptRequest{
-		Token:     token,
-		Alias:     strings.TrimSpace(alias),
-		HumanName: humanName,
-		AgentType: agentType,
-		DID:       did,
-		PublicKey: publicKey,
-		Custody:   awid.CustodySelf,
-		Lifetime:  lifetime,
+	req := &awid.SpawnAcceptInviteRequest{
+		Token:               token,
+		AddressReachability: addressReachability,
+		HumanName:           humanName,
+		AgentType:           agentType,
+		DID:                 did,
+		PublicKey:           publicKey,
+		Custody:             awid.CustodySelf,
+		Lifetime:            lifetime,
 	}
-	resp, err := client.InviteAccept(ctx, req)
+	if trimmed := strings.TrimSpace(alias); trimmed != "" {
+		req.Alias = &trimmed
+	}
+	if trimmed := strings.TrimSpace(name); trimmed != "" {
+		req.Name = &trimmed
+	}
+	resp, err := client.SpawnAcceptInvite(ctx, req)
 	if err != nil {
-		if code, ok := awid.HTTPStatusCode(err); ok && code == 422 && strings.TrimSpace(alias) == "" {
-			if body, ok := awid.HTTPErrorBody(err); ok && strings.Contains(strings.ToLower(body), "alias") {
-				return nil, usageError("alias is required (use --alias)")
+		if code, ok := awid.HTTPStatusCode(err); ok && code == 422 {
+			if body, ok := awid.HTTPErrorBody(err); ok {
+				lower := strings.ToLower(body)
+				if strings.TrimSpace(alias) == "" && strings.Contains(lower, "alias") {
+					return nil, usageError("alias is required (use --alias)")
+				}
+				if strings.TrimSpace(name) == "" && strings.Contains(lower, "name") {
+					return nil, usageError("name is required (use --name)")
+				}
 			}
 		}
 		return nil, err
@@ -897,98 +805,25 @@ func acceptInviteViaCloud(
 	if strings.TrimSpace(resp.APIKey) == "" {
 		return nil, fmt.Errorf("invite accept failed: missing api_key in response")
 	}
-	return &awid.InitResponse{
-		Status:        "ok",
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
-		ProjectID:     resp.ProjectID,
-		ProjectSlug:   resp.ProjectSlug,
-		AgentID:       resp.AgentID,
-		Alias:         resp.Alias,
-		APIKey:        resp.APIKey,
-		ServerURL:     resp.ServerURL,
-		NamespaceSlug: resp.OrgSlug,
-		Namespace:     resp.Namespace,
-		Address:       resp.Address,
-		Created:       resp.Created,
-		DID:           resp.DID,
-		StableID:      resp.StableID,
-		Custody:       resp.Custody,
-		Lifetime:      resp.Lifetime,
-	}, nil
+	return resp, nil
 }
 
-func resolveInitLifetime(explicit string) string {
-	if strings.TrimSpace(explicit) != "" {
-		return strings.TrimSpace(explicit)
+func resolveInitLifetime(permanent bool) string {
+	if permanent {
+		return awid.LifetimePersistent
 	}
-	return awid.LifetimePersistent
+	return awid.LifetimeEphemeral
 }
 
-func resolveCloudToken(baseURL, serverName, accountName, explicitToken string, global *awconfig.GlobalConfig) string {
-	if v := strings.TrimSpace(explicitToken); v != "" {
-		return v
+func describeIdentityClass(lifetime string) string {
+	switch strings.TrimSpace(lifetime) {
+	case awid.LifetimeEphemeral:
+		return "ephemeral"
+	case awid.LifetimePersistent:
+		return "permanent"
+	default:
+		return strings.TrimSpace(lifetime)
 	}
-	if v := strings.TrimSpace(os.Getenv("AWEB_CLOUD_TOKEN")); v != "" {
-		return v
-	}
-	if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); v != "" {
-		return v
-	}
-	if global == nil {
-		return ""
-	}
-
-	candidates := make([]string, 0, 4)
-	if v := strings.TrimSpace(accountName); v != "" {
-		candidates = append(candidates, v)
-	}
-	for _, name := range sortedAccountNames(global) {
-		acct := global.Accounts[name]
-		if strings.TrimSpace(serverName) != "" && strings.TrimSpace(acct.Server) == strings.TrimSpace(serverName) {
-			candidates = append(candidates, name)
-		}
-	}
-	baseHost := hostFromBaseURL(baseURL)
-	if baseHost != "" {
-		for _, name := range sortedAccountNames(global) {
-			acct := global.Accounts[name]
-			srv, ok := global.Servers[strings.TrimSpace(acct.Server)]
-			if !ok || strings.TrimSpace(srv.URL) == "" {
-				continue
-			}
-			if hostFromBaseURL(srv.URL) == baseHost {
-				candidates = append(candidates, name)
-			}
-		}
-	}
-	if v := strings.TrimSpace(global.DefaultAccount); v != "" {
-		candidates = append(candidates, v)
-	}
-
-	seen := map[string]struct{}{}
-	for _, accountName := range candidates {
-		if _, ok := seen[accountName]; ok {
-			continue
-		}
-		seen[accountName] = struct{}{}
-		acct, ok := global.Accounts[accountName]
-		if !ok {
-			continue
-		}
-		token := strings.TrimSpace(acct.APIKey)
-		if token != "" && !strings.HasPrefix(token, "aw_sk_") {
-			return token
-		}
-	}
-
-	for _, name := range sortedAccountNames(global) {
-		token := strings.TrimSpace(global.Accounts[name].APIKey)
-		if token != "" && !strings.HasPrefix(token, "aw_sk_") {
-			return token
-		}
-	}
-
-	return ""
 }
 
 func cloudRootBaseURL(baseURL string) (string, error) {

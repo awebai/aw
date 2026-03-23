@@ -23,7 +23,9 @@ SKIP_DIRS = {
 FORBIDDEN_SUBSTRINGS: list[tuple[str, str]] = [
     ("api.aweb.ai", "api.aweb.ai has no DNS; use https://app.aweb.ai/api"),
     ("~/.aw/config.yaml", "aw config lives at ~/.config/aw/config.yaml (not ~/.aw/config.yaml)"),
-    ("aw init --project-slug", "aw init flag is --namespace (project_slug is API/internal naming)"),
+    ("aw init --project-slug", "aw init does not accept project_slug; project comes from the project-scoped API key"),
+    ("aw init --project ", "aw init does not accept --project; project comes from the project-scoped API key"),
+    ("aw init --namespace", "aw init does not accept --namespace; project comes from the project-scoped API key"),
     ("aw init --url", "aw init flag is --server-url (or AWEB_URL env var)"),
 ]
 
@@ -72,4 +74,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

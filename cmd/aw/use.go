@@ -6,12 +6,13 @@ import (
 	"strings"
 
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
 var useCmd = &cobra.Command{
 	Use:   "use <account-or-alias>",
-	Short: "Use an existing agent in this directory",
+	Short: "Use an existing identity in this workspace",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runUse,
 }
@@ -20,7 +21,8 @@ type useOutput struct {
 	Account       string `json:"account"`
 	Server        string `json:"server"`
 	Alias         string `json:"alias,omitempty"`
-	Namespace     string `json:"namespace,omitempty"`
+	Project       string `json:"project,omitempty"`
+	IdentityClass string `json:"identity_class,omitempty"`
 	ContextStatus string `json:"context_status,omitempty"`
 }
 
@@ -39,10 +41,10 @@ func runUse(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if strings.TrimSpace(sel.AccountName) == "" {
-		return usageError("use requires a configured aw account; run 'aw init' or 'aw connect' first")
+		return usageError("use requires a configured aw identity; run 'aw init', 'aw project create', or 'aw connect' first")
 	}
 	if strings.TrimSpace(sel.ServerName) == "" {
-		return usageError("use requires a configured aw server; run 'aw init' or 'aw connect' first")
+		return usageError("use requires a configured aw server; run 'aw init', 'aw project create', or 'aw connect' first")
 	}
 
 	if err := writeOrUpdateContext(sel.ServerName, sel.AccountName); err != nil {
@@ -73,8 +75,9 @@ func runUse(cmd *cobra.Command, args []string) error {
 	printOutput(useOutput{
 		Account:       sel.AccountName,
 		Server:        sel.ServerName,
-		Alias:         sel.AgentAlias,
-		Namespace:     sel.NamespaceSlug,
+		Alias:         sel.IdentityHandle,
+		Project:       sel.NamespaceSlug,
+		IdentityClass: awid.DescribeIdentityClass(sel.Lifetime),
 		ContextStatus: contextStatus,
 	}, formatUse)
 	return nil
@@ -101,11 +104,14 @@ func resolveNamedSelectionForDir(workingDir, target string) (*awconfig.Selection
 func formatUse(v any) string {
 	out := v.(useOutput)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Using agent %s\n", out.Alias))
+	sb.WriteString(fmt.Sprintf("Using identity %s\n", out.Alias))
 	sb.WriteString(fmt.Sprintf("Account:    %s\n", out.Account))
 	sb.WriteString(fmt.Sprintf("Server:     %s\n", out.Server))
-	if strings.TrimSpace(out.Namespace) != "" {
-		sb.WriteString(fmt.Sprintf("Namespace:  %s\n", out.Namespace))
+	if strings.TrimSpace(out.Project) != "" {
+		sb.WriteString(fmt.Sprintf("Project:    %s\n", out.Project))
+	}
+	if strings.TrimSpace(out.IdentityClass) != "" {
+		sb.WriteString(fmt.Sprintf("Identity:   %s\n", out.IdentityClass))
 	}
 	if strings.TrimSpace(out.ContextStatus) != "" {
 		sb.WriteString(fmt.Sprintf("Context:    %s\n", out.ContextStatus))

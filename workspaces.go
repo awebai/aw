@@ -57,6 +57,7 @@ type WorkspaceInfo struct {
 	ContextKind       *string          `json:"context_kind,omitempty"`
 	ProjectID         *string          `json:"project_id,omitempty"`
 	ProjectSlug       *string          `json:"project_slug,omitempty"`
+	NamespaceSlug     *string          `json:"namespace_slug,omitempty"`
 	Program           *string          `json:"program,omitempty"`
 	Model             *string          `json:"model,omitempty"`
 	Repo              *string          `json:"repo,omitempty"`

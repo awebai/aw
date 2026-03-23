@@ -139,19 +139,19 @@ func TestDeleteContact(t *testing.T) {
 	}
 }
 
-func TestPatchAgent(t *testing.T) {
+func TestPatchIdentity(t *testing.T) {
 	t.Parallel()
 
 	var gotMethod, gotPath string
-	var gotBody PatchAgentRequest
+	var gotBody PatchIdentityRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatal(err)
 		}
-		_ = json.NewEncoder(w).Encode(PatchAgentResponse{
-			AgentID:    "agent-1",
+		_ = json.NewEncoder(w).Encode(PatchIdentityResponse{
+			IdentityID: "agent-1",
 			AccessMode: "contacts_only",
 		})
 	}))
@@ -161,7 +161,7 @@ func TestPatchAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := c.PatchAgent(context.Background(), "agent-1", &PatchAgentRequest{
+	resp, err := c.PatchIdentity(context.Background(), "agent-1", &PatchIdentityRequest{
 		AccessMode: "contacts_only",
 	})
 	if err != nil {
@@ -176,8 +176,8 @@ func TestPatchAgent(t *testing.T) {
 	if gotBody.AccessMode != "contacts_only" {
 		t.Fatalf("access_mode=%s", gotBody.AccessMode)
 	}
-	if resp.AgentID != "agent-1" {
-		t.Fatalf("agent_id=%s", resp.AgentID)
+	if resp.IdentityID != "agent-1" {
+		t.Fatalf("agent_id=%s", resp.IdentityID)
 	}
 	if resp.AccessMode != "contacts_only" {
 		t.Fatalf("access_mode=%s", resp.AccessMode)

@@ -9,37 +9,37 @@ import (
 	"time"
 )
 
-// AgentIdentity holds resolved identity information for an agent.
-type AgentIdentity struct {
-	DID         string
-	StableID    string
-	AgentID     string // server-assigned UUID
-	Address     string // namespace/alias
+// ResolvedIdentity holds resolved identity information for an identity address.
+type ResolvedIdentity struct {
+	DID           string
+	StableID      string
+	IdentityID    string // server-assigned UUID
+	Address       string // namespace/handle
 	ControllerDID string
-	Handle      string // @alice
-	PublicKey   ed25519.PublicKey
-	ServerURL   string
-	Custody     string // "self" or "custodial"
-	Lifetime    string // "persistent" or "ephemeral"
-	ResolvedAt  time.Time
-	ResolvedVia string // "did:key", "server", "pin"
+	Handle        string
+	PublicKey     ed25519.PublicKey
+	ServerURL     string
+	Custody       string // "self" or "custodial"
+	Lifetime      string // "persistent" or "ephemeral"
+	ResolvedAt    time.Time
+	ResolvedVia   string // "did:key", "server", "pin"
 }
 
-// IdentityResolver resolves an identifier to an AgentIdentity.
+// IdentityResolver resolves an identifier to a ResolvedIdentity.
 type IdentityResolver interface {
-	Resolve(ctx context.Context, identifier string) (*AgentIdentity, error)
+	Resolve(ctx context.Context, identifier string) (*ResolvedIdentity, error)
 }
 
 // DIDKeyResolver extracts the public key from a did:key string.
 // No network call required.
 type DIDKeyResolver struct{}
 
-func (r *DIDKeyResolver) Resolve(_ context.Context, identifier string) (*AgentIdentity, error) {
+func (r *DIDKeyResolver) Resolve(_ context.Context, identifier string) (*ResolvedIdentity, error) {
 	pub, err := ExtractPublicKey(identifier)
 	if err != nil {
 		return nil, fmt.Errorf("DIDKeyResolver: %w", err)
 	}
-	return &AgentIdentity{
+	return &ResolvedIdentity{
 		DID:         identifier,
 		PublicKey:   pub,
 		ResolvedAt:  time.Now().UTC(),
@@ -48,45 +48,45 @@ func (r *DIDKeyResolver) Resolve(_ context.Context, identifier string) (*AgentId
 }
 
 // serverResolveResponse is the wire format returned by
-// GET /v1/agents/resolve/{namespace}/{alias}.
+// GET /v1/agents/resolve/{namespace}/{handle}.
 type serverResolveResponse struct {
-	DID       string `json:"did"`
-	StableID  string `json:"stable_id"`
-	AgentID   string `json:"agent_id"`
-	Address   string `json:"address"`
-	HumanName string `json:"human_name"`
-	Handle    string `json:"handle"`
-	Server    string `json:"server"`
-	PublicKey string `json:"public_key"`
+	DID           string `json:"did"`
+	StableID      string `json:"stable_id"`
+	IdentityID    string `json:"identity_id"`
+	Address       string `json:"address"`
+	HumanName     string `json:"human_name"`
+	Handle        string `json:"handle"`
+	Server        string `json:"server"`
+	PublicKey     string `json:"public_key"`
 	ControllerDID string `json:"controller_did"`
-	Custody   string `json:"custody"`
-	Lifetime  string `json:"lifetime"`
-	Status    string `json:"status"`
+	Custody       string `json:"custody"`
+	Lifetime      string `json:"lifetime"`
+	Status        string `json:"status"`
 }
 
-// ServerResolver resolves an agent address via the aweb server.
+// ServerResolver resolves an identity address via the aweb server.
 type ServerResolver struct {
 	Client *Client
 }
 
-func (r *ServerResolver) Resolve(ctx context.Context, identifier string) (*AgentIdentity, error) {
+func (r *ServerResolver) Resolve(ctx context.Context, identifier string) (*ResolvedIdentity, error) {
 	var resp serverResolveResponse
 	path := "/v1/agents/resolve/" + identifier
 	if err := r.Client.Get(ctx, path, &resp); err != nil {
 		return nil, fmt.Errorf("ServerResolver: %w", err)
 	}
-	identity := &AgentIdentity{
-		DID:         resp.DID,
-		StableID:    resp.StableID,
-		AgentID:     resp.AgentID,
-		Address:     resp.Address,
+	identity := &ResolvedIdentity{
+		DID:           resp.DID,
+		StableID:      resp.StableID,
+		IdentityID:    resp.IdentityID,
+		Address:       resp.Address,
 		ControllerDID: resp.ControllerDID,
-		Handle:      resp.Handle,
-		ServerURL:   resp.Server,
-		Custody:     resp.Custody,
-		Lifetime:    resp.Lifetime,
-		ResolvedAt:  time.Now().UTC(),
-		ResolvedVia: "server",
+		Handle:        resp.Handle,
+		ServerURL:     resp.Server,
+		Custody:       resp.Custody,
+		Lifetime:      resp.Lifetime,
+		ResolvedAt:    time.Now().UTC(),
+		ResolvedVia:   "server",
 	}
 	if strings.TrimSpace(resp.PublicKey) != "" {
 		pub, err := base64.RawStdEncoding.DecodeString(strings.TrimSpace(resp.PublicKey))
@@ -109,10 +109,10 @@ type PinResolver struct {
 	Store *PinStore
 }
 
-func (r *PinResolver) Resolve(_ context.Context, identifier string) (*AgentIdentity, error) {
+func (r *PinResolver) Resolve(_ context.Context, identifier string) (*ResolvedIdentity, error) {
 	// Try direct DID lookup.
 	if pin, ok := r.Store.Pins[identifier]; ok {
-		return &AgentIdentity{
+		return &ResolvedIdentity{
 			DID:         identifier,
 			Address:     pin.Address,
 			Handle:      pin.Handle,
@@ -127,7 +127,7 @@ func (r *PinResolver) Resolve(_ context.Context, identifier string) (*AgentIdent
 		if !exists {
 			return nil, fmt.Errorf("PinResolver: address %q maps to DID %q not in pins", identifier, did)
 		}
-		return &AgentIdentity{
+		return &ResolvedIdentity{
 			DID:         did,
 			Address:     pin.Address,
 			Handle:      pin.Handle,
@@ -137,56 +137,6 @@ func (r *PinResolver) Resolve(_ context.Context, identifier string) (*AgentIdent
 		}, nil
 	}
 	return nil, fmt.Errorf("PinResolver: no pin for %q", identifier)
-}
-
-// ClaimIdentityRequest is sent to PUT /v1/agents/me/identity.
-// This endpoint lets an agent bind a did:key to itself (one-time claim).
-type ClaimIdentityRequest struct {
-	DID       string `json:"did"`
-	PublicKey string `json:"public_key"`
-	Custody   string `json:"custody"`
-	Lifetime  string `json:"lifetime"`
-}
-
-// ClaimIdentityResponse is returned by PUT /v1/agents/me/identity.
-type ClaimIdentityResponse struct {
-	Status   string `json:"status"`
-	DID      string `json:"did"`
-	StableID string `json:"stable_id,omitempty"`
-	Custody  string `json:"custody"`
-	Lifetime string `json:"lifetime,omitempty"`
-}
-
-// ClaimIdentity binds a did:key + public key to the agent identified by the
-// client's API key. The server returns 409 if the agent already has an identity.
-func (c *Client) ClaimIdentity(ctx context.Context, req *ClaimIdentityRequest) (*ClaimIdentityResponse, error) {
-	var out ClaimIdentityResponse
-	if err := c.Put(ctx, "/v1/agents/me/identity", req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ResetIdentityRequest is sent to POST /v1/agents/me/identity/reset.
-// This endpoint clears the agent's identity (DID, public key, stable ID,
-// custody, signing key) so it can be re-claimed via ClaimIdentity.
-type ResetIdentityRequest struct {
-	Confirm bool `json:"confirm"`
-}
-
-// ResetIdentityResponse is returned by POST /v1/agents/me/identity/reset.
-type ResetIdentityResponse struct {
-	Status string `json:"status"`
-}
-
-// ResetIdentity clears the agent's bound identity on the server.
-// Requires confirm=true; the server returns 400 otherwise.
-func (c *Client) ResetIdentity(ctx context.Context, req *ResetIdentityRequest) (*ResetIdentityResponse, error) {
-	var out ResetIdentityResponse
-	if err := c.Post(ctx, "/v1/agents/me/identity/reset", req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
 }
 
 // ChainResolver dispatches resolution by identifier format.
@@ -199,7 +149,7 @@ type ChainResolver struct {
 	Pin    *PinResolver
 }
 
-func (r *ChainResolver) Resolve(ctx context.Context, identifier string) (*AgentIdentity, error) {
+func (r *ChainResolver) Resolve(ctx context.Context, identifier string) (*ResolvedIdentity, error) {
 	if strings.HasPrefix(identifier, didKeyPrefix) {
 		identity, err := r.DIDKey.Resolve(ctx, identifier)
 		if err != nil {

@@ -23,44 +23,72 @@ accounts:
     server: local
     api_key: aw_sk_...
     default_project: myproject
-    agent_id: agt_abc123
-    agent_alias: alice
+    identity_id: ident_abc123
+    identity_handle: alice
   acct-cloud__myproject__bob:
     server: cloud
     api_key: aw_sk_...
     default_project: myproject
-    agent_id: agt_def456
-    agent_alias: bob
+    identity_id: ident_def456
+    identity_handle: bob
 
 default_account: acct-local__myproject__alice
 ```
 
-## Initializing Credentials
+## Initializing Workspaces
 
 ```bash
-aw init --server-url http://localhost:8000 --project-slug myproject --alias alice
+AWEB_URL=http://localhost:8000 \
+AWEB_API_KEY=aw_sk_project_... \
+aw init --alias alice
 ```
 
 Key flags:
-- `--server-url` — Base URL for the server (or set via config/`AWEB_URL`)
-- `--project-slug` — Project identifier (default: `AWEB_PROJECT` env var)
-- `--alias` — Agent alias (default: server-suggested)
-- `--project-name` — Project display name (default: `AWEB_PROJECT_NAME` or project-slug)
-- `--human-name` — Human operator name (default: `AWEB_HUMAN` or `$USER`)
-- `--agent-type` — Agent type (default: `AWEB_AGENT_TYPE` or `agent`)
-- `--save-config` — Write credentials to config.yaml (default: true)
+- `--alias` — Ephemeral identity handle (default: server-suggested)
+- `--permanent --name <name>` — Create a permanent self-custodial identity instead of the default ephemeral one
+- `--project` — Required for `aw project create`, not for `aw init`
+- `--namespace` — Optional authoritative namespace slug when it differs from the project slug
+- `--project-name` — Optional project display name for `aw project create`
 - `--set-default` — Set this account as default (default: false)
-- `--write-context` — Use the new agent in the current directory by writing `.aw/context` (default: true)
-- `--print-exports` — Print shell export lines after init
-- `--cloud-token` — Bearer token for hosted cloud bootstrap
-- `--cloud` — Use cloud bootstrap mode
+- `--print-exports` — Print shell export lines after creation/init
 
-## Cloud Bootstrap
+## Current Bootstrap Flows
 
-For hosted aweb.ai, use cloud bootstrap:
+For a new local project and first workspace:
 
 ```bash
-aw init --server-url https://app.aweb.ai --cloud --cloud-token <token> --project-slug myproject
+AWEB_URL=https://app.aweb.ai/api \
+aw project create --project myproject
+```
+
+When the authoritative namespace should differ from the project slug:
+
+```bash
+AWEB_URL=https://app.aweb.ai/api \
+aw project create --project platform --namespace acme
+```
+
+For an existing project workspace:
+
+```bash
+AWEB_URL=https://app.aweb.ai/api \
+AWEB_API_KEY=aw_sk_project_... \
+aw init --alias alice
+```
+
+For a permanent self-custodial identity at creation time:
+
+```bash
+AWEB_URL=https://app.aweb.ai/api \
+aw project create --project myproject --permanent --name maintainer
+```
+
+For importing an already-existing identity:
+
+```bash
+AWEB_URL=https://app.aweb.ai/api \
+AWEB_API_KEY=aw_sk_... \
+aw connect
 ```
 
 ## Environment Variables

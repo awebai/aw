@@ -25,9 +25,14 @@ func resolveCloudClient() (*aweb.Client, error) {
 	return aweb.NewWithAPIKey(rootURL, sel.APIKey)
 }
 
+var projectNamespaceCmd = &cobra.Command{
+	Use:   "namespace",
+	Short: "Manage project namespaces",
+}
+
 var namespaceAddCmd = &cobra.Command{
 	Use:   "add <domain>",
-	Short: "Add a BYOD namespace",
+	Short: "Add a BYOD namespace to the current project",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		domain := strings.TrimSpace(args[0])
@@ -50,24 +55,28 @@ var namespaceAddCmd = &cobra.Command{
 			return err
 		}
 
-		printOutput(resp, func(v any) string {
-			r := v.(*awid.NamespaceSummary)
-			var b strings.Builder
-			fmt.Fprintf(&b, "Domain %s added.\n\n", r.FullName)
-			fmt.Fprintf(&b, "Add this DNS TXT record to verify ownership:\n\n")
-			fmt.Fprintf(&b, "  Name:  %s\n", r.DnsTxtName)
-			fmt.Fprintf(&b, "  Type:  TXT\n")
-			fmt.Fprintf(&b, "  Value: %s\n\n", r.DnsTxtValue)
-			fmt.Fprintf(&b, "Then run: aw namespace verify %s\n", r.FullName)
-			return b.String()
-		})
-		return nil
-	},
-}
+			printOutput(resp, func(v any) string {
+				r := v.(*awid.NamespaceSummary)
+				var b strings.Builder
+				fmt.Fprintf(&b, "Domain %s added.\n\n", r.FullName)
+				fmt.Fprintf(&b, "Add this DNS TXT record to verify ownership:\n\n")
+				fmt.Fprintf(&b, "  Name:  %s\n", r.DnsTxtName)
+				fmt.Fprintf(&b, "  Type:  TXT\n")
+				fmt.Fprintf(&b, "  Value: %s\n\n", r.DnsTxtValue)
+				fmt.Fprintf(&b, "Next:\n")
+				fmt.Fprintf(&b, "  1. Add the TXT record in your DNS provider.\n")
+				fmt.Fprintf(&b, "  2. Wait for DNS propagation.\n")
+				fmt.Fprintf(&b, "  3. Run: aw project namespace verify %s\n\n", r.FullName)
+				fmt.Fprintf(&b, "If verification does not succeed immediately, wait a few minutes and run the verify command again.\n")
+				return b.String()
+			})
+			return nil
+		},
+	}
 
 var namespaceVerifyCmd = &cobra.Command{
 	Use:   "verify <domain>",
-	Short: "Verify DNS and register a BYOD namespace",
+	Short: "Verify DNS and register a BYOD namespace for the current project",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		domain := strings.TrimSpace(args[0])
@@ -113,7 +122,7 @@ var namespaceVerifyCmd = &cobra.Command{
 
 var namespaceListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all namespaces",
+	Short: "List namespaces attached to the current project",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := resolveCloudClient()
 		if err != nil {
@@ -149,7 +158,7 @@ var namespaceDeleteForce bool
 
 var namespaceDeleteCmd = &cobra.Command{
 	Use:   "delete <domain>",
-	Short: "Delete a namespace",
+	Short: "Delete a namespace from the current project",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		domain := strings.TrimSpace(args[0])
@@ -172,7 +181,7 @@ var namespaceDeleteCmd = &cobra.Command{
 
 		if !namespaceDeleteForce {
 			if !isTTY() {
-				return usageError("--force is required for non-interactive namespace deletion")
+				return usageError("--force is required for non-interactive project namespace deletion")
 			}
 			v, err := promptString(fmt.Sprintf("Delete namespace %s? [y/N]", domain), "N")
 			if err != nil {
@@ -208,14 +217,15 @@ func findNamespaceByDomain(ctx context.Context, client *aweb.Client, domain stri
 			return &list[i], nil
 		}
 	}
-	return nil, fmt.Errorf("namespace %s not found — run `aw namespace add` first", domain)
+	return nil, fmt.Errorf("namespace %s not found — run `aw project namespace add` first", domain)
 }
 
 func init() {
 	namespaceDeleteCmd.Flags().BoolVar(&namespaceDeleteForce, "force", false, "Skip confirmation prompt")
 
-	namespaceCmd.AddCommand(namespaceAddCmd)
-	namespaceCmd.AddCommand(namespaceVerifyCmd)
-	namespaceCmd.AddCommand(namespaceListCmd)
-	namespaceCmd.AddCommand(namespaceDeleteCmd)
+	projectNamespaceCmd.AddCommand(namespaceAddCmd)
+	projectNamespaceCmd.AddCommand(namespaceVerifyCmd)
+	projectNamespaceCmd.AddCommand(namespaceListCmd)
+	projectNamespaceCmd.AddCommand(namespaceDeleteCmd)
+	projectCmd.AddCommand(projectNamespaceCmd)
 }

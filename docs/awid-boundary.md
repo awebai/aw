@@ -15,8 +15,8 @@ without coordination infrastructure.
 **aw** is the coordination application. It uses awid as a library and
 adds workspace management, task dispatch, policy, and claims.
 
-The boundary test: "Can an agent that only depends on awid register,
-send mail, receive chat, run a provider loop, and respond to control
+The boundary test: "Can an agent that only depends on awid initialize an
+identity, send mail, receive chat, run a provider loop, and respond to control
 signals?" If yes, the boundary is correct.
 
 ---
@@ -50,10 +50,10 @@ implementation of aw-9sf.2.
 | `util.go` | URL escaping, UUID generation | — |
 | `alias_prefix.go` | Alias prefix suggestion | `GET /v1/agents/suggest-alias-prefix` |
 | `auth.go` | Authentication utilities | `GET /v1/auth/introspect` |
-| `register.go` | Agent registration | `POST /v1/auth/register`, `POST /v1/auth/verify-code` |
-| `init.go` | Agent initialization | `POST /v1/init` |
-| `cloud_bootstrap.go` | Cloud bootstrap | — |
-| `agents.go` | Agent listing/patching | `GET /v1/agents`, `PATCH /v1/agents/{id}` |
+| `init.go` | Workspace identity initialization | `POST /v1/workspaces/init` |
+| `create_project.go` | Project creation bootstrap | `POST /api/v1/create-project` |
+| `spawn.go` | Spawn invite create/list/revoke/accept | `POST/GET/DELETE /api/v1/spawn/*` |
+| `agents.go` | Identity listing/patching | `GET /v1/agents`, `PATCH /v1/agents/{id}` |
 | `mail.go` | Local project mail | `POST /v1/messages` |
 | `chat.go` | Chat sessions/messages | `GET/POST /v1/chat/*` |
 | `network.go` | Network directory | `GET /v1/network/directory` |
@@ -68,8 +68,7 @@ implementation of aw-9sf.2.
 | `verify.go` | Signature verification | — |
 | `identity.go` | Identity resolvers | `GET /v1/agents/resolve/{ns}/{alias}` |
 | `pinstore.go` | TOFU pin storage | — |
-| `deregister.go` | Agent deregistration | `DELETE /v1/agents/me`, `DELETE /v1/agents/{ns}/{alias}` |
-| `retire.go` | Agent retirement | `PUT /v1/agents/me/retire` |
+| `deregister.go` | Ephemeral identity delete transport | `DELETE /v1/agents/me`, `DELETE /v1/agents/{ns}/{alias}` |
 | `rotate.go` | Key rotation | `PUT /v1/agents/me/rotate` |
 
 ### Coordination (→ aw)
@@ -139,9 +138,9 @@ Mixed — needs splitting.
 
 ### Protocol config (→ awid)
 
-- `global_config.go` — Account struct fields: `Server`, `APIKey`, `AgentID`,
-  `AgentAlias`, `NamespaceSlug`, `DID`, `StableID`, `SigningKey`, `Custody`,
-  `Lifetime`, `Email`
+- `global_config.go` — Account struct fields: `Server`, `APIKey`, `IdentityID`,
+  `IdentityHandle`, `NamespaceSlug`, `DID`, `StableID`, `SigningKey`,
+  `Custody`, `Lifetime`, `Email`
 - `keys.go` — Keypair generation, storage, loading
 - `keys_scan.go` — Key scanning (recovery)
 - `selection.go` — Account resolution
@@ -170,19 +169,16 @@ delegate to the awid library.
 
 | File | Commands |
 |------|----------|
-| `register.go` | `aw register` |
 | `init.go` | `aw init` |
 | `connect.go` | `aw connect` |
 | `mail.go` | `aw mail send`, `aw mail inbox` |
 | `chat.go` | `aw chat *` |
-| `network.go` | `aw network *` |
-| `agents.go` | `aw agents` |
+| `network.go` | `aw directory` |
+| `agents.go` | `aw identities`, `aw identity access-mode`, `aw identity reachability`, `aw identity delete` |
 | `contacts.go` | `aw contacts` |
-| `did.go` | `aw did *` |
-| `retire.go` | `aw retire` |
+| `did.go` | `aw identity log`, `aw identity rotate-key` |
 | `heartbeat.go` | `aw heartbeat` |
-| `introspect.go` | `aw introspect` |
-| `verify.go` | `aw verify` |
+| `introspect.go` | `aw whoami` |
 | `reset.go` | `aw reset` |
 | `upgrade.go` | `aw upgrade` |
 | `log.go` | `aw log` |
@@ -245,7 +241,7 @@ agent authentication and message trust:
 - TOFU pin storage and checking
 - Identity resolvers (DIDKey, Server, Pin, Chain)
 - Key rotation announcements
-- Agent lifecycle (register, deregister, retire)
+- Identity lifecycle primitives (init, resolve, deregister, rotation, replacement verification)
 
 ---
 

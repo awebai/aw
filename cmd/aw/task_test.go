@@ -36,8 +36,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -99,8 +99,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -188,8 +188,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -243,8 +243,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -299,8 +299,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -362,8 +362,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -408,8 +408,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -468,8 +468,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -521,8 +521,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -584,8 +584,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -632,8 +632,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -681,8 +681,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -749,8 +749,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -805,8 +805,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -867,8 +867,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -928,8 +928,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {

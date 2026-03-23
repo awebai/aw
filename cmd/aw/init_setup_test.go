@@ -19,21 +19,20 @@ func TestAwInitInjectDocsAndSetupHooks(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "reviewer", "roles": []string{}})
-		case "/api/v1/bootstrap/headless-agent":
+		case "/api/v1/create-project":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"org_id":       "org-1",
-				"org_slug":     "myteam",
 				"project_id":   "proj-1",
 				"project_slug": "default",
+				"namespace_slug": "myteam",
 				"namespace":    "myteam.aweb.ai",
-				"agent_id":     "agent-1",
+				"identity_id":  "identity-1",
 				"alias":        "reviewer",
 				"address":      "myteam.aweb.ai/reviewer",
 				"api_key":      "aw_sk_headless_test",
 				"did":          "did:key:z6MkTest",
 				"stable_id":    "stable-1",
 				"custody":      "self",
-				"lifetime":     "persistent",
+				"lifetime":     "ephemeral",
 				"created":      true,
 			})
 		case "/v1/agents/heartbeat":
@@ -61,8 +60,8 @@ func TestAwInitInjectDocsAndSetupHooks(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--namespace", "myteam",
+	run := exec.CommandContext(ctx, bin, "project", "create",
+		"--project", "myteam",
 		"--alias", "reviewer",
 		"--inject-docs",
 		"--setup-hooks",
@@ -72,9 +71,7 @@ func TestAwInitInjectDocsAndSetupHooks(t *testing.T) {
 	run.Env = append(os.Environ(),
 		"AWEB_URL="+server.URL,
 		"AW_CONFIG_PATH="+cfgPath,
-		"AWEB_CLOUD_TOKEN=",
 		"AWEB_API_KEY=",
-		"AWEB_NAMESPACE=",
 		"AWEB_ALIAS=",
 	)
 	run.Dir = tmp

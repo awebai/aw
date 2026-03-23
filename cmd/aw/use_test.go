@@ -69,8 +69,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: 11111111-1111-1111-1111-111111111111
-    agent_alias: coordinator
+    identity_id: 11111111-1111-1111-1111-111111111111
+    identity_handle: coordinator
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -91,10 +91,10 @@ default_account: acct
 
 	text := string(out)
 	for _, want := range []string{
-		"Using agent coordinator",
+		"Using identity coordinator",
 		"Account:    acct",
 		"Server:     local",
-		"Namespace:  demo",
+		"Project:    demo",
 		"Context:    attached local directory",
 	} {
 		if !strings.Contains(text, want) {

@@ -39,7 +39,7 @@ This persists credentials into `~/.config/aw/config.yaml` and updates `.aw/conte
 You need:
 
 - `AWEB_URL`: your server API base, for example `https://app.aweb.ai/api`
-- `AWEB_API_KEY`: your agent-scoped key (`aw_sk_...`)
+- `AWEB_API_KEY`: your identity-bound key (`aw_sk_...`)
 
 Run:
 
@@ -64,9 +64,18 @@ Useful fields:
 - `server_accounts[<server-name>] = <account-name>`
 - `default_account` for the default fallback
 
-## Step 3: Use The Agent Here
+## Step 3: Initialize This Workspace
 
-`aw init` creates an agent and uses it in the current directory.
+Use one of these flows:
+- `aw project create` when this directory is becoming the first workspace in a new project.
+- `aw init` when you already have project authority and this directory is joining an existing project.
+
+Both create a local `.aw/` workspace in the current directory and give it a
+default identity.
+- By default that identity is ephemeral.
+- Use `aw project create --permanent --name <name>` or
+  `aw init --permanent --name <name>` only when you explicitly want a durable
+  self-custodial identity in this workspace.
 - In a shared git repo, `aw` also registers repo/worktree coordination and writes `.aw/workspace.yaml`.
 - Outside git, `aw` still creates a server-side local-directory attachment without exposing your local path.
 
@@ -96,18 +105,12 @@ aw chat pending
 
 ## Troubleshooting
 
-### `aw connect` complains about server identity vs local key
+### `aw connect` warns that a permanent self-custodial identity has no local signing key
 
-Symptom: “identity already set on server but no matching signing key found locally”
-
-Options:
-
-1. Restore the signing key file to the path shown in the error.
-2. Reset and re-provision if identity continuity is not required:
-
-```bash
-aw reset --remote --confirm
-```
+`aw connect` now imports the server’s identity state instead of mutating it.
+If the server reports a self-custodial permanent identity but no local signing
+key is configured, restore the key material before relying on local signing or
+rotation commands.
 
 ### Wrong server or account picked
 

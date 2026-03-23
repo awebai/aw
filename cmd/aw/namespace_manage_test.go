@@ -61,16 +61,16 @@ func TestAwNamespaceAdd(t *testing.T) {
 			}
 			_ = json.NewDecoder(r.Body).Decode(&gotBody)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"namespace_id":         "ns-1",
-				"slug":                 "acme-com",
-				"full_name":            "acme.com",
-				"display_name":         "acme.com",
-				"is_external":          true,
-				"dns_txt_name":         "_aweb.acme.com",
-				"dns_txt_value":        "aweb=v1; controller=did:key:z6Mkf;",
-				"dns_status":           "desired",
-				"registration_status":  "unregistered",
-				"created_at":           "2026-03-19T10:00:00Z",
+				"namespace_id":        "ns-1",
+				"slug":                "acme-com",
+				"full_name":           "acme.com",
+				"display_name":        "acme.com",
+				"is_external":         true,
+				"dns_txt_name":        "_aweb.acme.com",
+				"dns_txt_value":       "aweb=v1; controller=did:key:z6Mkf;",
+				"dns_status":          "desired",
+				"registration_status": "unregistered",
+				"created_at":          "2026-03-19T10:00:00Z",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -84,7 +84,7 @@ func TestAwNamespaceAdd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	run := exec.CommandContext(ctx, bin, "namespace", "add", "acme.com", "--json")
+	run := exec.CommandContext(ctx, bin, "project", "namespace", "add", "acme.com", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -134,7 +134,7 @@ func TestAwNamespaceAddTextOutput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	run := exec.CommandContext(ctx, bin, "namespace", "add", "acme.com")
+	run := exec.CommandContext(ctx, bin, "project", "namespace", "add", "acme.com")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -153,8 +153,11 @@ func TestAwNamespaceAddTextOutput(t *testing.T) {
 	if !strings.Contains(output, "_aweb.acme.com") {
 		t.Fatalf("expected TXT name in output:\n%s", output)
 	}
-	if !strings.Contains(output, "aw namespace verify") {
+	if !strings.Contains(output, "aw project namespace verify") {
 		t.Fatalf("expected verify instruction in output:\n%s", output)
+	}
+	if !strings.Contains(output, "Wait for DNS propagation") {
+		t.Fatalf("expected DNS propagation guidance in output:\n%s", output)
 	}
 }
 
@@ -169,17 +172,17 @@ func TestAwNamespaceList(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode([]map[string]any{
 				{
-					"namespace_id":         "ns-1",
-					"full_name":            "myteam.aweb.ai",
-					"is_external":          false,
-					"registration_status":  "registered",
+					"namespace_id":          "ns-1",
+					"full_name":             "myteam.aweb.ai",
+					"is_external":           false,
+					"registration_status":   "registered",
 					"published_agent_count": 3,
 				},
 				{
-					"namespace_id":         "ns-2",
-					"full_name":            "acme.com",
-					"is_external":          true,
-					"registration_status":  "unregistered",
+					"namespace_id":          "ns-2",
+					"full_name":             "acme.com",
+					"is_external":           true,
+					"registration_status":   "unregistered",
 					"published_agent_count": 0,
 				},
 			})
@@ -196,7 +199,7 @@ func TestAwNamespaceList(t *testing.T) {
 	defer cancel()
 
 	// JSON output.
-	run := exec.CommandContext(ctx, bin, "namespace", "list", "--json")
+	run := exec.CommandContext(ctx, bin, "project", "namespace", "list", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -221,15 +224,15 @@ func TestAwNamespaceListTextOutput(t *testing.T) {
 		case "/api/v1/namespaces":
 			_ = json.NewEncoder(w).Encode([]map[string]any{
 				{
-					"full_name":            "myteam.aweb.ai",
-					"is_external":          false,
-					"registration_status":  "registered",
+					"full_name":             "myteam.aweb.ai",
+					"is_external":           false,
+					"registration_status":   "registered",
 					"published_agent_count": 3,
 				},
 				{
-					"full_name":            "acme.com",
-					"is_external":          true,
-					"registration_status":  "unregistered",
+					"full_name":             "acme.com",
+					"is_external":           true,
+					"registration_status":   "unregistered",
 					"published_agent_count": 0,
 				},
 			})
@@ -245,7 +248,7 @@ func TestAwNamespaceListTextOutput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	run := exec.CommandContext(ctx, bin, "namespace", "list")
+	run := exec.CommandContext(ctx, bin, "project", "namespace", "list")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -300,7 +303,7 @@ func TestAwNamespaceVerify(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	run := exec.CommandContext(ctx, bin, "namespace", "verify", "acme.com")
+	run := exec.CommandContext(ctx, bin, "project", "namespace", "verify", "acme.com")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -333,9 +336,9 @@ func TestAwNamespaceVerifyDNSFailure(t *testing.T) {
 				case "/api/v1/namespaces":
 					_ = json.NewEncoder(w).Encode([]map[string]any{
 						{
-							"namespace_id": "ns-1",
-							"full_name":    "acme.com",
-							"dns_txt_name": "_aweb.acme.com",
+							"namespace_id":  "ns-1",
+							"full_name":     "acme.com",
+							"dns_txt_name":  "_aweb.acme.com",
 							"dns_txt_value": "aweb=v1; controller=did:key:z6Mkf;",
 						},
 					})
@@ -354,7 +357,7 @@ func TestAwNamespaceVerifyDNSFailure(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			run := exec.CommandContext(ctx, bin, "namespace", "verify", "acme.com")
+			run := exec.CommandContext(ctx, bin, "project", "namespace", "verify", "acme.com")
 			run.Env = append(os.Environ(),
 				"AW_CONFIG_PATH="+cfgPath,
 				"AWEB_URL=",
@@ -404,7 +407,7 @@ func TestAwNamespaceDelete(t *testing.T) {
 	defer cancel()
 
 	// --force skips TTY confirmation.
-	run := exec.CommandContext(ctx, bin, "namespace", "delete", "acme.com", "--force")
+	run := exec.CommandContext(ctx, bin, "project", "namespace", "delete", "acme.com", "--force")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -445,7 +448,7 @@ func TestAwNamespaceDeleteNotFound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	run := exec.CommandContext(ctx, bin, "namespace", "delete", "nonexistent.com", "--force")
+	run := exec.CommandContext(ctx, bin, "project", "namespace", "delete", "nonexistent.com", "--force")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -483,7 +486,7 @@ func TestAwNamespaceDeleteRequiresForceInNonTTY(t *testing.T) {
 	defer cancel()
 
 	// No --force, stdin is not a TTY (piped from test).
-	run := exec.CommandContext(ctx, bin, "namespace", "delete", "acme.com")
+	run := exec.CommandContext(ctx, bin, "project", "namespace", "delete", "acme.com")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,

@@ -22,7 +22,7 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 	var serverURL string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli/accept":
+		case "/api/v1/spawn/accept-invite":
 			if r.Method != http.MethodPost {
 				t.Fatalf("method=%s", r.Method)
 			}
@@ -30,20 +30,21 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":   "proj-1",
-				"project_slug": "myteam",
-				"namespace":    "myteam.aweb.ai",
-				"agent_id":     "agent-1",
-				"alias":        "reviewer",
-				"address":      "myteam.aweb.ai/reviewer",
-				"api_key":      "aw_sk_invited",
-				"server_url":   serverURL + "/api",
-				"did":          "did:key:z6MkInvite",
-				"stable_id":    "did:aw:invite",
-				"custody":      "self",
-				"lifetime":     "persistent",
-				"access_mode":  "owner_only",
-				"created":      true,
+				"project_id":     "proj-1",
+				"project_slug":   "myteam",
+				"namespace_slug": "myteam",
+				"namespace":      "myteam.aweb.ai",
+				"identity_id":    "identity-1",
+				"alias":          "reviewer",
+				"address":        "myteam.aweb.ai/reviewer",
+				"api_key":        "aw_sk_invited",
+				"server_url":     serverURL + "/api",
+				"did":            "did:key:z6MkInvite",
+				"stable_id":      "did:aw:invite",
+				"custody":        "self",
+				"lifetime":       "ephemeral",
+				"access_mode":    "owner_only",
+				"created":        true,
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -72,8 +73,7 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--invite", "aw_inv_test",
+	run := exec.CommandContext(ctx, bin, "spawn", "accept-invite", "aw_inv_test",
 		"--alias", "reviewer",
 		"--server", server.URL,
 		"--json",
@@ -100,6 +100,9 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 	if gotBody["custody"] != "self" {
 		t.Fatalf("custody=%v", gotBody["custody"])
 	}
+	if gotBody["lifetime"] != "ephemeral" {
+		t.Fatalf("lifetime=%v", gotBody["lifetime"])
+	}
 	if _, ok := gotBody["public_key"]; !ok {
 		t.Fatal("missing public_key")
 	}
@@ -124,8 +127,11 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 	for _, acct := range cfg.Accounts {
 		if acct.APIKey == "aw_sk_invited" {
 			found = true
-			if acct.AgentAlias != "reviewer" {
-				t.Fatalf("agent_alias=%q", acct.AgentAlias)
+			if acct.IdentityHandle != "reviewer" {
+				t.Fatalf("agent_alias=%q", acct.IdentityHandle)
+			}
+			if acct.NamespaceSlug != "myteam" {
+				t.Fatalf("namespace_slug=%q", acct.NamespaceSlug)
 			}
 		}
 	}
@@ -140,25 +146,26 @@ func TestAwInitInviteAcceptUsesServerProvidedAliasHint(t *testing.T) {
 	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli/accept":
+		case "/api/v1/spawn/accept-invite":
 			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 				t.Fatal(err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":   "proj-1",
-				"project_slug": "myteam",
-				"namespace":    "myteam.aweb.ai",
-				"agent_id":     "agent-1",
-				"alias":        "reviewer",
-				"address":      "myteam.aweb.ai/reviewer",
-				"api_key":      "aw_sk_invited",
-				"server_url":   "https://app.aweb.ai/api",
-				"did":          "did:key:z6MkInvite",
-				"stable_id":    "did:aw:invite",
-				"custody":      "self",
-				"lifetime":     "persistent",
-				"access_mode":  "open",
-				"created":      true,
+				"project_id":     "proj-1",
+				"project_slug":   "myteam",
+				"namespace_slug": "myteam",
+				"namespace":      "myteam.aweb.ai",
+				"identity_id":    "identity-1",
+				"alias":          "reviewer",
+				"address":        "myteam.aweb.ai/reviewer",
+				"api_key":        "aw_sk_invited",
+				"server_url":     "https://app.aweb.ai/api",
+				"did":            "did:key:z6MkInvite",
+				"stable_id":      "did:aw:invite",
+				"custody":        "self",
+				"lifetime":       "ephemeral",
+				"access_mode":    "open",
+				"created":        true,
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -186,8 +193,7 @@ func TestAwInitInviteAcceptUsesServerProvidedAliasHint(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--invite", "aw_inv_test",
+	run := exec.CommandContext(ctx, bin, "spawn", "accept-invite", "aw_inv_test",
 		"--server", server.URL,
 		"--json",
 		"--write-context=false",
@@ -211,21 +217,103 @@ func TestAwInitInviteAcceptUsesServerProvidedAliasHint(t *testing.T) {
 	}
 }
 
+func TestAwInitInviteAcceptPermanentUsesExplicitName(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/spawn/accept-invite":
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id":     "proj-1",
+				"project_slug":   "myteam",
+				"namespace_slug": "myteam",
+				"namespace":      "myteam.aweb.ai",
+				"identity_id":    "identity-1",
+				"name":           "maintainer",
+				"address":        "myteam.aweb.ai/maintainer",
+				"api_key":        "aw_sk_invited",
+				"server_url":     "https://app.aweb.ai/api",
+				"did":            "did:key:z6MkInvite",
+				"stable_id":      "did:aw:invite",
+				"custody":        "self",
+				"lifetime":       "persistent",
+				"access_mode":    "open",
+				"created":        true,
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		case "/v1/workspaces/register", "/v1/workspaces/attach":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	run := exec.CommandContext(ctx, bin, "spawn", "accept-invite", "aw_inv_test",
+		"--server", server.URL,
+		"--permanent",
+		"--name", "maintainer",
+		"--write-context=false",
+		"--print-exports=false",
+	)
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+	if gotBody["name"] != "maintainer" {
+		t.Fatalf("name=%v", gotBody["name"])
+	}
+	if gotBody["lifetime"] != "persistent" {
+		t.Fatalf("lifetime=%v", gotBody["lifetime"])
+	}
+	if !strings.Contains(string(out), "Name:       maintainer") {
+		t.Fatalf("unexpected output:\n%s", string(out))
+	}
+}
+
 func TestAwInitInviteAcceptRequiresAPIKeyInResponse(t *testing.T) {
 	t.Parallel()
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli/accept":
+		case "/api/v1/spawn/accept-invite":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":   "proj-1",
-				"project_slug": "myteam",
-				"namespace":    "myteam.aweb.ai",
-				"agent_id":     "agent-1",
-				"alias":        "reviewer",
-				"address":      "myteam.aweb.ai/reviewer",
-				"server_url":   "https://app.aweb.ai/api",
-				"created":      true,
+				"project_id":     "proj-1",
+				"project_slug":   "myteam",
+				"namespace_slug": "myteam",
+				"namespace":      "myteam.aweb.ai",
+				"identity_id":    "identity-1",
+				"alias":          "reviewer",
+				"address":        "myteam.aweb.ai/reviewer",
+				"server_url":     "https://app.aweb.ai/api",
+				"created":        true,
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -251,8 +339,7 @@ func TestAwInitInviteAcceptRequiresAPIKeyInResponse(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--invite", "aw_inv_test",
+	run := exec.CommandContext(ctx, bin, "spawn", "accept-invite", "aw_inv_test",
 		"--alias", "reviewer",
 		"--server", server.URL,
 	)
@@ -271,49 +358,12 @@ func TestAwInitInviteAcceptRequiresAPIKeyInResponse(t *testing.T) {
 	}
 }
 
-func TestAwInitInviteRejectsResolvedNamespaceConflictFromEnv(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "aw")
-	cfgPath := filepath.Join(tmp, "config.yaml")
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, string(out))
-	}
-
-	run := exec.CommandContext(ctx, bin, "init", "--invite", "aw_inv_test")
-	run.Env = append(os.Environ(),
-		"AW_CONFIG_PATH="+cfgPath,
-		"AWEB_URL=",
-		"AWEB_API_KEY=",
-		"AWEB_NAMESPACE=shadow-ns",
-	)
-	run.Dir = tmp
-	out, err := run.CombinedOutput()
-	if err == nil {
-		t.Fatalf("expected failure, got success:\n%s", string(out))
-	}
-	if !strings.Contains(string(out), "--invite cannot be combined with namespace/bootstrap flags") {
-		t.Fatalf("unexpected output:\n%s", string(out))
-	}
-}
-
 func TestAwInitInviteAliasErrorOnlyMapsAliasValidation(t *testing.T) {
 	t.Parallel()
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli/accept":
+		case "/api/v1/spawn/accept-invite":
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			_, _ = w.Write([]byte(`{"detail":"Invalid public_key"}`))
 		case "/v1/agents/heartbeat":
@@ -340,8 +390,7 @@ func TestAwInitInviteAliasErrorOnlyMapsAliasValidation(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--invite", "aw_inv_test",
+	run := exec.CommandContext(ctx, bin, "spawn", "accept-invite", "aw_inv_test",
 		"--server", server.URL,
 	)
 	run.Env = append(os.Environ(),
@@ -367,22 +416,23 @@ func TestAwInitInviteTextOutputSaysJoined(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli/accept":
+		case "/api/v1/spawn/accept-invite":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":   "proj-1",
-				"project_slug": "myteam",
-				"namespace":    "myteam.aweb.ai",
-				"agent_id":     "agent-1",
-				"alias":        "reviewer",
-				"address":      "myteam.aweb.ai/reviewer",
-				"api_key":      "aw_sk_invited",
-				"server_url":   "https://app.aweb.ai/api",
-				"did":          "did:key:z6MkInvite",
-				"stable_id":    "did:aw:invite",
-				"custody":      "self",
-				"lifetime":     "persistent",
-				"access_mode":  "open",
-				"created":      true,
+				"project_id":     "proj-1",
+				"project_slug":   "myteam",
+				"namespace_slug": "myteam",
+				"namespace":      "myteam.aweb.ai",
+				"identity_id":    "identity-1",
+				"alias":          "reviewer",
+				"address":        "myteam.aweb.ai/reviewer",
+				"api_key":        "aw_sk_invited",
+				"server_url":     "https://app.aweb.ai/api",
+				"did":            "did:key:z6MkInvite",
+				"stable_id":      "did:aw:invite",
+				"custody":        "self",
+				"lifetime":       "ephemeral",
+				"access_mode":    "open",
+				"created":        true,
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -410,8 +460,7 @@ func TestAwInitInviteTextOutputSaysJoined(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--invite", "aw_inv_test",
+	run := exec.CommandContext(ctx, bin, "spawn", "accept-invite", "aw_inv_test",
 		"--alias", "reviewer",
 		"--server", server.URL,
 		"--write-context=false",
@@ -427,7 +476,10 @@ func TestAwInitInviteTextOutputSaysJoined(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
-	if !strings.Contains(string(out), "Joined myteam.aweb.ai as reviewer") {
+	if !strings.Contains(string(out), "Accepted spawn invite") {
+		t.Fatalf("unexpected output:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "Alias:      reviewer") {
 		t.Fatalf("unexpected output:\n%s", string(out))
 	}
 }

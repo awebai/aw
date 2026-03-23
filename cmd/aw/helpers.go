@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -83,7 +85,7 @@ func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Se
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid identity configuration: %w", err)
 		}
-		c.SetAddress(deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias))
+		c.SetAddress(deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.IdentityHandle))
 		c.SetProjectSlug(sel.DefaultProject)
 		if sel.StableID != "" {
 			c.SetStableID(sel.StableID)
@@ -568,6 +570,69 @@ func promptString(label, defaultValue string) (string, error) {
 	return line, nil
 }
 
+func promptRequiredString(label, suggestedValue string) (string, error) {
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		if strings.TrimSpace(suggestedValue) != "" {
+			fmt.Fprintf(os.Stderr, "%s [%s]: ", label, suggestedValue)
+		} else {
+			fmt.Fprintf(os.Stderr, "%s: ", label)
+		}
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line, nil
+		}
+		if strings.TrimSpace(suggestedValue) != "" {
+			return strings.TrimSpace(suggestedValue), nil
+		}
+		fmt.Fprintf(os.Stderr, "%s is required.\n", label)
+	}
+}
+
+func promptIndexedChoice(label string, options []string, defaultIndex int, in io.Reader, out io.Writer) (string, error) {
+	if len(options) == 0 {
+		return "", fmt.Errorf("no options available")
+	}
+	hasDefault := defaultIndex >= 0 && defaultIndex < len(options)
+	if !hasDefault {
+		defaultIndex = -1
+	}
+
+	for i, option := range options {
+		fmt.Fprintf(out, "  %d. %s\n", i+1, option)
+	}
+
+	reader := bufio.NewReader(in)
+	for {
+		if hasDefault {
+			fmt.Fprintf(out, "%s number [%d]: ", label, defaultIndex+1)
+		} else {
+			fmt.Fprintf(out, "%s number: ", label)
+		}
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			if hasDefault {
+				return options[defaultIndex], nil
+			}
+			fmt.Fprintf(out, "Enter a number between 1 and %d.\n", len(options))
+			continue
+		}
+		index, err := strconv.Atoi(line)
+		if err == nil && index >= 1 && index <= len(options) {
+			return options[index-1], nil
+		}
+		fmt.Fprintf(out, "Enter a number between 1 and %d.\n", len(options))
+	}
+}
+
 func defaultGlobalPath() (string, error) {
 	return awconfig.DefaultGlobalConfigPath()
 }
@@ -598,20 +663,34 @@ func sanitizeKeyComponent(s string) string {
 	return out
 }
 
-func deriveAccountName(serverName, namespaceSlug, alias string) string {
-	return "acct-" + sanitizeKeyComponent(serverName) + "__" + sanitizeKeyComponent(namespaceSlug) + "__" + sanitizeKeyComponent(alias)
+func deriveAccountName(serverName, namespaceSlug, handle string) string {
+	return "acct-" + sanitizeKeyComponent(serverName) + "__" + sanitizeKeyComponent(namespaceSlug) + "__" + sanitizeKeyComponent(handle)
 }
 
-// deriveAgentAddress builds the agent address (namespace/alias) from
-// registration response fields. Prefers namespace_slug over project_slug.
-func deriveAgentAddress(namespaceSlug, projectSlug, alias string) string {
+// deriveIdentityAddress builds the canonical external identity address from
+// namespace/project context plus the local routing handle or permanent name.
+func deriveIdentityAddress(namespaceSlug, projectSlug, handle string) string {
 	if namespaceSlug != "" {
-		return namespaceSlug + "/" + alias
+		return namespaceSlug + "/" + handle
 	}
 	if projectSlug != "" {
-		return projectSlug + "/" + alias
+		return projectSlug + "/" + handle
 	}
-	return alias
+	return handle
+}
+
+func handleFromAddress(address string) string {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return ""
+	}
+	if idx := strings.LastIndexByte(address, '/'); idx >= 0 && idx+1 < len(address) {
+		return strings.TrimSpace(address[idx+1:])
+	}
+	if idx := strings.LastIndexByte(address, '~'); idx >= 0 && idx+1 < len(address) {
+		return strings.TrimSpace(address[idx+1:])
+	}
+	return address
 }
 
 func writeOrUpdateContext(serverName, accountName string) error {
@@ -776,7 +855,7 @@ func checkVerificationRequired(err error) string {
 	if envelope.Error.Details.MaskedEmail != "" {
 		hint += " (" + envelope.Error.Details.MaskedEmail + ")"
 	}
-	hint += ". Run 'aw verify --code CODE' to activate your agent."
+	hint += ". Verify this account in the dashboard, then reconnect with `aw connect` or re-run `aw init` with a fresh project key."
 	return hint
 }
 
@@ -797,7 +876,7 @@ func networkError(err error, target string) error {
 // wrong agent when .aw/context resolves to a different account than
 // .aw/workspace.yaml expects.
 func checkIdentityMismatch(workingDir string, sel *awconfig.Selection) error {
-	if sel == nil || strings.TrimSpace(sel.AgentAlias) == "" {
+	if sel == nil || strings.TrimSpace(sel.IdentityHandle) == "" {
 		return nil
 	}
 	ws, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir)
@@ -805,7 +884,7 @@ func checkIdentityMismatch(workingDir string, sel *awconfig.Selection) error {
 		return nil
 	}
 	wsAlias := strings.TrimSpace(ws.Alias)
-	selAlias := strings.TrimSpace(sel.AgentAlias)
+	selAlias := strings.TrimSpace(sel.IdentityHandle)
 	if wsAlias == "" || selAlias == "" {
 		return nil
 	}

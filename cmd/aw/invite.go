@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -19,7 +20,7 @@ var (
 )
 
 type inviteCreateOutput struct {
-	*awid.InviteCreateResponse
+	*awid.SpawnInviteCreateResponse
 	InitCommand string `json:"init_command"`
 }
 
@@ -28,9 +29,14 @@ type inviteRevokeOutput struct {
 	TokenPrefix string `json:"token_prefix"`
 }
 
-var inviteCmd = &cobra.Command{
-	Use:   "invite",
-	Short: "Create and manage CLI invite tokens",
+var spawnCmd = &cobra.Command{
+	Use:   "spawn",
+	Short: "Authorize another workspace to join this project",
+}
+
+var spawnCreateInviteCmd = &cobra.Command{
+	Use:   "create-invite",
+	Short: "Create a spawn invite for another workspace",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := resolveCloudClient()
@@ -52,7 +58,7 @@ var inviteCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := client.InviteCreate(ctx, &awid.InviteCreateRequest{
+		resp, err := client.SpawnCreateInvite(ctx, &awid.SpawnInviteCreateRequest{
 			AliasHint:        strings.TrimSpace(inviteAlias),
 			AccessMode:       accessMode,
 			MaxUses:          inviteUses,
@@ -63,17 +69,17 @@ var inviteCmd = &cobra.Command{
 		}
 
 		out := inviteCreateOutput{
-			InviteCreateResponse: resp,
-			InitCommand:          buildInviteInitCommand(resp.ServerURL, resp.Token, resp.AliasHint),
+			SpawnInviteCreateResponse: resp,
+			InitCommand:               buildInviteInitCommand(resp.ServerURL, resp.Token, resp.AliasHint),
 		}
 		printOutput(out, formatInviteCreate)
 		return nil
 	},
 }
 
-var inviteListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List CLI invites",
+var spawnListInvitesCmd = &cobra.Command{
+	Use:   "list-invites",
+	Short: "List active spawn invites",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := resolveCloudClient()
 		if err != nil {
@@ -82,7 +88,7 @@ var inviteListCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := client.InviteList(ctx)
+		resp, err := client.ListSpawnInvites(ctx)
 		if err != nil {
 			return err
 		}
@@ -91,9 +97,9 @@ var inviteListCmd = &cobra.Command{
 	},
 }
 
-var inviteRevokeCmd = &cobra.Command{
-	Use:   "revoke <prefix>",
-	Short: "Revoke a CLI invite by token prefix",
+var spawnRevokeInviteCmd = &cobra.Command{
+	Use:   "revoke-invite <prefix>",
+	Short: "Revoke a spawn invite by token prefix",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		prefix := strings.TrimSpace(args[0])
@@ -108,7 +114,7 @@ var inviteRevokeCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		list, err := client.InviteList(ctx)
+		list, err := client.ListSpawnInvites(ctx)
 		if err != nil {
 			return err
 		}
@@ -116,7 +122,7 @@ var inviteRevokeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := client.InviteRevoke(ctx, match.InviteID); err != nil {
+		if err := client.RevokeSpawnInvite(ctx, match.InviteID); err != nil {
 			return err
 		}
 		printOutput(inviteRevokeOutput{
@@ -127,14 +133,40 @@ var inviteRevokeCmd = &cobra.Command{
 	},
 }
 
+var spawnAcceptInviteCmd = &cobra.Command{
+	Use:   "accept-invite <token>",
+	Short: "Accept a spawn invite into a new workspace",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runSpawnAcceptInvite,
+}
+
 func init() {
-	inviteCmd.Flags().StringVar(&inviteAlias, "alias", "", "Pre-assign an alias hint for the invitee")
-	inviteCmd.Flags().StringVar(&inviteAccess, "access", "open", "Access mode: project|owner|contacts|open")
-	inviteCmd.Flags().StringVar(&inviteExpires, "expires", "24h", "Invite lifetime (examples: 24h, 7d)")
-	inviteCmd.Flags().IntVar(&inviteUses, "uses", 1, "Maximum number of invite uses")
-	inviteCmd.AddCommand(inviteListCmd)
-	inviteCmd.AddCommand(inviteRevokeCmd)
-	rootCmd.AddCommand(inviteCmd)
+	spawnCreateInviteCmd.Flags().StringVar(&inviteAlias, "alias", "", "Pre-assign a routing alias hint for the child workspace")
+	spawnCreateInviteCmd.Flags().StringVar(&inviteAccess, "access", "open", "Access mode: project|owner|contacts|open")
+	spawnCreateInviteCmd.Flags().StringVar(&inviteExpires, "expires", "24h", "Invite lifetime (examples: 24h, 7d)")
+	spawnCreateInviteCmd.Flags().IntVar(&inviteUses, "uses", 1, "Maximum number of invite uses")
+
+	spawnAcceptInviteCmd.Flags().StringVar(&initServerURL, "server-url", "", "Base URL for the aweb server (or AWEB_URL). Any URL is accepted; aw probes common mounts (including /api).")
+	spawnAcceptInviteCmd.Flags().StringVar(&initServerURL, "server", "", "Base URL for the aweb server (alias for --server-url)")
+	spawnAcceptInviteCmd.Flags().StringVar(&initAlias, "alias", "", "Ephemeral identity routing alias (optional; default: invite or server-suggested)")
+	spawnAcceptInviteCmd.Flags().StringVar(&initName, "name", "", "Permanent identity name (required with --permanent)")
+	spawnAcceptInviteCmd.Flags().StringVar(&initReachability, "reachability", "", "Permanent address reachability (private|org-visible|contacts-only|public)")
+	spawnAcceptInviteCmd.Flags().BoolVar(&initInjectDocs, "inject-docs", false, "Inject aw coordination instructions into CLAUDE.md and AGENTS.md")
+	spawnAcceptInviteCmd.Flags().BoolVar(&initSetupHooks, "setup-hooks", false, "Set up Claude Code PostToolUse hook for aw notify")
+	spawnAcceptInviteCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
+	spawnAcceptInviteCmd.Flags().StringVar(&initAgentType, "agent-type", "", "Runtime type (default: AWEB_AGENT_TYPE or agent)")
+	spawnAcceptInviteCmd.Flags().BoolVar(&initSaveConfig, "save-config", true, "Write/update ~/.config/aw/config.yaml with the new credentials")
+	spawnAcceptInviteCmd.Flags().BoolVar(&initSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
+	spawnAcceptInviteCmd.Flags().BoolVar(&initWriteContext, "write-context", true, "Write/update .aw/context in the current directory (non-secret pointer)")
+	spawnAcceptInviteCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
+	spawnAcceptInviteCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (must match a role in the active project policy)")
+	spawnAcceptInviteCmd.Flags().BoolVar(&initPermanent, "permanent", false, "Create a durable self-custodial identity instead of the default ephemeral identity")
+
+	spawnCmd.AddCommand(spawnCreateInviteCmd)
+	spawnCmd.AddCommand(spawnListInvitesCmd)
+	spawnCmd.AddCommand(spawnRevokeInviteCmd)
+	spawnCmd.AddCommand(spawnAcceptInviteCmd)
+	rootCmd.AddCommand(spawnCmd)
 }
 
 func parseInviteExpirySeconds(raw string) (int, error) {
@@ -185,7 +217,7 @@ func inviteTTLLabel(seconds int) string {
 
 func buildInviteInitCommand(serverURL, token, alias string) string {
 	var parts []string
-	parts = append(parts, "aw", "init", "--invite", token)
+	parts = append(parts, "aw", "spawn", "accept-invite", token)
 	if rootURL, err := cloudRootBaseURL(serverURL); err == nil && strings.TrimSpace(rootURL) != "" {
 		if strings.TrimSuffix(rootURL, "/") != strings.TrimSuffix(DefaultServerURL, "/") {
 			parts = append(parts, "--server", rootURL)
@@ -209,13 +241,13 @@ func formatInviteCreate(v any) string {
 	if ttl == "0s" {
 		ttl = out.ExpiresAt
 	}
-	return fmt.Sprintf("Invite created (expires in %s, %s)\n\nRun this on the target machine:\n  %s\n", ttl, usesText, out.InitCommand)
+	return fmt.Sprintf("Spawn invite created (expires in %s, %s)\n\nRun this in the child workspace:\n  %s\n", ttl, usesText, out.InitCommand)
 }
 
 func formatInviteList(v any) string {
-	resp := v.(*awid.InviteListResponse)
+	resp := v.(*awid.SpawnInviteListResponse)
 	if len(resp.Invites) == 0 {
-		return "No invites.\n"
+		return "No spawn invites.\n"
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%-10s %-16s %-6s %-12s %s\n", "PREFIX", "ALIAS HINT", "USES", "EXPIRES", "CREATED")
@@ -245,11 +277,11 @@ func formatInviteDate(timestamp string) string {
 
 func formatInviteRevoke(v any) string {
 	out := v.(inviteRevokeOutput)
-	return fmt.Sprintf("Invite %s revoked\n", out.TokenPrefix)
+	return fmt.Sprintf("Spawn invite %s revoked\n", out.TokenPrefix)
 }
 
-func findInviteByPrefix(invites []awid.InviteListItem, prefix string) (*awid.InviteListItem, error) {
-	var matches []awid.InviteListItem
+func findInviteByPrefix(invites []awid.SpawnInviteListItem, prefix string) (*awid.SpawnInviteListItem, error) {
+	var matches []awid.SpawnInviteListItem
 	for i := range invites {
 		if strings.HasPrefix(invites[i].TokenPrefix, prefix) {
 			matches = append(matches, invites[i])
@@ -270,4 +302,83 @@ func newUnauthenticatedCloudClient(baseURL string) (*aweb.Client, error) {
 		return nil, err
 	}
 	return aweb.New(rootURL)
+}
+
+func runSpawnAcceptInvite(cmd *cobra.Command, args []string) error {
+	token := strings.TrimSpace(args[0])
+	if !strings.HasPrefix(token, "aw_inv_") {
+		return usageError("invalid invite token (expected aw_inv_...)")
+	}
+	if err := validateInitIdentityFlags(); err != nil {
+		return err
+	}
+
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	baseURL, serverName, _, err := resolveBaseURLForInit(initServerURL, serverFlag)
+	if err != nil {
+		return err
+	}
+
+	alias := ""
+	name := strings.TrimSpace(initName)
+	if !initPermanent {
+		alias = strings.TrimSpace(initAlias)
+		if alias == "" {
+			alias = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
+		}
+	}
+
+	opts := initOptions{
+		Flow:                   flowInvite,
+		WorkingDir:             workingDir,
+		BaseURL:                baseURL,
+		ServerName:             serverName,
+		IdentityAlias:          alias,
+		IdentityName:           name,
+		AddressReachability:    normalizeAddressReachability(strings.TrimSpace(initReachability)),
+		HumanName:              resolveHumanName(),
+		AgentType:              resolveAgentType(),
+		SaveConfig:             initSaveConfig,
+		SetDefault:             initSetDefault,
+		WriteContext:           initWriteContext,
+		InviteToken:            token,
+		WorkspaceRole:          resolveRequestedRole(),
+		Lifetime:               resolveInitLifetime(initPermanent),
+	}
+
+	result, err := executeInit(opts)
+	if err != nil {
+		return err
+	}
+
+	if jsonFlag {
+		printJSON(result.Response)
+	} else {
+		printInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.SigningKeyPath, "Accepted spawn invite")
+	}
+	if initPrintExports {
+		fmt.Println("")
+		fmt.Println("# Copy/paste to configure your shell:")
+		fmt.Println("export AWEB_URL=" + result.ExportBaseURL)
+		fmt.Println("export AWEB_API_KEY=" + result.Response.APIKey)
+		fmt.Println("export AWEB_PROJECT=" + result.ExportNamespace)
+		if result.Response.Alias != "" {
+			fmt.Println("export AWEB_ALIAS=" + result.Response.Alias)
+		}
+	}
+	repoRoot := resolveRepoRoot(opts.WorkingDir)
+	if initInjectDocs {
+		printInjectDocsResult(InjectAgentDocs(repoRoot))
+	}
+	if initSetupHooks {
+		hookResult := SetupClaudeHooks(repoRoot, isTTY())
+		printClaudeHooksResult(hookResult)
+	}
+	if !jsonFlag {
+		printInitNextSteps(initInjectDocs, initSetupHooks)
+	}
+	return nil
 }

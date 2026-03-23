@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,13 +33,13 @@ var workspaceInitCmd = &cobra.Command{
 
 var workspaceStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show coordination status for the current agent/context and team",
+	Short: "Show coordination status for the current workspace/identity and team",
 	RunE:  runWorkspaceStatus,
 }
 
 var workspaceAddWorktreeCmd = &cobra.Command{
 	Use:   "add-worktree [role]",
-	Short: "Create a sibling git worktree and initialize a new coordination agent in it",
+	Short: "Create a sibling git worktree and initialize a new coordination workspace in it",
 	Args:  cobra.RangeArgs(0, 1),
 	RunE:  runWorkspaceAddWorktree,
 }
@@ -106,8 +107,8 @@ func runWorkspaceInit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(sel.AgentID) == "" || strings.TrimSpace(sel.AgentAlias) == "" {
-		return usageError("selected account has no agent identity; run 'aw init' first")
+	if strings.TrimSpace(sel.IdentityID) == "" || strings.TrimSpace(sel.IdentityHandle) == "" {
+		return usageError("selected account has no identity; run 'aw init' first")
 	}
 
 	out, err := registerWorkspaceForRoot(root, client, strings.TrimSpace(workspaceInitRole), strings.TrimSpace(workspaceInitRepoOrigin))
@@ -126,8 +127,8 @@ func runWorkspaceStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(sel.AgentID) == "" {
-		return usageError("selected account has no agent identity; run 'aw init' first")
+	if strings.TrimSpace(sel.IdentityID) == "" {
+		return usageError("selected account has no identity; run 'aw init' first")
 	}
 
 	state, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir)
@@ -135,7 +136,7 @@ func runWorkspaceStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load workspace state: %w", err)
 	}
 
-	workspaceID := strings.TrimSpace(sel.AgentID)
+	workspaceID := strings.TrimSpace(sel.IdentityID)
 	if state != nil && strings.TrimSpace(state.WorkspaceID) != "" {
 		workspaceID = strings.TrimSpace(state.WorkspaceID)
 	}
@@ -326,9 +327,9 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(os.Stderr, "Initializing aw...")
 		}
 
-		// Create a short-lived invite with the parent agent's key,
-		// then accept it to bootstrap the new agent. This is the
-		// supported hosted path for "agent creates agent."
+		// Create a short-lived invite from the current workspace,
+		// then accept it in the new worktree. This is the supported
+		// hosted path for one workspace spawning another in the same project.
 		inviteToken, initErr := createWorktreeInvite(client, alias)
 		if initErr == nil {
 			initOpts := initOptions{
@@ -336,8 +337,7 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 				WorkingDir:    worktreePath,
 				BaseURL:       sourceBaseURL,
 				ServerName:    sourceServerName,
-				Alias:         alias,
-				AliasExplicit: true,
+				IdentityAlias: alias,
 				HumanName:     humanName,
 				AgentType:     "agent",
 				SaveConfig:    true,
@@ -451,6 +451,10 @@ func registerWorkspaceForRoot(root string, client *aweb.Client, roleOverride str
 	if role == "" && existingState != nil {
 		role = strings.TrimSpace(existingState.Role)
 	}
+	role, err = resolveWorkspacePolicyRole(client, role, isTTY(), os.Stdin, os.Stderr)
+	if err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -558,8 +562,8 @@ func resolveWorkspaceRepoOrigin(root, explicit string) (string, error) {
 
 func fallbackWorkspaceInfo(sel *awconfig.Selection, state *awconfig.WorktreeWorkspace) aweb.WorkspaceInfo {
 	info := aweb.WorkspaceInfo{
-		WorkspaceID: sel.AgentID,
-		Alias:       sel.AgentAlias,
+		WorkspaceID: sel.IdentityID,
+		Alias:       sel.IdentityHandle,
 		Status:      "offline",
 	}
 	if state == nil {
@@ -626,7 +630,7 @@ func formatWorkspaceInit(v any) string {
 	}
 	sb.WriteString(fmt.Sprintf("%s workspace %s\n", action, out.Alias))
 	sb.WriteString(fmt.Sprintf("Workspace ID: %s\n", out.WorkspaceID))
-	sb.WriteString(fmt.Sprintf("Namespace:    %s\n", out.ProjectSlug))
+	sb.WriteString(fmt.Sprintf("Project:      %s\n", out.ProjectSlug))
 	sb.WriteString(fmt.Sprintf("Repo:         %s\n", out.CanonicalOrigin))
 	if out.Role != "" {
 		sb.WriteString(fmt.Sprintf("Role:         %s\n", out.Role))
@@ -640,7 +644,7 @@ func formatWorkspaceInit(v any) string {
 func formatWorkspaceAddWorktree(v any) string {
 	out := v.(workspaceAddWorktreeOutput)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Agent worktree created at %s\n", abbreviateUserHome(out.WorktreePath)))
+	sb.WriteString(fmt.Sprintf("Worktree created at %s\n", abbreviateUserHome(out.WorktreePath)))
 	sb.WriteString(fmt.Sprintf("Alias:    %s\n", out.Alias))
 	sb.WriteString(fmt.Sprintf("Role:     %s\n", out.Role))
 	sb.WriteString(fmt.Sprintf("Branch:   %s\n", out.Branch))
@@ -689,32 +693,11 @@ func isValidWorkspaceRole(role string) bool {
 }
 
 func resolveWorkspaceAddRole(client *aweb.Client, args []string) (string, error) {
+	requested := ""
 	if len(args) > 0 {
-		return strings.TrimSpace(args[0]), nil
+		requested = strings.TrimSpace(args[0])
 	}
-
-	roles, err := fetchWorkspacePolicyRoles(client)
-	if err != nil {
-		return "", err
-	}
-
-	if isTTY() {
-		defaultRole := ""
-		if len(roles) > 0 {
-			defaultRole = roles[0]
-			fmt.Fprintf(os.Stderr, "Available roles: %s\n", strings.Join(roles, ", "))
-		}
-		role, err := promptString("Role", defaultRole)
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(role), nil
-	}
-
-	if len(roles) > 0 {
-		return "", usageError("no role specified; available roles: %s. Pass role as argument: aw workspace add-worktree <role>", strings.Join(roles, ", "))
-	}
-	return "", usageError("no role specified. Pass role as argument: aw workspace add-worktree <role>")
+	return resolveWorkspacePolicyRole(client, requested, isTTY() && requested == "", os.Stdin, os.Stderr)
 }
 
 func fetchWorkspacePolicyRoles(client *aweb.Client) ([]string, error) {
@@ -732,6 +715,50 @@ func fetchWorkspacePolicyRoles(client *aweb.Client) ([]string, error) {
 	}
 	sort.Strings(roles)
 	return roles, nil
+}
+
+func resolveWorkspacePolicyRole(client *aweb.Client, requested string, allowPrompt bool, in io.Reader, out io.Writer) (string, error) {
+	roles, err := fetchWorkspacePolicyRoles(client)
+	if err != nil {
+		return "", err
+	}
+	return selectRoleFromAvailableRoles(requested, roles, allowPrompt, in, out)
+}
+
+func selectRoleFromAvailableRoles(requested string, roles []string, allowPrompt bool, in io.Reader, out io.Writer) (string, error) {
+	if len(roles) == 0 {
+		return "", usageError("no roles defined in the active project policy")
+	}
+
+	normalizedRoles := make(map[string]string, len(roles))
+	for _, role := range roles {
+		normalized := normalizeWorkspaceRole(role)
+		if normalized != "" {
+			normalizedRoles[normalized] = role
+		}
+	}
+
+	requested = normalizeWorkspaceRole(requested)
+	if requested != "" {
+		if role, ok := normalizedRoles[requested]; ok {
+			return role, nil
+		}
+		return "", usageError("invalid role %q; available roles: %s", requested, strings.Join(roles, ", "))
+	}
+
+	if !allowPrompt {
+		return "", usageError("no role specified; available roles: %s", strings.Join(roles, ", "))
+	}
+
+	role, err := promptIndexedChoice("Role", roles, -1, in, out)
+	if err != nil {
+		return "", err
+	}
+	role = normalizeWorkspaceRole(role)
+	if selected, ok := normalizedRoles[role]; ok {
+		return selected, nil
+	}
+	return "", usageError("invalid role %q; available roles: %s", role, strings.Join(roles, ", "))
 }
 
 func deriveWorkspaceAddWorktreePath(mainRepo, branchName string) (string, error) {
@@ -807,13 +834,14 @@ func cleanupWorkspaceWorktree(repoPath, worktreePath, branchName string, deleteB
 }
 
 // createWorktreeInvite creates a single-use, short-lived CLI invite for
-// bootstrapping a worktree agent. The parent agent's authenticated client
-// creates the invite; the new worktree then accepts it via flowInvite.
+// bootstrapping another workspace identity in a sibling worktree. The current
+// workspace's authenticated client creates the invite; the new worktree then
+// accepts it via flowInvite.
 func createWorktreeInvite(client *aweb.Client, aliasHint string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	resp, err := client.InviteCreate(ctx, &awid.InviteCreateRequest{
+	resp, err := client.SpawnCreateInvite(ctx, &awid.SpawnInviteCreateRequest{
 		AliasHint:        aliasHint,
 		MaxUses:          1,
 		ExpiresInSeconds: 300, // 5 minutes

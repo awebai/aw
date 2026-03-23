@@ -124,7 +124,7 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 		if !strings.HasSuffix(dir, "testdata") {
 			t.Fatalf("expected selection dir to match working dir, got %q", dir)
 		}
-		return &aweb.Client{}, &awconfig.Selection{NamespaceSlug: "team", AgentAlias: "rose"}, nil
+		return &aweb.Client{}, &awconfig.Selection{NamespaceSlug: "team", IdentityHandle: "rose"}, nil
 	}
 	runNewEventBus = func(client *aweb.Client) *awrun.EventBus {
 		if client == nil {
@@ -269,7 +269,7 @@ func TestRunAllowsEmptyPromptWhenInteractiveScreenIsAvailable(t *testing.T) {
 		return awrun.ClaudeProvider{}, nil
 	}
 	runResolveClientForDir = func(dir string) (*aweb.Client, *awconfig.Selection, error) {
-		return &aweb.Client{}, &awconfig.Selection{NamespaceSlug: "team", AgentAlias: "rose"}, nil
+		return &aweb.Client{}, &awconfig.Selection{NamespaceSlug: "team", IdentityHandle: "rose"}, nil
 	}
 	runNewEventBus = func(client *aweb.Client) *awrun.EventBus { return nil }
 	runNewScreenController = func(in io.Reader, out io.Writer) *awrun.ScreenController {
@@ -520,7 +520,7 @@ func TestRunUsesWakeEventToTriggerSecondCycle(t *testing.T) {
 		return provider, nil
 	}
 	runResolveClientForDir = func(string) (*aweb.Client, *awconfig.Selection, error) {
-		return client, &awconfig.Selection{NamespaceSlug: "team", AgentAlias: "rose"}, nil
+		return client, &awconfig.Selection{NamespaceSlug: "team", IdentityHandle: "rose"}, nil
 	}
 	runNewLoop = func(provider awrun.Provider, out io.Writer) *awrun.Loop {
 		loop := awrun.NewLoop(provider, out)
@@ -632,7 +632,7 @@ func TestRunUsesActionableWakeEventToTriggerSecondCycle(t *testing.T) {
 		return provider, nil
 	}
 	runResolveClientForDir = func(string) (*aweb.Client, *awconfig.Selection, error) {
-		return client, &awconfig.Selection{NamespaceSlug: "team", AgentAlias: "rose"}, nil
+		return client, &awconfig.Selection{NamespaceSlug: "team", IdentityHandle: "rose"}, nil
 	}
 	runNewLoop = func(provider awrun.Provider, out io.Writer) *awrun.Loop {
 		loop := awrun.NewLoop(provider, out)
@@ -713,7 +713,7 @@ func TestRunContinuePrintsRecentInteractionRecap(t *testing.T) {
 	}
 	runNewProvider = func(name string) (awrun.Provider, error) { return awrun.ClaudeProvider{}, nil }
 	runResolveClientForDir = func(string) (*aweb.Client, *awconfig.Selection, error) {
-		return &aweb.Client{}, &awconfig.Selection{NamespaceSlug: "team", AgentAlias: "rose"}, nil
+		return &aweb.Client{}, &awconfig.Selection{NamespaceSlug: "team", IdentityHandle: "rose"}, nil
 	}
 	runNewEventBus = func(client *aweb.Client) *awrun.EventBus { return nil }
 	runNewScreenController = func(in io.Reader, out io.Writer) *awrun.ScreenController { return nil }
@@ -734,14 +734,17 @@ func TestRunContinuePrintsRecentInteractionRecap(t *testing.T) {
 		t.Fatalf("runRun returned error: %v", err)
 	}
 	out := stdout.String()
-	if !strings.Contains(out, "Recent interactions:") {
+	if !strings.Contains(out, "Recent interactions") {
 		t.Fatalf("expected interaction recap, got %q", out)
 	}
-	if !strings.Contains(out, "you: please fix the continue UX") {
+	if !strings.Contains(out, "> please fix the continue UX") {
 		t.Fatalf("expected user recap line, got %q", out)
 	}
-	if !strings.Contains(out, "agent: I can add a compact recap") {
+	if !strings.Contains(out, "I can add a compact recap") {
 		t.Fatalf("expected agent recap line, got %q", out)
+	}
+	if strings.Contains(out, "[10:00]") {
+		t.Fatalf("did not expect timestamps in recap, got %q", out)
 	}
 }
 

@@ -18,7 +18,7 @@ func TestAwInviteCreateOmitsDefaultServerFlag(t *testing.T) {
 	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli":
+		case "/api/v1/spawn/create-invite":
 			if r.Method != http.MethodPost {
 				t.Fatalf("method=%s", r.Method)
 			}
@@ -73,7 +73,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "invite", "--alias", "reviewer")
+	run := exec.CommandContext(ctx, bin, "spawn", "create-invite", "--alias", "reviewer")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -81,7 +81,7 @@ default_account: acct
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 	text := string(out)
-	if !strings.Contains(text, "aw init --invite aw_inv_7f3k9x2m --alias reviewer") {
+	if !strings.Contains(text, "aw spawn accept-invite aw_inv_7f3k9x2m --alias reviewer") {
 		t.Fatalf("missing invite command:\n%s", text)
 	}
 	if strings.Contains(text, "--server ") {
@@ -98,7 +98,7 @@ func TestAwInviteCreateIncludesSelfHostedServerFlag(t *testing.T) {
 	var serverURL string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli":
+		case "/api/v1/spawn/create-invite":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"invite_id":    "inv-1",
 				"token":        "aw_inv_7f3k9x2m",
@@ -147,7 +147,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "invite")
+	run := exec.CommandContext(ctx, bin, "spawn", "create-invite")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -169,7 +169,7 @@ func TestAwInviteListAndRevoke(t *testing.T) {
 	var gotDeletePath string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/invites/cli":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/spawn/invites":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"invites": []map[string]any{
 					{
@@ -184,7 +184,7 @@ func TestAwInviteListAndRevoke(t *testing.T) {
 					},
 				},
 			})
-		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/invites/cli/inv-1":
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/spawn/invites/inv-1":
 			gotDeletePath = r.URL.Path
 			w.WriteHeader(http.StatusNoContent)
 		case r.URL.Path == "/v1/agents/heartbeat":
@@ -224,7 +224,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	listCmd := exec.CommandContext(ctx, bin, "invite", "list")
+	listCmd := exec.CommandContext(ctx, bin, "spawn", "list-invites")
 	listCmd.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	listCmd.Dir = tmp
 	listOut, err := listCmd.CombinedOutput()
@@ -235,17 +235,17 @@ default_account: acct
 		t.Fatalf("unexpected list output:\n%s", string(listOut))
 	}
 
-	revokeCmd := exec.CommandContext(ctx, bin, "invite", "revoke", "7f3k9x")
+	revokeCmd := exec.CommandContext(ctx, bin, "spawn", "revoke-invite", "7f3k9x")
 	revokeCmd.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	revokeCmd.Dir = tmp
 	revokeOut, err := revokeCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("invite revoke failed: %v\n%s", err, string(revokeOut))
 	}
-	if gotDeletePath != "/api/v1/invites/cli/inv-1" {
+	if gotDeletePath != "/api/v1/spawn/invites/inv-1" {
 		t.Fatalf("delete path=%q", gotDeletePath)
 	}
-	if !strings.Contains(string(revokeOut), "Invite 7f3k9x2m revoked") {
+	if !strings.Contains(string(revokeOut), "Spawn invite 7f3k9x2m revoked") {
 		t.Fatalf("unexpected revoke output:\n%s", string(revokeOut))
 	}
 }
@@ -256,7 +256,7 @@ func TestAwInviteCreateMapsAccessFlag(t *testing.T) {
 	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/invites/cli":
+		case "/api/v1/spawn/create-invite":
 			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 				t.Fatal(err)
 			}
@@ -307,7 +307,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "invite", "--access", "contacts")
+	run := exec.CommandContext(ctx, bin, "spawn", "create-invite", "--access", "contacts")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -353,7 +353,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "invite", "--uses", "0")
+	run := exec.CommandContext(ctx, bin, "spawn", "create-invite", "--uses", "0")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()

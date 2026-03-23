@@ -13,7 +13,7 @@ var mcpConfigAll bool
 
 var mcpConfigCmd = &cobra.Command{
 	Use:   "mcp-config",
-	Short: "Output MCP server configuration for the current agent",
+	Short: "Output MCP server configuration for the current identity",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if mcpConfigAll {
 			return mcpConfigAllAccounts()

@@ -12,14 +12,15 @@ import (
 type introspectOutput struct {
 	awid.IntrospectResponse
 	DID      string `json:"did,omitempty"`
+	StableID string `json:"stable_id,omitempty"`
 	Custody  string `json:"custody,omitempty"`
 	Lifetime string `json:"lifetime,omitempty"`
 }
 
 var introspectCmd = &cobra.Command{
-	Use:     "introspect",
-	Aliases: []string{"whoami"},
-	Short:   "Show current agent identity",
+	Use:     "whoami",
+	Aliases: []string{"introspect"},
+	Short:   "Show the current identity",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, sel, err := resolveClientSelection()
 		if err != nil {
@@ -34,14 +35,15 @@ var introspectCmd = &cobra.Command{
 			return err
 		}
 
-		alias := resp.Alias
+		alias := resp.IdentityHandle()
 		if alias == "" {
-			alias = sel.AgentAlias
+			alias = sel.IdentityHandle
 		}
 
 		out := introspectOutput{
 			IntrospectResponse: *resp,
 			DID:                sel.DID,
+			StableID:           sel.StableID,
 			Custody:            sel.Custody,
 			Lifetime:           sel.Lifetime,
 		}
@@ -50,7 +52,7 @@ var introspectCmd = &cobra.Command{
 			out.NamespaceSlug = sel.NamespaceSlug
 		}
 		if out.Address == "" {
-			out.Address = deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, alias)
+			out.Address = deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, alias)
 		}
 		printOutput(out, formatIntrospect)
 		return nil

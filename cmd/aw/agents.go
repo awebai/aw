@@ -6,42 +6,39 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
-	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
 // agentsListOutput wraps the server response with local config fields for display.
 type agentsListOutput struct {
-	*awid.ListAgentsResponse
-	NamespaceSlug string `json:"namespace_slug,omitempty"`
+	*awid.ListIdentitiesResponse
+	ProjectSlug string `json:"project_slug,omitempty"`
 }
 
-// agentPatchOutput wraps the server response with the agent's alias for display.
-type agentPatchOutput struct {
-	*awid.PatchAgentResponse
+// identityPatchOutput wraps the server response with the identity alias for display.
+type identityPatchOutput struct {
+	*awid.PatchIdentityResponse
 	Alias string `json:"alias,omitempty"`
 }
 
-// resolveAgentID resolves the current agent's ID via introspect, falling back
-// to the configured agent_id in the selection.
-func resolveAgentID(ctx context.Context, client *aweb.Client, sel *awconfig.Selection) (string, error) {
+// resolveCurrentIdentityID resolves the current identity's server ID via
+// introspect.
+func resolveCurrentIdentityID(ctx context.Context, client *aweb.Client, _ *awconfig.Selection) (string, error) {
 	intro, err := client.Introspect(ctx)
 	if err != nil {
 		return "", err
 	}
-	if intro.AgentID == "" && sel.AgentID != "" {
-		return sel.AgentID, nil
+	if intro.IdentityID == "" {
+		return "", fmt.Errorf("cannot determine identity id: API key is not bound to an identity")
 	}
-	if intro.AgentID == "" {
-		return "", fmt.Errorf("cannot determine agent_id: not an agent-scoped key")
-	}
-	return intro.AgentID, nil
+	return intro.IdentityID, nil
 }
 
-var agentsCmd = &cobra.Command{
-	Use:   "agents",
-	Short: "List your agents",
+var identitiesCmd = &cobra.Command{
+	Use:   "identities",
+	Short: "List identities in the current project",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -50,26 +47,26 @@ var agentsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		resp, err := client.ListAgents(ctx)
+		resp, err := client.ListIdentities(ctx)
 		if err != nil {
 			return err
 		}
 		printOutput(agentsListOutput{
-			ListAgentsResponse: resp,
-			NamespaceSlug:      sel.NamespaceSlug,
+			ListIdentitiesResponse: resp,
+			ProjectSlug:            sel.NamespaceSlug,
 		}, formatAgentsList)
 		return nil
 	},
 }
 
-var agentCmd = &cobra.Command{
-	Use:   "agent",
-	Short: "Agent operations",
+var identityCmd = &cobra.Command{
+	Use:   "identity",
+	Short: "Identity lifecycle, settings, and key management",
 }
 
 var agentAccessModeCmd = &cobra.Command{
 	Use:   "access-mode [open|contacts_only]",
-	Short: "Get or set agent access mode",
+	Short: "Get or set identity access mode",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -79,28 +76,28 @@ var agentAccessModeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		agentID, err := resolveAgentID(ctx, client, sel)
+		agentID, err := resolveCurrentIdentityID(ctx, client, sel)
 		if err != nil {
 			return err
 		}
 
 		if len(args) == 0 {
 			// GET: list agents, find self, print access_mode.
-			agents, err := client.ListAgents(ctx)
+			identities, err := client.ListIdentities(ctx)
 			if err != nil {
 				return err
 			}
-			for _, a := range agents.Agents {
-				if a.AgentID == agentID {
+			for _, a := range identities.Identities {
+				if a.IdentityID == agentID {
 					printOutput(map[string]string{
-						"agent_id":    a.AgentID,
-						"alias":       a.Alias,
+						"identity_id": a.IdentityID,
+						"alias":       firstNonEmpty(a.Name, a.Alias),
 						"access_mode": a.AccessMode,
 					}, formatAgentAccessMode)
 					return nil
 				}
 			}
-			return fmt.Errorf("agent %s not found in agents list", agentID)
+			return fmt.Errorf("identity %s not found in identities list", agentID)
 		}
 
 		// SET: patch access mode.
@@ -109,23 +106,23 @@ var agentAccessModeCmd = &cobra.Command{
 			return fmt.Errorf("invalid access mode: %s (must be \"open\" or \"contacts_only\")", mode)
 		}
 
-		resp, err := client.PatchAgent(ctx, agentID, &awid.PatchAgentRequest{
+		resp, err := client.PatchIdentity(ctx, agentID, &awid.PatchIdentityRequest{
 			AccessMode: mode,
 		})
 		if err != nil {
 			return err
 		}
-		printOutput(agentPatchOutput{
-			PatchAgentResponse: resp,
-			Alias:              sel.AgentAlias,
+		printOutput(identityPatchOutput{
+			PatchIdentityResponse: resp,
+			Alias:                 sel.IdentityHandle,
 		}, formatAgentPatch)
 		return nil
 	},
 }
 
-var agentPrivacyCmd = &cobra.Command{
-	Use:   "privacy [public|private]",
-	Short: "Get or set agent privacy",
+var identityReachabilityCmd = &cobra.Command{
+	Use:   "reachability [private|org-visible|contacts-only|public]",
+	Short: "Get or set permanent address reachability",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -135,51 +132,67 @@ var agentPrivacyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		agentID, err := resolveAgentID(ctx, client, sel)
+		lifetime, _, err := resolveSelectionIdentityState(ctx, client, sel)
+		if err != nil {
+			return err
+		}
+		if awid.IdentityClassFromLifetime(lifetime) != awid.IdentityClassPermanent {
+			return fmt.Errorf("reachability is only defined for permanent identities")
+		}
+		agentID, err := resolveCurrentIdentityID(ctx, client, sel)
 		if err != nil {
 			return err
 		}
 
 		if len(args) == 0 {
-			agents, err := client.ListAgents(ctx)
+			identities, err := client.ListIdentities(ctx)
 			if err != nil {
 				return err
 			}
-			for _, a := range agents.Agents {
-				if a.AgentID == agentID {
+			for _, a := range identities.Identities {
+				if a.IdentityID == agentID {
 					printOutput(map[string]string{
-						"agent_id": a.AgentID,
-						"alias":    a.Alias,
-						"privacy":  a.Privacy,
-					}, formatAgentPrivacy)
+						"identity_id":          a.IdentityID,
+						"alias":                firstNonEmpty(a.Name, a.Alias),
+						"address_reachability": a.AddressReachability,
+					}, formatIdentityReachability)
 					return nil
 				}
 			}
-			return fmt.Errorf("agent %s not found in agents list", agentID)
+			return fmt.Errorf("identity %s not found in identities list", agentID)
 		}
 
-		privacy := args[0]
-		if privacy != "public" && privacy != "private" {
-			return fmt.Errorf("invalid privacy: %s (must be \"public\" or \"private\")", privacy)
+		reachability := normalizeAddressReachability(args[0])
+		if reachability == "" {
+			return fmt.Errorf("invalid reachability: %s (must be \"private\", \"org-visible\", \"contacts-only\", or \"public\")", args[0])
 		}
 
-		resp, err := client.PatchAgent(ctx, agentID, &awid.PatchAgentRequest{
-			Privacy: privacy,
+		resp, err := client.PatchIdentity(ctx, agentID, &awid.PatchIdentityRequest{
+			AddressReachability: reachability,
 		})
 		if err != nil {
 			return err
 		}
-		printOutput(agentPatchOutput{
-			PatchAgentResponse: resp,
-			Alias:              sel.AgentAlias,
+		printOutput(identityPatchOutput{
+			PatchIdentityResponse: resp,
+			Alias:                 sel.IdentityHandle,
 		}, formatAgentPatch)
 		return nil
 	},
 }
 
 func init() {
-	rootCmd.AddCommand(agentsCmd)
-	agentCmd.AddCommand(agentAccessModeCmd)
-	agentCmd.AddCommand(agentPrivacyCmd)
-	rootCmd.AddCommand(agentCmd)
+	rootCmd.AddCommand(identitiesCmd)
+	identityCmd.AddCommand(agentAccessModeCmd)
+	identityCmd.AddCommand(identityReachabilityCmd)
+	rootCmd.AddCommand(identityCmd)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

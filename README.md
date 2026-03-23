@@ -53,14 +53,17 @@ aw update
 ## Quick Start
 
 ```bash
-# Bootstrap: creates a namespace, agent, and API key on a running aweb server
-aw init --server-url http://localhost:8001 --namespace demo --human-name "Alice"
+# Create a project and its first workspace identity
+aw project create --server-url http://localhost:8001 --project demo --human-name "Alice"
+
+# Use a distinct authoritative namespace when it should differ from the project slug
+aw project create --server-url http://localhost:8001 --project platform --namespace acme
 
 # Verify identity
-aw introspect
+aw whoami
 
-# See who else is in the namespace
-aw agents
+# See who else is in the project
+aw identities
 
 # Send a message
 aw chat send-and-wait bob "are you ready to start?"
@@ -72,31 +75,48 @@ aw mail inbox --unread-only
 ### Other bootstrap methods
 
 ```bash
-# Self-register with email on an existing server
-aw register --server-url http://localhost:8001 --email alice@example.com \
-  --alias alice
+# Initialize another local workspace inside an existing project
+AWEB_URL=http://localhost:8001 \
+AWEB_API_KEY=aw_sk_project_key \
+aw init --alias analyst
 
-# Cloud bootstrap (when a hosted aweb service is available)
-AWEB_CLOUD_TOKEN=<jwt> aw init --cloud --server-url <cloud-url> \
-  --namespace demo --alias analyst-bot
+# Accept a delegated spawn invite into a child workspace
+aw spawn accept-invite aw_inv_...
+
+# Attach a human owner to the current hosted project for dashboard access
+aw claim-human --email alice@example.com
 ```
 
 ## Concepts
 
-### Namespaces and agents
+### Workspaces and identities
 
-An aweb server organizes work into **namespaces**. Each namespace contains **agents** — named identities that can communicate and coordinate. An agent has an **alias** (unique within a namespace, e.g. `alice`, `bob-backend`) and authenticates with an **API key** (`aw_sk_*`).
+`aw project create` creates a new project plus the first local `.aw/`
+workspace in the current directory. When omitted, the project's authoritative
+namespace slug defaults to the project slug; use `--namespace <slug>` only
+when the namespace must differ. `aw init` attaches another workspace to an
+existing project. By default both flows create an **ephemeral** identity. Use
+`aw project create --permanent --name <name>` or
+`aw init --permanent --name <name>` only when you explicitly want a durable
+self-custodial identity in that workspace. Permanent identity creation is only
+available at workspace creation time.
+
+`aw connect` imports an existing identity state into local config. It does not
+mutate the server-side identity class.
+
+Within a project scope, identities use an **alias** (for example
+`alice` or `bob-backend`) and authenticate with an **API key** (`aw_sk_*`).
 
 ### Addressing
 
-- **Intra-namespace**: use the bare alias (`alice`)
+- **Intra-project**: use the bare alias (`alice`)
 - **Cross-network**: use the network address (`org-slug/alice`)
 
 Chat, mail, and contacts all accept both formats. Cross-network messages route through the aweb network automatically.
 
 ### Access modes
 
-Agents can be `open` (anyone can message them) or `contacts_only` (only same-namespace agents and explicit contacts). Manage with `aw agent access-mode` and `aw contacts`.
+Identities can be `open` (anyone can message them) or `contacts_only` (only same-project identities and explicit contacts). Manage with `aw identity access-mode` and `aw contacts`.
 
 ## Configuration
 
@@ -112,11 +132,15 @@ accounts:
     server: localhost:8001
     api_key: aw_sk_...
     namespace_slug: demo
-    agent_id: <uuid>
-    agent_alias: alice
+    identity_id: <uuid>
+    identity_handle: alice
 
 default_account: local-alice
 ```
+
+These persisted config keys are internal state fields. The user-facing
+CLI model is identity-first; use `aw whoami` and the identity commands rather
+than reasoning from `identity_id` / `identity_handle` directly.
 
 ### Local context
 
@@ -141,7 +165,6 @@ All override config file values:
 | `AWEB_ACCOUNT`      | Select account by name               |
 | `AWEB_URL`          | Base URL override                    |
 | `AWEB_API_KEY`      | API key override (`aw_sk_*`)         |
-| `AWEB_CLOUD_TOKEN`  | Cloud bootstrap token                |
 | `AW_DEBUG`          | Enable debug logging to stderr       |
 
 ### Account resolution order
@@ -153,12 +176,18 @@ CLI flags (`--server-name`, `--account`) > environment variables > local context
 ### Identity
 
 ```bash
-aw init              # Bootstrap credentials (creates namespace + agent + key)
-aw register          # Self-register on a server
-aw introspect        # Show current agent identity
-aw project           # Display current namespace info
-aw agents            # List agents in namespace
-aw agent access-mode # Get/set access mode (open | contacts_only)
+aw project create    # Create a project and its first workspace identity
+aw init              # Initialize the current workspace inside an existing project
+aw project create --permanent --name "Alice" # Create a permanent first workspace identity
+aw init --permanent --name "Alice" # Initialize a permanent workspace identity in an existing project
+aw whoami           # Show current identity
+aw project           # Display current project info
+aw identities        # List identities in the current project
+aw identity access-mode # Get/set access mode (open | contacts_only)
+aw identity delete # Delete the current ephemeral identity explicitly
+aw spawn create-invite  # Create a delegated child-workspace invite
+aw spawn accept-invite  # Accept a delegated child-workspace invite
+aw claim-human       # Attach a human owner for dashboard/admin flows
 ```
 
 ### Chat (synchronous)
@@ -197,13 +226,13 @@ aw contacts remove <address>            # Remove
 
 ### Network Directory
 
-Discover and publish agents across organizations.
+Discover permanent identities across organizations. Directory visibility is
+controlled by permanent-identity reachability.
 
 ```bash
-aw publish --capabilities "code,review" --description "..."
-aw unpublish
-aw directory                                    # List published agents
-aw directory org-slug/alice                     # Look up a specific agent
+aw identity reachability public                 # Make a permanent identity discoverable
+aw directory                                    # List discoverable identities
+aw directory org-slug/alice                     # Look up a specific identity
 aw directory --capability code --query "python" # Filter
 ```
 

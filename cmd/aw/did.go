@@ -8,26 +8,21 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
-	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
-var didCmd = &cobra.Command{
-	Use:   "did",
-	Short: "DID and key management commands",
-}
-
-var didRotateKeyCmd = &cobra.Command{
+var identityRotateKeyCmd = &cobra.Command{
 	Use:   "rotate-key",
-	Short: "Rotate the agent's signing key",
+	Short: "Rotate the identity signing key",
 	Long:  "Generate a new Ed25519 keypair, sign the rotation with the old key, and update the server and local config.",
 	RunE:  runDidRotateKey,
 }
 
-var didLogCmd = &cobra.Command{
-	Use:   "log [namespace/alias]",
-	Short: "Show an agent's identity log",
+var identityLogCmd = &cobra.Command{
+	Use:   "log [address]",
+	Short: "Show an identity log",
 	Long:  "Display rotation and status history. Without arguments, shows your own log.",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  runDidLog,
@@ -36,10 +31,9 @@ var didLogCmd = &cobra.Command{
 var rotateKeySelfCustody bool
 
 func init() {
-	didRotateKeyCmd.Flags().BoolVar(&rotateKeySelfCustody, "self-custody", false, "Graduate from custodial to self-custody")
-	didCmd.AddCommand(didRotateKeyCmd)
-	didCmd.AddCommand(didLogCmd)
-	rootCmd.AddCommand(didCmd)
+	identityRotateKeyCmd.Flags().BoolVar(&rotateKeySelfCustody, "self-custody", false, "Graduate from custodial to self-custody")
+	identityCmd.AddCommand(identityRotateKeyCmd)
+	identityCmd.AddCommand(identityLogCmd)
 }
 
 func runDidRotateKey(cmd *cobra.Command, args []string) error {
@@ -51,7 +45,7 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 	// Custodial graduation: no local signing key, server signs on behalf.
 	if rotateKeySelfCustody {
 		if sel.Custody == awid.CustodySelf {
-			return fmt.Errorf("account %q is already self-custody", sel.AccountName)
+			return fmt.Errorf("identity %q is already self-custodial", sel.AccountName)
 		}
 		return runCustodialGraduation(sel)
 	}
@@ -60,7 +54,7 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 		return usageError("no signing key configured; use --self-custody to graduate from custodial to self-custody")
 	}
 	if sel.DID == "" {
-		return fmt.Errorf("no DID configured for this account")
+		return fmt.Errorf("no DID configured for this identity")
 	}
 
 	oldPriv := c.SigningKey()
@@ -94,7 +88,7 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	keysDir := awconfig.KeysDir(configPath)
-	address := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
+	address := deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.IdentityHandle)
 
 	if err := awid.ArchiveKey(keysDir, oldDID, oldPub, oldPriv); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to archive old key: %v\n", err)
@@ -149,7 +143,7 @@ func runCustodialGraduation(sel *awconfig.Selection) error {
 		return err
 	}
 	keysDir := awconfig.KeysDir(configPath)
-	address := deriveAgentAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
+	address := deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.IdentityHandle)
 	if err := awid.SaveKeypair(keysDir, address, newPub, newPriv); err != nil {
 		return fmt.Errorf("save new keypair: %w", err)
 	}

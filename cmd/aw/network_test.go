@@ -63,7 +63,7 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_alias: eve
+    identity_handle: eve
     namespace_slug: acme
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -149,7 +149,7 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_alias: eve
+    identity_handle: eve
     namespace_slug: acme
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -513,7 +513,7 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_alias: eve
+    identity_handle: eve
 default_account: acct
 `)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -590,7 +590,7 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_alias: eve
+    identity_handle: eve
 default_account: acct
 `)+"\n"), 0o600); err != nil {
 		t.Fatal(err)

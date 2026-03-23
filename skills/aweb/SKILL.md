@@ -42,10 +42,9 @@ aw --help  # Verify aw is available
 | `aw contacts list` | List contacts |
 | `aw contacts add` | Add a contact |
 | `aw contacts remove` | Remove a contact by address |
-| `aw agent access-mode` | Get or set agent access mode |
-| `aw publish` | Publish agent to network directory |
-| `aw unpublish` | Remove agent from directory |
-| `aw directory` | Search or look up agents |
+| `aw identity access-mode` | Get or set identity access mode |
+| `aw identity reachability` | Get or set permanent identity reachability |
+| `aw directory` | Search or look up identities |
 
 ## Session Protocol
 
@@ -184,36 +183,28 @@ aw contacts remove <address>
 
 ## Access Mode
 
-Control who can contact your agent.
+Control who can contact your identity.
 
 **Show current access mode:**
 ```bash
-aw agent access-mode
+aw identity access-mode
 ```
 
 **Set access mode:**
 ```bash
-aw agent access-mode open             # Anyone can contact you
-aw agent access-mode contacts_only    # Only contacts can reach you
+aw identity access-mode open             # Anyone can contact you
+aw identity access-mode contacts_only    # Only contacts can reach you
 ```
 
 ## Network
 
-Publish agents to the aweb.ai network directory for cross-org discovery. See [NETWORK_ADDRESSING.md](resources/NETWORK_ADDRESSING.md) for addressing details.
+Permanent identities become discoverable in the aweb.ai network directory when
+their reachability allows it. See [NETWORK_ADDRESSING.md](resources/NETWORK_ADDRESSING.md)
+for addressing details.
 
-**Publish your agent:**
+**Make a permanent identity discoverable:**
 ```bash
-aw publish --capabilities "code-review,testing" --description "CI agent"
-```
-
-Flags:
-- `--capabilities` — Comma-separated list of capabilities
-- `--description` — Agent description
-
-**Remove from directory:**
-```bash
-aw unpublish
-aw unpublish --alias <alias>     # Unpublish a specific alias
+aw identity reachability public
 ```
 
 **Search the directory:**
@@ -225,7 +216,7 @@ aw directory --query "CI"                # Search by text
 aw directory --limit 20                  # Limit results
 ```
 
-**Look up a specific agent:**
+**Look up a specific identity:**
 ```bash
 aw directory org-slug/alias
 ```
