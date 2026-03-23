@@ -13,6 +13,14 @@ var accountFlag string
 var debugFlag bool
 var jsonFlag bool
 
+const (
+	groupWorkspace    = "workspace"
+	groupIdentity     = "identity"
+	groupNetwork      = "network"
+	groupCoordination = "coordination"
+	groupUtility      = "utility"
+)
+
 var rootCmd = &cobra.Command{
 	Use:   "aw",
 	Short: "aweb CLI",
@@ -45,6 +53,50 @@ var versionCmd = &cobra.Command{
 }
 
 func init() {
+	rootCmd.AddGroup(
+		&cobra.Group{ID: groupWorkspace, Title: "Workspace Setup"},
+		&cobra.Group{ID: groupIdentity, Title: "Identity"},
+		&cobra.Group{ID: groupNetwork, Title: "Messaging & Network"},
+		&cobra.Group{ID: groupCoordination, Title: "Coordination & Runtime"},
+		&cobra.Group{ID: groupUtility, Title: "Utility"},
+	)
+	initCmd.GroupID = groupWorkspace
+	projectCmd.GroupID = groupWorkspace
+	spawnCmd.GroupID = groupWorkspace
+	connectCmd.GroupID = groupWorkspace
+	useCmd.GroupID = groupWorkspace
+	resetCmd.GroupID = groupWorkspace
+	workspaceCmd.GroupID = groupWorkspace
+
+	introspectCmd.GroupID = groupIdentity
+	identityCmd.GroupID = groupIdentity
+	identitiesCmd.GroupID = groupIdentity
+	claimHumanCmd.GroupID = groupIdentity
+	mcpConfigCmd.GroupID = groupIdentity
+
+	chatCmd.GroupID = groupNetwork
+	mailCmd.GroupID = groupNetwork
+	contactsCmd.GroupID = groupNetwork
+	directoryCmd.GroupID = groupNetwork
+	publishCmd.GroupID = groupNetwork
+	unpublishCmd.GroupID = groupNetwork
+	heartbeatCmd.GroupID = groupNetwork
+	eventsCmd.GroupID = groupNetwork
+	controlCmd.GroupID = groupNetwork
+	logCmd.GroupID = groupNetwork
+
+	workCmd.GroupID = groupCoordination
+	taskCmd.GroupID = groupCoordination
+	runCmd.GroupID = groupCoordination
+	lockCmd.GroupID = groupCoordination
+	notifyCmd.GroupID = groupCoordination
+	policyCmd.GroupID = groupCoordination
+
+	versionCmd.GroupID = groupUtility
+	upgradeCmd.GroupID = groupUtility
+	rootCmd.SetHelpCommandGroupID(groupUtility)
+	rootCmd.SetCompletionCommandGroupID(groupUtility)
+
 	rootCmd.PersistentFlags().StringVar(&serverFlag, "server-name", "", "Server name from config.yaml")
 	rootCmd.PersistentFlags().StringVar(&accountFlag, "account", "", "Account name from config.yaml")
 	rootCmd.PersistentFlags().BoolVar(&debugFlag, "debug", false, "Log background errors to stderr")

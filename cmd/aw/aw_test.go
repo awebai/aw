@@ -331,6 +331,54 @@ func TestAwIdentityCommandSurface(t *testing.T) {
 	}
 }
 
+func TestAwTopLevelHelpGroupsCommandsByArchitecture(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+
+	helpCmd := exec.CommandContext(ctx, bin, "--help")
+	helpCmd.Dir = tmp
+	out, err := helpCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("top-level help failed: %v\n%s", err, string(out))
+	}
+
+	text := string(out)
+	for _, want := range []string{
+		"Workspace Setup",
+		"Identity",
+		"Messaging & Network",
+		"Coordination & Runtime",
+		"Utility",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("top-level help missing group %q:\n%s", want, text)
+		}
+	}
+
+	identityIdx := strings.Index(text, "Identity")
+	networkIdx := strings.Index(text, "Messaging & Network")
+	coordinationIdx := strings.Index(text, "Coordination & Runtime")
+	if identityIdx < 0 || networkIdx < 0 || coordinationIdx < 0 {
+		t.Fatalf("missing expected group boundaries:\n%s", text)
+	}
+
+	mcpIdx := strings.Index(text, "mcp-config")
+	if mcpIdx < identityIdx || mcpIdx > networkIdx {
+		t.Fatalf("expected mcp-config in Identity group:\n%s", text)
+	}
+
+	runIdx := strings.Index(text, "run")
+	if runIdx < coordinationIdx {
+		t.Fatalf("expected run in Coordination & Runtime group:\n%s", text)
+	}
+}
+
 func TestAwIntrospectServerFlagSelectsConfiguredServer(t *testing.T) {
 	t.Parallel()
 
