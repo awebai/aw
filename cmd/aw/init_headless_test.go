@@ -36,20 +36,21 @@ func TestAwInitHeadlessBootstrapAgainstHosted(t *testing.T) {
 			}
 			_ = json.NewDecoder(r.Body).Decode(&gotBody)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"org_id":       "org-1",
-				"org_slug":     "myteam",
-				"project_id":   "proj-1",
-				"project_slug": "default",
-				"namespace":    "myteam.aweb.ai",
-				"agent_id":     "agent-1",
-				"alias":        "deploy-bot",
-				"address":      "myteam.aweb.ai/deploy-bot",
-				"api_key":      "aw_sk_headless_test",
-				"did":          "did:key:z6MkTest",
-				"stable_id":    "stable-1",
-				"custody":      "self",
-				"lifetime":     "ephemeral",
-				"created":      true,
+				"org_id":         "org-1",
+				"org_slug":       "myteam",
+				"project_id":     "proj-1",
+				"project_slug":   "default",
+				"namespace_slug": "myteam.aweb.ai",
+				"namespace":      "myteam.aweb.ai",
+				"agent_id":       "agent-1",
+				"alias":          "deploy-bot",
+				"address":        "myteam.aweb.ai/deploy-bot",
+				"api_key":        "aw_sk_headless_test",
+				"did":            "did:key:z6MkTest",
+				"stable_id":      "stable-1",
+				"custody":        "self",
+				"lifetime":       "ephemeral",
+				"created":        true,
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -153,6 +154,9 @@ func TestAwInitHeadlessBootstrapAgainstHosted(t *testing.T) {
 			if acct.AgentAlias != "deploy-bot" {
 				t.Fatalf("agent_alias=%q", acct.AgentAlias)
 			}
+			if acct.NamespaceSlug != "myteam.aweb.ai" {
+				t.Fatalf("namespace_slug=%q", acct.NamespaceSlug)
+			}
 			break
 		}
 	}
@@ -175,20 +179,21 @@ func TestAwInitPermanentRequestsPersistentIdentity(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"org_id":       "org-1",
-				"org_slug":     "myteam",
-				"project_id":   "proj-1",
-				"project_slug": "default",
-				"namespace":    "myteam.aweb.ai",
-				"agent_id":     "agent-1",
-				"alias":        "maintainer",
-				"address":      "myteam.aweb.ai/maintainer",
-				"api_key":      "aw_sk_permanent_test",
-				"did":          "did:key:z6MkPermanent",
-				"stable_id":    "stable-permanent",
-				"custody":      "self",
-				"lifetime":     "persistent",
-				"created":      true,
+				"org_id":         "org-1",
+				"org_slug":       "myteam",
+				"project_id":     "proj-1",
+				"project_slug":   "default",
+				"namespace_slug": "myteam.aweb.ai",
+				"namespace":      "myteam.aweb.ai",
+				"agent_id":       "agent-1",
+				"alias":          "maintainer",
+				"address":        "myteam.aweb.ai/maintainer",
+				"api_key":        "aw_sk_permanent_test",
+				"did":            "did:key:z6MkPermanent",
+				"stable_id":      "stable-permanent",
+				"custody":        "self",
+				"lifetime":       "persistent",
+				"created":        true,
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -246,6 +251,28 @@ func TestAwInitPermanentRequestsPersistentIdentity(t *testing.T) {
 	}
 	if resp["lifetime"] != "persistent" {
 		t.Fatalf("response lifetime=%v", resp["lifetime"])
+	}
+
+	cfgData, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg awconfig.GlobalConfig
+	if err := yaml.Unmarshal(cfgData, &cfg); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	found := false
+	for _, acct := range cfg.Accounts {
+		if acct.APIKey == "aw_sk_permanent_test" {
+			found = true
+			if acct.NamespaceSlug != "myteam.aweb.ai" {
+				t.Fatalf("namespace_slug=%q", acct.NamespaceSlug)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected account with permanent API key in config:\n%s", string(cfgData))
 	}
 }
 

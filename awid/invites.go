@@ -58,22 +58,23 @@ type InviteAcceptRequest struct {
 
 // InviteAcceptResponse is returned by POST /api/v1/invites/cli/accept.
 type InviteAcceptResponse struct {
-	OrgID       string `json:"org_id,omitempty"`
-	OrgSlug     string `json:"org_slug,omitempty"`
-	ProjectID   string `json:"project_id"`
-	ProjectSlug string `json:"project_slug"`
-	Namespace   string `json:"namespace"`
-	AgentID     string `json:"agent_id"`
-	Alias       string `json:"alias"`
-	Address     string `json:"address"`
-	APIKey      string `json:"api_key"`
-	ServerURL   string `json:"server_url"`
-	DID         string `json:"did,omitempty"`
-	StableID    string `json:"stable_id,omitempty"`
-	Custody     string `json:"custody,omitempty"`
-	Lifetime    string `json:"lifetime,omitempty"`
-	AccessMode  string `json:"access_mode"`
-	Created     bool   `json:"created"`
+	OrgID         string `json:"org_id,omitempty"`
+	OrgSlug       string `json:"org_slug,omitempty"`
+	ProjectID     string `json:"project_id"`
+	ProjectSlug   string `json:"project_slug"`
+	NamespaceSlug string `json:"namespace_slug,omitempty"`
+	Namespace     string `json:"namespace"`
+	AgentID       string `json:"agent_id"`
+	Alias         string `json:"alias"`
+	Address       string `json:"address"`
+	APIKey        string `json:"api_key"`
+	ServerURL     string `json:"server_url"`
+	DID           string `json:"did,omitempty"`
+	StableID      string `json:"stable_id,omitempty"`
+	Custody       string `json:"custody,omitempty"`
+	Lifetime      string `json:"lifetime,omitempty"`
+	AccessMode    string `json:"access_mode"`
+	Created       bool   `json:"created"`
 }
 
 // InviteCreate creates a CLI invite token in the current hosted context.

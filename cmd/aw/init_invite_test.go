@@ -30,20 +30,21 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":   "proj-1",
-				"project_slug": "myteam",
-				"namespace":    "myteam.aweb.ai",
-				"agent_id":     "agent-1",
-				"alias":        "reviewer",
-				"address":      "myteam.aweb.ai/reviewer",
-				"api_key":      "aw_sk_invited",
-				"server_url":   serverURL + "/api",
-				"did":          "did:key:z6MkInvite",
-				"stable_id":    "did:aw:invite",
-				"custody":      "self",
-				"lifetime":     "ephemeral",
-				"access_mode":  "owner_only",
-				"created":      true,
+				"project_id":     "proj-1",
+				"project_slug":   "myteam",
+				"namespace_slug": "myteam.aweb.ai",
+				"namespace":      "myteam.aweb.ai",
+				"agent_id":       "agent-1",
+				"alias":          "reviewer",
+				"address":        "myteam.aweb.ai/reviewer",
+				"api_key":        "aw_sk_invited",
+				"server_url":     serverURL + "/api",
+				"did":            "did:key:z6MkInvite",
+				"stable_id":      "did:aw:invite",
+				"custody":        "self",
+				"lifetime":       "ephemeral",
+				"access_mode":    "owner_only",
+				"created":        true,
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -128,6 +129,9 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 			found = true
 			if acct.AgentAlias != "reviewer" {
 				t.Fatalf("agent_alias=%q", acct.AgentAlias)
+			}
+			if acct.NamespaceSlug != "myteam.aweb.ai" {
+				t.Fatalf("namespace_slug=%q", acct.NamespaceSlug)
 			}
 		}
 	}

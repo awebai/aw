@@ -107,7 +107,7 @@ func runWorkspaceInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if strings.TrimSpace(sel.AgentID) == "" || strings.TrimSpace(sel.AgentAlias) == "" {
-		return usageError("selected account has no agent identity; run 'aw init' first")
+		return usageError("selected account has no identity; run 'aw init' first")
 	}
 
 	out, err := registerWorkspaceForRoot(root, client, strings.TrimSpace(workspaceInitRole), strings.TrimSpace(workspaceInitRepoOrigin))
@@ -127,7 +127,7 @@ func runWorkspaceStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if strings.TrimSpace(sel.AgentID) == "" {
-		return usageError("selected account has no agent identity; run 'aw init' first")
+		return usageError("selected account has no identity; run 'aw init' first")
 	}
 
 	state, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir)

@@ -769,7 +769,7 @@ func tryHeadlessOrInit(
 		Alias:         headlessResp.Alias,
 		APIKey:        headlessResp.APIKey,
 		ServerURL:     headlessResp.ServerURL,
-		NamespaceSlug: headlessResp.OrgSlug,
+		NamespaceSlug: firstNonEmptyString(headlessResp.NamespaceSlug, headlessResp.OrgSlug),
 		Namespace:     headlessResp.Namespace,
 		Address:       headlessResp.Address,
 		Created:       headlessResp.Created,
@@ -826,7 +826,7 @@ func acceptInviteViaCloud(
 		Alias:         resp.Alias,
 		APIKey:        resp.APIKey,
 		ServerURL:     resp.ServerURL,
-		NamespaceSlug: resp.OrgSlug,
+		NamespaceSlug: firstNonEmptyString(resp.NamespaceSlug, resp.OrgSlug),
 		Namespace:     resp.Namespace,
 		Address:       resp.Address,
 		Created:       resp.Created,
@@ -842,6 +842,15 @@ func resolveInitLifetime(permanent bool) string {
 		return awid.LifetimePersistent
 	}
 	return awid.LifetimeEphemeral
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func describeIdentityClass(lifetime string) string {

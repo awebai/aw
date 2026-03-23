@@ -2631,6 +2631,123 @@ func TestAwInitProjectKeyRoutesToOSSInit(t *testing.T) {
 	}
 }
 
+func TestAwInitProjectKeyPermanentRequestsPersistentIdentity(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "Alice", "roles": []string{}})
+		case "/v1/init":
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":         "ok",
+				"project_id":     "proj-1",
+				"project_slug":   "default",
+				"namespace_slug": "myteam.aweb.ai",
+				"namespace":      "myteam.aweb.ai",
+				"agent_id":       "agent-new",
+				"alias":          "Alice",
+				"address":        "myteam.aweb.ai/Alice",
+				"api_key":        "aw_sk_new",
+				"created":        true,
+				"did":            "did:key:z6MkPermanentProjectKey",
+				"stable_id":      "stable-project-key",
+				"custody":        "self",
+				"lifetime":       "persistent",
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "init",
+		"--server-url", server.URL,
+		"--permanent",
+		"--name", "Alice",
+		"--json",
+		"--write-context=false",
+		"--print-exports=false",
+	)
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=aw_sk_project",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	if gotBody["lifetime"] != "persistent" {
+		t.Fatalf("lifetime=%v", gotBody["lifetime"])
+	}
+	if gotBody["alias"] != "Alice" {
+		t.Fatalf("alias=%v", gotBody["alias"])
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(extractJSON(t, out), &resp); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if resp["lifetime"] != "persistent" {
+		t.Fatalf("response lifetime=%v", resp["lifetime"])
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Accounts map[string]map[string]any `yaml:"accounts"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, string(data))
+	}
+	var found bool
+	for _, acct := range cfg.Accounts {
+		if acct["api_key"] == "aw_sk_new" {
+			found = true
+			if acct["namespace_slug"] != "myteam.aweb.ai" {
+				t.Fatalf("namespace_slug=%v, want myteam.aweb.ai", acct["namespace_slug"])
+			}
+			if acct["lifetime"] != "persistent" {
+				t.Fatalf("lifetime=%v, want persistent", acct["lifetime"])
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no account with api_key=aw_sk_new in config:\n%s", string(data))
+	}
+}
+
 func TestAwMailSendSignsWithIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -2988,6 +3105,12 @@ func TestAwConnect(t *testing.T) {
 	out, err := run.CombinedOutput()
 	if err != nil {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+	if strings.Contains(string(out), "(agent-1)") {
+		t.Fatalf("connect output should not expose raw identity UUID:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "Imported identity context for alice") {
+		t.Fatalf("expected identity-focused import summary, got:\n%s", string(out))
 	}
 
 	// Verify config was written with identity fields.

@@ -180,7 +180,14 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "Imported identity context for %s (%s)\n", alias, agentID)
+	identityLabel := alias
+	if address := strings.TrimSpace(resp.Address); address != "" {
+		identityLabel = address
+	}
+	if identityLabel == "" {
+		identityLabel = "current identity"
+	}
+	fmt.Fprintf(os.Stderr, "Imported identity context for %s\n", identityLabel)
 	if identityDID != "" {
 		fmt.Fprintf(os.Stderr, "Identity DID: %s\n", identityDID)
 	}
