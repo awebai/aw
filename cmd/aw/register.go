@@ -32,7 +32,7 @@ var (
 
 var registerCmd = &cobra.Command{
 	Use:   "register",
-	Short: "Register a new account on an aweb server",
+	Short: "Register a new identity on an aweb server",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		loadDotenvBestEffort()
 		// No heartbeat for register — no credentials yet.
@@ -42,12 +42,12 @@ var registerCmd = &cobra.Command{
 
 func init() {
 	registerCmd.Flags().StringVar(&registerServer, "server-url", "", "Base URL for the aweb server (required)")
-	registerCmd.Flags().StringVar(&registerEmail, "email", "", "Email address for the new account (required)")
-	registerCmd.Flags().StringVar(&registerUsername, "username", "", "Username for the new account (required)")
+	registerCmd.Flags().StringVar(&registerEmail, "email", "", "Email address for the new identity owner (required)")
+	registerCmd.Flags().StringVar(&registerUsername, "username", "", "Username for the new identity owner (required)")
 	registerCmd.Flags().StringVar(&registerAlias, "alias", "", "Agent alias (required)")
 	registerCmd.Flags().StringVar(&registerHumanName, "human-name", "", "Human name (optional)")
-	registerCmd.Flags().StringVar(&registerNamespace, "namespace", "", "Target namespace for existing accounts (requires verification)")
-	registerCmd.Flags().StringVar(&registerCode, "code", "", "Verification code (skips Register call; for existing accounts)")
+	registerCmd.Flags().StringVar(&registerNamespace, "namespace", "", "Target namespace for existing identities (requires verification)")
+	registerCmd.Flags().StringVar(&registerCode, "code", "", "Verification code (skips Register call; for existing identities)")
 	registerCmd.Flags().BoolVar(&registerSaveConfig, "save-config", true, "Write/update ~/.config/aw/config.yaml with the new credentials")
 	registerCmd.Flags().BoolVar(&registerSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
 	registerCmd.Flags().BoolVar(&registerWriteContext, "write-context", true, "Write/update .aw/context in the current directory (non-secret pointer)")
@@ -295,7 +295,7 @@ func printRegisterSummary(resp *awid.RegisterResponse, accountName, serverName s
 	if resp == nil {
 		return
 	}
-	fmt.Printf("Registered agent %s\n", resp.Alias)
+	fmt.Printf("Registered identity %s\n", resp.Alias)
 	if strings.TrimSpace(resp.NamespaceSlug) != "" {
 		fmt.Printf("Namespace:  %s\n", strings.TrimSpace(resp.NamespaceSlug))
 	}

@@ -77,8 +77,8 @@ func TestAwInitHeadlessBootstrapAgainstHosted(t *testing.T) {
 	}
 
 	// No config, no tokens, no API key — headless path.
-	run := exec.CommandContext(ctx, bin, "init",
-		"--namespace", "myteam",
+	run := exec.CommandContext(ctx, bin, "project", "create",
+		"--project", "myteam",
 		"--alias", "deploy-bot",
 		"--json",
 		"--write-context=false",
@@ -217,8 +217,8 @@ func TestAwInitPermanentRequestsPersistentIdentity(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--namespace", "myteam",
+	run := exec.CommandContext(ctx, bin, "project", "create",
+		"--project", "myteam",
 		"--alias", "maintainer",
 		"--permanent",
 		"--json",
@@ -321,8 +321,8 @@ default_account: existing
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--namespace", "myteam",
+	run := exec.CommandContext(ctx, bin, "project", "create",
+		"--project", "myteam",
 		"--alias", "reviewer",
 		"--json",
 		"--write-context=false",
@@ -401,9 +401,9 @@ func TestAwInitSelfHostedStillUsesV1Init(t *testing.T) {
 	}
 
 	// Explicit --server-url to non-hosted server, no config → self-hosted /v1/init.
-	run := exec.CommandContext(ctx, bin, "init",
+	run := exec.CommandContext(ctx, bin, "project", "create",
 		"--server-url", server.URL,
-		"--namespace", "myteam",
+		"--project", "myteam",
 		"--alias", "deploy-bot",
 		"--json",
 		"--write-context=false",
@@ -509,8 +509,8 @@ func TestAwInitHeadlessRetryOnAliasCollision(t *testing.T) {
 	}
 
 	// No --alias, no API key → headless 404s → /v1/init with suggested alias → collision → retry.
-	run := exec.CommandContext(ctx, bin, "init",
-		"--namespace", "myteam",
+	run := exec.CommandContext(ctx, bin, "project", "create",
+		"--project", "myteam",
 		"--json",
 		"--write-context=false",
 		"--print-exports=false",
@@ -603,8 +603,8 @@ func TestAwInitHeadlessWithAPIMount(t *testing.T) {
 
 	// AWEB_URL will trigger resolveWorkingBaseURL which probes /api
 	// and resolves to server.URL+"/api".
-	run := exec.CommandContext(ctx, bin, "init",
-		"--namespace", "myteam",
+	run := exec.CommandContext(ctx, bin, "project", "create",
+		"--project", "myteam",
 		"--alias", "deploy-bot",
 		"--json",
 		"--write-context=false",

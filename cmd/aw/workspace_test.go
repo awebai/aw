@@ -261,7 +261,7 @@ func TestAwInitAutoAttachesRepoContext(t *testing.T) {
 	initGitRepoWithOrigin(t, repo, origin)
 	buildAwBinary(t, ctx, bin)
 
-	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--alias", "alice")
+	run := exec.CommandContext(ctx, bin, "project", "create", "--project", "demo", "--alias", "alice")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,

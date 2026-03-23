@@ -19,7 +19,7 @@ import (
 
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Initialize a local workspace and identity",
+	Short: "Initialize a local workspace in an existing project",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		loadDotenvBestEffort()
 		// No heartbeat for init — no credentials yet.
@@ -102,6 +102,7 @@ type initResult struct {
 	ServerName      string
 	Role            string
 	AttachResult    *contextAttachResult
+	SigningKeyPath  string
 	ExportBaseURL   string
 	ExportNamespace string
 	JoinedViaInvite bool
@@ -110,21 +111,17 @@ type initResult struct {
 func init() {
 	initCmd.Flags().StringVar(&initServerURL, "server-url", "", "Base URL for the aweb server (or AWEB_URL). Any URL is accepted; aw probes common mounts (including /api).")
 	initCmd.Flags().StringVar(&initServerURL, "server", "", "Base URL for the aweb server (alias for --server-url)")
-	initCmd.Flags().StringVar(&initNamespaceSlug, "namespace", "", "Namespace slug (default: AWEB_NAMESPACE or prompt in TTY)")
-	initCmd.Flags().StringVar(&initNamespaceName, "namespace-name", "", "Namespace display name (default: AWEB_NAMESPACE_NAME or namespace slug)")
-	initCmd.Flags().StringVar(&initAlias, "alias", "", "Agent alias (optional; default: server-suggested)")
-	initCmd.Flags().StringVar(&initInviteToken, "invite", "", "CLI invite token (aw_inv_...)")
+	initCmd.Flags().StringVar(&initNamespaceSlug, "project", "", "Project slug (default: AWEB_PROJECT_SLUG, AWEB_PROJECT, or prompt in TTY)")
+	initCmd.Flags().StringVar(&initNamespaceName, "project-name", "", "Project display name (default: AWEB_PROJECT_NAME or project slug)")
+	initCmd.Flags().StringVar(&initAlias, "alias", "", "Identity routing alias (optional; default: server-suggested)")
 	initCmd.Flags().BoolVar(&initInjectDocs, "inject-docs", false, "Inject aw coordination instructions into CLAUDE.md and AGENTS.md")
 	initCmd.Flags().BoolVar(&initSetupHooks, "setup-hooks", false, "Set up Claude Code PostToolUse hook for aw notify")
 	initCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
-	initCmd.Flags().StringVar(&initAgentType, "agent-type", "", "Agent type (default: AWEB_AGENT_TYPE or agent)")
+	initCmd.Flags().StringVar(&initAgentType, "agent-type", "", "Runtime type (default: AWEB_AGENT_TYPE or agent)")
 	initCmd.Flags().BoolVar(&initSaveConfig, "save-config", true, "Write/update ~/.config/aw/config.yaml with the new credentials")
 	initCmd.Flags().BoolVar(&initSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
 	initCmd.Flags().BoolVar(&initWriteContext, "write-context", true, "Write/update .aw/context in the current directory (non-secret pointer)")
 	initCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
-	initCmd.Flags().StringVar(&initCloudToken, "cloud-token", "", "Cloud auth bearer token for hosted aweb-cloud bootstrap (default: AWEB_CLOUD_TOKEN, then AWEB_API_KEY if non-aw_sk_, then existing aw_sk_ keys from config)")
-	initCmd.Flags().BoolVar(&initCloudMode, "cloud", false, "Force hosted aweb-cloud bootstrap mode (skip probing /v1/init)")
-	initCmd.Flags().StringVar(&initTargetNamespace, "target-namespace", "", "Create agent in a specific namespace (forces cloud mode; requires --alias)")
 	initCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (default: AWEB_ROLE or prompt in TTY, fallback: developer)")
 	initCmd.Flags().BoolVar(&initPermanent, "permanent", false, "Create a durable self-custodial identity instead of the default ephemeral identity")
 
@@ -147,7 +144,18 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	opts, err := collectInitOptions()
+	if flow := detectInitFlow(); flow != flowProjectKey {
+		switch flow {
+		case flowHeadless:
+			return usageError("aw init now initializes a workspace in an existing project; use `aw project create` to create a new project")
+		case flowInvite:
+			return usageError("aw init no longer accepts spawn tokens; use `aw spawn accept-invite`")
+		case flowCloudJWT:
+			return usageError("aw init no longer creates hosted custodial identities; use the dashboard create flow for hosted permanent identities")
+		}
+	}
+
+	opts, err := collectInitOptionsForFlow(flowProjectKey)
 	if err != nil {
 		return err
 	}
@@ -159,7 +167,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if jsonFlag {
 		printJSON(result.Response)
 	} else {
-		printInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.JoinedViaInvite)
+		printInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.SigningKeyPath, "Initialized workspace")
 	}
 	if initPrintExports {
 		fmt.Println("")
@@ -232,12 +240,15 @@ func detectInitFlow() initFlow {
 }
 
 func collectInitOptions() (initOptions, error) {
+	flow := detectInitFlow()
+	return collectInitOptionsForFlow(flow)
+}
+
+func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 	workingDir, err := os.Getwd()
 	if err != nil {
 		return initOptions{}, err
 	}
-
-	flow := detectInitFlow()
 
 	// --- Validation ---
 
@@ -664,13 +675,14 @@ func executeInit(opts initOptions) (*initResult, error) {
 		ServerName:      opts.ServerName,
 		Role:            opts.WorkspaceRole,
 		AttachResult:    attachResult,
+		SigningKeyPath:  signingKeyPath,
 		ExportBaseURL:   exportBaseURL,
 		ExportNamespace: namespaceSlug,
 		JoinedViaInvite: opts.InviteToken != "",
 	}, nil
 }
 
-func printInitSummary(resp *awid.InitResponse, accountName, serverName, role string, attachResult *contextAttachResult, joinedViaInvite bool) {
+func printInitSummary(resp *awid.InitResponse, accountName, serverName, role string, attachResult *contextAttachResult, signingKeyPath, headline string) {
 	if resp == nil {
 		return
 	}
@@ -680,14 +692,11 @@ func printInitSummary(resp *awid.InitResponse, accountName, serverName, role str
 		namespace = strings.TrimSpace(resp.NamespaceSlug)
 	}
 
-	if joinedViaInvite {
-		if namespace == "" {
-			namespace = project
-		}
-		fmt.Printf("Joined %s as %s\n", namespace, resp.Alias)
-	} else {
-		fmt.Println("Initialized workspace")
+	headline = strings.TrimSpace(headline)
+	if headline == "" {
+		headline = "Initialized workspace"
 	}
+	fmt.Println(headline)
 	if strings.TrimSpace(resp.Alias) != "" {
 		fmt.Printf("Alias:      %s\n", strings.TrimSpace(resp.Alias))
 	}
@@ -715,6 +724,9 @@ func printInitSummary(resp *awid.InitResponse, accountName, serverName, role str
 	}
 	if strings.TrimSpace(serverName) != "" {
 		fmt.Printf("Server:     %s\n", strings.TrimSpace(serverName))
+	}
+	if awid.IdentityClassFromLifetime(resp.Lifetime) == awid.IdentityClassPermanent && strings.TrimSpace(signingKeyPath) != "" {
+		fmt.Printf("Key:        %s\n", strings.TrimSpace(signingKeyPath))
 	}
 	if attachResult != nil {
 		switch strings.TrimSpace(attachResult.ContextKind) {

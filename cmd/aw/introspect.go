@@ -12,6 +12,7 @@ import (
 type introspectOutput struct {
 	awid.IntrospectResponse
 	DID      string `json:"did,omitempty"`
+	StableID string `json:"stable_id,omitempty"`
 	Custody  string `json:"custody,omitempty"`
 	Lifetime string `json:"lifetime,omitempty"`
 }
@@ -19,7 +20,7 @@ type introspectOutput struct {
 var introspectCmd = &cobra.Command{
 	Use:     "introspect",
 	Aliases: []string{"whoami"},
-	Short:   "Show current agent identity",
+	Short:   "Show the current identity",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, sel, err := resolveClientSelection()
 		if err != nil {
@@ -42,6 +43,7 @@ var introspectCmd = &cobra.Command{
 		out := introspectOutput{
 			IntrospectResponse: *resp,
 			DID:                sel.DID,
+			StableID:           sel.StableID,
 			Custody:            sel.Custody,
 			Lifetime:           sel.Lifetime,
 		}

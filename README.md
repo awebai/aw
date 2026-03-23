@@ -53,14 +53,14 @@ aw update
 ## Quick Start
 
 ```bash
-# Bootstrap: creates a local workspace identity and API key on a running aweb server
-aw init --server-url http://localhost:8001 --namespace demo --human-name "Alice"
+# Create a project and its first workspace identity
+aw project create --server-url http://localhost:8001 --project demo --human-name "Alice"
 
 # Verify identity
 aw introspect
 
-# See who else is in the namespace
-aw agents
+# See who else is in the project
+aw identities
 
 # Send a message
 aw chat send-and-wait bob "are you ready to start?"
@@ -72,37 +72,42 @@ aw mail inbox --unread-only
 ### Other bootstrap methods
 
 ```bash
+# Initialize another local workspace inside an existing project
+AWEB_URL=http://localhost:8001 \
+AWEB_API_KEY=aw_sk_project_key \
+aw init --project demo --alias analyst
+
+# Accept a delegated spawn invite into a child workspace
+aw spawn accept-invite aw_inv_...
+
 # Self-register with email on an existing server
 aw register --server-url http://localhost:8001 --email alice@example.com \
   --alias alice
-
-# Cloud bootstrap (when a hosted aweb service is available)
-AWEB_CLOUD_TOKEN=<jwt> aw init --cloud --server-url <cloud-url> \
-  --namespace demo --alias analyst-bot
 ```
 
 ## Concepts
 
 ### Workspaces and identities
 
-`aw init` creates a local `.aw/` workspace in the current directory and binds it
-to one active identity. By default that identity is **ephemeral**. Use
-`aw init --permanent` only when you explicitly want a durable self-custodial
-identity in that workspace.
+`aw project create` creates a new project plus the first local `.aw/`
+workspace in the current directory. `aw init` attaches another workspace to an
+existing project. By default both flows create an **ephemeral** identity. Use
+`aw init --permanent` or `aw id create-permanent` only when you explicitly
+want a durable self-custodial identity in that workspace.
 
-Within a project/namespace scope, identities use an **alias** (for example
+Within a project scope, identities use an **alias** (for example
 `alice` or `bob-backend`) and authenticate with an **API key** (`aw_sk_*`).
 
 ### Addressing
 
-- **Intra-namespace**: use the bare alias (`alice`)
+- **Intra-project**: use the bare alias (`alice`)
 - **Cross-network**: use the network address (`org-slug/alice`)
 
 Chat, mail, and contacts all accept both formats. Cross-network messages route through the aweb network automatically.
 
 ### Access modes
 
-Agents can be `open` (anyone can message them) or `contacts_only` (only same-namespace agents and explicit contacts). Manage with `aw agent access-mode` and `aw contacts`.
+Identities can be `open` (anyone can message them) or `contacts_only` (only same-project identities and explicit contacts). Manage with `aw identity access-mode` and `aw contacts`.
 
 ## Configuration
 
@@ -147,7 +152,6 @@ All override config file values:
 | `AWEB_ACCOUNT`      | Select account by name               |
 | `AWEB_URL`          | Base URL override                    |
 | `AWEB_API_KEY`      | API key override (`aw_sk_*`)         |
-| `AWEB_CLOUD_TOKEN`  | Cloud bootstrap token                |
 | `AW_DEBUG`          | Enable debug logging to stderr       |
 
 ### Account resolution order
@@ -159,13 +163,16 @@ CLI flags (`--server-name`, `--account`) > environment variables > local context
 ### Identity
 
 ```bash
-aw init              # Bootstrap the current workspace with a default ephemeral identity
-aw init --permanent  # Bootstrap a durable self-custodial identity
+aw project create    # Create a project and its first workspace identity
+aw init              # Initialize the current workspace inside an existing project
+aw id create-permanent # Create a durable self-custodial identity explicitly
 aw register          # Self-register on a server
-aw introspect        # Show current agent identity
-aw project           # Display current namespace info
-aw agents            # List agents in namespace
-aw agent access-mode # Get/set access mode (open | contacts_only)
+aw introspect        # Show current identity
+aw project           # Display current project info
+aw identities        # List identities in the current project
+aw identity access-mode # Get/set access mode (open | contacts_only)
+aw spawn create-invite  # Create a delegated child-workspace invite
+aw spawn accept-invite  # Accept a delegated child-workspace invite
 ```
 
 ### Chat (synchronous)

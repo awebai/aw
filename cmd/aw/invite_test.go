@@ -73,7 +73,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "invite", "--alias", "reviewer")
+	run := exec.CommandContext(ctx, bin, "spawn", "create-invite", "--alias", "reviewer")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -81,7 +81,7 @@ default_account: acct
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 	text := string(out)
-	if !strings.Contains(text, "aw init --invite aw_inv_7f3k9x2m --alias reviewer") {
+	if !strings.Contains(text, "aw spawn accept-invite aw_inv_7f3k9x2m --alias reviewer") {
 		t.Fatalf("missing invite command:\n%s", text)
 	}
 	if strings.Contains(text, "--server ") {
@@ -147,7 +147,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "invite")
+	run := exec.CommandContext(ctx, bin, "spawn", "create-invite")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -224,7 +224,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	listCmd := exec.CommandContext(ctx, bin, "invite", "list")
+	listCmd := exec.CommandContext(ctx, bin, "spawn", "list-invites")
 	listCmd.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	listCmd.Dir = tmp
 	listOut, err := listCmd.CombinedOutput()
@@ -235,7 +235,7 @@ default_account: acct
 		t.Fatalf("unexpected list output:\n%s", string(listOut))
 	}
 
-	revokeCmd := exec.CommandContext(ctx, bin, "invite", "revoke", "7f3k9x")
+	revokeCmd := exec.CommandContext(ctx, bin, "spawn", "revoke-invite", "7f3k9x")
 	revokeCmd.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	revokeCmd.Dir = tmp
 	revokeOut, err := revokeCmd.CombinedOutput()
@@ -245,7 +245,7 @@ default_account: acct
 	if gotDeletePath != "/api/v1/invites/cli/inv-1" {
 		t.Fatalf("delete path=%q", gotDeletePath)
 	}
-	if !strings.Contains(string(revokeOut), "Invite 7f3k9x2m revoked") {
+	if !strings.Contains(string(revokeOut), "Spawn invite 7f3k9x2m revoked") {
 		t.Fatalf("unexpected revoke output:\n%s", string(revokeOut))
 	}
 }
@@ -307,7 +307,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "invite", "--access", "contacts")
+	run := exec.CommandContext(ctx, bin, "spawn", "create-invite", "--access", "contacts")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -353,7 +353,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "invite", "--uses", "0")
+	run := exec.CommandContext(ctx, bin, "spawn", "create-invite", "--uses", "0")
 	run.Env = append(os.Environ(), "AW_CONFIG_PATH="+cfgPath, "AWEB_URL=", "AWEB_API_KEY=")
 	run.Dir = tmp
 	out, err := run.CombinedOutput()

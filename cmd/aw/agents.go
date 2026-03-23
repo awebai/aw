@@ -6,24 +6,24 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
-	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
 // agentsListOutput wraps the server response with local config fields for display.
 type agentsListOutput struct {
 	*awid.ListAgentsResponse
-	NamespaceSlug string `json:"namespace_slug,omitempty"`
+	ProjectSlug string `json:"project_slug,omitempty"`
 }
 
-// agentPatchOutput wraps the server response with the agent's alias for display.
+// agentPatchOutput wraps the server response with the identity alias for display.
 type agentPatchOutput struct {
 	*awid.PatchAgentResponse
 	Alias string `json:"alias,omitempty"`
 }
 
-// resolveAgentID resolves the current agent's ID via introspect, falling back
+// resolveAgentID resolves the current identity's ID via introspect, falling back
 // to the configured agent_id in the selection.
 func resolveAgentID(ctx context.Context, client *aweb.Client, sel *awconfig.Selection) (string, error) {
 	intro, err := client.Introspect(ctx)
@@ -39,9 +39,9 @@ func resolveAgentID(ctx context.Context, client *aweb.Client, sel *awconfig.Sele
 	return intro.AgentID, nil
 }
 
-var agentsCmd = &cobra.Command{
-	Use:   "agents",
-	Short: "List your agents",
+var identitiesCmd = &cobra.Command{
+	Use:   "identities",
+	Short: "List identities in the current project",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -56,20 +56,20 @@ var agentsCmd = &cobra.Command{
 		}
 		printOutput(agentsListOutput{
 			ListAgentsResponse: resp,
-			NamespaceSlug:      sel.NamespaceSlug,
+			ProjectSlug:        sel.NamespaceSlug,
 		}, formatAgentsList)
 		return nil
 	},
 }
 
-var agentCmd = &cobra.Command{
-	Use:   "agent",
-	Short: "Agent operations",
+var identityCmd = &cobra.Command{
+	Use:   "identity",
+	Short: "Identity operations",
 }
 
 var agentAccessModeCmd = &cobra.Command{
 	Use:   "access-mode [open|contacts_only]",
-	Short: "Get or set agent access mode",
+	Short: "Get or set identity access mode",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -100,7 +100,7 @@ var agentAccessModeCmd = &cobra.Command{
 					return nil
 				}
 			}
-			return fmt.Errorf("agent %s not found in agents list", agentID)
+			return fmt.Errorf("identity %s not found in identities list", agentID)
 		}
 
 		// SET: patch access mode.
@@ -125,7 +125,7 @@ var agentAccessModeCmd = &cobra.Command{
 
 var agentPrivacyCmd = &cobra.Command{
 	Use:   "privacy [public|private]",
-	Short: "Get or set agent privacy",
+	Short: "Get or set identity privacy",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -155,7 +155,7 @@ var agentPrivacyCmd = &cobra.Command{
 					return nil
 				}
 			}
-			return fmt.Errorf("agent %s not found in agents list", agentID)
+			return fmt.Errorf("identity %s not found in identities list", agentID)
 		}
 
 		privacy := args[0]
@@ -178,8 +178,8 @@ var agentPrivacyCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.AddCommand(agentsCmd)
-	agentCmd.AddCommand(agentAccessModeCmd)
-	agentCmd.AddCommand(agentPrivacyCmd)
-	rootCmd.AddCommand(agentCmd)
+	rootCmd.AddCommand(identitiesCmd)
+	identityCmd.AddCommand(agentAccessModeCmd)
+	identityCmd.AddCommand(agentPrivacyCmd)
+	rootCmd.AddCommand(identityCmd)
 }

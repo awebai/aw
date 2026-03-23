@@ -194,7 +194,7 @@ default_account: acct
 	}
 
 	text := string(out)
-	for _, want := range []string{"Address:", "Namespace:", "Human:", "Type:"} {
+	for _, want := range []string{"Routing:", "Project:", "Human:", "Type:"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("text output missing %q:\n%s", want, text)
 		}
@@ -541,7 +541,7 @@ func TestAwInitRetriesWhenSuggestedAliasAlreadyExists(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--print-exports=false", "--write-context=false", "--json")
+	run := exec.CommandContext(ctx, bin, "project", "create", "--project", "demo", "--print-exports=false", "--write-context=false", "--json")
 	// Ensure non-TTY mode so aw init doesn't prompt during tests.
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
@@ -637,7 +637,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "agents", "--json")
+	run := exec.CommandContext(ctx, bin, "identities", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -885,7 +885,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "namespace", "--json")
+	run := exec.CommandContext(ctx, bin, "project", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -1199,7 +1199,7 @@ func TestAwInitWritesConfig(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--server-name", "local", "--server-url", server.URL, "--account", "acct", "--print-exports=false", "--write-context=false", "--json")
+	run := exec.CommandContext(ctx, bin, "project", "create", "--project", "demo", "--server-name", "local", "--server-url", server.URL, "--account", "acct", "--print-exports=false", "--write-context=false", "--json")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1306,8 +1306,8 @@ func TestAwInitStoresFullDomainAddress(t *testing.T) {
 
 	buildAwBinary(t, ctx, bin)
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--namespace", "myteam",
+	run := exec.CommandContext(ctx, bin, "project", "create",
+		"--project", "myteam",
 		"--server-name", "local",
 		"--server-url", server.URL,
 		"--account", "acct",
@@ -1345,6 +1345,7 @@ func TestAwInitStoresFullDomainAddress(t *testing.T) {
 
 func TestAwInitCloudModeRequiresCloudToken(t *testing.T) {
 	t.Parallel()
+	t.Skip("obsolete under the 2026-03-23 clean-slate CLI; hosted custodial creation moved out of `aw init`")
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1396,6 +1397,7 @@ func TestAwInitCloudModeRequiresCloudToken(t *testing.T) {
 
 func TestAwInitCloudModeSkipsInitProbe(t *testing.T) {
 	t.Parallel()
+	t.Skip("obsolete under the 2026-03-23 clean-slate CLI; hosted custodial creation moved out of `aw init`")
 
 	var initCalls int
 	var cloudCalls int
@@ -1528,7 +1530,7 @@ func TestAwInitAcceptsAPIV1BaseURL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/api/v1", "--json")
+	run := exec.CommandContext(ctx, bin, "project", "create", "--project", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/api/v1", "--json")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1605,7 +1607,7 @@ func TestAwInitAllowsCustomMountRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init", "--namespace", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/custom", "--json")
+	run := exec.CommandContext(ctx, bin, "project", "create", "--project", "demo", "--print-exports=false", "--write-context=false", "--server-url", server.URL+"/custom", "--json")
 	run.Stdin = strings.NewReader("")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
@@ -1633,6 +1635,7 @@ func TestAwInitAllowsCustomMountRoot(t *testing.T) {
 
 func TestAwInitCloudTokenResolutionFromConfiguredServerKey(t *testing.T) {
 	t.Parallel()
+	t.Skip("obsolete under the 2026-03-23 clean-slate CLI; hosted custodial creation moved out of `aw init`")
 
 	var cloudCalls int
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1724,6 +1727,7 @@ default_account: cloud-acct
 
 func TestAwInitCloudWithOnlyProjectKeyInConfigErrors(t *testing.T) {
 	t.Parallel()
+	t.Skip("obsolete under the 2026-03-23 clean-slate CLI; hosted custodial creation moved out of `aw init`")
 
 	// --cloud with only an aw_sk_ key in config (no cloud JWT) should error.
 	// aw_sk_ keys are project keys and go through flowProjectKey, not cloud.
@@ -1790,6 +1794,7 @@ default_account: existing-acct
 
 func TestAwInitCloudWithAPIKeyRequiresAlias(t *testing.T) {
 	t.Parallel()
+	t.Skip("obsolete under the 2026-03-23 clean-slate CLI; hosted custodial creation moved out of `aw init`")
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -2353,7 +2358,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "agent", "access-mode", "--json")
+	run := exec.CommandContext(ctx, bin, "identity", "access-mode", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -2437,7 +2442,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "agent", "access-mode", "open", "--json")
+	run := exec.CommandContext(ctx, bin, "identity", "access-mode", "open", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -5163,7 +5168,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "agent", "privacy", "--json")
+	run := exec.CommandContext(ctx, bin, "identity", "privacy", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -5247,7 +5252,7 @@ default_account: acct
 		t.Fatalf("write config: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "agent", "privacy", "private", "--json")
+	run := exec.CommandContext(ctx, bin, "identity", "privacy", "private", "--json")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -5370,6 +5375,7 @@ default_account: acct
 
 func TestAwInitNamespaceRequiresAlias(t *testing.T) {
 	t.Parallel()
+	t.Skip("obsolete under the 2026-03-23 clean-slate CLI; hosted target-namespace bootstrap was removed")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -5425,6 +5431,7 @@ default_account: acct
 
 func TestAwInitNamespaceForcesCloudMode(t *testing.T) {
 	t.Parallel()
+	t.Skip("obsolete under the 2026-03-23 clean-slate CLI; hosted target-namespace bootstrap was removed")
 
 	var bootstrapBody map[string]any
 	var bootstrapCalled atomic.Bool
@@ -5510,6 +5517,7 @@ func TestAwInitNamespaceForcesCloudMode(t *testing.T) {
 
 func TestAwInitNamespaceStoresInConfig(t *testing.T) {
 	t.Parallel()
+	t.Skip("obsolete under the 2026-03-23 clean-slate CLI; hosted target-namespace bootstrap was removed")
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -5659,7 +5667,7 @@ func TestAwInitProjectKeyRoutesToOSSInit(t *testing.T) {
 
 	run := exec.CommandContext(ctx, bin, "init",
 		"--server-url", server.URL,
-		"--namespace", "livepub",
+		"--project", "livepub",
 		"--alias", "coordinator",
 		"--write-context=false",
 	)
@@ -5706,6 +5714,7 @@ func TestAwInitProjectKeyRoutesToOSSInit(t *testing.T) {
 
 func TestAwInitCloudPrefersExplicitEnvProjectKeyOverConfigToken(t *testing.T) {
 	t.Parallel()
+	t.Skip("obsolete under the 2026-03-23 clean-slate CLI; hosted custodial creation moved out of `aw init`")
 
 	var bootstrapAuth string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6076,8 +6085,8 @@ default_account: acct
 func TestAwConnect(t *testing.T) {
 	t.Parallel()
 
-	var identityClaimed atomic.Bool
 	const stableID = "did:aw:GrRZYotwid5A4FxaddwPxsxChzo"
+	const did = "did:key:z6MkConnectImported"
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/auth/introspect":
@@ -6097,18 +6106,11 @@ func TestAwConnect(t *testing.T) {
 				"slug":       "myco",
 				"name":       "My Company",
 			})
-		case "/v1/agents/me/identity":
-			if r.Method != http.MethodPut {
-				t.Fatalf("identity endpoint: method=%s, want PUT", r.Method)
-			}
-			identityClaimed.Store(true)
-			var req map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&req)
+		case "/v1/agents/resolve/myco/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":    "ok",
-				"did":       req["did"],
+				"did":       did,
 				"stable_id": stableID,
-				"custody":   "self",
+				"custody":   "custodial",
 				"lifetime":  "persistent",
 			})
 		case "/v1/agents/heartbeat":
@@ -6153,10 +6155,6 @@ func TestAwConnect(t *testing.T) {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 
-	if !identityClaimed.Load() {
-		t.Fatal("expected /v1/agents/me/identity to be called")
-	}
-
 	// Verify config was written with identity fields.
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -6188,16 +6186,16 @@ func TestAwConnect(t *testing.T) {
 				t.Fatalf("namespace_slug=%v, want myco", acct["namespace_slug"])
 			}
 			// Verify identity fields are populated.
-			did, _ := acct["did"].(string)
-			if did == "" || !strings.HasPrefix(did, "did:key:z") {
+			importedDID, _ := acct["did"].(string)
+			if importedDID != did {
 				t.Fatalf("did=%v, want did:key:z...", acct["did"])
 			}
 			signingKey, _ := acct["signing_key"].(string)
-			if signingKey == "" {
-				t.Fatal("signing_key not set")
+			if signingKey != "" {
+				t.Fatalf("signing_key=%q, want empty for imported custodial identity", signingKey)
 			}
-			if acct["custody"] != "self" {
-				t.Fatalf("custody=%v, want self", acct["custody"])
+			if acct["custody"] != "custodial" {
+				t.Fatalf("custody=%v, want custodial", acct["custody"])
 			}
 			if acct["lifetime"] != "persistent" {
 				t.Fatalf("lifetime=%v, want persistent", acct["lifetime"])
@@ -6351,16 +6349,12 @@ func TestAwConnectDoesNotOverrideExistingContextDefaultWithoutSetDefault(t *test
 				"project_id": "proj-123",
 				"slug":       "myco",
 			})
-		case "/v1/agents/me/identity":
-			if r.Method != http.MethodPut {
-				t.Fatalf("identity endpoint: method=%s, want PUT", r.Method)
-			}
-			var req map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&req)
+		case "/v1/agents/resolve/myco/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":  "ok",
-				"did":     req["did"],
-				"custody": "self",
+				"did":      "did:key:z6MkConnectDefault",
+				"address":  "myco/alice",
+				"custody":  "custodial",
+				"lifetime": "persistent",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -6436,6 +6430,7 @@ server_accounts:
 
 func TestAwConnectIdentityAlreadySetNoLocalKey(t *testing.T) {
 	t.Parallel()
+	t.Skip("obsolete under import-only connect semantics")
 
 	// Pre-create a keypair that the server will report as the agent's identity,
 	// but do NOT save it to the test's keysDir — simulating key loss.
@@ -6527,6 +6522,7 @@ func TestAwConnectIdentityAlreadySetNoLocalKey(t *testing.T) {
 
 func TestAwConnectRecoverWith409AndLocalKey(t *testing.T) {
 	t.Parallel()
+	t.Skip("obsolete under import-only connect semantics")
 
 	// Pre-create a keypair that the server will report as the agent's identity.
 	pub, priv, err := awid.GenerateKeypair()
@@ -6657,6 +6653,7 @@ func TestAwConnectUsesServerStableID(t *testing.T) {
 	t.Parallel()
 
 	const stableID = "did:aw:4FAsTHsY3uUjQ6rLw8TDwQyd5Ek"
+	const did = "did:key:z6MkServerStableID"
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -6672,14 +6669,11 @@ func TestAwConnectUsesServerStableID(t *testing.T) {
 				"project_id": "proj-123",
 				"slug":       "myco",
 			})
-		case "/v1/agents/me/identity":
-			var req map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&req)
+		case "/v1/agents/resolve/myco/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":    "ok",
-				"did":       req["did"],
+				"did":       did,
 				"stable_id": stableID,
-				"custody":   "self",
+				"custody":   "custodial",
 				"lifetime":  "persistent",
 			})
 		case "/v1/agents/heartbeat":
@@ -6731,8 +6725,8 @@ func TestAwConnectUsesServerStableID(t *testing.T) {
 	_ = yaml.Unmarshal(data, &cfg)
 	for _, acct := range cfg.Accounts {
 		if acct["api_key"] == "aw_sk_test" {
-			did, _ := acct["did"].(string)
-			if did == "" || !strings.HasPrefix(did, "did:key:z") {
+			gotDID, _ := acct["did"].(string)
+			if gotDID != did {
 				t.Fatalf("did=%v, want did:key:z...", acct["did"])
 			}
 			if acct["stable_id"] != stableID {
@@ -7508,8 +7502,8 @@ func TestInitDefaultServerUsedWhenNoURLProvided(t *testing.T) {
 	// Use AWEB_URL to point at test server. The test verifies that
 	// when --server-url is omitted, the init flow still works (using
 	// whatever URL resolution provides, including the default).
-	run := exec.CommandContext(ctx, bin, "init",
-		"--namespace", "demo",
+	run := exec.CommandContext(ctx, bin, "project", "create",
+		"--project", "demo",
 		"--alias", "alice",
 		"--write-context=false",
 	)
@@ -7531,6 +7525,7 @@ func TestInitDefaultServerUsedWhenNoURLProvided(t *testing.T) {
 
 func TestInitTargetNamespaceRequiresAlias(t *testing.T) {
 	t.Parallel()
+	t.Skip("obsolete under the 2026-03-23 clean-slate CLI; hosted target-namespace bootstrap was removed")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -7616,8 +7611,8 @@ func TestInitWorkspaceAttachNonFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--namespace", "demo",
+	run := exec.CommandContext(ctx, bin, "project", "create",
+		"--project", "demo",
 		"--alias", "alice",
 	)
 	run.Stdin = strings.NewReader("")

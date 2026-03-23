@@ -3,15 +3,14 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/base64"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
 	aweb "github.com/awebai/aw"
-	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
@@ -19,10 +18,11 @@ var connectSetDefault bool
 
 var connectCmd = &cobra.Command{
 	Use:   "connect",
-	Short: "Connect to an aweb server using environment credentials",
+	Short: "Import an existing identity context using environment credentials",
 	Long: `Reads AWEB_URL and AWEB_API_KEY from the environment (or .env.aweb),
-validates them via introspect, and writes persistent config so future
-commands work without environment variables.`,
+validates them via introspect, and writes local config so future commands
+work without environment variables. This command imports the server's
+current identity state; it does not create or mutate an identity.`,
 	RunE: runConnect,
 }
 
@@ -88,7 +88,6 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	keysDir := awconfig.KeysDir(cfgPath)
 
 	// Check existing config for identity fields before provisioning.
 	existingCfg, _ := awconfig.LoadGlobalFrom(cfgPath)
@@ -106,24 +105,30 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Provision identity if not already present.
 	identityDID := existingDID
 	signingKeyPath := existingSigningKey
 	stableID := existingStableID
 	custody := existingCustody
 	lifetime := existingLifetime
-	if existingDID == "" || existingSigningKey == "" {
-		var provErr error
-		identityDID, signingKeyPath, stableID, custody, lifetime, provErr = provisionIdentity(
-			ctx, client, keysDir, namespaceSlug, alias, resp.Address,
+	if identityDID == "" || stableID == "" || custody == "" || lifetime == "" {
+		serverDID, serverStableID, serverCustody, serverLifetime := resolveServerIdentityState(
+			ctx, client, namespaceSlug, alias, strings.TrimSpace(resp.Address),
 		)
-		if provErr != nil {
-			return provErr
+		if strings.TrimSpace(serverDID) != "" {
+			identityDID = strings.TrimSpace(serverDID)
 		}
-		// Preserve an existing stable_id if the server did not return one.
-		if stableID == "" && existingStableID != "" {
-			stableID = existingStableID
+		if strings.TrimSpace(serverStableID) != "" {
+			stableID = strings.TrimSpace(serverStableID)
 		}
+		if strings.TrimSpace(serverCustody) != "" {
+			custody = strings.TrimSpace(serverCustody)
+		}
+		if strings.TrimSpace(serverLifetime) != "" {
+			lifetime = strings.TrimSpace(serverLifetime)
+		}
+	}
+	if stableID == "" && existingStableID != "" {
+		stableID = existingStableID
 	}
 
 	updateErr := awconfig.UpdateGlobalAt(cfgPath, func(cfg *awconfig.GlobalConfig) error {
@@ -176,12 +181,21 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "Connected as %s (%s)\n", alias, agentID)
+	fmt.Fprintf(os.Stderr, "Imported identity context for %s (%s)\n", alias, agentID)
 	if identityDID != "" {
-		fmt.Fprintf(os.Stderr, "Identity: %s (%s)\n", identityDID, custody)
+		fmt.Fprintf(os.Stderr, "Identity DID: %s\n", identityDID)
+	}
+	if lifetime != "" {
+		fmt.Fprintf(os.Stderr, "Identity: %s\n", awid.DescribeIdentityClass(lifetime))
+	}
+	if custody != "" {
+		fmt.Fprintf(os.Stderr, "Custody: %s\n", custody)
 	}
 	if stableID != "" {
-		fmt.Fprintf(os.Stderr, "Stable ID: %s\n", stableID)
+		fmt.Fprintf(os.Stderr, "Permanent ID: %s\n", stableID)
+	}
+	if awid.IsSelfCustodial(custody) && awid.IdentityClassFromLifetime(lifetime) == awid.IdentityClassPermanent && signingKeyPath == "" {
+		fmt.Fprintln(os.Stderr, "Warning: this self-custodial permanent identity has no local signing key configured.")
 	}
 	fmt.Fprintf(os.Stderr, "Config written to %s\n", cfgPath)
 
@@ -192,86 +206,24 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// provisionIdentity generates a keypair, claims identity on the server, and
-// returns the canonical identity fields to persist.
-func provisionIdentity(
+func resolveServerIdentityState(
 	ctx context.Context,
 	client *aweb.Client,
-	keysDir, namespaceSlug, alias, authoritativeAddress string,
-) (did, signingKeyPath, stableID, custody, lifetime string, err error) {
-	address := authoritativeAddress
-	if address == "" {
+	namespaceSlug, alias, authoritativeAddress string,
+) (did, stableID, custody, lifetime string) {
+	address := strings.TrimSpace(authoritativeAddress)
+	if address == "" && strings.TrimSpace(namespaceSlug) != "" && strings.TrimSpace(alias) != "" {
 		address = deriveAgentAddress(namespaceSlug, "", alias)
 	}
-	signingKeyPath = awid.SigningKeyPath(keysDir, address)
-
-	// Reuse existing key if one is already on disk for this address,
-	// to avoid overwriting a valid key before we know whether the server
-	// accepts our claim.
-	var pub ed25519.PublicKey
-	var priv ed25519.PrivateKey
-	generatedNewKey := false
-	existingPriv, loadErr := awid.LoadSigningKey(signingKeyPath)
-	if loadErr == nil {
-		priv = existingPriv
-		pub = priv.Public().(ed25519.PublicKey)
-	} else {
-		var genErr error
-		pub, priv, genErr = awid.GenerateKeypair()
-		if genErr != nil {
-			return "", "", "", "", "", genErr
-		}
-		// Persist the keypair to disk BEFORE claiming on the server.
-		// If claim succeeds but disk write fails later, the key would be
-		// unrecoverable. An unused key file on disk is harmless.
-		if err := awid.SaveKeypair(keysDir, address, pub, priv); err != nil {
-			return "", "", "", "", "", err
-		}
-		generatedNewKey = true
+	if address == "" {
+		return "", "", "", ""
 	}
-
-	did = awid.ComputeDIDKey(pub)
-	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
-
-	// Claim identity on the aweb server.
-	resp, claimErr := client.ClaimIdentity(ctx, &awid.ClaimIdentityRequest{
-		DID:       did,
-		PublicKey: pubKeyB64,
-		Custody:   "self",
-		Lifetime:  "persistent",
-	})
-	if claimErr != nil {
-		code, ok := awid.HTTPStatusCode(claimErr)
-		if ok && code == 409 {
-			// Remove orphan key if we just generated it — it doesn't match
-			// the server's identity and would be confusing on disk.
-			if generatedNewKey {
-				os.Remove(signingKeyPath)
-				pubPath := strings.TrimSuffix(signingKeyPath, ".key") + ".pub"
-				os.Remove(pubPath)
-			}
-			recoveredDID, recoveredKeyPath, recoveredStableID, recoveredCustody, recoveredLifetime, recoverErr := recoverIdentity409WithStableID(ctx, client, keysDir, address)
-			if recoverErr != nil {
-				return "", "", "", "", "", recoverErr
-			}
-			return recoveredDID, recoveredKeyPath, recoveredStableID, recoveredCustody, recoveredLifetime, nil
-		}
-		return "", "", "", "", "", claimErr
+	resolver := &awid.ServerResolver{Client: client.Client}
+	identity, err := resolver.Resolve(ctx, address)
+	if err != nil || identity == nil {
+		return "", "", "", ""
 	}
-
-	if resp != nil {
-		stableID = strings.TrimSpace(resp.StableID)
-		custody = strings.TrimSpace(resp.Custody)
-		lifetime = strings.TrimSpace(resp.Lifetime)
-	}
-	if custody == "" {
-		custody = "self"
-	}
-	if lifetime == "" {
-		lifetime = "persistent"
-	}
-
-	return did, signingKeyPath, stableID, custody, lifetime, nil
+	return strings.TrimSpace(identity.DID), strings.TrimSpace(identity.StableID), strings.TrimSpace(identity.Custody), strings.TrimSpace(identity.Lifetime)
 }
 
 // recoverIdentity409 handles a 409 from ClaimIdentity by resolving the

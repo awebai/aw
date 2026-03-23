@@ -11,8 +11,8 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
-	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
@@ -24,10 +24,10 @@ var (
 
 var resetCmd = &cobra.Command{
 	Use:   "reset",
-	Short: "Reset local or remote agent identity",
+	Short: "Reset local workspace binding or remote identity state",
 	Long: `Without flags, removes the .aw/context file in the current directory.
 
-With --remote --confirm, clears the agent's identity on the server and
+With --remote --confirm, clears the current identity on the server and
 re-provisions a fresh keypair + identity claim.`,
 	RunE: runReset,
 }
@@ -35,7 +35,7 @@ re-provisions a fresh keypair + identity claim.`,
 func init() {
 	resetCmd.Flags().BoolVar(&resetRemote, "remote", false, "Clear server identity and re-provision")
 	resetCmd.Flags().BoolVar(&resetConfirm, "confirm", false, "Required for --remote to prevent accidental resets")
-	resetCmd.Flags().BoolVar(&resetWipeKeys, "wipe-keys", false, "Also delete local key files for this account")
+	resetCmd.Flags().BoolVar(&resetWipeKeys, "wipe-keys", false, "Also delete local key files for this identity")
 	rootCmd.AddCommand(resetCmd)
 }
 

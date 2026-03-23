@@ -14,15 +14,15 @@ var retireSuccessor string
 
 var agentRetireCmd = &cobra.Command{
 	Use:   "retire",
-	Short: "Retire this agent with a successor",
-	Long:  "Mark this agent as retired on the server. The successor's DID is resolved from their address and linked.",
+	Short: "Archive this permanent identity with a successor",
+	Long:  "Mark this identity as retired on the server. The successor's DID is resolved from their address and linked.",
 	RunE:  runAgentRetire,
 }
 
 func init() {
-	agentRetireCmd.Flags().StringVar(&retireSuccessor, "successor", "", "Successor agent address (namespace/alias)")
+	agentRetireCmd.Flags().StringVar(&retireSuccessor, "successor", "", "Successor identity address (namespace/name)")
 	agentRetireCmd.MarkFlagRequired("successor")
-	agentCmd.AddCommand(agentRetireCmd)
+	identityCmd.AddCommand(agentRetireCmd)
 }
 
 func runAgentRetire(cmd *cobra.Command, args []string) error {
@@ -38,10 +38,10 @@ func runAgentRetire(cmd *cobra.Command, args []string) error {
 	}
 
 	if sel.SigningKey == "" {
-		return fmt.Errorf("no signing key configured; retirement requires a self-custody identity")
+		return fmt.Errorf("no signing key configured; archival requires a self-custodial permanent identity")
 	}
 	if sel.DID == "" {
-		return fmt.Errorf("no DID configured for this account")
+		return fmt.Errorf("no DID configured for this identity")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -54,7 +54,7 @@ func runAgentRetire(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve successor %q: %w", retireSuccessor, err)
 	}
 	if successorIdentity.AgentID == "" {
-		return fmt.Errorf("successor %q has no agent_id (server may not support resolution)", retireSuccessor)
+		return fmt.Errorf("successor %q has no identity id (server may not support resolution)", retireSuccessor)
 	}
 	if successorIdentity.DID == "" {
 		return fmt.Errorf("successor %q has no DID", retireSuccessor)
@@ -69,9 +69,9 @@ func runAgentRetire(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Agent retired.\n")
+	fmt.Printf("Identity archived.\n")
 	fmt.Printf("  status: %s\n", resp.Status)
-	fmt.Printf("  successor: %s (agent_id: %s)\n", retireSuccessor, resp.SuccessorAgentID)
+	fmt.Printf("  successor: %s (identity_id: %s)\n", retireSuccessor, resp.SuccessorAgentID)
 
 	return nil
 }

@@ -66,10 +66,14 @@ Useful fields:
 
 ## Step 3: Initialize This Workspace
 
-`aw init` creates a local `.aw/` workspace in the current directory and gives
-it a default identity.
+Use one of these flows:
+- `aw project create` when this directory is becoming the first workspace in a new project.
+- `aw init` when you already have project authority and this directory is joining an existing project.
+
+Both create a local `.aw/` workspace in the current directory and give it a
+default identity.
 - By default that identity is ephemeral.
-- Use `aw init --permanent` only when you explicitly want a durable
+- Use `aw id create-permanent` or `aw init --permanent` only when you explicitly want a durable
   self-custodial identity in this workspace.
 - In a shared git repo, `aw` also registers repo/worktree coordination and writes `.aw/workspace.yaml`.
 - Outside git, `aw` still creates a server-side local-directory attachment without exposing your local path.
@@ -100,18 +104,12 @@ aw chat pending
 
 ## Troubleshooting
 
-### `aw connect` complains about server identity vs local key
+### `aw connect` warns that a permanent self-custodial identity has no local signing key
 
-Symptom: “identity already set on server but no matching signing key found locally”
-
-Options:
-
-1. Restore the signing key file to the path shown in the error.
-2. Reset and re-provision if identity continuity is not required:
-
-```bash
-aw reset --remote --confirm
-```
+`aw connect` now imports the server’s identity state instead of mutating it.
+If the server reports a self-custodial permanent identity but no local signing
+key is configured, restore the key material before relying on local signing or
+rotation commands.
 
 ### Wrong server or account picked
 

@@ -91,10 +91,10 @@ default_account: acct
 
 	text := string(out)
 	for _, want := range []string{
-		"Using agent coordinator",
+		"Using identity coordinator",
 		"Account:    acct",
 		"Server:     local",
-		"Namespace:  demo",
+		"Project:    demo",
 		"Context:    attached local directory",
 	} {
 		if !strings.Contains(text, want) {

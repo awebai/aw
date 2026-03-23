@@ -72,8 +72,7 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--invite", "aw_inv_test",
+	run := exec.CommandContext(ctx, bin, "spawn", "accept-invite", "aw_inv_test",
 		"--alias", "reviewer",
 		"--server", server.URL,
 		"--json",
@@ -189,8 +188,7 @@ func TestAwInitInviteAcceptUsesServerProvidedAliasHint(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--invite", "aw_inv_test",
+	run := exec.CommandContext(ctx, bin, "spawn", "accept-invite", "aw_inv_test",
 		"--server", server.URL,
 		"--json",
 		"--write-context=false",
@@ -254,8 +252,7 @@ func TestAwInitInviteAcceptRequiresAPIKeyInResponse(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--invite", "aw_inv_test",
+	run := exec.CommandContext(ctx, bin, "spawn", "accept-invite", "aw_inv_test",
 		"--alias", "reviewer",
 		"--server", server.URL,
 	)
@@ -270,43 +267,6 @@ func TestAwInitInviteAcceptRequiresAPIKeyInResponse(t *testing.T) {
 		t.Fatalf("expected failure, got success:\n%s", string(out))
 	}
 	if !strings.Contains(string(out), "invite accept failed: missing api_key in response") {
-		t.Fatalf("unexpected output:\n%s", string(out))
-	}
-}
-
-func TestAwInitInviteRejectsResolvedNamespaceConflictFromEnv(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "aw")
-	cfgPath := filepath.Join(tmp, "config.yaml")
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, string(out))
-	}
-
-	run := exec.CommandContext(ctx, bin, "init", "--invite", "aw_inv_test")
-	run.Env = append(os.Environ(),
-		"AW_CONFIG_PATH="+cfgPath,
-		"AWEB_URL=",
-		"AWEB_API_KEY=",
-		"AWEB_NAMESPACE=shadow-ns",
-	)
-	run.Dir = tmp
-	out, err := run.CombinedOutput()
-	if err == nil {
-		t.Fatalf("expected failure, got success:\n%s", string(out))
-	}
-	if !strings.Contains(string(out), "--invite cannot be combined with namespace/bootstrap flags") {
 		t.Fatalf("unexpected output:\n%s", string(out))
 	}
 }
@@ -343,8 +303,7 @@ func TestAwInitInviteAliasErrorOnlyMapsAliasValidation(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--invite", "aw_inv_test",
+	run := exec.CommandContext(ctx, bin, "spawn", "accept-invite", "aw_inv_test",
 		"--server", server.URL,
 	)
 	run.Env = append(os.Environ(),
@@ -413,8 +372,7 @@ func TestAwInitInviteTextOutputSaysJoined(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--invite", "aw_inv_test",
+	run := exec.CommandContext(ctx, bin, "spawn", "accept-invite", "aw_inv_test",
 		"--alias", "reviewer",
 		"--server", server.URL,
 		"--write-context=false",
@@ -430,7 +388,10 @@ func TestAwInitInviteTextOutputSaysJoined(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
-	if !strings.Contains(string(out), "Joined myteam.aweb.ai as reviewer") {
+	if !strings.Contains(string(out), "Accepted spawn invite") {
+		t.Fatalf("unexpected output:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "Alias:      reviewer") {
 		t.Fatalf("unexpected output:\n%s", string(out))
 	}
 }

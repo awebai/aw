@@ -61,8 +61,8 @@ func TestAwInitInjectDocsAndSetupHooks(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, string(out))
 	}
 
-	run := exec.CommandContext(ctx, bin, "init",
-		"--namespace", "myteam",
+	run := exec.CommandContext(ctx, bin, "project", "create",
+		"--project", "myteam",
 		"--alias", "reviewer",
 		"--inject-docs",
 		"--setup-hooks",
