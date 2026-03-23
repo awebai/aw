@@ -139,7 +139,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	repoSlug := runDetectRepoSlug(workingDir)
-	statusIdentity := awrun.StatusIdentity(runProviderName, sel.NamespaceSlug, repoSlug, sel.AgentAlias)
+	statusIdentity := awrun.StatusIdentity(runProviderName, sel.NamespaceSlug, repoSlug, sel.IdentityHandle)
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 	defer stop()

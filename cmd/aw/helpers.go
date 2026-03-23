@@ -85,7 +85,7 @@ func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Se
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid identity configuration: %w", err)
 		}
-		c.SetAddress(deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias))
+		c.SetAddress(deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.IdentityHandle))
 		c.SetProjectSlug(sel.DefaultProject)
 		if sel.StableID != "" {
 			c.SetStableID(sel.StableID)
@@ -876,7 +876,7 @@ func networkError(err error, target string) error {
 // wrong agent when .aw/context resolves to a different account than
 // .aw/workspace.yaml expects.
 func checkIdentityMismatch(workingDir string, sel *awconfig.Selection) error {
-	if sel == nil || strings.TrimSpace(sel.AgentAlias) == "" {
+	if sel == nil || strings.TrimSpace(sel.IdentityHandle) == "" {
 		return nil
 	}
 	ws, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir)
@@ -884,7 +884,7 @@ func checkIdentityMismatch(workingDir string, sel *awconfig.Selection) error {
 		return nil
 	}
 	wsAlias := strings.TrimSpace(ws.Alias)
-	selAlias := strings.TrimSpace(sel.AgentAlias)
+	selAlias := strings.TrimSpace(sel.IdentityHandle)
 	if wsAlias == "" || selAlias == "" {
 		return nil
 	}

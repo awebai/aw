@@ -242,8 +242,8 @@ func TestResolveAccountByAgentAlias(t *testing.T) {
 			"prod": {URL: "https://app.aweb.ai"},
 		},
 		Accounts: map[string]Account{
-			"acct-prod__default__alice": {Account: awid.Account{Server: "prod", APIKey: "aw_sk_alice", AgentAlias: "alice"}},
-			"acct-prod__default__bob":   {Account: awid.Account{Server: "prod", APIKey: "aw_sk_bob", AgentAlias: "bob"}},
+			"acct-prod__default__alice": {Account: awid.Account{Server: "prod", APIKey: "aw_sk_alice", IdentityHandle: "alice"}},
+			"acct-prod__default__bob":   {Account: awid.Account{Server: "prod", APIKey: "aw_sk_bob", IdentityHandle: "bob"}},
 		},
 		DefaultAccount: "acct-prod__default__alice",
 	}
@@ -292,8 +292,8 @@ func TestResolveAccountByAgentAliasAmbiguous(t *testing.T) {
 			"staging": {URL: "https://staging.aweb.ai"},
 		},
 		Accounts: map[string]Account{
-			"acct-prod":    {Account: awid.Account{Server: "prod", APIKey: "aw_sk_1", AgentAlias: "alice"}},
-			"acct-staging": {Account: awid.Account{Server: "staging", APIKey: "aw_sk_2", AgentAlias: "alice"}},
+			"acct-prod":    {Account: awid.Account{Server: "prod", APIKey: "aw_sk_1", IdentityHandle: "alice"}},
+			"acct-staging": {Account: awid.Account{Server: "staging", APIKey: "aw_sk_2", IdentityHandle: "alice"}},
 		},
 		DefaultAccount: "acct-prod",
 	}

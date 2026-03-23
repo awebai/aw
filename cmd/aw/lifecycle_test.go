@@ -63,8 +63,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_ephemeral
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: myco
     custody: custodial
     lifetime: ephemeral
@@ -168,8 +168,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_permanent
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: myco
     custody: custodial
     lifetime: ephemeral

@@ -62,25 +62,25 @@ const (
 )
 
 type initOptions struct {
-	Flow                           initFlow
-	WorkingDir                     string
-	BaseURL                        string
-	ServerName                     string
-	NamespaceSlug                  string
-	NamespaceName                  string
-	IdentityAlias                  string
-	IdentityName                   string
-	AddressReachability            string
-	HumanName                      string
-	AgentType                      string
-	SaveConfig                     bool
-	SetDefault                     bool
-	WriteContext                   bool
-	AuthToken                      string // Bearer token for the selected flow
-	InviteToken                    string
-	AccountName                    string
-	WorkspaceRole                  string
-	Lifetime                       string // "ephemeral" (default) or "persistent"
+	Flow                initFlow
+	WorkingDir          string
+	BaseURL             string
+	ServerName          string
+	NamespaceSlug       string
+	NamespaceName       string
+	IdentityAlias       string
+	IdentityName        string
+	AddressReachability string
+	HumanName           string
+	AgentType           string
+	SaveConfig          bool
+	SetDefault          bool
+	WriteContext        bool
+	AuthToken           string // Bearer token for the selected flow
+	InviteToken         string
+	AccountName         string
+	WorkspaceRole       string
+	Lifetime            string // "ephemeral" (default) or "persistent"
 }
 
 type initResult struct {
@@ -304,24 +304,24 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 	}
 
 	return initOptions{
-		Flow:                           flow,
-		WorkingDir:                     workingDir,
-		BaseURL:                        baseURL,
-		ServerName:                     serverName,
-		NamespaceSlug:                  nsSlug,
-		NamespaceName:                  nsName,
-		IdentityAlias:                  alias,
-		IdentityName:                   name,
-		AddressReachability:            normalizeAddressReachability(strings.TrimSpace(initReachability)),
-		HumanName:                      humanName,
-		AgentType:                      agentType,
-		SaveConfig:                     initSaveConfig,
-		SetDefault:                     initSetDefault,
-		WriteContext:                   initWriteContext,
-		AuthToken:                      authToken,
-		AccountName:                    accountName,
-		WorkspaceRole:                  role,
-		Lifetime:                       resolveInitLifetime(initPermanent),
+		Flow:                flow,
+		WorkingDir:          workingDir,
+		BaseURL:             baseURL,
+		ServerName:          serverName,
+		NamespaceSlug:       nsSlug,
+		NamespaceName:       nsName,
+		IdentityAlias:       alias,
+		IdentityName:        name,
+		AddressReachability: normalizeAddressReachability(strings.TrimSpace(initReachability)),
+		HumanName:           humanName,
+		AgentType:           agentType,
+		SaveConfig:          initSaveConfig,
+		SetDefault:          initSetDefault,
+		WriteContext:        initWriteContext,
+		AuthToken:           authToken,
+		AccountName:         accountName,
+		WorkspaceRole:       role,
+		Lifetime:            resolveInitLifetime(initPermanent),
 	}, nil
 }
 
@@ -574,16 +574,16 @@ func executeInit(opts initOptions) (*initResult, error) {
 			}
 			cfg.Servers[opts.ServerName] = awconfig.Server{URL: serverURL}
 			cfg.Accounts[accountName] = awconfig.Account{Account: awid.Account{
-				Server:        opts.ServerName,
-				APIKey:        resp.APIKey,
-				AgentID:       resp.IdentityID,
-				AgentAlias:    handle,
-				NamespaceSlug: namespaceSlug,
-				DID:           resp.DID,
-				StableID:      stableID,
-				SigningKey:    signingKeyPath,
-				Custody:       resp.Custody,
-				Lifetime:      resp.Lifetime,
+				Server:         opts.ServerName,
+				APIKey:         resp.APIKey,
+				IdentityID:     resp.IdentityID,
+				IdentityHandle: handle,
+				NamespaceSlug:  namespaceSlug,
+				DID:            resp.DID,
+				StableID:       stableID,
+				SigningKey:     signingKeyPath,
+				Custody:        resp.Custody,
+				Lifetime:       resp.Lifetime,
 			}}
 			if strings.TrimSpace(cfg.DefaultAccount) == "" || opts.SetDefault {
 				cfg.DefaultAccount = accountName

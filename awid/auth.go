@@ -6,14 +6,25 @@ import "context"
 type IntrospectResponse struct {
 	ProjectID     string `json:"project_id"`
 	APIKeyID      string `json:"api_key_id,omitempty"`
-	AgentID       string `json:"agent_id,omitempty"`
+	IdentityID    string `json:"identity_id,omitempty"`
 	Alias         string `json:"alias,omitempty"`
+	Name          string `json:"name,omitempty"`
 	HumanName     string `json:"human_name,omitempty"`
 	AgentType     string `json:"agent_type,omitempty"`
 	AccessMode    string `json:"access_mode,omitempty"`
 	UserID        string `json:"user_id,omitempty"`
 	NamespaceSlug string `json:"namespace_slug,omitempty"`
 	Address       string `json:"address,omitempty"`
+}
+
+func (r *IntrospectResponse) IdentityHandle() string {
+	if r == nil {
+		return ""
+	}
+	if r.Name != "" {
+		return r.Name
+	}
+	return r.Alias
 }
 
 // Introspect validates the client's Bearer token and returns the scoped project_id.

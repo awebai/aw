@@ -35,9 +35,9 @@ var introspectCmd = &cobra.Command{
 			return err
 		}
 
-		alias := resp.Alias
+		alias := resp.IdentityHandle()
 		if alias == "" {
-			alias = sel.AgentAlias
+			alias = sel.IdentityHandle
 		}
 
 		out := introspectOutput{

@@ -127,15 +127,15 @@ accounts:
     server: localhost:8001
     api_key: aw_sk_...
     namespace_slug: demo
-    agent_id: <uuid>
-    agent_alias: alice
+    identity_id: <uuid>
+    identity_handle: alice
 
 default_account: local-alice
 ```
 
-These persisted config keys are internal compatibility fields. The user-facing
+These persisted config keys are internal state fields. The user-facing
 CLI model is identity-first; use `aw whoami` and the identity commands rather
-than reasoning from `agent_id` / `agent_alias` directly.
+than reasoning from `identity_id` / `identity_handle` directly.
 
 ### Local context
 

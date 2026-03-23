@@ -107,7 +107,7 @@ func runWorkspaceInit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(sel.AgentID) == "" || strings.TrimSpace(sel.AgentAlias) == "" {
+	if strings.TrimSpace(sel.IdentityID) == "" || strings.TrimSpace(sel.IdentityHandle) == "" {
 		return usageError("selected account has no identity; run 'aw init' first")
 	}
 
@@ -127,7 +127,7 @@ func runWorkspaceStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(sel.AgentID) == "" {
+	if strings.TrimSpace(sel.IdentityID) == "" {
 		return usageError("selected account has no identity; run 'aw init' first")
 	}
 
@@ -136,7 +136,7 @@ func runWorkspaceStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load workspace state: %w", err)
 	}
 
-	workspaceID := strings.TrimSpace(sel.AgentID)
+	workspaceID := strings.TrimSpace(sel.IdentityID)
 	if state != nil && strings.TrimSpace(state.WorkspaceID) != "" {
 		workspaceID = strings.TrimSpace(state.WorkspaceID)
 	}
@@ -333,20 +333,20 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 		inviteToken, initErr := createWorktreeInvite(client, alias)
 		if initErr == nil {
 			initOpts := initOptions{
-				Flow:                   flowInvite,
-				WorkingDir:             worktreePath,
-				BaseURL:                sourceBaseURL,
-				ServerName:             sourceServerName,
-				IdentityAlias:          alias,
-				HumanName:              humanName,
-				AgentType:              "agent",
-				SaveConfig:             true,
-				SetDefault:             false,
-				WriteContext:           true,
-				InviteToken:            inviteToken,
-				AccountName:            "",
-				WorkspaceRole:          role,
-				Lifetime:               awid.LifetimeEphemeral,
+				Flow:          flowInvite,
+				WorkingDir:    worktreePath,
+				BaseURL:       sourceBaseURL,
+				ServerName:    sourceServerName,
+				IdentityAlias: alias,
+				HumanName:     humanName,
+				AgentType:     "agent",
+				SaveConfig:    true,
+				SetDefault:    false,
+				WriteContext:  true,
+				InviteToken:   inviteToken,
+				AccountName:   "",
+				WorkspaceRole: role,
+				Lifetime:      awid.LifetimeEphemeral,
 			}
 			_, initErr = executeInit(initOpts)
 		}
@@ -562,8 +562,8 @@ func resolveWorkspaceRepoOrigin(root, explicit string) (string, error) {
 
 func fallbackWorkspaceInfo(sel *awconfig.Selection, state *awconfig.WorktreeWorkspace) aweb.WorkspaceInfo {
 	info := aweb.WorkspaceInfo{
-		WorkspaceID: sel.AgentID,
-		Alias:       sel.AgentAlias,
+		WorkspaceID: sel.IdentityID,
+		Alias:       sel.IdentityHandle,
 		Status:      "offline",
 	}
 	if state == nil {

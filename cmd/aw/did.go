@@ -88,7 +88,7 @@ func runDidRotateKey(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	keysDir := awconfig.KeysDir(configPath)
-	address := deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
+	address := deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.IdentityHandle)
 
 	if err := awid.ArchiveKey(keysDir, oldDID, oldPub, oldPriv); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to archive old key: %v\n", err)
@@ -143,7 +143,7 @@ func runCustodialGraduation(sel *awconfig.Selection) error {
 		return err
 	}
 	keysDir := awconfig.KeysDir(configPath)
-	address := deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.AgentAlias)
+	address := deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.IdentityHandle)
 	if err := awid.SaveKeypair(keysDir, address, newPub, newPriv); err != nil {
 		return fmt.Errorf("save new keypair: %w", err)
 	}

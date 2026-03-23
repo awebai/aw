@@ -50,7 +50,7 @@ func runNotify(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	output := formatNotifyOutput(result, sel.AgentAlias)
+	output := formatNotifyOutput(result, sel.IdentityHandle)
 	if output == "" {
 		return nil
 	}

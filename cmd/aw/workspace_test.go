@@ -148,8 +148,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: `+workspaceID+`
-    agent_alias: alice
+    identity_id: `+workspaceID+`
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -412,8 +412,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: `+selfID+`
-    agent_alias: alice
+    identity_id: `+selfID+`
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -534,8 +534,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: `+selfID+`
-    agent_alias: coordinator
+    identity_id: `+selfID+`
+    identity_handle: coordinator
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -627,12 +627,12 @@ func TestAwWorkspaceStatusDeletesGoneEphemeralIdentity(t *testing.T) {
 			})
 		case r.URL.Path == "/v1/agents/resolve/demo/bob" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"agent_id":   "agent-bob",
-				"did":        "did:key:z6MkEphemeral",
-				"address":    "demo/bob",
-				"custody":    "custodial",
-				"lifetime":   "ephemeral",
-				"public_key": "",
+				"identity_id": "agent-bob",
+				"did":         "did:key:z6MkEphemeral",
+				"address":     "demo/bob",
+				"custody":     "custodial",
+				"lifetime":    "ephemeral",
+				"public_key":  "",
 			})
 		case r.URL.Path == "/v1/agents/demo/bob" && r.Method == http.MethodDelete:
 			deletedIdentity.Store(true)
@@ -666,8 +666,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: `+selfID+`
-    agent_alias: alice
+    identity_id: `+selfID+`
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -767,11 +767,11 @@ func TestAwWorkspaceStatusKeepsGonePermanentIdentity(t *testing.T) {
 			})
 		case r.URL.Path == "/v1/agents/resolve/demo/maintainer" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"agent_id": "agent-maintainer",
-				"did":      "did:key:z6MkPermanent",
-				"address":  "demo/maintainer",
-				"custody":  "self",
-				"lifetime": "persistent",
+				"identity_id": "agent-maintainer",
+				"did":         "did:key:z6MkPermanent",
+				"address":     "demo/maintainer",
+				"custody":     "self",
+				"lifetime":    "persistent",
 			})
 		case r.URL.Path == "/v1/agents/demo/maintainer" && r.Method == http.MethodDelete:
 			deletedIdentity.Store(true)
@@ -805,8 +805,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: `+selfID+`
-    agent_alias: alice
+    identity_id: `+selfID+`
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -907,12 +907,12 @@ func TestAwWorkspaceStatusDeletesGoneEphemeralIdentityByNamespaceSlug(t *testing
 			})
 		case r.URL.Path == "/v1/agents/resolve/demo.example.com/bot" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"agent_id":   "agent-bot",
-				"did":        "did:key:z6MkEphemeral",
-				"address":    "demo.example.com/bot",
-				"custody":    "custodial",
-				"lifetime":   "ephemeral",
-				"public_key": "",
+				"identity_id": "agent-bot",
+				"did":         "did:key:z6MkEphemeral",
+				"address":     "demo.example.com/bot",
+				"custody":     "custodial",
+				"lifetime":    "ephemeral",
+				"public_key":  "",
 			})
 		case r.URL.Path == "/v1/agents/demo.example.com/bot" && r.Method == http.MethodDelete:
 			deletedIdentity.Store(true)
@@ -946,8 +946,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: `+selfID+`
-    agent_alias: alice
+    identity_id: `+selfID+`
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -1076,8 +1076,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: `+selfID+`
-    agent_alias: alice
+    identity_id: `+selfID+`
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -1149,16 +1149,16 @@ func TestAwWorkspaceAddWorktreeCreatesSiblingWorktree(t *testing.T) {
 			initAuth = r.Header.Get("Authorization")
 			srvURL := "http://" + r.Host
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"invite_id":    "inv-1",
-				"token":        "aw_inv_test_worktree",
-				"token_prefix": "aw_inv_test",
-				"alias_hint":   "bob",
-				"access_mode":  "open",
-				"max_uses":     1,
-				"expires_at":   "2099-01-01T00:00:00Z",
-					"namespace_slug": "demo",
-					"namespace":    "demo",
-				"server_url":   srvURL,
+				"invite_id":      "inv-1",
+				"token":          "aw_inv_test_worktree",
+				"token_prefix":   "aw_inv_test",
+				"alias_hint":     "bob",
+				"access_mode":    "open",
+				"max_uses":       1,
+				"expires_at":     "2099-01-01T00:00:00Z",
+				"namespace_slug": "demo",
+				"namespace":      "demo",
+				"server_url":     srvURL,
 			})
 		case "/api/v1/spawn/accept-invite":
 			srvURL := "http://" + r.Host
@@ -1170,20 +1170,20 @@ func TestAwWorkspaceAddWorktreeCreatesSiblingWorktree(t *testing.T) {
 				t.Fatalf("alias=%v", req["alias"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":   "proj-1",
-				"project_slug": "demo",
-					"namespace_slug": "demo",
-					"namespace":    "demo",
-				"identity_id":  newID,
-				"alias":        "bob",
-				"api_key":      "aw_sk_new",
-				"address":      "demo/bob",
-				"server_url":   srvURL,
-				"created":      true,
-				"did":          "did:key:z6Mktest",
-				"custody":      "self",
-				"lifetime":     "ephemeral",
-				"access_mode":  "open",
+				"project_id":     "proj-1",
+				"project_slug":   "demo",
+				"namespace_slug": "demo",
+				"namespace":      "demo",
+				"identity_id":    newID,
+				"alias":          "bob",
+				"api_key":        "aw_sk_new",
+				"address":        "demo/bob",
+				"server_url":     srvURL,
+				"created":        true,
+				"did":            "did:key:z6Mktest",
+				"custody":        "self",
+				"lifetime":       "ephemeral",
+				"access_mode":    "open",
 			})
 		case "/v1/workspaces/register":
 			registerAuth = r.Header.Get("Authorization")
@@ -1236,8 +1236,8 @@ accounts:
   acct-source:
     server: local
     api_key: aw_sk_source
-    agent_id: `+sourceID+`
-    agent_alias: alice
+    identity_id: `+sourceID+`
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct-source
 `)+"\n"), 0o600); err != nil {
@@ -1368,8 +1368,8 @@ accounts:
   acct-source:
     server: local
     api_key: aw_sk_source
-    agent_id: `+sourceID+`
-    agent_alias: alice
+    identity_id: `+sourceID+`
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct-source
 `)+"\n"), 0o600); err != nil {
@@ -1445,8 +1445,8 @@ accounts:
   acct-source:
     server: local
     api_key: aw_sk_source
-    agent_id: `+sourceID+`
-    agent_alias: alice
+    identity_id: `+sourceID+`
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct-source
 `)+"\n"), 0o600); err != nil {
@@ -1488,7 +1488,7 @@ func TestAwWorkspaceAddWorktreeExplicitAliasCreatesSiblingWorktree(t *testing.T)
 			srvURL := "http://" + r.Host
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"invite_id": "inv-1", "token": "aw_inv_carol", "token_prefix": "aw_inv_c",
-					"max_uses": 1, "expires_at": "2099-01-01T00:00:00Z", "namespace_slug": "demo", "namespace": "demo", "server_url": srvURL, "access_mode": "open",
+				"max_uses": 1, "expires_at": "2099-01-01T00:00:00Z", "namespace_slug": "demo", "namespace": "demo", "server_url": srvURL, "access_mode": "open",
 			})
 		case "/api/v1/spawn/accept-invite":
 			srvURL := "http://" + r.Host
@@ -1499,7 +1499,7 @@ func TestAwWorkspaceAddWorktreeExplicitAliasCreatesSiblingWorktree(t *testing.T)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id": "proj-1", "project_slug": "demo",
-					"namespace_slug": "demo", "namespace": "demo", "identity_id": newID, "alias": "carol", "api_key": "aw_sk_new",
+				"namespace_slug": "demo", "namespace": "demo", "identity_id": newID, "alias": "carol", "api_key": "aw_sk_new",
 				"address": "demo/carol", "server_url": srvURL, "created": true,
 				"did": "did:key:z6Mktest", "custody": "self", "lifetime": "ephemeral", "access_mode": "open",
 			})
@@ -1561,8 +1561,8 @@ accounts:
   acct-source:
     server: local
     api_key: aw_sk_source
-    agent_id: `+sourceID+`
-    agent_alias: alice
+    identity_id: `+sourceID+`
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct-source
 `)+"\n"), 0o600); err != nil {
@@ -1656,8 +1656,8 @@ accounts:
   acct-source:
     server: local
     api_key: aw_sk_source
-    agent_id: `+sourceID+`
-    agent_alias: alice
+    identity_id: `+sourceID+`
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct-source
 `)+"\n"), 0o600); err != nil {
@@ -1753,7 +1753,7 @@ func TestAwWorkspaceAddWorktreeRetriesAliasTakenSuggestion(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"invite_id": fmt.Sprintf("inv-%d", initCalls), "token": fmt.Sprintf("aw_inv_test_%d", initCalls),
 				"token_prefix": "aw_inv_t", "max_uses": 1, "expires_at": "2099-01-01T00:00:00Z",
-					"namespace_slug": "demo", "namespace": "demo", "server_url": srvURL, "access_mode": "open",
+				"namespace_slug": "demo", "namespace": "demo", "server_url": srvURL, "access_mode": "open",
 			})
 		case "/api/v1/spawn/accept-invite":
 			var req map[string]any
@@ -1773,7 +1773,7 @@ func TestAwWorkspaceAddWorktreeRetriesAliasTakenSuggestion(t *testing.T) {
 			case alias == "bob-3":
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"project_id": "proj-1", "project_slug": "demo",
-						"namespace_slug": "demo", "namespace": "demo", "identity_id": newID, "alias": "bob-3", "api_key": "aw_sk_new",
+					"namespace_slug": "demo", "namespace": "demo", "identity_id": newID, "alias": "bob-3", "api_key": "aw_sk_new",
 					"address": "demo/bob-3", "server_url": srvURL, "created": true,
 					"did": "did:key:z6Mktest", "custody": "self", "lifetime": "ephemeral", "access_mode": "open",
 				})
@@ -1829,8 +1829,8 @@ accounts:
   acct-source:
     server: local
     api_key: aw_sk_source
-    agent_id: `+sourceID+`
-    agent_alias: alice
+    identity_id: `+sourceID+`
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct-source
 `)+"\n"), 0o600); err != nil {

@@ -93,10 +93,10 @@ func TestAccountEmailFieldRoundTrips(t *testing.T) {
 
 	if err := UpdateGlobalAt(path, func(cfg *GlobalConfig) error {
 		cfg.Accounts["alice"] = Account{Account: awid.Account{
-			Server:     "localhost:8000",
-			APIKey:     "aw_sk_test",
-			AgentAlias: "alice",
-			Email:      "alice@example.com",
+			Server:         "localhost:8000",
+			APIKey:         "aw_sk_test",
+			IdentityHandle: "alice",
+			Email:          "alice@example.com",
 		}}
 		cfg.DefaultAccount = "alice"
 		return nil
@@ -125,13 +125,13 @@ func TestAccountIdentityFieldsRoundTrip(t *testing.T) {
 
 	if err := UpdateGlobalAt(path, func(cfg *GlobalConfig) error {
 		cfg.Accounts["alice"] = Account{Account: awid.Account{
-			Server:     "localhost:8000",
-			APIKey:     "aw_sk_test",
-			AgentAlias: "alice",
-			DID:        "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-			SigningKey: "~/.config/aw/keys/mycompany-alice.signing.key",
-			Custody:    "self",
-			Lifetime:   "persistent",
+			Server:         "localhost:8000",
+			APIKey:         "aw_sk_test",
+			IdentityHandle: "alice",
+			DID:            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+			SigningKey:     "~/.config/aw/keys/mycompany-alice.signing.key",
+			Custody:        "self",
+			Lifetime:       "persistent",
 		}}
 		cfg.DefaultAccount = "alice"
 		return nil
@@ -199,13 +199,13 @@ func TestIdentityFieldsPropagateToSelection(t *testing.T) {
 		},
 		Accounts: map[string]Account{
 			"alice": {Account: awid.Account{
-				Server:     "prod",
-				APIKey:     "aw_sk_test",
-				AgentAlias: "alice",
-				DID:        "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-				SigningKey: "/path/to/key",
-				Custody:    "self",
-				Lifetime:   "persistent",
+				Server:         "prod",
+				APIKey:         "aw_sk_test",
+				IdentityHandle: "alice",
+				DID:            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+				SigningKey:     "/path/to/key",
+				Custody:        "self",
+				Lifetime:       "persistent",
 			}},
 		},
 		DefaultAccount: "alice",

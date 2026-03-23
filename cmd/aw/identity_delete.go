@@ -62,8 +62,8 @@ func runIdentityDelete(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println("Identity deleted.")
-	if strings.TrimSpace(sel.AgentAlias) != "" {
-		fmt.Printf("Alias:       %s\n", strings.TrimSpace(sel.AgentAlias))
+	if strings.TrimSpace(sel.IdentityHandle) != "" {
+		fmt.Printf("Alias:       %s\n", strings.TrimSpace(sel.IdentityHandle))
 	}
 	if custody != "" {
 		fmt.Printf("Custody:     %s\n", custody)
@@ -132,7 +132,7 @@ func resolveSelectionIdentityState(ctx context.Context, client *aweb.Client, sel
 	}
 	alias := strings.TrimSpace(intro.Alias)
 	if alias == "" {
-		alias = strings.TrimSpace(sel.AgentAlias)
+		alias = strings.TrimSpace(sel.IdentityHandle)
 	}
 	address := strings.TrimSpace(intro.Address)
 	if address == "" && namespaceSlug != "" && alias != "" {

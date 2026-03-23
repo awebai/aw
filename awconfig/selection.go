@@ -15,8 +15,8 @@ type Selection struct {
 	APIKey      string
 
 	DefaultProject string
-	AgentID        string
-	AgentAlias     string
+	IdentityID     string
+	IdentityHandle string
 	Email          string
 	NamespaceSlug  string
 	DID            string
@@ -121,10 +121,10 @@ func resolveAccount(global *GlobalConfig, opts ResolveOptions) (*Selection, erro
 	if accountName != "" {
 		acct, ok := global.Accounts[accountName]
 		if !ok {
-			// Fall back: match by agent_alias.
+			// Fall back: match by identity_handle.
 			var matchedName string
 			for name, a := range global.Accounts {
-				if strings.TrimSpace(a.AgentAlias) == accountName {
+				if strings.TrimSpace(a.IdentityHandle) == accountName {
 					if matchedName != "" {
 						return nil, fmt.Errorf("ambiguous alias %q matches multiple accounts (%s, %s); use the full account name", accountName, matchedName, name)
 					}
@@ -255,8 +255,8 @@ func finalizeSelection(accountName, serverName, baseURL, apiKey string, acct Acc
 		BaseURL:        baseURL,
 		APIKey:         apiKey,
 		DefaultProject: strings.TrimSpace(acct.DefaultProject),
-		AgentID:        strings.TrimSpace(acct.AgentID),
-		AgentAlias:     strings.TrimSpace(acct.AgentAlias),
+		IdentityID:     strings.TrimSpace(acct.IdentityID),
+		IdentityHandle: strings.TrimSpace(acct.IdentityHandle),
 		Email:          strings.TrimSpace(acct.Email),
 		NamespaceSlug:  ns,
 		DID:            strings.TrimSpace(acct.DID),

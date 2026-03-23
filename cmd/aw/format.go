@@ -396,7 +396,7 @@ func formatAgentPatch(v any) string {
 	if out.Alias != "" {
 		sb.WriteString(fmt.Sprintf("Identity:    %s\n", out.Alias))
 	} else {
-		sb.WriteString(fmt.Sprintf("Identity:    %s\n", out.AgentID))
+		sb.WriteString(fmt.Sprintf("Identity:    %s\n", out.IdentityID))
 	}
 	if out.AccessMode != "" {
 		sb.WriteString(fmt.Sprintf("Access mode: %s\n", out.AccessMode))

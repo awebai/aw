@@ -61,7 +61,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if strings.TrimSpace(resp.AgentID) == "" {
+	if strings.TrimSpace(resp.IdentityID) == "" {
 		return usageError("This API key is not bound to an identity. Use an identity-bound key from the dashboard.")
 	}
 
@@ -72,15 +72,15 @@ func runConnect(cmd *cobra.Command, args []string) error {
 
 	handle := handleFromAddress(resp.Address)
 	if handle == "" {
-		handle = strings.TrimSpace(resp.Alias)
+		handle = strings.TrimSpace(resp.IdentityHandle())
 	}
 	if handle == "" {
 		return usageError("server did not return an addressable identity handle; cannot import identity state safely")
 	}
-	agentID := strings.TrimSpace(resp.AgentID)
+	identityID := strings.TrimSpace(resp.IdentityID)
 
-	// Derive account name from server + agent_id (stable across alias changes).
-	accountName := "acct-" + sanitizeKeyComponent(serverName) + "__" + sanitizeKeyComponent(agentID)
+	// Derive account name from server + identity_id (stable across handle changes).
+	accountName := "acct-" + sanitizeKeyComponent(serverName) + "__" + sanitizeKeyComponent(identityID)
 
 	cfgPath, err := defaultGlobalPath()
 	if err != nil {
@@ -92,7 +92,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	var existingDID, existingSigningKey, existingStableID, existingCustody, existingLifetime string
 	if existingCfg != nil {
 		for _, acct := range existingCfg.Accounts {
-			if strings.TrimSpace(acct.AgentID) == agentID && strings.TrimSpace(acct.Server) == serverName {
+			if strings.TrimSpace(acct.IdentityID) == identityID && strings.TrimSpace(acct.Server) == serverName {
 				existingDID = strings.TrimSpace(acct.DID)
 				existingSigningKey = strings.TrimSpace(acct.SigningKey)
 				existingStableID = strings.TrimSpace(acct.StableID)
@@ -140,9 +140,9 @@ func runConnect(cmd *cobra.Command, args []string) error {
 			cfg.ClientDefaultAccounts = map[string]string{}
 		}
 
-		// Check for existing account with same server+agent_id — update it.
+		// Check for existing account with same server+identity_id — update it.
 		for name, acct := range cfg.Accounts {
-			if strings.TrimSpace(acct.AgentID) == agentID && strings.TrimSpace(acct.Server) == serverName {
+			if strings.TrimSpace(acct.IdentityID) == identityID && strings.TrimSpace(acct.Server) == serverName {
 				accountName = name
 				break
 			}
@@ -151,16 +151,16 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		cfg.Servers[serverName] = awconfig.Server{URL: baseURL}
 
 		cfg.Accounts[accountName] = awconfig.Account{Account: awid.Account{
-			Server:        serverName,
-			APIKey:        apiKey,
-			AgentID:       agentID,
-			AgentAlias:    handle,
-			NamespaceSlug: namespaceSlug,
-			DID:           identityDID,
-			StableID:      stableID,
-			SigningKey:    signingKeyPath,
-			Custody:       custody,
-			Lifetime:      lifetime,
+			Server:         serverName,
+			APIKey:         apiKey,
+			IdentityID:     identityID,
+			IdentityHandle: handle,
+			NamespaceSlug:  namespaceSlug,
+			DID:            identityDID,
+			StableID:       stableID,
+			SigningKey:     signingKeyPath,
+			Custody:        custody,
+			Lifetime:       lifetime,
 		}}
 
 		if strings.TrimSpace(cfg.DefaultAccount) == "" || connectSetDefault {

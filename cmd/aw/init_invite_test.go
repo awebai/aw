@@ -127,8 +127,8 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 	for _, acct := range cfg.Accounts {
 		if acct.APIKey == "aw_sk_invited" {
 			found = true
-			if acct.AgentAlias != "reviewer" {
-				t.Fatalf("agent_alias=%q", acct.AgentAlias)
+			if acct.IdentityHandle != "reviewer" {
+				t.Fatalf("agent_alias=%q", acct.IdentityHandle)
 			}
 			if acct.NamespaceSlug != "myteam" {
 				t.Fatalf("namespace_slug=%q", acct.NamespaceSlug)
@@ -151,21 +151,21 @@ func TestAwInitInviteAcceptUsesServerProvidedAliasHint(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":   "proj-1",
-				"project_slug": "myteam",
+				"project_id":     "proj-1",
+				"project_slug":   "myteam",
 				"namespace_slug": "myteam",
-				"namespace":    "myteam.aweb.ai",
-				"identity_id":  "identity-1",
-				"alias":        "reviewer",
-				"address":      "myteam.aweb.ai/reviewer",
-				"api_key":      "aw_sk_invited",
-				"server_url":   "https://app.aweb.ai/api",
-				"did":          "did:key:z6MkInvite",
-				"stable_id":    "did:aw:invite",
-				"custody":      "self",
-				"lifetime":     "ephemeral",
-				"access_mode":  "open",
-				"created":      true,
+				"namespace":      "myteam.aweb.ai",
+				"identity_id":    "identity-1",
+				"alias":          "reviewer",
+				"address":        "myteam.aweb.ai/reviewer",
+				"api_key":        "aw_sk_invited",
+				"server_url":     "https://app.aweb.ai/api",
+				"did":            "did:key:z6MkInvite",
+				"stable_id":      "did:aw:invite",
+				"custody":        "self",
+				"lifetime":       "ephemeral",
+				"access_mode":    "open",
+				"created":        true,
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -228,21 +228,21 @@ func TestAwInitInviteAcceptPermanentUsesExplicitName(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":   "proj-1",
-				"project_slug": "myteam",
+				"project_id":     "proj-1",
+				"project_slug":   "myteam",
 				"namespace_slug": "myteam",
-				"namespace":    "myteam.aweb.ai",
-				"identity_id":  "identity-1",
-				"name":         "maintainer",
-				"address":      "myteam.aweb.ai/maintainer",
-				"api_key":      "aw_sk_invited",
-				"server_url":   "https://app.aweb.ai/api",
-				"did":          "did:key:z6MkInvite",
-				"stable_id":    "did:aw:invite",
-				"custody":      "self",
-				"lifetime":     "persistent",
-				"access_mode":  "open",
-				"created":      true,
+				"namespace":      "myteam.aweb.ai",
+				"identity_id":    "identity-1",
+				"name":           "maintainer",
+				"address":        "myteam.aweb.ai/maintainer",
+				"api_key":        "aw_sk_invited",
+				"server_url":     "https://app.aweb.ai/api",
+				"did":            "did:key:z6MkInvite",
+				"stable_id":      "did:aw:invite",
+				"custody":        "self",
+				"lifetime":       "persistent",
+				"access_mode":    "open",
+				"created":        true,
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -305,15 +305,15 @@ func TestAwInitInviteAcceptRequiresAPIKeyInResponse(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v1/spawn/accept-invite":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":   "proj-1",
-				"project_slug": "myteam",
+				"project_id":     "proj-1",
+				"project_slug":   "myteam",
 				"namespace_slug": "myteam",
-				"namespace":    "myteam.aweb.ai",
-				"identity_id":  "identity-1",
-				"alias":        "reviewer",
-				"address":      "myteam.aweb.ai/reviewer",
-				"server_url":   "https://app.aweb.ai/api",
-				"created":      true,
+				"namespace":      "myteam.aweb.ai",
+				"identity_id":    "identity-1",
+				"alias":          "reviewer",
+				"address":        "myteam.aweb.ai/reviewer",
+				"server_url":     "https://app.aweb.ai/api",
+				"created":        true,
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -418,21 +418,21 @@ func TestAwInitInviteTextOutputSaysJoined(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v1/spawn/accept-invite":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":   "proj-1",
-				"project_slug": "myteam",
+				"project_id":     "proj-1",
+				"project_slug":   "myteam",
 				"namespace_slug": "myteam",
-				"namespace":    "myteam.aweb.ai",
-				"identity_id":  "identity-1",
-				"alias":        "reviewer",
-				"address":      "myteam.aweb.ai/reviewer",
-				"api_key":      "aw_sk_invited",
-				"server_url":   "https://app.aweb.ai/api",
-				"did":          "did:key:z6MkInvite",
-				"stable_id":    "did:aw:invite",
-				"custody":      "self",
-				"lifetime":     "ephemeral",
-				"access_mode":  "open",
-				"created":      true,
+				"namespace":      "myteam.aweb.ai",
+				"identity_id":    "identity-1",
+				"alias":          "reviewer",
+				"address":        "myteam.aweb.ai/reviewer",
+				"api_key":        "aw_sk_invited",
+				"server_url":     "https://app.aweb.ai/api",
+				"did":            "did:key:z6MkInvite",
+				"stable_id":      "did:aw:invite",
+				"custody":        "self",
+				"lifetime":       "ephemeral",
+				"access_mode":    "open",
+				"created":        true,
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)

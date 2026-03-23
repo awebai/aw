@@ -137,7 +137,7 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_alias: wendy
+    identity_handle: wendy
 default_account: acct
 `)+"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -199,7 +199,7 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_alias: wendy
+    identity_handle: wendy
 default_account: acct
 `)+"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)

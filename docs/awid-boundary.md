@@ -138,9 +138,9 @@ Mixed — needs splitting.
 
 ### Protocol config (→ awid)
 
-- `global_config.go` — Account struct fields: `Server`, `APIKey`, `AgentID`,
-  `AgentAlias`, `NamespaceSlug`, `DID`, `StableID`, `SigningKey`, `Custody`,
-  `Lifetime`, `Email`
+- `global_config.go` — Account struct fields: `Server`, `APIKey`, `IdentityID`,
+  `IdentityHandle`, `NamespaceSlug`, `DID`, `StableID`, `SigningKey`,
+  `Custody`, `Lifetime`, `Email`
 - `keys.go` — Keypair generation, storage, loading
 - `keys_scan.go` — Key scanning (recovery)
 - `selection.go` — Account resolution

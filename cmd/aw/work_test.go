@@ -67,8 +67,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: `+selfID+`
-    agent_alias: alice
+    identity_id: `+selfID+`
+    identity_handle: alice
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {
@@ -140,13 +140,13 @@ func TestAwWorkActiveShowsOwnersFromClaimsAndAgents(t *testing.T) {
 				},
 				"has_more": false,
 			})
-			case "/v1/agents":
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"project_id": "proj-1",
-					"identities": []map[string]any{
-						{"agent_id": "agent-native", "alias": "alice", "online": true},
-					},
-				})
+		case "/v1/agents":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "proj-1",
+				"identities": []map[string]any{
+					{"identity_id": "agent-native", "alias": "alice", "online": true},
+				},
+			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -170,8 +170,8 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_id: agent-self
-    agent_alias: self
+    identity_id: agent-self
+    identity_handle: self
     namespace_slug: demo
 default_account: acct
 `)+"\n"), 0o600); err != nil {

@@ -9,14 +9,14 @@ import (
 	"time"
 )
 
-// AgentIdentity holds resolved identity information for an agent.
-type AgentIdentity struct {
+// ResolvedIdentity holds resolved identity information for an identity address.
+type ResolvedIdentity struct {
 	DID           string
 	StableID      string
-	AgentID       string // server-assigned UUID
-	Address       string // namespace/alias
+	IdentityID    string // server-assigned UUID
+	Address       string // namespace/handle
 	ControllerDID string
-	Handle        string // @alice
+	Handle        string
 	PublicKey     ed25519.PublicKey
 	ServerURL     string
 	Custody       string // "self" or "custodial"
@@ -25,21 +25,21 @@ type AgentIdentity struct {
 	ResolvedVia   string // "did:key", "server", "pin"
 }
 
-// IdentityResolver resolves an identifier to an AgentIdentity.
+// IdentityResolver resolves an identifier to a ResolvedIdentity.
 type IdentityResolver interface {
-	Resolve(ctx context.Context, identifier string) (*AgentIdentity, error)
+	Resolve(ctx context.Context, identifier string) (*ResolvedIdentity, error)
 }
 
 // DIDKeyResolver extracts the public key from a did:key string.
 // No network call required.
 type DIDKeyResolver struct{}
 
-func (r *DIDKeyResolver) Resolve(_ context.Context, identifier string) (*AgentIdentity, error) {
+func (r *DIDKeyResolver) Resolve(_ context.Context, identifier string) (*ResolvedIdentity, error) {
 	pub, err := ExtractPublicKey(identifier)
 	if err != nil {
 		return nil, fmt.Errorf("DIDKeyResolver: %w", err)
 	}
-	return &AgentIdentity{
+	return &ResolvedIdentity{
 		DID:         identifier,
 		PublicKey:   pub,
 		ResolvedAt:  time.Now().UTC(),
@@ -48,11 +48,11 @@ func (r *DIDKeyResolver) Resolve(_ context.Context, identifier string) (*AgentId
 }
 
 // serverResolveResponse is the wire format returned by
-// GET /v1/agents/resolve/{namespace}/{alias}.
+// GET /v1/agents/resolve/{namespace}/{handle}.
 type serverResolveResponse struct {
 	DID           string `json:"did"`
 	StableID      string `json:"stable_id"`
-	AgentID       string `json:"agent_id"`
+	IdentityID    string `json:"identity_id"`
 	Address       string `json:"address"`
 	HumanName     string `json:"human_name"`
 	Handle        string `json:"handle"`
@@ -64,21 +64,21 @@ type serverResolveResponse struct {
 	Status        string `json:"status"`
 }
 
-// ServerResolver resolves an agent address via the aweb server.
+// ServerResolver resolves an identity address via the aweb server.
 type ServerResolver struct {
 	Client *Client
 }
 
-func (r *ServerResolver) Resolve(ctx context.Context, identifier string) (*AgentIdentity, error) {
+func (r *ServerResolver) Resolve(ctx context.Context, identifier string) (*ResolvedIdentity, error) {
 	var resp serverResolveResponse
 	path := "/v1/agents/resolve/" + identifier
 	if err := r.Client.Get(ctx, path, &resp); err != nil {
 		return nil, fmt.Errorf("ServerResolver: %w", err)
 	}
-	identity := &AgentIdentity{
+	identity := &ResolvedIdentity{
 		DID:           resp.DID,
 		StableID:      resp.StableID,
-		AgentID:       resp.AgentID,
+		IdentityID:    resp.IdentityID,
 		Address:       resp.Address,
 		ControllerDID: resp.ControllerDID,
 		Handle:        resp.Handle,
@@ -109,10 +109,10 @@ type PinResolver struct {
 	Store *PinStore
 }
 
-func (r *PinResolver) Resolve(_ context.Context, identifier string) (*AgentIdentity, error) {
+func (r *PinResolver) Resolve(_ context.Context, identifier string) (*ResolvedIdentity, error) {
 	// Try direct DID lookup.
 	if pin, ok := r.Store.Pins[identifier]; ok {
-		return &AgentIdentity{
+		return &ResolvedIdentity{
 			DID:         identifier,
 			Address:     pin.Address,
 			Handle:      pin.Handle,
@@ -127,7 +127,7 @@ func (r *PinResolver) Resolve(_ context.Context, identifier string) (*AgentIdent
 		if !exists {
 			return nil, fmt.Errorf("PinResolver: address %q maps to DID %q not in pins", identifier, did)
 		}
-		return &AgentIdentity{
+		return &ResolvedIdentity{
 			DID:         did,
 			Address:     pin.Address,
 			Handle:      pin.Handle,
@@ -149,7 +149,7 @@ type ChainResolver struct {
 	Pin    *PinResolver
 }
 
-func (r *ChainResolver) Resolve(ctx context.Context, identifier string) (*AgentIdentity, error) {
+func (r *ChainResolver) Resolve(ctx context.Context, identifier string) (*ResolvedIdentity, error) {
 	if strings.HasPrefix(identifier, didKeyPrefix) {
 		identity, err := r.DIDKey.Resolve(ctx, identifier)
 		if err != nil {

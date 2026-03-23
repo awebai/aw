@@ -134,11 +134,11 @@ func TestAwIntrospectTextOutput(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/auth/introspect":
 			_ = json.NewEncoder(w).Encode(map[string]string{
-				"project_id": "proj-123",
-				"agent_id":   "agent-1",
-				"alias":      "alice",
-				"human_name": "Alice Dev",
-				"agent_type": "developer",
+				"project_id":  "proj-123",
+				"identity_id": "agent-1",
+				"alias":       "alice",
+				"human_name":  "Alice Dev",
+				"agent_type":  "developer",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -210,8 +210,8 @@ func TestAwIntrospectIncludesIdentityFields(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/auth/introspect":
 			_ = json.NewEncoder(w).Encode(map[string]string{
-				"project_id": "proj-123",
-				"agent_id":   "agent-1",
+				"project_id":  "proj-123",
+				"identity_id": "agent-1",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -761,22 +761,22 @@ func TestAwAgents(t *testing.T) {
 				"project_id": "proj-123",
 				"identities": []map[string]any{
 					{
-						"agent_id":   "agent-1",
-						"alias":      "alice",
-						"human_name": "Alice",
-						"agent_type": "agent",
-						"status":     "active",
-						"last_seen":  "2026-02-04T10:00:00Z",
-						"online":     true,
+						"identity_id": "agent-1",
+						"alias":       "alice",
+						"human_name":  "Alice",
+						"agent_type":  "agent",
+						"status":      "active",
+						"last_seen":   "2026-02-04T10:00:00Z",
+						"online":      true,
 					},
 					{
-						"agent_id":   "agent-2",
-						"alias":      "bob",
-						"human_name": "Bob",
-						"agent_type": "agent",
-						"status":     nil,
-						"last_seen":  nil,
-						"online":     false,
+						"identity_id": "agent-2",
+						"alias":       "bob",
+						"human_name":  "Bob",
+						"agent_type":  "agent",
+						"status":      nil,
+						"last_seen":   nil,
+						"online":      false,
 					},
 				},
 			})
@@ -837,11 +837,11 @@ default_account: acct
 	if got["project_id"] != "proj-123" {
 		t.Fatalf("project_id=%v", got["project_id"])
 	}
-		identities, ok := got["identities"].([]any)
-		if !ok || len(identities) != 2 {
-			t.Fatalf("identities=%v", got["identities"])
-		}
-		first := identities[0].(map[string]any)
+	identities, ok := got["identities"].([]any)
+	if !ok || len(identities) != 2 {
+		t.Fatalf("identities=%v", got["identities"])
+	}
+	first := identities[0].(map[string]any)
 	if first["alias"] != "alice" {
 		t.Fatalf("first alias=%v", first["alias"])
 	}
@@ -1226,7 +1226,7 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_alias: eve
+    identity_handle: eve
 default_account: acct
 `)+"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1344,16 +1344,16 @@ func TestAwInitWritesConfig(t *testing.T) {
 			return
 		case "/v1/workspaces/init":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":       "ok",
-				"created_at":   "now",
-				"project_id":   "proj-1",
-				"project_slug": "demo",
+				"status":         "ok",
+				"created_at":     "now",
+				"project_id":     "proj-1",
+				"project_slug":   "demo",
 				"namespace_slug": "demo",
-				"identity_id":  "identity-alice",
-				"alias":        "alice",
-				"api_key":      "aw_sk_alice",
-				"created":      true,
-				"stable_id":    "did:aw:test-stable-id",
+				"identity_id":    "identity-alice",
+				"alias":          "alice",
+				"api_key":        "aw_sk_alice",
+				"created":        true,
+				"stable_id":      "did:aw:test-stable-id",
 			})
 			return
 		default:
@@ -1434,11 +1434,11 @@ func TestAwInitWritesConfig(t *testing.T) {
 	if acct["namespace_slug"] != "demo" {
 		t.Fatalf("accounts.acct.namespace_slug=%v", acct["namespace_slug"])
 	}
-	if acct["agent_id"] != "identity-alice" {
-		t.Fatalf("accounts.acct.agent_id=%v", acct["agent_id"])
+	if acct["identity_id"] != "identity-alice" {
+		t.Fatalf("accounts.acct.identity_id=%v", acct["identity_id"])
 	}
-	if acct["agent_alias"] != "alice" {
-		t.Fatalf("accounts.acct.agent_alias=%v", acct["agent_alias"])
+	if acct["identity_handle"] != "alice" {
+		t.Fatalf("accounts.acct.identity_handle=%v", acct["identity_handle"])
 	}
 	stableID, _ := acct["stable_id"].(string)
 	if stableID != "did:aw:test-stable-id" {
@@ -1575,7 +1575,7 @@ accounts:
   acct:
     server: local
     api_key: aw_sk_test
-    agent_alias: eve
+    identity_handle: eve
 default_account: acct
 `)+"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1966,16 +1966,16 @@ func TestAwAgentAccessModeGet(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/auth/introspect":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id": "proj-1",
-				"agent_id":   "agent-1",
-				"alias":      "alice",
+				"project_id":  "proj-1",
+				"identity_id": "agent-1",
+				"alias":       "alice",
 			})
 		case "/v1/agents":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id": "proj-1",
 				"identities": []map[string]any{
 					{
-						"agent_id":    "agent-1",
+						"identity_id": "agent-1",
 						"alias":       "alice",
 						"online":      true,
 						"access_mode": "contacts_only",
@@ -2036,8 +2036,8 @@ default_account: acct
 	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
-	if got["agent_id"] != "agent-1" {
-		t.Fatalf("agent_id=%v", got["agent_id"])
+	if got["identity_id"] != "agent-1" {
+		t.Fatalf("identity_id=%v", got["identity_id"])
 	}
 	if got["access_mode"] != "contacts_only" {
 		t.Fatalf("access_mode=%v", got["access_mode"])
@@ -2053,9 +2053,9 @@ func TestAwAgentAccessModeSet(t *testing.T) {
 		switch {
 		case r.URL.Path == "/v1/auth/introspect":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id": "proj-1",
-				"agent_id":   "agent-1",
-				"alias":      "alice",
+				"project_id":  "proj-1",
+				"identity_id": "agent-1",
+				"alias":       "alice",
 			})
 		case strings.HasPrefix(r.URL.Path, "/v1/agents/") && r.Method == http.MethodPatch:
 			patchPath = r.URL.Path
@@ -2063,7 +2063,7 @@ func TestAwAgentAccessModeSet(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"agent_id":    "agent-1",
+				"identity_id": "agent-1",
 				"access_mode": patchBody["access_mode"],
 			})
 		case r.URL.Path == "/v1/agents/heartbeat":
@@ -2120,8 +2120,8 @@ default_account: acct
 	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
-	if got["agent_id"] != "agent-1" {
-		t.Fatalf("agent_id=%v", got["agent_id"])
+	if got["identity_id"] != "agent-1" {
+		t.Fatalf("identity_id=%v", got["identity_id"])
 	}
 	if got["access_mode"] != "open" {
 		t.Fatalf("access_mode=%v", got["access_mode"])
@@ -2242,24 +2242,24 @@ func TestAwIdentityReachabilityGet(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/auth/introspect":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id": "proj-1",
-				"agent_id":   "agent-1",
+				"project_id":     "proj-1",
+				"identity_id":    "agent-1",
 				"namespace_slug": "demo",
-				"alias":      "alice",
-				"address":    "demo/alice",
+				"alias":          "alice",
+				"address":        "demo/alice",
 			})
 		case "/v1/agents/resolve/demo/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"address":    "demo/alice",
-				"lifetime":   "persistent",
-				"custody":    "self",
+				"address":  "demo/alice",
+				"lifetime": "persistent",
+				"custody":  "self",
 			})
 		case "/v1/agents":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id": "proj-1",
 				"identities": []map[string]any{
 					{
-						"agent_id":             "agent-1",
+						"identity_id":          "agent-1",
 						"alias":                "alice",
 						"online":               true,
 						"address_reachability": "private",
@@ -2320,8 +2320,8 @@ default_account: acct
 	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
-	if got["agent_id"] != "agent-1" {
-		t.Fatalf("agent_id=%v", got["agent_id"])
+	if got["identity_id"] != "agent-1" {
+		t.Fatalf("identity_id=%v", got["identity_id"])
 	}
 	if got["address_reachability"] != "private" {
 		t.Fatalf("address_reachability=%v", got["address_reachability"])
@@ -2337,17 +2337,17 @@ func TestAwIdentityReachabilitySet(t *testing.T) {
 		switch {
 		case r.URL.Path == "/v1/auth/introspect":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id": "proj-1",
-				"agent_id":   "agent-1",
+				"project_id":     "proj-1",
+				"identity_id":    "agent-1",
 				"namespace_slug": "demo",
-				"alias":      "alice",
-				"address":    "demo/alice",
+				"alias":          "alice",
+				"address":        "demo/alice",
 			})
 		case r.URL.Path == "/v1/agents/resolve/demo/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"address":    "demo/alice",
-				"lifetime":   "persistent",
-				"custody":    "self",
+				"address":  "demo/alice",
+				"lifetime": "persistent",
+				"custody":  "self",
 			})
 		case strings.HasPrefix(r.URL.Path, "/v1/agents/") && r.Method == http.MethodPatch:
 			patchPath = r.URL.Path
@@ -2355,7 +2355,7 @@ func TestAwIdentityReachabilitySet(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"agent_id":             "agent-1",
+				"identity_id":          "agent-1",
 				"address_reachability": patchBody["address_reachability"],
 			})
 		case r.URL.Path == "/v1/agents/heartbeat":
@@ -2412,8 +2412,8 @@ default_account: acct
 	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
-	if got["agent_id"] != "agent-1" {
-		t.Fatalf("agent_id=%v", got["agent_id"])
+	if got["identity_id"] != "agent-1" {
+		t.Fatalf("identity_id=%v", got["identity_id"])
 	}
 	if got["address_reachability"] != "private" {
 		t.Fatalf("address_reachability=%v", got["address_reachability"])
@@ -2527,17 +2527,17 @@ func TestAwInitProjectKeyRoutesToOSSInit(t *testing.T) {
 		case "/v1/workspaces/init":
 			initAuth = r.Header.Get("Authorization")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":       "ok",
-				"project_id":   "proj-1",
-				"project_slug": "live-publication-project",
+				"status":         "ok",
+				"project_id":     "proj-1",
+				"project_slug":   "live-publication-project",
 				"namespace_slug": "livepub",
-				"identity_id":  "identity-new",
-				"alias":        "coordinator",
-				"api_key":      "aw_sk_new",
-				"created":      true,
-				"did":          "did:key:z6MkTest",
-				"custody":      "self",
-				"lifetime":     "ephemeral",
+				"identity_id":    "identity-new",
+				"alias":          "coordinator",
+				"api_key":        "aw_sk_new",
+				"created":        true,
+				"did":            "did:key:z6MkTest",
+				"custody":        "self",
+				"lifetime":       "ephemeral",
 			})
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "coordinator", "roles": []string{}})
@@ -2604,8 +2604,8 @@ func TestAwInitProjectKeyRoutesToOSSInit(t *testing.T) {
 			if acct["namespace_slug"] != "livepub" && acct["namespace_slug"] != "live-publication-project" {
 				t.Fatalf("accounts.%s.namespace_slug=%v, want livepub or live-publication-project", name, acct["namespace_slug"])
 			}
-			if acct["agent_alias"] != "coordinator" {
-				t.Fatalf("accounts.%s.agent_alias=%v, want coordinator", name, acct["agent_alias"])
+			if acct["identity_handle"] != "coordinator" {
+				t.Fatalf("accounts.%s.identity_handle=%v, want coordinator", name, acct["identity_handle"])
 			}
 		}
 	}
@@ -2883,7 +2883,7 @@ accounts:
     signing_key: "`+keyPath+`"
     custody: "self"
     default_project: "myco"
-    agent_alias: "agent"
+    identity_handle: "agent"
 default_account: acct
 `)+"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -3029,7 +3029,7 @@ accounts:
     custody: "self"
     namespace_slug: "acme"
     default_project: "fallback"
-    agent_alias: "bot"
+    identity_handle: "bot"
 default_account: acct
 `)+"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -3100,12 +3100,12 @@ func TestAwConnect(t *testing.T) {
 				t.Fatalf("auth=%q", r.Header.Get("Authorization"))
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id": "proj-123",
-				"agent_id":   "agent-1",
+				"project_id":     "proj-123",
+				"identity_id":    "agent-1",
 				"namespace_slug": "myco",
-				"alias":      "alice",
-				"human_name": "Alice",
-				"agent_type": "agent",
+				"alias":          "alice",
+				"human_name":     "Alice",
+				"agent_type":     "agent",
 			})
 		case "/v1/projects/current":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -3189,11 +3189,11 @@ func TestAwConnect(t *testing.T) {
 	for _, acct := range cfg.Accounts {
 		if acct["api_key"] == "aw_sk_test" {
 			found = true
-			if acct["agent_id"] != "agent-1" {
-				t.Fatalf("agent_id=%v", acct["agent_id"])
+			if acct["identity_id"] != "agent-1" {
+				t.Fatalf("identity_id=%v", acct["identity_id"])
 			}
-			if acct["agent_alias"] != "alice" {
-				t.Fatalf("agent_alias=%v", acct["agent_alias"])
+			if acct["identity_handle"] != "alice" {
+				t.Fatalf("identity_handle=%v", acct["identity_handle"])
 			}
 			if acct["namespace_slug"] != "myco" {
 				t.Fatalf("namespace_slug=%v, want myco", acct["namespace_slug"])
@@ -3242,11 +3242,11 @@ func TestAwConnectPreservesExistingIdentity(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/auth/introspect":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id": "proj-123",
-				"agent_id":   "agent-1",
+				"project_id":     "proj-123",
+				"identity_id":    "agent-1",
 				"namespace_slug": "myco",
-				"alias":      "alice",
-				"agent_type": "agent",
+				"alias":          "alice",
+				"agent_type":     "agent",
 			})
 		case "/v1/projects/current":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -3297,8 +3297,8 @@ accounts:
   acct-`+server.Listener.Addr().String()+`__agent-1:
     server: `+server.Listener.Addr().String()+`
     api_key: aw_sk_test
-    agent_id: agent-1
-    agent_alias: alice
+    identity_id: agent-1
+    identity_handle: alice
     namespace_slug: myco
     did: "`+did+`"
     signing_key: "`+keyPath+`"
@@ -3353,11 +3353,11 @@ func TestAwConnectDoesNotOverrideExistingContextDefaultWithoutSetDefault(t *test
 		switch r.URL.Path {
 		case "/v1/auth/introspect":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id": "proj-123",
-				"agent_id":   "agent-1",
+				"project_id":     "proj-123",
+				"identity_id":    "agent-1",
 				"namespace_slug": "myco",
-				"alias":      "alice",
-				"agent_type": "agent",
+				"alias":          "alice",
+				"agent_type":     "agent",
 			})
 		case "/v1/projects/current":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -3461,10 +3461,10 @@ func TestAwConnectIdentityAlreadySetNoLocalKey(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/auth/introspect":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id": "proj-123",
-				"agent_id":   "agent-1",
-				"alias":      "alice",
-				"agent_type": "agent",
+				"project_id":  "proj-123",
+				"identity_id": "agent-1",
+				"alias":       "alice",
+				"agent_type":  "agent",
 			})
 		case "/v1/projects/current":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -3481,11 +3481,11 @@ func TestAwConnectIdentityAlreadySetNoLocalKey(t *testing.T) {
 			})
 		case "/v1/agents/resolve/myco/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"did":      serverDID,
-				"agent_id": "agent-1",
-				"address":  "myco/alice",
-				"custody":  "self",
-				"lifetime": "persistent",
+				"did":         serverDID,
+				"identity_id": "agent-1",
+				"address":     "myco/alice",
+				"custody":     "self",
+				"lifetime":    "persistent",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -3551,10 +3551,10 @@ func TestAwConnectRecoverWith409AndLocalKey(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/auth/introspect":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id": "proj-123",
-				"agent_id":   "agent-1",
-				"alias":      "alice",
-				"agent_type": "agent",
+				"project_id":  "proj-123",
+				"identity_id": "agent-1",
+				"alias":       "alice",
+				"agent_type":  "agent",
 			})
 		case "/v1/projects/current":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -3571,12 +3571,12 @@ func TestAwConnectRecoverWith409AndLocalKey(t *testing.T) {
 			})
 		case "/v1/agents/resolve/myco/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"did":       serverDID,
-				"stable_id": serverStableID,
-				"agent_id":  "agent-1",
-				"address":   "myco/alice",
-				"custody":   "self",
-				"lifetime":  "persistent",
+				"did":         serverDID,
+				"stable_id":   serverStableID,
+				"identity_id": "agent-1",
+				"address":     "myco/alice",
+				"custody":     "self",
+				"lifetime":    "persistent",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -3675,7 +3675,7 @@ func TestAwConnectUsesServerStableID(t *testing.T) {
 		case "/v1/auth/introspect":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id":     "proj-123",
-				"agent_id":       "agent-1",
+				"identity_id":    "agent-1",
 				"namespace_slug": "myco",
 				"address":        "myco/alice",
 				"agent_type":     "agent",

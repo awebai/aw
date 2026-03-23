@@ -149,8 +149,8 @@ func TestAwProjectCreateAgainstHosted(t *testing.T) {
 	for _, acct := range cfg.Accounts {
 		if acct.APIKey == "aw_sk_headless_test" {
 			found = true
-			if acct.AgentAlias != "deploy-bot" {
-				t.Fatalf("agent_alias=%q", acct.AgentAlias)
+			if acct.IdentityHandle != "deploy-bot" {
+				t.Fatalf("agent_alias=%q", acct.IdentityHandle)
 			}
 			if acct.NamespaceSlug != "myteam" {
 				t.Fatalf("namespace_slug=%q", acct.NamespaceSlug)
@@ -286,19 +286,19 @@ func TestAwInitIgnoresExistingConfigKeys(t *testing.T) {
 		case "/api/v1/create-project":
 			gotPath = r.URL.Path
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":   "proj-1",
-				"project_slug": "default",
+				"project_id":     "proj-1",
+				"project_slug":   "default",
 				"namespace_slug": "myteam",
-				"namespace":    "myteam.aweb.ai",
-				"identity_id":  "identity-2",
-				"alias":        "reviewer",
-				"address":      "myteam.aweb.ai/reviewer",
-				"api_key":      "aw_sk_new_agent",
-				"did":          "did:key:z6MkTest2",
-				"stable_id":    "stable-2",
-				"custody":      "self",
-				"lifetime":     "ephemeral",
-				"created":      true,
+				"namespace":      "myteam.aweb.ai",
+				"identity_id":    "identity-2",
+				"alias":          "reviewer",
+				"address":        "myteam.aweb.ai/reviewer",
+				"api_key":        "aw_sk_new_agent",
+				"did":            "did:key:z6MkTest2",
+				"stable_id":      "stable-2",
+				"custody":        "self",
+				"lifetime":       "ephemeral",
+				"created":        true,
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -377,18 +377,18 @@ func TestAwProjectCreateUsesCreateProjectOnSelfHosted(t *testing.T) {
 		case "/api/v1/create-project":
 			gotPath = r.URL.Path
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":        "ok",
-				"project_id":    "proj-1",
-				"project_slug":  "default",
+				"status":         "ok",
+				"project_id":     "proj-1",
+				"project_slug":   "default",
 				"namespace_slug": "myteam",
-				"namespace":     "myteam.aweb.ai",
-				"identity_id":   "identity-1",
-				"alias":         "deploy-bot",
-				"api_key":       "aw_sk_selfhost",
-				"created":       true,
-				"did":           "did:key:z6MkTest3",
-				"custody":       "self",
-				"lifetime":      "ephemeral",
+				"namespace":      "myteam.aweb.ai",
+				"identity_id":    "identity-1",
+				"alias":          "deploy-bot",
+				"api_key":        "aw_sk_selfhost",
+				"created":        true,
+				"did":            "did:key:z6MkTest3",
+				"custody":        "self",
+				"lifetime":       "ephemeral",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -443,7 +443,6 @@ func TestAwProjectCreateUsesCreateProjectOnSelfHosted(t *testing.T) {
 	}
 }
 
-
 func TestAwProjectCreateWithAPIMount(t *testing.T) {
 	t.Parallel()
 
@@ -465,19 +464,19 @@ func TestAwProjectCreateWithAPIMount(t *testing.T) {
 	mux.HandleFunc("/api/v1/create-project", func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"project_id":   "proj-1",
-			"project_slug": "default",
+			"project_id":     "proj-1",
+			"project_slug":   "default",
 			"namespace_slug": "myteam",
-			"namespace":    "myteam.aweb.ai",
-			"identity_id":  "identity-1",
-			"alias":        "deploy-bot",
-			"address":      "myteam.aweb.ai/deploy-bot",
-			"api_key":      "aw_sk_api_mount",
-			"did":          "did:key:z6MkTest4",
-			"stable_id":    "stable-4",
-			"custody":      "self",
-			"lifetime":     "ephemeral",
-			"created":      true,
+			"namespace":      "myteam.aweb.ai",
+			"identity_id":    "identity-1",
+			"alias":          "deploy-bot",
+			"address":        "myteam.aweb.ai/deploy-bot",
+			"api_key":        "aw_sk_api_mount",
+			"did":            "did:key:z6MkTest4",
+			"stable_id":      "stable-4",
+			"custody":        "self",
+			"lifetime":       "ephemeral",
+			"created":        true,
 		})
 	})
 	server := httptest.NewServer(mux)

@@ -30,10 +30,10 @@ func resolveCurrentIdentityID(ctx context.Context, client *aweb.Client, _ *awcon
 	if err != nil {
 		return "", err
 	}
-	if intro.AgentID == "" {
+	if intro.IdentityID == "" {
 		return "", fmt.Errorf("cannot determine identity id: API key is not bound to an identity")
 	}
-	return intro.AgentID, nil
+	return intro.IdentityID, nil
 }
 
 var identitiesCmd = &cobra.Command{
@@ -53,7 +53,7 @@ var identitiesCmd = &cobra.Command{
 		}
 		printOutput(agentsListOutput{
 			ListIdentitiesResponse: resp,
-			ProjectSlug:        sel.NamespaceSlug,
+			ProjectSlug:            sel.NamespaceSlug,
 		}, formatAgentsList)
 		return nil
 	},
@@ -88,9 +88,9 @@ var agentAccessModeCmd = &cobra.Command{
 				return err
 			}
 			for _, a := range identities.Identities {
-				if a.AgentID == agentID {
+				if a.IdentityID == agentID {
 					printOutput(map[string]string{
-						"agent_id":    a.AgentID,
+						"identity_id": a.IdentityID,
 						"alias":       firstNonEmpty(a.Name, a.Alias),
 						"access_mode": a.AccessMode,
 					}, formatAgentAccessMode)
@@ -114,7 +114,7 @@ var agentAccessModeCmd = &cobra.Command{
 		}
 		printOutput(identityPatchOutput{
 			PatchIdentityResponse: resp,
-			Alias:              sel.AgentAlias,
+			Alias:                 sel.IdentityHandle,
 		}, formatAgentPatch)
 		return nil
 	},
@@ -150,9 +150,9 @@ var identityReachabilityCmd = &cobra.Command{
 				return err
 			}
 			for _, a := range identities.Identities {
-				if a.AgentID == agentID {
+				if a.IdentityID == agentID {
 					printOutput(map[string]string{
-						"agent_id":             a.AgentID,
+						"identity_id":          a.IdentityID,
 						"alias":                firstNonEmpty(a.Name, a.Alias),
 						"address_reachability": a.AddressReachability,
 					}, formatIdentityReachability)
@@ -175,7 +175,7 @@ var identityReachabilityCmd = &cobra.Command{
 		}
 		printOutput(identityPatchOutput{
 			PatchIdentityResponse: resp,
-			Alias:              sel.AgentAlias,
+			Alias:                 sel.IdentityHandle,
 		}, formatAgentPatch)
 		return nil
 	},

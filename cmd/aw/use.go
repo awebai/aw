@@ -75,7 +75,7 @@ func runUse(cmd *cobra.Command, args []string) error {
 	printOutput(useOutput{
 		Account:       sel.AccountName,
 		Server:        sel.ServerName,
-		Alias:         sel.AgentAlias,
+		Alias:         sel.IdentityHandle,
 		Project:       sel.NamespaceSlug,
 		IdentityClass: awid.DescribeIdentityClass(sel.Lifetime),
 		ContextStatus: contextStatus,

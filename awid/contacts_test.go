@@ -151,7 +151,7 @@ func TestPatchIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = json.NewEncoder(w).Encode(PatchIdentityResponse{
-			AgentID:    "agent-1",
+			IdentityID: "agent-1",
 			AccessMode: "contacts_only",
 		})
 	}))
@@ -176,8 +176,8 @@ func TestPatchIdentity(t *testing.T) {
 	if gotBody.AccessMode != "contacts_only" {
 		t.Fatalf("access_mode=%s", gotBody.AccessMode)
 	}
-	if resp.AgentID != "agent-1" {
-		t.Fatalf("agent_id=%s", resp.AgentID)
+	if resp.IdentityID != "agent-1" {
+		t.Fatalf("agent_id=%s", resp.IdentityID)
 	}
 	if resp.AccessMode != "contacts_only" {
 		t.Fatalf("access_mode=%s", resp.AccessMode)
