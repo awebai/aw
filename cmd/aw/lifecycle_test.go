@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-func TestAwIdentityDecommissionEphemeral(t *testing.T) {
+func TestAwIdentityDeleteEphemeral(t *testing.T) {
 	t.Parallel()
 
 	var deregisterCalled atomic.Bool
@@ -88,7 +88,7 @@ client_default_accounts:
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "identity", "decommission", "--confirm")
+	run := exec.CommandContext(ctx, bin, "identity", "delete", "--confirm")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",
@@ -102,8 +102,8 @@ client_default_accounts:
 	if !deregisterCalled.Load() {
 		t.Fatal("expected DELETE /v1/agents/me")
 	}
-	if !strings.Contains(string(out), "Identity decommissioned.") {
-		t.Fatalf("expected decommission output, got: %s", string(out))
+	if !strings.Contains(string(out), "Identity deleted.") {
+		t.Fatalf("expected delete output, got: %s", string(out))
 	}
 
 	data, err := os.ReadFile(cfgPath)
@@ -117,14 +117,14 @@ client_default_accounts:
 		t.Fatalf("yaml: %v\n%s", err, string(data))
 	}
 	if len(cfgOut.Accounts) != 0 {
-		t.Fatalf("expected account removal after decommission:\n%s", string(data))
+		t.Fatalf("expected account removal after delete:\n%s", string(data))
 	}
 	if _, err := os.Stat(filepath.Join(tmp, ".aw", "context")); !os.IsNotExist(err) {
 		t.Fatalf("expected .aw/context removal, err=%v", err)
 	}
 }
 
-func TestAwIdentityDecommissionRejectsPermanent(t *testing.T) {
+func TestAwIdentityDeleteRejectsPermanent(t *testing.T) {
 	t.Parallel()
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -180,7 +180,7 @@ default_account: acct
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "identity", "decommission", "--confirm")
+	run := exec.CommandContext(ctx, bin, "identity", "delete", "--confirm")
 	run.Env = append(os.Environ(),
 		"AW_CONFIG_PATH="+cfgPath,
 		"AWEB_URL=",

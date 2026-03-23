@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -553,6 +554,285 @@ default_account: acct
 		if !strings.Contains(text, want) {
 			t.Fatalf("output missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestAwWorkspaceStatusDeletesGoneEphemeralIdentity(t *testing.T) {
+	t.Parallel()
+
+	const selfID = "11111111-1111-1111-1111-111111111111"
+	const goneID = "44444444-4444-4444-4444-444444444444"
+
+	missingPath := filepath.Join(t.TempDir(), "gone-worktree")
+	var deletedIdentity atomic.Bool
+	var deletedWorkspace atomic.Bool
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
+			t.Fatalf("auth=%q", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.URL.Path == "/v1/workspaces/team":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspaces": []map[string]any{
+					{
+						"workspace_id":   selfID,
+						"alias":          "alice",
+						"role":           "developer",
+						"status":         "active",
+						"hostname":       "devbox",
+						"workspace_path": "/tmp/repo",
+						"repo":           "github.com/acme/repo",
+						"branch":         "main",
+					},
+				},
+				"has_more": false,
+			})
+		case r.URL.Path == "/v1/reservations":
+			_ = json.NewEncoder(w).Encode(map[string]any{"reservations": []map[string]any{}})
+		case r.URL.Path == "/v1/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspace":           map[string]any{"project_id": "proj-1", "project_slug": "demo", "workspace_count": 2},
+				"agents":              []map[string]any{},
+				"claims":              []map[string]any{},
+				"conflicts":           []map[string]any{},
+				"escalations_pending": 0,
+				"timestamp":           "2026-03-10T10:10:00Z",
+			})
+		case r.URL.Path == "/v1/workspaces" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspaces": []map[string]any{
+					{
+						"workspace_id":   goneID,
+						"alias":          "bob",
+						"project_slug":   "demo",
+						"status":         "offline",
+						"workspace_path": missingPath,
+					},
+				},
+				"has_more": false,
+			})
+		case r.URL.Path == "/v1/agents/resolve/demo/bob" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"agent_id":   "agent-bob",
+				"did":        "did:key:z6MkEphemeral",
+				"address":    "demo/bob",
+				"custody":    "custodial",
+				"lifetime":   "ephemeral",
+				"public_key": "",
+			})
+		case r.URL.Path == "/v1/agents/demo/bob" && r.Method == http.MethodDelete:
+			deletedIdentity.Store(true)
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/v1/workspaces/"+goneID && r.Method == http.MethodDelete:
+			deletedWorkspace.Store(true)
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	if err := os.MkdirAll(filepath.Join(tmp, ".aw"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	buildAwBinary(t, ctx, bin)
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+    agent_id: `+selfID+`
+    agent_alias: alice
+    namespace_slug: demo
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	state := awconfig.WorktreeWorkspace{
+		WorkspaceID:     selfID,
+		ProjectID:       "proj-1",
+		ProjectSlug:     "demo",
+		Alias:           "alice",
+		Role:            "developer",
+		Hostname:        "devbox",
+		WorkspacePath:   tmp,
+		CanonicalOrigin: "github.com/acme/repo",
+	}
+	if err := awconfig.SaveWorktreeWorkspaceTo(filepath.Join(tmp, ".aw", "workspace.yaml"), &state); err != nil {
+		t.Fatalf("save workspace state: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "workspace", "status")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+	if !deletedIdentity.Load() {
+		t.Fatal("expected gone ephemeral identity deletion")
+	}
+	if !deletedWorkspace.Load() {
+		t.Fatal("expected gone workspace record deletion")
+	}
+	if !strings.Contains(string(out), "deleted ephemeral identity") {
+		t.Fatalf("expected gone-workspace cleanup output, got:\n%s", string(out))
+	}
+}
+
+func TestAwWorkspaceStatusKeepsGonePermanentIdentity(t *testing.T) {
+	t.Parallel()
+
+	const selfID = "11111111-1111-1111-1111-111111111111"
+	const goneID = "44444444-4444-4444-4444-444444444444"
+
+	missingPath := filepath.Join(t.TempDir(), "gone-worktree")
+	var deletedIdentity atomic.Bool
+	var deletedWorkspace atomic.Bool
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
+			t.Fatalf("auth=%q", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.URL.Path == "/v1/workspaces/team":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspaces": []map[string]any{
+					{
+						"workspace_id":   selfID,
+						"alias":          "alice",
+						"role":           "developer",
+						"status":         "active",
+						"hostname":       "devbox",
+						"workspace_path": "/tmp/repo",
+						"repo":           "github.com/acme/repo",
+						"branch":         "main",
+					},
+				},
+				"has_more": false,
+			})
+		case r.URL.Path == "/v1/reservations":
+			_ = json.NewEncoder(w).Encode(map[string]any{"reservations": []map[string]any{}})
+		case r.URL.Path == "/v1/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspace":           map[string]any{"project_id": "proj-1", "project_slug": "demo", "workspace_count": 2},
+				"agents":              []map[string]any{},
+				"claims":              []map[string]any{},
+				"conflicts":           []map[string]any{},
+				"escalations_pending": 0,
+				"timestamp":           "2026-03-10T10:10:00Z",
+			})
+		case r.URL.Path == "/v1/workspaces" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspaces": []map[string]any{
+					{
+						"workspace_id":   goneID,
+						"alias":          "maintainer",
+						"project_slug":   "demo",
+						"status":         "offline",
+						"workspace_path": missingPath,
+					},
+				},
+				"has_more": false,
+			})
+		case r.URL.Path == "/v1/agents/resolve/demo/maintainer" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"agent_id": "agent-maintainer",
+				"did":      "did:key:z6MkPermanent",
+				"address":  "demo/maintainer",
+				"custody":  "self",
+				"lifetime": "persistent",
+			})
+		case r.URL.Path == "/v1/agents/demo/maintainer" && r.Method == http.MethodDelete:
+			deletedIdentity.Store(true)
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/v1/workspaces/"+goneID && r.Method == http.MethodDelete:
+			deletedWorkspace.Store(true)
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	if err := os.MkdirAll(filepath.Join(tmp, ".aw"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	buildAwBinary(t, ctx, bin)
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+    agent_id: `+selfID+`
+    agent_alias: alice
+    namespace_slug: demo
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	state := awconfig.WorktreeWorkspace{
+		WorkspaceID:     selfID,
+		ProjectID:       "proj-1",
+		ProjectSlug:     "demo",
+		Alias:           "alice",
+		Role:            "developer",
+		Hostname:        "devbox",
+		WorkspacePath:   tmp,
+		CanonicalOrigin: "github.com/acme/repo",
+	}
+	if err := awconfig.SaveWorktreeWorkspaceTo(filepath.Join(tmp, ".aw", "workspace.yaml"), &state); err != nil {
+		t.Fatalf("save workspace state: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "workspace", "status")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+	if deletedIdentity.Load() {
+		t.Fatal("did not expect permanent identity deletion")
+	}
+	if !deletedWorkspace.Load() {
+		t.Fatal("expected gone workspace record deletion")
+	}
+	if !strings.Contains(string(out), "removed workspace record") {
+		t.Fatalf("expected gone-workspace cleanup output, got:\n%s", string(out))
 	}
 }
 

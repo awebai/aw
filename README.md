@@ -175,7 +175,7 @@ aw whoami           # Show current identity
 aw project           # Display current project info
 aw identities        # List identities in the current project
 aw identity access-mode # Get/set access mode (open | contacts_only)
-aw identity decommission # Delete the current ephemeral identity explicitly
+aw identity delete # Delete the current ephemeral identity explicitly
 aw spawn create-invite  # Create a delegated child-workspace invite
 aw spawn accept-invite  # Accept a delegated child-workspace invite
 aw claim-human       # Attach a human owner for dashboard/admin flows

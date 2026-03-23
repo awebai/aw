@@ -130,12 +130,12 @@ signing key is available, the CLI warns instead of inventing a new identity.
 
 User-facing lifecycle verb:
 
-- `decommission`
+- `delete`
 
 CLI command:
 
 ```bash
-aw identity decommission --confirm
+aw identity delete --confirm
 ```
 
 Effects:
@@ -144,6 +144,8 @@ Effects:
 - releases its alias
 - removes the matching local account/workspace binding
 - removes the local signing key if one exists
+- if a gone workspace is detected later, `aw workspace status` also deletes the
+  corresponding ephemeral identity and removes the stale workspace record
 
 `aw reset` is not an identity lifecycle command. It only removes local
 workspace binding state.
@@ -161,7 +163,7 @@ intentionally omits a fake successor-based command for them.
 
 - `archive` is the normal permanent end-state action
 - `replace` is the owner-authorized continuity move after key loss
-- both are owner-admin lifecycle flows, not `aw identity decommission`
+- both are owner-admin lifecycle flows, not `aw identity delete`
 
 ## Trust
 
@@ -189,7 +191,7 @@ Trust continuity attaches to permanent addresses, not ephemeral aliases.
 - `aw init`, `aw project create`, `aw spawn accept-invite`, and `aw connect`
   update it
 - `aw reset` removes it
-- `aw identity decommission --confirm` removes or updates it as part of local
+- `aw identity delete --confirm` removes or updates it as part of local
   cleanup
 
 ### Local signing keys
@@ -209,7 +211,7 @@ Preferred CLI language:
   workspace identity
 - `aw init --permanent --name <name>`: initialize a workspace with a permanent
   self-custodial identity
-- `aw identity decommission`: delete the current ephemeral identity
+- `aw identity delete`: delete the current ephemeral identity
 
 Language to avoid:
 

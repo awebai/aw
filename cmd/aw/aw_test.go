@@ -310,7 +310,7 @@ func TestAwIdentityCommandSurface(t *testing.T) {
 		"log",
 		"access-mode",
 		"privacy",
-		"decommission",
+		"delete",
 	} {
 		if !strings.Contains(identityText, want) {
 			t.Fatalf("identity help missing %q:\n%s", want, identityText)
@@ -3350,8 +3350,8 @@ func TestAwConnectIdentityAlreadySetNoLocalKey(t *testing.T) {
 	if !strings.Contains(string(out), "no matching signing key found locally") {
 		t.Fatalf("expected 'no matching signing key found locally', got: %s", string(out))
 	}
-	if !strings.Contains(string(out), "aw identity decommission --confirm") {
-		t.Fatalf("expected recovery suggestion with 'aw identity decommission --confirm', got: %s", string(out))
+	if !strings.Contains(string(out), "aw identity delete --confirm") {
+		t.Fatalf("expected recovery suggestion with 'aw identity delete --confirm', got: %s", string(out))
 	}
 }
 

@@ -67,7 +67,7 @@ implementation of aw-9sf.2.
 | `verify.go` | Signature verification | — |
 | `identity.go` | Identity resolvers | `GET /v1/agents/resolve/{ns}/{alias}` |
 | `pinstore.go` | TOFU pin storage | — |
-| `deregister.go` | Identity decommission transport | `DELETE /v1/agents/me`, `DELETE /v1/agents/{ns}/{alias}` |
+| `deregister.go` | Ephemeral identity delete transport | `DELETE /v1/agents/me`, `DELETE /v1/agents/{ns}/{alias}` |
 | `rotate.go` | Key rotation | `PUT /v1/agents/me/rotate` |
 
 ### Coordination (→ aw)

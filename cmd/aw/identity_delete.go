@@ -14,23 +14,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var identityDecommissionConfirm bool
+var identityDeleteConfirm bool
 
-var identityDecommissionCmd = &cobra.Command{
-	Use:   "decommission",
-	Short: "Decommission the current ephemeral identity",
-	Long:  "Deletes the current ephemeral identity on the server and removes the matching local workspace/account state.",
-	RunE:  runIdentityDecommission,
+var identityDeleteCmd = &cobra.Command{
+	Use:   "delete",
+	Short: "Delete the current ephemeral identity",
+	Long:  "Deletes the current ephemeral identity on the server, releases its alias, and removes the matching local workspace/account state.",
+	RunE:  runIdentityDelete,
 }
 
 func init() {
-	identityDecommissionCmd.Flags().BoolVar(&identityDecommissionConfirm, "confirm", false, "Required to decommission the current ephemeral identity")
-	identityCmd.AddCommand(identityDecommissionCmd)
+	identityDeleteCmd.Flags().BoolVar(&identityDeleteConfirm, "confirm", false, "Required to delete the current ephemeral identity")
+	identityCmd.AddCommand(identityDeleteCmd)
 }
 
-func runIdentityDecommission(cmd *cobra.Command, args []string) error {
-	if !identityDecommissionConfirm {
-		return usageError("identity decommission requires --confirm")
+func runIdentityDelete(cmd *cobra.Command, args []string) error {
+	if !identityDeleteConfirm {
+		return usageError("identity delete requires --confirm")
 	}
 
 	client, sel, err := resolveClientSelection()
@@ -46,22 +46,22 @@ func runIdentityDecommission(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if awid.IdentityClassFromLifetime(lifetime) == awid.IdentityClassPermanent {
-		return usageError("the current identity is permanent; permanent archival and replacement are owner-admin lifecycle flows, not CLI decommission")
+		return usageError("the current identity is permanent; permanent archival and replacement are owner-admin lifecycle flows, not CLI delete")
 	}
 	if awid.IdentityClassFromLifetime(lifetime) != awid.IdentityClassEphemeral {
 		return fmt.Errorf("could not confirm that the current identity is ephemeral")
 	}
 
-	if err := client.Deregister(ctx); err != nil {
+	if err := deleteCurrentEphemeralIdentity(ctx, client); err != nil {
 		return err
 	}
 
-	configRemoved, contextRemoved, keyRemoved, err := cleanupDecommissionedIdentity(sel)
+	configRemoved, contextRemoved, keyRemoved, err := cleanupDeletedIdentity(sel)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println("Identity decommissioned.")
+	fmt.Println("Identity deleted.")
 	if strings.TrimSpace(sel.AgentAlias) != "" {
 		fmt.Printf("Alias:       %s\n", strings.TrimSpace(sel.AgentAlias))
 	}
@@ -79,6 +79,41 @@ func runIdentityDecommission(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Key:         removed %s\n", keyRemoved)
 	}
 	return nil
+}
+
+func deleteCurrentEphemeralIdentity(ctx context.Context, client *aweb.Client) error {
+	return client.Deregister(ctx)
+}
+
+func deleteEphemeralIdentityByWorkspace(ctx context.Context, client *aweb.Client, ws aweb.WorkspaceInfo) (bool, error) {
+	projectSlug := strings.TrimSpace(derefString(ws.ProjectSlug))
+	alias := strings.TrimSpace(ws.Alias)
+	if projectSlug == "" || alias == "" {
+		return false, nil
+	}
+
+	address := deriveAgentAddress("", projectSlug, alias)
+	resolver := &awid.ServerResolver{Client: client.Client}
+	identity, err := resolver.Resolve(ctx, address)
+	if err != nil {
+		if code, ok := awid.HTTPStatusCode(err); ok && code == 404 {
+			return false, nil
+		}
+		return false, err
+	}
+	if identity == nil {
+		return false, fmt.Errorf("resolve current identity %q: empty response", address)
+	}
+	if awid.IdentityClassFromLifetime(identity.Lifetime) != awid.IdentityClassEphemeral {
+		return false, nil
+	}
+	if err := client.DeregisterAgent(ctx, projectSlug, alias); err != nil {
+		if code, ok := awid.HTTPStatusCode(err); ok && code == 404 {
+			return true, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func resolveSelectionIdentityState(ctx context.Context, client *aweb.Client, sel *awconfig.Selection) (lifetime, custody string, err error) {
@@ -120,7 +155,7 @@ func resolveSelectionIdentityState(ctx context.Context, client *aweb.Client, sel
 	return lifetime, custody, nil
 }
 
-func cleanupDecommissionedIdentity(sel *awconfig.Selection) (configRemoved, contextRemoved, keyRemoved string, err error) {
+func cleanupDeletedIdentity(sel *awconfig.Selection) (configRemoved, contextRemoved, keyRemoved string, err error) {
 	if strings.TrimSpace(sel.SigningKey) != "" {
 		if removeErr := removeSigningKeyFiles(strings.TrimSpace(sel.SigningKey)); removeErr != nil {
 			return "", "", "", removeErr
