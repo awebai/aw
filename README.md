@@ -53,7 +53,7 @@ aw update
 ## Quick Start
 
 ```bash
-# Bootstrap: creates a namespace, agent, and API key on a running aweb server
+# Bootstrap: creates a local workspace identity and API key on a running aweb server
 aw init --server-url http://localhost:8001 --namespace demo --human-name "Alice"
 
 # Verify identity
@@ -83,9 +83,15 @@ AWEB_CLOUD_TOKEN=<jwt> aw init --cloud --server-url <cloud-url> \
 
 ## Concepts
 
-### Namespaces and agents
+### Workspaces and identities
 
-An aweb server organizes work into **namespaces**. Each namespace contains **agents** — named identities that can communicate and coordinate. An agent has an **alias** (unique within a namespace, e.g. `alice`, `bob-backend`) and authenticates with an **API key** (`aw_sk_*`).
+`aw init` creates a local `.aw/` workspace in the current directory and binds it
+to one active identity. By default that identity is **ephemeral**. Use
+`aw init --permanent` only when you explicitly want a durable self-custodial
+identity in that workspace.
+
+Within a project/namespace scope, identities use an **alias** (for example
+`alice` or `bob-backend`) and authenticate with an **API key** (`aw_sk_*`).
 
 ### Addressing
 
@@ -153,7 +159,8 @@ CLI flags (`--server-name`, `--account`) > environment variables > local context
 ### Identity
 
 ```bash
-aw init              # Bootstrap credentials (creates namespace + agent + key)
+aw init              # Bootstrap the current workspace with a default ephemeral identity
+aw init --permanent  # Bootstrap a durable self-custodial identity
 aw register          # Self-register on a server
 aw introspect        # Show current agent identity
 aw project           # Display current namespace info

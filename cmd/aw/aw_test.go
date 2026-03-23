@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -5615,16 +5615,16 @@ func TestAwInitProjectKeyRoutesToOSSInit(t *testing.T) {
 		case "/v1/init":
 			initAuth = r.Header.Get("Authorization")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":        "ok",
-				"project_id":    "proj-1",
-				"project_slug":  "live-publication-project",
-				"agent_id":      "agent-new",
-				"alias":         "coordinator",
-				"api_key":       "aw_sk_new",
-				"created":       true,
-				"did":           "did:key:z6MkTest",
-				"custody":       "self",
-				"lifetime":      "persistent",
+				"status":       "ok",
+				"project_id":   "proj-1",
+				"project_slug": "live-publication-project",
+				"agent_id":     "agent-new",
+				"alias":        "coordinator",
+				"api_key":      "aw_sk_new",
+				"created":      true,
+				"did":          "did:key:z6MkTest",
+				"custody":      "self",
+				"lifetime":     "ephemeral",
 			})
 		case "/v1/agents/suggest-alias-prefix":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "coordinator", "roles": []string{}})
@@ -7486,7 +7486,7 @@ func TestInitDefaultServerUsedWhenNoURLProvided(t *testing.T) {
 				"created":        true,
 				"did":            "did:key:z6Mktest",
 				"custody":        "self",
-				"lifetime":       "persistent",
+				"lifetime":       "ephemeral",
 			})
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
@@ -7589,7 +7589,7 @@ func TestInitWorkspaceAttachNonFatal(t *testing.T) {
 				"created":        true,
 				"did":            "did:key:z6Mktest",
 				"custody":        "self",
-				"lifetime":       "persistent",
+				"lifetime":       "ephemeral",
 			})
 		case "/v1/workspaces/register":
 			w.WriteHeader(http.StatusNotFound)

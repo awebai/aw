@@ -218,7 +218,7 @@ func TestAwInitAutoAttachesRepoContext(t *testing.T) {
 				"created":        true,
 				"did":            "did:key:z6Mktest",
 				"custody":        "self",
-				"lifetime":       "persistent",
+				"lifetime":       "ephemeral",
 			})
 		case "/v1/workspaces/register":
 			if r.Header.Get("Authorization") != "Bearer aw_sk_test" {

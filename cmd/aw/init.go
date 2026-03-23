@@ -19,7 +19,7 @@ import (
 
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Create and use an agent",
+	Short: "Initialize a local workspace and identity",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		loadDotenvBestEffort()
 		// No heartbeat for init — no credentials yet.
@@ -45,6 +45,7 @@ var (
 	initCloudMode       bool
 	initTargetNamespace string
 	initRole            string
+	initPermanent       bool
 )
 
 // initFlow identifies which bootstrap path to use. Determined once at the
@@ -92,7 +93,7 @@ type initOptions struct {
 	InviteToken                   string
 	AccountName                   string
 	WorkspaceRole                 string
-	Lifetime                      string // "persistent" (default) or "ephemeral"
+	Lifetime                      string // "ephemeral" (default) or "persistent"
 }
 
 type initResult struct {
@@ -125,6 +126,7 @@ func init() {
 	initCmd.Flags().BoolVar(&initCloudMode, "cloud", false, "Force hosted aweb-cloud bootstrap mode (skip probing /v1/init)")
 	initCmd.Flags().StringVar(&initTargetNamespace, "target-namespace", "", "Create agent in a specific namespace (forces cloud mode; requires --alias)")
 	initCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (default: AWEB_ROLE or prompt in TTY, fallback: developer)")
+	initCmd.Flags().BoolVar(&initPermanent, "permanent", false, "Create a durable self-custodial identity instead of the default ephemeral identity")
 
 	rootCmd.AddCommand(initCmd)
 }
@@ -187,7 +189,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 func initNeedsFullInit() bool {
 	if initServerURL != "" || initNamespaceSlug != "" || initAlias != "" ||
 		initInviteToken != "" || initCloudMode || initCloudToken != "" ||
-		initTargetNamespace != "" || initRole != "" {
+		initTargetNamespace != "" || initRole != "" || initPermanent {
 		return true
 	}
 	if strings.TrimSpace(os.Getenv("AWEB_API_KEY")) != "" ||
@@ -379,6 +381,7 @@ func collectInitOptions() (initOptions, error) {
 		InviteToken:                   inviteToken,
 		AccountName:                   accountName,
 		WorkspaceRole:                 role,
+		Lifetime:                      resolveInitLifetime(initPermanent),
 	}, nil
 }
 
@@ -493,7 +496,10 @@ func executeInit(opts initOptions) (*initResult, error) {
 	if namespaceName == "" {
 		namespaceName = strings.TrimSpace(opts.NamespaceSlug)
 	}
-	lifetime := resolveInitLifetime(opts.Lifetime)
+	lifetime := strings.TrimSpace(opts.Lifetime)
+	if lifetime == "" {
+		lifetime = resolveInitLifetime(initPermanent)
+	}
 
 	req := &awid.InitRequest{
 		ProjectSlug: opts.NamespaceSlug,
@@ -668,26 +674,44 @@ func printInitSummary(resp *awid.InitResponse, accountName, serverName, role str
 	if resp == nil {
 		return
 	}
+	project := strings.TrimSpace(resp.ProjectSlug)
+	namespace := strings.TrimSpace(resp.Namespace)
+	if namespace == "" {
+		namespace = strings.TrimSpace(resp.NamespaceSlug)
+	}
+
 	if joinedViaInvite {
-		namespace := strings.TrimSpace(resp.Namespace)
 		if namespace == "" {
-			namespace = strings.TrimSpace(resp.NamespaceSlug)
-		}
-		if namespace == "" {
-			namespace = strings.TrimSpace(resp.ProjectSlug)
+			namespace = project
 		}
 		fmt.Printf("Joined %s as %s\n", namespace, resp.Alias)
 	} else {
-		fmt.Printf("Initialized agent %s\n", resp.Alias)
+		fmt.Println("Initialized workspace")
 	}
-	if strings.TrimSpace(resp.NamespaceSlug) != "" {
-		fmt.Printf("Namespace:  %s\n", strings.TrimSpace(resp.NamespaceSlug))
+	if strings.TrimSpace(resp.Alias) != "" {
+		fmt.Printf("Alias:      %s\n", strings.TrimSpace(resp.Alias))
+	}
+	if identityClass := describeIdentityClass(strings.TrimSpace(resp.Lifetime)); identityClass != "" {
+		fmt.Printf("Identity:   %s\n", identityClass)
+	}
+	if strings.TrimSpace(resp.Custody) != "" {
+		fmt.Printf("Custody:    %s\n", strings.TrimSpace(resp.Custody))
+	}
+	if project != "" {
+		fmt.Printf("Project:    %s\n", project)
+	}
+	if namespace != "" && namespace != project {
+		fmt.Printf("Namespace:  %s\n", namespace)
 	}
 	if strings.TrimSpace(role) != "" {
 		fmt.Printf("Role:       %s\n", strings.TrimSpace(role))
 	}
 	if strings.TrimSpace(resp.Address) != "" {
-		fmt.Printf("Address:    %s\n", strings.TrimSpace(resp.Address))
+		label := "Address"
+		if strings.TrimSpace(resp.Lifetime) == awid.LifetimeEphemeral {
+			label = "Routing"
+		}
+		fmt.Printf("%-10s %s\n", label+":", strings.TrimSpace(resp.Address))
 	}
 	if strings.TrimSpace(serverName) != "" {
 		fmt.Printf("Server:     %s\n", strings.TrimSpace(serverName))
@@ -917,11 +941,22 @@ func acceptInviteViaCloud(
 	}, nil
 }
 
-func resolveInitLifetime(explicit string) string {
-	if strings.TrimSpace(explicit) != "" {
-		return strings.TrimSpace(explicit)
+func resolveInitLifetime(permanent bool) string {
+	if permanent {
+		return awid.LifetimePersistent
 	}
-	return awid.LifetimePersistent
+	return awid.LifetimeEphemeral
+}
+
+func describeIdentityClass(lifetime string) string {
+	switch strings.TrimSpace(lifetime) {
+	case awid.LifetimeEphemeral:
+		return "ephemeral"
+	case awid.LifetimePersistent:
+		return "permanent"
+	default:
+		return strings.TrimSpace(lifetime)
+	}
 }
 
 func resolveCloudToken(baseURL, serverName, accountName, explicitToken string, global *awconfig.GlobalConfig) string {

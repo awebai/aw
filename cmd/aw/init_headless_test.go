@@ -48,7 +48,7 @@ func TestAwInitHeadlessBootstrapAgainstHosted(t *testing.T) {
 				"did":          "did:key:z6MkTest",
 				"stable_id":    "stable-1",
 				"custody":      "self",
-				"lifetime":     "persistent",
+				"lifetime":     "ephemeral",
 				"created":      true,
 			})
 		case "/v1/agents/heartbeat":
@@ -122,6 +122,9 @@ func TestAwInitHeadlessBootstrapAgainstHosted(t *testing.T) {
 	if _, ok := gotBody["public_key"]; !ok {
 		t.Fatal("missing public_key in request")
 	}
+	if gotBody["lifetime"] != "ephemeral" {
+		t.Fatalf("lifetime=%v", gotBody["lifetime"])
+	}
 
 	// Verify JSON response.
 	var resp map[string]any
@@ -160,6 +163,96 @@ func TestAwInitHeadlessBootstrapAgainstHosted(t *testing.T) {
 	}
 }
 
+func TestAwInitPermanentRequestsPersistentIdentity(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "maintainer", "roles": []string{}})
+		case "/api/v1/bootstrap/headless-agent":
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"org_id":       "org-1",
+				"org_slug":     "myteam",
+				"project_id":   "proj-1",
+				"project_slug": "default",
+				"namespace":    "myteam.aweb.ai",
+				"agent_id":     "agent-1",
+				"alias":        "maintainer",
+				"address":      "myteam.aweb.ai/maintainer",
+				"api_key":      "aw_sk_permanent_test",
+				"did":          "did:key:z6MkPermanent",
+				"stable_id":    "stable-permanent",
+				"custody":      "self",
+				"lifetime":     "persistent",
+				"created":      true,
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	run := exec.CommandContext(ctx, bin, "init",
+		"--namespace", "myteam",
+		"--alias", "maintainer",
+		"--permanent",
+		"--json",
+		"--write-context=false",
+		"--print-exports=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AWEB_URL="+server.URL,
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_CLOUD_TOKEN=",
+		"AWEB_API_KEY=",
+		"AWEB_NAMESPACE=",
+		"AWEB_ALIAS=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	if gotBody["lifetime"] != "persistent" {
+		t.Fatalf("lifetime=%v", gotBody["lifetime"])
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(extractJSON(t, out), &resp); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if resp["lifetime"] != "persistent" {
+		t.Fatalf("response lifetime=%v", resp["lifetime"])
+	}
+}
+
 func TestAwInitIgnoresExistingConfigKeys(t *testing.T) {
 	t.Parallel()
 
@@ -186,7 +279,7 @@ func TestAwInitIgnoresExistingConfigKeys(t *testing.T) {
 				"did":          "did:key:z6MkTest2",
 				"stable_id":    "stable-2",
 				"custody":      "self",
-				"lifetime":     "persistent",
+				"lifetime":     "ephemeral",
 				"created":      true,
 			})
 		case "/v1/agents/heartbeat":
@@ -280,7 +373,7 @@ func TestAwInitSelfHostedStillUsesV1Init(t *testing.T) {
 				"created":      true,
 				"did":          "did:key:z6MkTest3",
 				"custody":      "self",
-				"lifetime":     "persistent",
+				"lifetime":     "ephemeral",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -373,7 +466,7 @@ func TestAwInitHeadlessRetryOnAliasCollision(t *testing.T) {
 					"created":      false,
 					"did":          "did:key:z6MkTest",
 					"custody":      "self",
-					"lifetime":     "persistent",
+					"lifetime":     "ephemeral",
 				})
 			} else {
 				// Retry: server allocates alias.
@@ -387,7 +480,7 @@ func TestAwInitHeadlessRetryOnAliasCollision(t *testing.T) {
 					"created":      true,
 					"did":          "did:key:z6MkTest2",
 					"custody":      "self",
-					"lifetime":     "persistent",
+					"lifetime":     "ephemeral",
 				})
 			}
 		case "/v1/agents/heartbeat":
@@ -483,7 +576,7 @@ func TestAwInitHeadlessWithAPIMount(t *testing.T) {
 			"did":          "did:key:z6MkTest4",
 			"stable_id":    "stable-4",
 			"custody":      "self",
-			"lifetime":     "persistent",
+			"lifetime":     "ephemeral",
 			"created":      true,
 		})
 	})

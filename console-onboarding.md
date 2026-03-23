@@ -64,9 +64,13 @@ Useful fields:
 - `server_accounts[<server-name>] = <account-name>`
 - `default_account` for the default fallback
 
-## Step 3: Use The Agent Here
+## Step 3: Initialize This Workspace
 
-`aw init` creates an agent and uses it in the current directory.
+`aw init` creates a local `.aw/` workspace in the current directory and gives
+it a default identity.
+- By default that identity is ephemeral.
+- Use `aw init --permanent` only when you explicitly want a durable
+  self-custodial identity in this workspace.
 - In a shared git repo, `aw` also registers repo/worktree coordination and writes `.aw/workspace.yaml`.
 - Outside git, `aw` still creates a server-side local-directory attachment without exposing your local path.
 

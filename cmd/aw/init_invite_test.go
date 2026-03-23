@@ -41,7 +41,7 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 				"did":          "did:key:z6MkInvite",
 				"stable_id":    "did:aw:invite",
 				"custody":      "self",
-				"lifetime":     "persistent",
+				"lifetime":     "ephemeral",
 				"access_mode":  "owner_only",
 				"created":      true,
 			})
@@ -100,6 +100,9 @@ func TestAwInitInviteAcceptWritesConfigAndUsesServerAliasFlag(t *testing.T) {
 	if gotBody["custody"] != "self" {
 		t.Fatalf("custody=%v", gotBody["custody"])
 	}
+	if gotBody["lifetime"] != "ephemeral" {
+		t.Fatalf("lifetime=%v", gotBody["lifetime"])
+	}
 	if _, ok := gotBody["public_key"]; !ok {
 		t.Fatal("missing public_key")
 	}
@@ -156,7 +159,7 @@ func TestAwInitInviteAcceptUsesServerProvidedAliasHint(t *testing.T) {
 				"did":          "did:key:z6MkInvite",
 				"stable_id":    "did:aw:invite",
 				"custody":      "self",
-				"lifetime":     "persistent",
+				"lifetime":     "ephemeral",
 				"access_mode":  "open",
 				"created":      true,
 			})
@@ -380,7 +383,7 @@ func TestAwInitInviteTextOutputSaysJoined(t *testing.T) {
 				"did":          "did:key:z6MkInvite",
 				"stable_id":    "did:aw:invite",
 				"custody":      "self",
-				"lifetime":     "persistent",
+				"lifetime":     "ephemeral",
 				"access_mode":  "open",
 				"created":      true,
 			})

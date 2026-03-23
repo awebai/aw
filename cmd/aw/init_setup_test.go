@@ -33,7 +33,7 @@ func TestAwInitInjectDocsAndSetupHooks(t *testing.T) {
 				"did":          "did:key:z6MkTest",
 				"stable_id":    "stable-1",
 				"custody":      "self",
-				"lifetime":     "persistent",
+				"lifetime":     "ephemeral",
 				"created":      true,
 			})
 		case "/v1/agents/heartbeat":

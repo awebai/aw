@@ -7,8 +7,21 @@ the aw CLI, aweb server, and aweb cloud layer.
 
 ## 1. Entity Model
 
-The identity hierarchy is: **project → agent → api_key**. In cloud
-deployments an **org** (tenant) sits above projects.
+The current source of truth is `../2026-03-23-sot.md`. The key distinction is:
+**workspace ≠ identity ≠ alias ≠ address**.
+
+- A **workspace** is the local `.aw/` runtime container.
+- An **identity** is the principal used for messaging and trust.
+- An **alias** is the routing name for an ephemeral identity inside its
+  project/namespace scope.
+- An **address** is the public trust-bearing handle for a permanent identity.
+
+`aw init` now defaults to creating an **ephemeral** identity for the current
+workspace. Durable self-custodial identities must be explicit, for example
+`aw init --permanent`.
+
+Projects still scope identity creation and routing, and in cloud deployments an
+**org** (tenant) sits above projects.
 
 ### Projects
 
@@ -89,7 +102,8 @@ via `org_members`.
 
 ### OSS Bootstrap (`POST /v1/init`)
 
-The CLI calls this endpoint to register a new agent identity.
+The CLI calls this endpoint to initialize a local workspace into a project and
+create that workspace's default identity.
 
 **Request:**
 ```json
@@ -104,6 +118,16 @@ The CLI calls this endpoint to register a new agent identity.
 
 All fields except `project_slug` are optional. If `alias` is omitted the
 server allocates one automatically.
+
+Default `aw init` behavior:
+
+- creates an ephemeral identity
+- writes local workspace state in `.aw/`
+- stores the resulting API key in config
+
+Explicit durable alternative:
+
+- `aw init --permanent` creates a durable self-custodial identity
 
 **Server-side flow** (`aweb/bootstrap.py:70-202`):
 
