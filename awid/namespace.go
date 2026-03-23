@@ -15,8 +15,7 @@ type ListNamespacesResponse struct {
 }
 
 // ListNamespaces fetches the namespaces owned by the authenticated user.
-// Requires an agent-scoped API key (aw_sk_*).
-// Uses the /api/ prefix (aweb-cloud endpoint, same as CloudBootstrapAgent).
+// Uses the /api/ prefix on the hosted admin surface.
 func (c *Client) ListNamespaces(ctx context.Context) (*ListNamespacesResponse, error) {
 	var out ListNamespacesResponse
 	if err := c.Get(ctx, "/api/v1/auth/namespaces", &out); err != nil {

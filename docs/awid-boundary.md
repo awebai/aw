@@ -50,9 +50,8 @@ implementation of aw-9sf.2.
 | `util.go` | URL escaping, UUID generation | — |
 | `alias_prefix.go` | Alias prefix suggestion | `GET /v1/agents/suggest-alias-prefix` |
 | `auth.go` | Authentication utilities | `GET /v1/auth/introspect` |
-| `register.go` | Agent registration | `POST /v1/auth/register`, `POST /v1/auth/verify-code` |
-| `init.go` | Agent initialization | `POST /v1/init` |
-| `cloud_bootstrap.go` | Cloud bootstrap | — |
+| `init.go` | Workspace identity initialization | `POST /v1/init` |
+| `headless_bootstrap.go` | Project creation bootstrap | `POST /api/v1/bootstrap/headless-agent` |
 | `agents.go` | Agent listing/patching | `GET /v1/agents`, `PATCH /v1/agents/{id}` |
 | `mail.go` | Local project mail | `POST /v1/messages` |
 | `chat.go` | Chat sessions/messages | `GET/POST /v1/chat/*` |
@@ -68,8 +67,7 @@ implementation of aw-9sf.2.
 | `verify.go` | Signature verification | — |
 | `identity.go` | Identity resolvers | `GET /v1/agents/resolve/{ns}/{alias}` |
 | `pinstore.go` | TOFU pin storage | — |
-| `deregister.go` | Agent deregistration | `DELETE /v1/agents/me`, `DELETE /v1/agents/{ns}/{alias}` |
-| `retire.go` | Agent retirement | `PUT /v1/agents/me/retire` |
+| `deregister.go` | Identity decommission transport | `DELETE /v1/agents/me`, `DELETE /v1/agents/{ns}/{alias}` |
 | `rotate.go` | Key rotation | `PUT /v1/agents/me/rotate` |
 
 ### Coordination (→ aw)
@@ -175,13 +173,11 @@ delegate to the awid library.
 | `mail.go` | `aw mail send`, `aw mail inbox` |
 | `chat.go` | `aw chat *` |
 | `network.go` | `aw network *` |
-| `agents.go` | `aw agents` |
+| `agents.go` | `aw identities`, `aw identity access-mode`, `aw identity privacy` |
 | `contacts.go` | `aw contacts` |
 | `did.go` | `aw did *` |
-| `replace.go` | `aw identity replace` |
 | `heartbeat.go` | `aw heartbeat` |
 | `introspect.go` | `aw introspect` |
-| `verify.go` | `aw verify` |
 | `reset.go` | `aw reset` |
 | `upgrade.go` | `aw upgrade` |
 | `log.go` | `aw log` |
@@ -244,7 +240,7 @@ agent authentication and message trust:
 - TOFU pin storage and checking
 - Identity resolvers (DIDKey, Server, Pin, Chain)
 - Key rotation announcements
-- Agent lifecycle (init, deregister, replace)
+- Identity lifecycle primitives (init, resolve, deregister, rotation, replacement verification)
 
 ---
 

@@ -17,15 +17,15 @@ type agentsListOutput struct {
 	ProjectSlug string `json:"project_slug,omitempty"`
 }
 
-// agentPatchOutput wraps the server response with the identity alias for display.
-type agentPatchOutput struct {
+// identityPatchOutput wraps the server response with the identity alias for display.
+type identityPatchOutput struct {
 	*awid.PatchAgentResponse
 	Alias string `json:"alias,omitempty"`
 }
 
-// resolveAgentID resolves the current identity's ID via introspect, falling back
-// to the configured agent_id in the selection.
-func resolveAgentID(ctx context.Context, client *aweb.Client, sel *awconfig.Selection) (string, error) {
+// resolveCurrentIdentityID resolves the current identity's server ID via
+// introspect, falling back to the configured agent_id field in the selection.
+func resolveCurrentIdentityID(ctx context.Context, client *aweb.Client, sel *awconfig.Selection) (string, error) {
 	intro, err := client.Introspect(ctx)
 	if err != nil {
 		return "", err
@@ -34,7 +34,7 @@ func resolveAgentID(ctx context.Context, client *aweb.Client, sel *awconfig.Sele
 		return sel.AgentID, nil
 	}
 	if intro.AgentID == "" {
-		return "", fmt.Errorf("cannot determine agent_id: not an agent-scoped key")
+		return "", fmt.Errorf("cannot determine identity id: API key is not bound to an identity")
 	}
 	return intro.AgentID, nil
 }
@@ -79,7 +79,7 @@ var agentAccessModeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		agentID, err := resolveAgentID(ctx, client, sel)
+		agentID, err := resolveCurrentIdentityID(ctx, client, sel)
 		if err != nil {
 			return err
 		}
@@ -115,7 +115,7 @@ var agentAccessModeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		printOutput(agentPatchOutput{
+		printOutput(identityPatchOutput{
 			PatchAgentResponse: resp,
 			Alias:              sel.AgentAlias,
 		}, formatAgentPatch)
@@ -135,7 +135,7 @@ var agentPrivacyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		agentID, err := resolveAgentID(ctx, client, sel)
+		agentID, err := resolveCurrentIdentityID(ctx, client, sel)
 		if err != nil {
 			return err
 		}
@@ -169,7 +169,7 @@ var agentPrivacyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		printOutput(agentPatchOutput{
+		printOutput(identityPatchOutput{
 			PatchAgentResponse: resp,
 			Alias:              sel.AgentAlias,
 		}, formatAgentPatch)

@@ -776,7 +776,7 @@ func checkVerificationRequired(err error) string {
 	if envelope.Error.Details.MaskedEmail != "" {
 		hint += " (" + envelope.Error.Details.MaskedEmail + ")"
 	}
-	hint += ". Run 'aw verify --code CODE' to activate your agent."
+	hint += ". Verify this account in the dashboard, then reconnect with `aw connect` or re-run `aw init` with a fresh project key."
 	return hint
 }
 

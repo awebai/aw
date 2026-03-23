@@ -159,14 +159,13 @@ Permanent identities are not treated as disposable.
 Relevant operations:
 
 - `aw id rotate-key`
-- `aw identity replace --successor namespace/name`
 
-`replace` is the continuity-preserving successor flow. It is distinct from
-ephemeral decommission.
+Archive and replacement belong to the permanent identity model, but this CLI
+intentionally omits a fake successor-based command for them.
 
-The normal no-successor archive flow belongs in the permanent identity model,
-but the current CLI does not expose a standalone archive command yet because the
-available server lifecycle path is successor-based.
+- `archive` is the normal permanent end-state action
+- `replace` is the owner-authorized continuity move after key loss
+- both are owner-admin lifecycle flows, not `aw identity decommission`
 
 ## Trust
 
@@ -212,7 +211,6 @@ Preferred CLI language:
 - `aw spawn`: authorize another workspace to join the same project
 - `aw id create-permanent`: create a durable self-custodial identity
 - `aw identity decommission`: delete the current ephemeral identity
-- `aw identity replace`: move continuity to a successor permanent identity
 
 Language to avoid:
 

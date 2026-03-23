@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"fmt"
 	"os"
 	"strings"
@@ -63,7 +62,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	}
 
 	if strings.TrimSpace(resp.AgentID) == "" {
-		return usageError("This API key is not agent-scoped (no agent_id). Use an agent-scoped key from the dashboard.")
+		return usageError("This API key is not bound to an identity (no agent_id). Use an identity-bound key from the dashboard.")
 	}
 
 	// Fetch namespace slug for canonical address derivation (needed for
@@ -224,61 +223,4 @@ func resolveServerIdentityState(
 		return "", "", "", ""
 	}
 	return strings.TrimSpace(identity.DID), strings.TrimSpace(identity.StableID), strings.TrimSpace(identity.Custody), strings.TrimSpace(identity.Lifetime)
-}
-
-// recoverIdentity409 handles a 409 from ClaimIdentity by resolving the
-// server's identity for this agent and looking for a matching local key.
-// If found, it returns the identity fields to persist. Otherwise it returns
-// a descriptive error.
-func recoverIdentity409(
-	ctx context.Context,
-	client *aweb.Client,
-	keysDir, address string,
-) (did, signingKeyPath, custody, lifetime string, err error) {
-	did, signingKeyPath, _, custody, lifetime, err = recoverIdentity409WithStableID(ctx, client, keysDir, address)
-	return did, signingKeyPath, custody, lifetime, err
-}
-
-func recoverIdentity409WithStableID(
-	ctx context.Context,
-	client *aweb.Client,
-	keysDir, address string,
-) (did, signingKeyPath, stableID, custody, lifetime string, err error) {
-	resolver := &awid.ServerResolver{Client: client.Client}
-	identity, err := resolver.Resolve(ctx, address)
-	if err != nil {
-		return "", "", "", "", "", fmt.Errorf("identity already exists on the server, and could not resolve %s to recover it: %w\nImport the matching signing key for this identity. If this is a disposable ephemeral identity, decommission it explicitly with 'aw identity decommission --confirm' and create a new workspace identity.", address, err)
-	}
-
-	serverPub, err := awid.ExtractPublicKey(identity.DID)
-	if err != nil {
-		return "", "", "", "", "", fmt.Errorf("identity already set on server with invalid DID %q: %w", identity.DID, err)
-	}
-
-	// Fast path: check expected key location.
-	expectedPath := awid.SigningKeyPath(keysDir, address)
-	priv, loadErr := awid.LoadSigningKey(expectedPath)
-	if loadErr == nil {
-		loadedPub := priv.Public().(ed25519.PublicKey)
-		if loadedPub.Equal(serverPub) {
-			fmt.Fprintf(os.Stderr, "Recovered identity from existing key at %s\n", expectedPath)
-			return identity.DID, expectedPath, identity.StableID, identity.Custody, identity.Lifetime, nil
-		}
-	}
-
-	// Slow path: scan all keys (including rotated/).
-	foundPath, err := awid.ScanKeysForPublicKey(keysDir, serverPub)
-	if err != nil {
-		return "", "", "", "", "", fmt.Errorf("identity already set on server; error scanning local keys: %w", err)
-	}
-	if foundPath != "" {
-		if strings.Contains(foundPath, string(os.PathSeparator)+"rotated"+string(os.PathSeparator)) {
-			fmt.Fprintf(os.Stderr, "Warning: recovered identity from rotated key at %s — server may be out of sync\n", foundPath)
-		} else {
-			fmt.Fprintf(os.Stderr, "Recovered identity from existing key at %s\n", foundPath)
-		}
-		return identity.DID, foundPath, identity.StableID, identity.Custody, identity.Lifetime, nil
-	}
-
-	return "", "", "", "", "", fmt.Errorf("identity already exists on the server (%s) but no matching signing key was found locally.\nTo recover, place the signing key at %s. If this is a disposable ephemeral identity, decommission it explicitly with 'aw identity decommission --confirm' and create a new workspace identity.", identity.DID, expectedPath)
 }

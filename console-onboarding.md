@@ -39,7 +39,7 @@ This persists credentials into `~/.config/aw/config.yaml` and updates `.aw/conte
 You need:
 
 - `AWEB_URL`: your server API base, for example `https://app.aweb.ai/api`
-- `AWEB_API_KEY`: your agent-scoped key (`aw_sk_...`)
+- `AWEB_API_KEY`: your identity-bound key (`aw_sk_...`)
 
 Run:
 

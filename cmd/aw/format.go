@@ -391,7 +391,7 @@ func formatAgentPrivacy(v any) string {
 }
 
 func formatAgentPatch(v any) string {
-	out := v.(agentPatchOutput)
+	out := v.(identityPatchOutput)
 	var sb strings.Builder
 	if out.Alias != "" {
 		sb.WriteString(fmt.Sprintf("Identity:    %s\n", out.Alias))

@@ -41,9 +41,12 @@ func runIdentityDecommission(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	lifetime, custody := resolveSelectionIdentityState(ctx, client, sel)
+	lifetime, custody, err := resolveSelectionIdentityState(ctx, client, sel)
+	if err != nil {
+		return err
+	}
 	if awid.IdentityClassFromLifetime(lifetime) == awid.IdentityClassPermanent {
-		return usageError("the current identity is permanent; use `aw identity replace --successor ...` for continuity, or archive it from the dashboard when that flow is available")
+		return usageError("the current identity is permanent; permanent archival and replacement are owner-admin lifecycle flows, not CLI decommission")
 	}
 	if awid.IdentityClassFromLifetime(lifetime) != awid.IdentityClassEphemeral {
 		return fmt.Errorf("could not confirm that the current identity is ephemeral")
@@ -78,28 +81,43 @@ func runIdentityDecommission(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func resolveSelectionIdentityState(ctx context.Context, client *aweb.Client, sel *awconfig.Selection) (lifetime, custody string) {
-	lifetime = strings.TrimSpace(sel.Lifetime)
-	custody = strings.TrimSpace(sel.Custody)
-	if lifetime != "" && custody != "" {
-		return lifetime, custody
+func resolveSelectionIdentityState(ctx context.Context, client *aweb.Client, sel *awconfig.Selection) (lifetime, custody string, err error) {
+	intro, err := client.Introspect(ctx)
+	if err != nil {
+		return "", "", err
 	}
 
-	namespaceSlug := strings.TrimSpace(sel.NamespaceSlug)
+	namespaceSlug := strings.TrimSpace(intro.NamespaceSlug)
 	if namespaceSlug == "" {
-		if project, err := client.GetCurrentProject(ctx); err == nil {
-			namespaceSlug = strings.TrimSpace(project.Slug)
-		}
+		namespaceSlug = strings.TrimSpace(sel.NamespaceSlug)
+	}
+	alias := strings.TrimSpace(intro.Alias)
+	if alias == "" {
+		alias = strings.TrimSpace(sel.AgentAlias)
+	}
+	address := strings.TrimSpace(intro.Address)
+	if address == "" && namespaceSlug != "" && alias != "" {
+		address = deriveAgentAddress(namespaceSlug, "", alias)
+	}
+	if address == "" {
+		return "", "", fmt.Errorf("could not determine the current identity address from server state")
 	}
 
-	_, _, resolvedCustody, resolvedLifetime := resolveServerIdentityState(ctx, client, namespaceSlug, strings.TrimSpace(sel.AgentAlias), "")
-	if strings.TrimSpace(resolvedLifetime) != "" {
-		lifetime = strings.TrimSpace(resolvedLifetime)
+	resolver := &awid.ServerResolver{Client: client.Client}
+	identity, err := resolver.Resolve(ctx, address)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve current identity %q: %w", address, err)
 	}
-	if strings.TrimSpace(resolvedCustody) != "" {
-		custody = strings.TrimSpace(resolvedCustody)
+	if identity == nil {
+		return "", "", fmt.Errorf("resolve current identity %q: empty response", address)
 	}
-	return lifetime, custody
+
+	lifetime = strings.TrimSpace(identity.Lifetime)
+	custody = strings.TrimSpace(identity.Custody)
+	if lifetime == "" || custody == "" {
+		return "", "", fmt.Errorf("server did not return complete lifecycle state for %s", address)
+	}
+	return lifetime, custody, nil
 }
 
 func cleanupDecommissionedIdentity(sel *awconfig.Selection) (configRemoved, contextRemoved, keyRemoved string, err error) {

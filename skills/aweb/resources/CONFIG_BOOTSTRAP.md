@@ -52,15 +52,29 @@ Key flags:
 - `--set-default` — Set this account as default (default: false)
 - `--write-context` — Use the new agent in the current directory by writing `.aw/context` (default: true)
 - `--print-exports` — Print shell export lines after init
-- `--cloud-token` — Bearer token for hosted cloud bootstrap
-- `--cloud` — Use cloud bootstrap mode
 
-## Cloud Bootstrap
+## Current Bootstrap Flows
 
-For hosted aweb.ai, use cloud bootstrap:
+For a new local project and first workspace:
 
 ```bash
-aw init --server-url https://app.aweb.ai --cloud --cloud-token <token> --project-slug myproject
+aw project create --server-url https://app.aweb.ai/api --project myproject
+```
+
+For an existing project workspace:
+
+```bash
+AWEB_URL=https://app.aweb.ai/api \
+AWEB_API_KEY=aw_sk_project_... \
+aw init
+```
+
+For importing an already-existing identity:
+
+```bash
+AWEB_URL=https://app.aweb.ai/api \
+AWEB_API_KEY=aw_sk_... \
+aw connect
 ```
 
 ## Environment Variables
