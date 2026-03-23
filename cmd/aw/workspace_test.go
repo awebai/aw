@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -583,30 +584,45 @@ func TestAwWorkspaceAddWorktreeCreatesSiblingWorktree(t *testing.T) {
 				"project_slug": "demo",
 				"name_prefix":  "bob",
 			})
-		case "/v1/init":
+		case "/api/v1/invites/cli":
 			initAuth = r.Header.Get("Authorization")
+			srvURL := "http://" + r.Host
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"invite_id":    "inv-1",
+				"token":        "aw_inv_test_worktree",
+				"token_prefix": "aw_inv_test",
+				"alias_hint":   "bob",
+				"access_mode":  "open",
+				"max_uses":     1,
+				"expires_at":   "2099-01-01T00:00:00Z",
+				"namespace":    "demo",
+				"server_url":   srvURL,
+			})
+		case "/api/v1/invites/cli/accept":
+			srvURL := "http://" + r.Host
 			var req map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode init request: %v", err)
+				t.Fatalf("decode invite accept: %v", err)
 			}
 			if req["alias"] != "bob" {
 				t.Fatalf("alias=%v", req["alias"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":         "ok",
-				"created_at":     "2026-03-10T10:00:00Z",
-				"project_id":     "proj-1",
-				"project_slug":   "demo",
-				"namespace_slug": "demo",
-				"namespace":      "demo",
+				"org_id":       "org-1",
+				"org_slug":     "demo",
+				"project_id":   "proj-1",
+				"project_slug": "demo",
+				"namespace":    "demo",
 				"agent_id":     newID,
 				"alias":        "bob",
 				"api_key":      "aw_sk_new",
 				"address":      "demo/bob",
+				"server_url":   srvURL,
 				"created":      true,
 				"did":          "did:key:z6Mktest",
 				"custody":      "self",
 				"lifetime":     "ephemeral",
+				"access_mode":  "open",
 			})
 		case "/v1/workspaces/register":
 			registerAuth = r.Header.Get("Authorization")
@@ -900,29 +916,24 @@ func TestAwWorkspaceAddWorktreeExplicitAliasCreatesSiblingWorktree(t *testing.T)
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/init":
+		case "/api/v1/invites/cli":
+			srvURL := "http://" + r.Host
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"invite_id": "inv-1", "token": "aw_inv_carol", "token_prefix": "aw_inv_c",
+				"max_uses": 1, "expires_at": "2099-01-01T00:00:00Z", "namespace": "demo", "server_url": srvURL, "access_mode": "open",
+			})
+		case "/api/v1/invites/cli/accept":
+			srvURL := "http://" + r.Host
 			var req map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode init request: %v", err)
-			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
 			if req["alias"] != "carol" {
 				t.Fatalf("alias=%v", req["alias"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":         "ok",
-				"created_at":     "2026-03-10T10:00:00Z",
-				"project_id":     "proj-1",
-				"project_slug":   "demo",
-				"namespace_slug": "demo",
-				"namespace":      "demo",
-				"agent_id":     newID,
-				"alias":        "carol",
-				"api_key":      "aw_sk_new",
-				"address":      "demo/carol",
-				"created":      true,
-				"did":          "did:key:z6Mktest",
-				"custody":      "self",
-				"lifetime":     "ephemeral",
+				"org_id": "org-1", "org_slug": "demo", "project_id": "proj-1", "project_slug": "demo",
+				"namespace": "demo", "agent_id": newID, "alias": "carol", "api_key": "aw_sk_new",
+				"address": "demo/carol", "server_url": srvURL, "created": true,
+				"did": "did:key:z6Mktest", "custody": "self", "lifetime": "ephemeral", "access_mode": "open",
 			})
 		case "/v1/workspaces/register":
 			var req map[string]any
@@ -1027,12 +1038,12 @@ func TestAwWorkspaceAddWorktreeCleansUpOnInitFailure(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/init":
+		case "/api/v1/invites/cli":
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"error": map[string]any{
 					"code":    "NOT_ALIAS_RELATED",
-					"message": "bootstrap failed",
+					"message": "invite creation failed",
 				},
 			})
 		case "/v1/agents/heartbeat":
@@ -1147,48 +1158,38 @@ func TestAwWorkspaceAddWorktreeRetriesAliasTakenSuggestion(t *testing.T) {
 			default:
 				t.Fatalf("unexpected suggest call %d", suggestCalls)
 			}
-		case "/v1/init":
+		case "/api/v1/invites/cli":
 			initCalls++
+			srvURL := "http://" + r.Host
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"invite_id": fmt.Sprintf("inv-%d", initCalls), "token": fmt.Sprintf("aw_inv_test_%d", initCalls),
+				"token_prefix": "aw_inv_t", "max_uses": 1, "expires_at": "2099-01-01T00:00:00Z",
+				"namespace": "demo", "server_url": srvURL, "access_mode": "open",
+			})
+		case "/api/v1/invites/cli/accept":
 			var req map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode init request: %v", err)
-			}
-			switch initCalls {
-			case 1:
-				if req["alias"] != "alice-123" {
-					t.Fatalf("first alias=%v", req["alias"])
-				}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			alias, _ := req["alias"].(string)
+			srvURL := "http://" + r.Host
+			switch {
+			case alias == "alice-123":
 				w.WriteHeader(http.StatusConflict)
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"error": map[string]any{
 						"code":    "ALIAS_TAKEN",
 						"message": "alias already taken",
-						"details": map[string]any{
-							"attempted_alias": "alice-123",
-						},
+						"details": map[string]any{"attempted_alias": "alice-123"},
 					},
 				})
-			case 2:
-				if req["alias"] != "bob-3" {
-					t.Fatalf("second alias=%v", req["alias"])
-				}
+			case alias == "bob-3":
 				_ = json.NewEncoder(w).Encode(map[string]any{
-					"org_id":       "org-1",
-					"org_slug":     "demo",
-					"project_id":   "proj-1",
-					"project_slug": "demo",
-					"namespace":    "demo",
-					"agent_id":     newID,
-					"alias":        "bob-3",
-					"api_key":      "aw_sk_new",
-					"address":      "demo/bob-3",
-					"created":      true,
-					"did":          "did:key:z6Mktest",
-					"custody":      "self",
-					"lifetime":     "ephemeral",
+					"org_id": "org-1", "org_slug": "demo", "project_id": "proj-1", "project_slug": "demo",
+					"namespace": "demo", "agent_id": newID, "alias": "bob-3", "api_key": "aw_sk_new",
+					"address": "demo/bob-3", "server_url": srvURL, "created": true,
+					"did": "did:key:z6Mktest", "custody": "self", "lifetime": "ephemeral", "access_mode": "open",
 				})
 			default:
-				t.Fatalf("unexpected bootstrap call %d", initCalls)
+				t.Fatalf("unexpected alias in accept: %v", alias)
 			}
 		case "/v1/workspaces/register":
 			var req map[string]any

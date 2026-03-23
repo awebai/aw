@@ -92,7 +92,6 @@ type initOptions struct {
 	InviteToken                   string
 	AccountName                   string
 	WorkspaceRole                 string
-	RepoOrigin                    string
 	Lifetime                      string // "persistent" (default) or "ephemeral"
 }
 
@@ -499,7 +498,6 @@ func executeInit(opts initOptions) (*initResult, error) {
 	req := &awid.InitRequest{
 		ProjectSlug: opts.NamespaceSlug,
 		ProjectName: namespaceName,
-		RepoOrigin:  opts.RepoOrigin,
 		HumanName:   opts.HumanName,
 		AgentType:   opts.AgentType,
 		DID:         did,
