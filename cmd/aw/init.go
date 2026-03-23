@@ -28,49 +28,35 @@ var initCmd = &cobra.Command{
 }
 
 var (
-	initServerURL       string
-	initNamespaceSlug   string
-	initNamespaceName   string
-	initAlias           string
-	initInviteToken     string
-	initInjectDocs      bool
-	initSetupHooks      bool
-	initHumanName       string
-	initAgentType       string
-	initSaveConfig      bool
-	initSetDefault      bool
-	initWriteContext    bool
-	initPrintExports    bool
-	initCloudToken      string
-	initCloudMode       bool
-	initTargetNamespace string
-	initRole            string
-	initPermanent       bool
+	initServerURL     string
+	initNamespaceSlug string
+	initNamespaceName string
+	initAlias         string
+	initInjectDocs    bool
+	initSetupHooks    bool
+	initHumanName     string
+	initAgentType     string
+	initSaveConfig    bool
+	initSetDefault    bool
+	initWriteContext  bool
+	initPrintExports  bool
+	initRole          string
+	initPermanent     bool
 )
 
-// initFlow identifies which bootstrap path to use. Determined once at the
-// start of collectInitOptions and never re-evaluated.
+// initFlow identifies which clean-slate workspace/identity creation path to use.
 type initFlow int
 
 const (
-	// flowHeadless is the Tier 1 path: no credentials, creates a new tenant.
-	// Endpoint: /api/v1/bootstrap/headless-agent (hosted) or /v1/init (self-hosted).
+	// flowHeadless creates a project plus its first workspace identity.
 	flowHeadless initFlow = iota
 
-	// flowProjectKey is the Tier 2 path: AWEB_API_KEY=aw_sk_... from the
-	// dashboard. The key is project-scoped; the server creates the agent in
-	// the project the key belongs to.
-	// Endpoint: /v1/init with Bearer aw_sk_...
+	// flowProjectKey initializes a workspace inside an existing project using
+	// project authority.
 	flowProjectKey
 
-	// flowInvite accepts a CLI invite token.
-	// Endpoint: cloud invite accept.
+	// flowInvite accepts a spawn invite into another workspace.
 	flowInvite
-
-	// flowCloudJWT uses a cloud JWT or non-aw_sk_ token for authenticated
-	// bootstrap into an existing org.
-	// Endpoint: /api/v1/agents/bootstrap.
-	flowCloudJWT
 )
 
 type initOptions struct {
@@ -89,7 +75,6 @@ type initOptions struct {
 	SetDefault                    bool
 	WriteContext                  bool
 	AuthToken                     string // Bearer token for the selected flow
-	TargetNamespace               string
 	InviteToken                   string
 	AccountName                   string
 	WorkspaceRole                 string
@@ -130,7 +115,7 @@ func init() {
 
 func runInit(cmd *cobra.Command, args []string) error {
 	// When only --inject-docs or --setup-hooks are requested, operate on the
-	// existing workspace without running the full init/register flow.
+	// existing workspace without running the full init flow.
 	if (initInjectDocs || initSetupHooks) && !initNeedsFullInit() {
 		wd, _ := os.Getwd()
 		repoRoot := resolveRepoRoot(wd)
@@ -144,15 +129,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if flow := detectInitFlow(); flow != flowProjectKey {
-		switch flow {
-		case flowHeadless:
-			return usageError("aw init now initializes a workspace in an existing project; use `aw project create` to create a new project")
-		case flowInvite:
-			return usageError("aw init no longer accepts spawn tokens; use `aw spawn accept-invite`")
-		case flowCloudJWT:
-			return usageError("aw init no longer creates hosted custodial identities; use the dashboard create flow for hosted permanent identities")
-		}
+	if strings.TrimSpace(os.Getenv("AWEB_API_KEY")) == "" {
+		return usageError("aw init now initializes a workspace in an existing project; set AWEB_API_KEY to a project-scoped key or use `aw project create`")
 	}
 
 	opts, err := collectInitOptionsForFlow(flowProjectKey)
@@ -193,55 +171,18 @@ func runInit(cmd *cobra.Command, args []string) error {
 }
 
 // initNeedsFullInit returns true if the user passed flags that require the
-// full register flow, or if no .aw/context exists yet (first-time init).
+// full init flow, or if no .aw/context exists yet (first-time init).
 func initNeedsFullInit() bool {
 	if initServerURL != "" || initNamespaceSlug != "" || initAlias != "" ||
-		initInviteToken != "" || initCloudMode || initCloudToken != "" ||
-		initTargetNamespace != "" || initRole != "" || initPermanent {
+		initRole != "" || initPermanent {
 		return true
 	}
-	if strings.TrimSpace(os.Getenv("AWEB_API_KEY")) != "" ||
-		strings.TrimSpace(os.Getenv("AWEB_CLOUD_TOKEN")) != "" {
+	if strings.TrimSpace(os.Getenv("AWEB_API_KEY")) != "" {
 		return true
 	}
 	wd, _ := os.Getwd()
 	_, _, err := awconfig.LoadWorktreeContextFromDir(wd)
 	return err != nil
-}
-
-// detectInitFlow determines which bootstrap path to use based on CLI flags
-// and environment variables. Called once at the start of collectInitOptions.
-func detectInitFlow() initFlow {
-	inviteToken := strings.TrimSpace(initInviteToken)
-	if inviteToken != "" {
-		return flowInvite
-	}
-
-	// Explicit cloud mode flags.
-	if initCloudMode || strings.TrimSpace(initTargetNamespace) != "" {
-		return flowCloudJWT
-	}
-	if strings.TrimSpace(initCloudToken) != "" {
-		return flowCloudJWT
-	}
-	if v := strings.TrimSpace(os.Getenv("AWEB_CLOUD_TOKEN")); v != "" {
-		return flowCloudJWT
-	}
-
-	// AWEB_API_KEY distinguishes project key from cloud JWT.
-	if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); v != "" {
-		if strings.HasPrefix(v, "aw_sk_") {
-			return flowProjectKey
-		}
-		return flowCloudJWT
-	}
-
-	return flowHeadless
-}
-
-func collectInitOptions() (initOptions, error) {
-	flow := detectInitFlow()
-	return collectInitOptionsForFlow(flow)
 }
 
 func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
@@ -252,28 +193,14 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 
 	// --- Validation ---
 
-	inviteToken := strings.TrimSpace(initInviteToken)
-	targetNamespace := strings.TrimSpace(initTargetNamespace)
+	inviteToken := ""
 	if inviteToken != "" && !strings.HasPrefix(inviteToken, "aw_inv_") {
 		return initOptions{}, usageError("invalid --invite token (expected aw_inv_...)")
-	}
-	if flow == flowInvite {
-		if targetNamespace != "" || resolveNamespaceSlug() != "" ||
-			strings.TrimSpace(initNamespaceName) != "" || initCloudMode || strings.TrimSpace(initCloudToken) != "" {
-			return initOptions{}, usageError("--invite cannot be combined with namespace/bootstrap flags")
-		}
-	}
-	if targetNamespace != "" {
-		aliasFromFlag := strings.TrimSpace(initAlias)
-		aliasFromEnv := strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
-		if aliasFromFlag == "" && aliasFromEnv == "" {
-			return initOptions{}, usageError("--target-namespace requires --alias (server cannot auto-assign in a specific namespace)")
-		}
 	}
 
 	// --- Base URL and server resolution ---
 
-	baseURL, serverName, global, err := resolveBaseURLForInit(initServerURL, serverFlag)
+	baseURL, serverName, _, err := resolveBaseURLForInit(initServerURL, serverFlag)
 	if err != nil {
 		return initOptions{}, err
 	}
@@ -285,8 +212,12 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 	switch flow {
 	case flowProjectKey:
 		authToken = strings.TrimSpace(os.Getenv("AWEB_API_KEY"))
-	case flowCloudJWT:
-		authToken = resolveCloudToken(baseURL, serverName, accountName, strings.TrimSpace(initCloudToken), global)
+		if authToken == "" {
+			return initOptions{}, usageError("aw init requires AWEB_API_KEY with a project-scoped key; use `aw project create` for a new project")
+		}
+		if !strings.HasPrefix(authToken, "aw_sk_") {
+			return initOptions{}, usageError("aw init requires a project-scoped API key (aw_sk_...). Hosted permanent identities are created from the dashboard")
+		}
 	}
 
 	// --- Suggestion (one call, reused for namespace + alias + roles) ---
@@ -338,8 +269,8 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 		aliasExplicit = alias != ""
 	}
 	if !aliasExplicit && flow != flowInvite {
-		if !isTTY() && (flow == flowProjectKey || flow == flowCloudJWT) {
-			return initOptions{}, usageError("--alias is required when bootstrapping with an API key (non-interactive)")
+		if !isTTY() && flow == flowProjectKey {
+			return initOptions{}, usageError("--alias is required when initializing an existing project workspace non-interactively")
 		}
 		if suggestion != nil && strings.TrimSpace(suggestion.NamePrefix) != "" {
 			alias = strings.TrimSpace(suggestion.NamePrefix)
@@ -388,7 +319,6 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 		SetDefault:                    initSetDefault,
 		WriteContext:                  initWriteContext,
 		AuthToken:                     authToken,
-		TargetNamespace:               targetNamespace,
 		InviteToken:                   inviteToken,
 		AccountName:                   accountName,
 		WorkspaceRole:                 role,
@@ -532,9 +462,6 @@ func executeInit(opts initOptions) (*initResult, error) {
 	case flowInvite:
 		resp, err = acceptInviteViaCloud(ctx, opts.BaseURL, opts.InviteToken, opts.Alias, opts.HumanName, opts.AgentType, did, pubKeyB64, lifetime)
 
-	case flowCloudJWT:
-		resp, err = bootstrapViaCloud(ctx, opts.BaseURL, opts.AuthToken, req, opts.TargetNamespace)
-
 	case flowProjectKey:
 		var client *aweb.Client
 		client, err = aweb.NewWithAPIKey(opts.BaseURL, opts.AuthToken)
@@ -566,15 +493,6 @@ func executeInit(opts initOptions) (*initResult, error) {
 	}
 	if err != nil {
 		return nil, err
-	}
-
-	// For cloud JWT retry on alias conflict, stay in cloud path.
-	if opts.Flow == flowCloudJWT && opts.RetrySuggestedAliasOnConflict && !resp.Created {
-		req.Alias = nil
-		resp, err = bootstrapViaCloud(ctx, opts.BaseURL, opts.AuthToken, req, opts.TargetNamespace)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	namespaceSlug := strings.TrimSpace(resp.NamespaceSlug)
@@ -835,67 +753,6 @@ func tryHeadlessOrInit(
 	}, nil
 }
 
-func bootstrapViaCloud(
-	ctx context.Context,
-	baseURL string,
-	token string,
-	req *awid.InitRequest,
-	namespaceSlug string,
-) (*awid.InitResponse, error) {
-	if strings.TrimSpace(token) == "" {
-		return nil, fmt.Errorf("hosted Cloud bootstrap requires --cloud-token, AWEB_CLOUD_TOKEN, or an existing aw_sk_ key in config")
-	}
-
-	cloudBaseURL, err := cloudRootBaseURL(baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("hosted Cloud bootstrap requires a valid URL: %w", err)
-	}
-
-	cloudClient, err := aweb.NewWithAPIKey(cloudBaseURL, token)
-	if err != nil {
-		return nil, err
-	}
-
-	cloudReq := &awid.CloudBootstrapAgentRequest{
-		Alias:         req.Alias,
-		HumanName:     req.HumanName,
-		AgentType:     req.AgentType,
-		NamespaceSlug: namespaceSlug,
-		DID:           req.DID,
-		PublicKey:     req.PublicKey,
-		Custody:       req.Custody,
-		Lifetime:      req.Lifetime,
-	}
-
-	cloudResp, err := cloudClient.CloudBootstrapAgent(ctx, cloudReq)
-	if err != nil {
-		return nil, fmt.Errorf("cloud bootstrap failed: %w", err)
-	}
-
-	if strings.TrimSpace(cloudResp.APIKey) == "" {
-		return nil, fmt.Errorf("cloud bootstrap failed: missing api_key in response")
-	}
-
-	return &awid.InitResponse{
-		Status:        "ok",
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
-		ProjectID:     cloudResp.ProjectID,
-		ProjectSlug:   cloudResp.ProjectSlug,
-		AgentID:       cloudResp.AgentID,
-		Alias:         cloudResp.Alias,
-		APIKey:        cloudResp.APIKey,
-		NamespaceSlug: cloudResp.OrgSlug,
-		Namespace:     cloudResp.Namespace,
-		Address:       cloudResp.Address,
-		ServerURL:     cloudResp.ServerURL,
-		Created:       cloudResp.Created,
-		DID:           cloudResp.DID,
-		StableID:      cloudResp.StableID,
-		Custody:       cloudResp.Custody,
-		Lifetime:      cloudResp.Lifetime,
-	}, nil
-}
-
 func acceptInviteViaCloud(
 	ctx context.Context,
 	baseURL string,
@@ -969,73 +826,6 @@ func describeIdentityClass(lifetime string) string {
 	default:
 		return strings.TrimSpace(lifetime)
 	}
-}
-
-func resolveCloudToken(baseURL, serverName, accountName, explicitToken string, global *awconfig.GlobalConfig) string {
-	if v := strings.TrimSpace(explicitToken); v != "" {
-		return v
-	}
-	if v := strings.TrimSpace(os.Getenv("AWEB_CLOUD_TOKEN")); v != "" {
-		return v
-	}
-	if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); v != "" {
-		return v
-	}
-	if global == nil {
-		return ""
-	}
-
-	candidates := make([]string, 0, 4)
-	if v := strings.TrimSpace(accountName); v != "" {
-		candidates = append(candidates, v)
-	}
-	for _, name := range sortedAccountNames(global) {
-		acct := global.Accounts[name]
-		if strings.TrimSpace(serverName) != "" && strings.TrimSpace(acct.Server) == strings.TrimSpace(serverName) {
-			candidates = append(candidates, name)
-		}
-	}
-	baseHost := hostFromBaseURL(baseURL)
-	if baseHost != "" {
-		for _, name := range sortedAccountNames(global) {
-			acct := global.Accounts[name]
-			srv, ok := global.Servers[strings.TrimSpace(acct.Server)]
-			if !ok || strings.TrimSpace(srv.URL) == "" {
-				continue
-			}
-			if hostFromBaseURL(srv.URL) == baseHost {
-				candidates = append(candidates, name)
-			}
-		}
-	}
-	if v := strings.TrimSpace(global.DefaultAccount); v != "" {
-		candidates = append(candidates, v)
-	}
-
-	seen := map[string]struct{}{}
-	for _, accountName := range candidates {
-		if _, ok := seen[accountName]; ok {
-			continue
-		}
-		seen[accountName] = struct{}{}
-		acct, ok := global.Accounts[accountName]
-		if !ok {
-			continue
-		}
-		token := strings.TrimSpace(acct.APIKey)
-		if token != "" && !strings.HasPrefix(token, "aw_sk_") {
-			return token
-		}
-	}
-
-	for _, name := range sortedAccountNames(global) {
-		token := strings.TrimSpace(global.Accounts[name].APIKey)
-		if token != "" && !strings.HasPrefix(token, "aw_sk_") {
-			return token
-		}
-	}
-
-	return ""
 }
 
 func cloudRootBaseURL(baseURL string) (string, error) {

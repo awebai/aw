@@ -247,7 +247,7 @@ func recoverIdentity409WithStableID(
 	resolver := &awid.ServerResolver{Client: client.Client}
 	identity, err := resolver.Resolve(ctx, address)
 	if err != nil {
-		return "", "", "", "", "", fmt.Errorf("identity already set on server, and could not resolve %s to recover: %w\nRun 'aw reset --remote --confirm' to clear the server identity and re-provision.", address, err)
+		return "", "", "", "", "", fmt.Errorf("identity already exists on the server, and could not resolve %s to recover it: %w\nImport the matching signing key for this identity. If this is a disposable ephemeral identity, decommission it explicitly with 'aw identity decommission --confirm' and create a new workspace identity.", address, err)
 	}
 
 	serverPub, err := awid.ExtractPublicKey(identity.DID)
@@ -280,5 +280,5 @@ func recoverIdentity409WithStableID(
 		return identity.DID, foundPath, identity.StableID, identity.Custody, identity.Lifetime, nil
 	}
 
-	return "", "", "", "", "", fmt.Errorf("identity already set on server (%s) but no matching signing key found locally.\nTo recover, place the signing key at %s, or run 'aw reset --remote --confirm' to clear the server identity and re-provision.", identity.DID, expectedPath)
+	return "", "", "", "", "", fmt.Errorf("identity already exists on the server (%s) but no matching signing key was found locally.\nTo recover, place the signing key at %s. If this is a disposable ephemeral identity, decommission it explicitly with 'aw identity decommission --confirm' and create a new workspace identity.", identity.DID, expectedPath)
 }

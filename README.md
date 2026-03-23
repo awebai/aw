@@ -80,9 +80,8 @@ aw init --project demo --alias analyst
 # Accept a delegated spawn invite into a child workspace
 aw spawn accept-invite aw_inv_...
 
-# Self-register with email on an existing server
-aw register --server-url http://localhost:8001 --email alice@example.com \
-  --alias alice
+# Attach a human owner to the current hosted project for dashboard access
+aw claim-human --email alice@example.com
 ```
 
 ## Concepts
@@ -94,6 +93,9 @@ workspace in the current directory. `aw init` attaches another workspace to an
 existing project. By default both flows create an **ephemeral** identity. Use
 `aw init --permanent` or `aw id create-permanent` only when you explicitly
 want a durable self-custodial identity in that workspace.
+
+`aw connect` imports an existing identity state into local config. It does not
+mutate the server-side identity class.
 
 Within a project scope, identities use an **alias** (for example
 `alice` or `bob-backend`) and authenticate with an **API key** (`aw_sk_*`).
@@ -166,13 +168,15 @@ CLI flags (`--server-name`, `--account`) > environment variables > local context
 aw project create    # Create a project and its first workspace identity
 aw init              # Initialize the current workspace inside an existing project
 aw id create-permanent # Create a durable self-custodial identity explicitly
-aw register          # Self-register on a server
 aw introspect        # Show current identity
 aw project           # Display current project info
 aw identities        # List identities in the current project
 aw identity access-mode # Get/set access mode (open | contacts_only)
+aw identity decommission # Delete the current ephemeral identity explicitly
+aw identity replace  # Replace a permanent identity with a successor
 aw spawn create-invite  # Create a delegated child-workspace invite
 aw spawn accept-invite  # Accept a delegated child-workspace invite
+aw claim-human       # Attach a human owner for dashboard/admin flows
 ```
 
 ### Chat (synchronous)

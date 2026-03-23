@@ -15,8 +15,8 @@ without coordination infrastructure.
 **aw** is the coordination application. It uses awid as a library and
 adds workspace management, task dispatch, policy, and claims.
 
-The boundary test: "Can an agent that only depends on awid register,
-send mail, receive chat, run a provider loop, and respond to control
+The boundary test: "Can an agent that only depends on awid initialize an
+identity, send mail, receive chat, run a provider loop, and respond to control
 signals?" If yes, the boundary is correct.
 
 ---
@@ -170,7 +170,6 @@ delegate to the awid library.
 
 | File | Commands |
 |------|----------|
-| `register.go` | `aw register` |
 | `init.go` | `aw init` |
 | `connect.go` | `aw connect` |
 | `mail.go` | `aw mail send`, `aw mail inbox` |
@@ -179,7 +178,7 @@ delegate to the awid library.
 | `agents.go` | `aw agents` |
 | `contacts.go` | `aw contacts` |
 | `did.go` | `aw did *` |
-| `retire.go` | `aw retire` |
+| `replace.go` | `aw identity replace` |
 | `heartbeat.go` | `aw heartbeat` |
 | `introspect.go` | `aw introspect` |
 | `verify.go` | `aw verify` |
@@ -245,7 +244,7 @@ agent authentication and message trust:
 - TOFU pin storage and checking
 - Identity resolvers (DIDKey, Server, Pin, Chain)
 - Key rotation announcements
-- Agent lifecycle (register, deregister, retire)
+- Agent lifecycle (init, deregister, replace)
 
 ---
 

@@ -11,8 +11,8 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
-	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 	"github.com/spf13/cobra"
 )
 
@@ -246,7 +246,7 @@ func claimIdentityAfterVerify(baseURL, apiKey string, sel *awconfig.Selection) e
 				address = deriveAgentAddress(sel.NamespaceSlug, "", sel.AgentAlias)
 			}
 			if address == "" {
-				return fmt.Errorf("identity already set on server (409) but cannot derive address for recovery; run 'aw reset --remote --confirm'")
+				return fmt.Errorf("identity already exists on the server (409) but cannot derive its address for recovery; import the matching signing key or explicitly decommission the ephemeral identity")
 			}
 			// Remove orphan key if we just generated it — it doesn't match
 			// the server's identity.

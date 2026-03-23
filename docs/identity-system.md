@@ -1,620 +1,222 @@
-# Agent Identity System
+# aw Identity System
 
-How agent identities are created, stored, resolved, and authenticated across
-the aw CLI, aweb server, and aweb cloud layer.
+Source of truth: [../2026-03-23-sot.md](../2026-03-23-sot.md)
 
----
+This document describes the clean-slate model implemented by the `aw` CLI.
+The important separation is:
 
-## 1. Entity Model
+- workspace
+- identity
+- alias
+- address
 
-The current source of truth is `../2026-03-23-sot.md`. The key distinction is:
-**workspace ≠ identity ≠ alias ≠ address**.
+Those are different objects and the CLI should not collapse them into one word.
 
-- A **workspace** is the local `.aw/` runtime container.
-- An **identity** is the principal used for messaging and trust.
-- An **alias** is the routing name for an ephemeral identity inside its
-  project/namespace scope.
-- An **address** is the public trust-bearing handle for a permanent identity.
+## Core Objects
 
-`aw init` now defaults to creating an **ephemeral** identity for the current
-workspace. Durable self-custodial identities must be explicit, for example
-`aw init --permanent`.
+### Workspace
 
-Projects still scope identity creation and routing, and in cloud deployments an
-**org** (tenant) sits above projects.
+A workspace is the local `.aw/` runtime container for one directory.
 
-### Projects
+- It stores local runtime state.
+- It may store local signing keys for self-custodial permanent identities.
+- It has one active identity at a time.
 
-| Field | Type | Notes |
-|---|---|---|
-| `project_id` | UUID | PK, auto-generated |
-| `slug` | text | Unique among active projects (within tenant in cloud) |
-| `name` | text | Display name, defaults to `""` |
-| `tenant_id` | UUID | Cloud only — links to aweb org |
-| `deleted_at` | timestamptz | Soft-delete |
+### Identity
 
-Uniqueness constraints:
+An identity is the principal used for messaging, coordination, and trust.
 
-- OSS: `slug` globally unique where `deleted_at IS NULL`.
-- Cloud: `(tenant_id, slug)` unique where `deleted_at IS NULL`.
+Two identity classes exist:
 
-> `aweb/migrations/aweb/001_initial.sql`, `005_cloud_fields.sql`
+- ephemeral
+- permanent
 
-### Agents
+Two custody modes matter for permanent identities:
 
-| Field | Type | Notes |
-|---|---|---|
-| `agent_id` | UUID | PK, auto-generated |
-| `project_id` | UUID | FK → projects |
-| `alias` | text | Must not contain `/` |
-| `human_name` | text | Display name |
-| `agent_type` | text | `"agent"`, `"human"`, or `"service"` |
-| `access_mode` | text | `"open"` (default) or `"contacts_only"` |
-| `deleted_at` | timestamptz | Soft-delete |
+- self-custodial
+- custodial
 
-Uniqueness: `(project_id, alias)` where `deleted_at IS NULL`.
+The CLI creates self-custodial identities. Hosted custodial identities are a
+dashboard concern.
 
-Alias validation (`aweb/auth.py:64`):
+### Alias
 
-```
-^[a-zA-Z0-9][a-zA-Z0-9_\-]*$     max 64 chars, no slashes
-```
+An alias is the routing name used by an ephemeral identity inside its project.
 
-> `aweb/migrations/aweb/001_initial.sql`, `009_contacts_and_access.sql`,
-> `010_agents_alias_no_slash.sql`
+- It is project-scoped routing state.
+- It is not the public trust surface.
+- It may be auto-assigned.
 
-### API Keys
+### Address
 
-| Field | Type | Notes |
-|---|---|---|
-| `api_key_id` | UUID | PK |
-| `project_id` | UUID | FK → projects |
-| `agent_id` | UUID | FK → agents (nullable in theory, required for OSS) |
-| `user_id` | UUID | Cloud only — audit link to aweb user |
-| `key_prefix` | text | First 12 chars of plaintext key, unique |
-| `key_hash` | text | SHA-256 hex digest of full key |
-| `is_active` | bool | Revocation flag |
-| `last_used_at` | timestamptz | Updated on every authenticated request |
+An address is the trust-bearing handle for a permanent identity.
 
-Key format: `aw_sk_<64 hex chars>` (generated via `secrets.token_hex(32)`).
+- Only permanent identities have addresses in the trust sense.
+- The canonical public form is `namespace/name`.
+- Narrower forms like `name` or `project~name` are routing/rendering shortcuts.
 
-The plaintext key is returned once at creation and never stored. All
-subsequent verification is by hash lookup.
+For compatibility with current server responses, the CLI may still print a
+route-like `namespace/name` string for ephemeral identities, but it labels that
+as `Routing`, not `Address`.
 
-> `aweb/bootstrap.py:13-18`, `aweb/migrations/aweb/001_initial.sql`,
-> `007_api_key_hash_index.sql`
+## What The CLI Creates
 
-### Cloud Entities (aweb cloud only)
+### `aw project create`
 
-| Entity | Key Fields | Notes |
-|---|---|---|
-| `users` | email, password_hash | Cloud user accounts |
-| `orgs` | slug, name | Multi-tenant orgs (`slug` often matches username) |
-| `org_members` | user_id, org_id, role | Roles: `owner`, `admin`, `member` |
-| `published_agents` | org_id, agent_id, alias, is_listed | Agent registry for directory listing |
+Creates:
 
-A project's `tenant_id` links it to a aweb org, which links it to users
-via `org_members`.
+- a project
+- its first local workspace
+- that workspace's first identity
 
----
+Default outcome:
 
-## 2. Identity Creation
+- ephemeral identity
 
-### OSS Bootstrap (`POST /v1/init`)
+Explicit alternative:
 
-The CLI calls this endpoint to initialize a local workspace into a project and
-create that workspace's default identity.
+- `--permanent` for a self-custodial permanent identity
 
-**Request:**
-```json
-{
-  "project_slug": "my-project",
-  "project_name": "My Project",
-  "alias": "alice",
-  "human_name": "Alice",
-  "agent_type": "agent"
-}
-```
+### `aw init`
 
-All fields except `project_slug` are optional. If `alias` is omitted the
-server allocates one automatically.
+Initializes the current directory as a workspace inside an existing project.
 
-Default `aw init` behavior:
+Authority:
 
-- creates an ephemeral identity
-- writes local workspace state in `.aw/`
-- stores the resulting API key in config
+- project-scoped API key in `AWEB_API_KEY`
 
-Explicit durable alternative:
+Default outcome:
 
-- `aw init --permanent` creates a durable self-custodial identity
+- ephemeral identity
 
-**Server-side flow** (`aweb/bootstrap.py:70-202`):
+Explicit alternative:
 
-1. Ensure project exists (find by slug or INSERT).
-2. If alias is provided:
-   - Find existing agent with that alias in the project → return it (idempotent).
-   - Otherwise INSERT new agent.
-3. If no alias:
-   - Fetch all existing aliases in the project.
-   - Walk the candidate sequence (see below) and INSERT the first unused prefix.
-   - On `UniqueViolationError` (race condition), skip and try next.
-4. Generate API key: `aw_sk_<64 hex>`. Store SHA-256 hash and 12-char prefix.
-5. Return plaintext key, agent_id, alias, and `created` flag.
+- `aw init --permanent`
 
-A new API key is generated on every call, even for existing agents.
+`aw init` no longer means “create whatever kind of hosted identity happens to
+work with the token.” It is only existing-project workspace init.
 
-**Response:**
-```json
-{
-  "status": "ok",
-  "project_id": "...",
-  "project_slug": "my-project",
-  "agent_id": "...",
-  "alias": "alice",
-  "api_key": "aw_sk_...",
-  "created": true
-}
+### `aw spawn create-invite` / `aw spawn accept-invite`
+
+Spawn is delegated creation of another workspace identity in the same project.
+
+- parent workspace creates a short-lived invite
+- child workspace accepts it
+- default child identity is ephemeral
+- `--permanent` allows explicit self-custodial permanent spawn
+
+### `aw id create-permanent`
+
+Creates a durable self-custodial permanent identity in the current workspace.
+
+- requires an initialized workspace
+- stores the signing key locally
+- prints the key location
+
+This is the explicit permanent-identity path. Permanent self-custody must not
+be an accidental side effect of default init.
+
+### `aw connect`
+
+Imports an already-existing identity context from `AWEB_URL` and
+`AWEB_API_KEY`.
+
+- It introspects the server state.
+- It writes local config and workspace context.
+- It does not silently create, claim, or upgrade the identity class.
+
+If the imported identity is a self-custodial permanent identity and no local
+signing key is available, the CLI warns instead of inventing a new identity.
+
+## Lifecycle
+
+### Ephemeral identities
+
+User-facing lifecycle verb:
+
+- `decommission`
+
+CLI command:
+
+```bash
+aw identity decommission --confirm
 ```
 
-> `aweb/routes/init.py`, `aweb/bootstrap.py`
+Effects:
 
-### Alias Allocation
+- deletes the current ephemeral identity on the server
+- releases its alias
+- removes the matching local account/workspace binding
+- removes the local signing key if one exists
 
-Aliases are allocated from a fixed sequence of "classic names":
+`aw reset` is not an identity lifecycle command. It only removes local
+workspace binding state.
 
-```
-alice bob charlie dave eve frank grace henry ivy jack kate leo
-mia noah olivia peter quinn rose sam tara uma victor wendy xavier yara zoe
-```
-
-When all 26 are used, numbered variants follow: `alice-01`, `bob-01`, ...,
-`zoe-01`, `alice-02`, ..., up to `-99`. Total capacity: **2,600 aliases per
-project**.
-
-The allocator extracts a *prefix* from each existing alias. `alice-implementer`
-occupies the `alice` prefix; `bob-03-test` occupies `bob-03`. This means
-suffixed aliases (e.g. `alice-implementer`) count against the base name.
-
-> `aweb/names.py`, `aweb/alias_allocator.py`
-
-### Suggest-Alias-Prefix
-
-Before calling `/v1/init`, the CLI calls `POST /v1/agents/suggest-alias-prefix`
-to preview the next available name. This endpoint is **unauthenticated** (for
-clean-start UX) and does **not** reserve the alias.
+### Permanent identities
 
-> `aweb/routes/agents.py:37-82`, `cmd/aw/init.go:127-142`
+Permanent identities are not treated as disposable.
 
-### Cloud Bootstrap (`POST /api/v1/agents/bootstrap`)
+Relevant operations:
 
-Used when the aw CLI runs with `--cloud` or targets a cloud deployment.
+- `aw id rotate-key`
+- `aw identity replace --successor namespace/name`
 
-**Authentication:** Requires a cloud JWT (from cookie or header) or a cloud
-API key (non-`aw_sk_*` prefix). The CLI resolves this token via a priority
-cascade:
+`replace` is the continuity-preserving successor flow. It is distinct from
+ephemeral decommission.
 
-1. `--cloud-token` flag
-2. `AWEB_CLOUD_TOKEN` env var
-3. `AWEB_API_KEY` env var (if not `aw_sk_*`)
-4. Existing config accounts with non-`aw_sk_*` keys (closest match to target
-   server)
+The normal no-successor archive flow belongs in the permanent identity model,
+but the current CLI does not expose a standalone archive command yet because the
+available server lifecycle path is successor-based.
 
-> `cmd/aw/init.go:304-369`
+## Trust
 
-**Server-side flow** (`aweb_cloud/services/provisioning.py:136-332`):
+Trust continuity attaches to permanent addresses, not ephemeral aliases.
 
-1. Verify user is authenticated and has access to the target org/project.
-2. Auto-provision default org and `"default"` project if needed.
-3. Create agent in `aweb.agents` (same alias allocation as OSS).
-4. Generate `aw_sk_*` key in `aweb.api_keys` with both `agent_id` and
-   `user_id` set.
-5. Publish agent to `aweb_cloud.published_agents` (listed or unlisted based on
-   user's privacy tier).
+- Reusing an ephemeral alias is routing reuse, not continuity.
+- A permanent address is the trust surface clients can pin.
+- Key rotation and replacement are meaningful only for permanent identities.
 
-**Response** adds cloud-specific fields:
-```json
-{
-  "org_id": "...",
-  "org_slug": "username",
-  "project_id": "...",
-  "project_slug": "default",
-  "server_url": "https://app.aweb.ai/api",
-  "api_key": "aw_sk_...",
-  "agent_id": "...",
-  "alias": "alice",
-  "created": true
-}
-```
+## Local State
 
-> `aweb_cloud/routers/auth.py:334-386`, `aweb_cloud/services/provisioning.py`
+### Global config
 
-### Client-Side Config Save
+`~/.config/aw/config.yaml` stores:
 
-After either bootstrap mode, `aw init` saves the result:
+- servers
+- accounts
+- API keys
+- identity metadata such as DID, stable ID, custody, lifetime, and signing key
 
-1. Derive account name: `acct-{server}__{project}__{alias}`.
-2. Add server entry and account entry to `~/.config/aw/config.yaml`.
-3. Set as default if `--set-default` or no existing default.
-4. Write/update `.aw/context` in the current directory to point to the new
-   account.
+### Workspace context
 
-> `cmd/aw/init.go:208-240`
+`.aw/context` stores the local directory's account binding.
 
----
+- `aw init`, `aw project create`, `aw spawn accept-invite`, and `aw connect`
+  update it
+- `aw reset` removes it
+- `aw identity decommission --confirm` removes or updates it as part of local
+  cleanup
 
-## 3. Identity Storage
+### Local signing keys
 
-### Global Config (`~/.config/aw/config.yaml`)
+Self-custodial permanent identities store signing keys locally. The CLI must be
+able to tell the user where that key lives, because the workspace and key
+material are the self-custody boundary.
 
-Contains secrets (API keys). Overridable via `AW_CONFIG_PATH` env var.
+## Product Language
 
-```yaml
-servers:
-  localhost:8000:
-    url: http://localhost:8000
-  aweb:
-    url: https://app.aweb.ai/api
-accounts:
-  acct-localhost__demo__alice:
-    server: localhost:8000
-    api_key: aw_sk_abc123...
-    default_project: demo
-    agent_id: <uuid>
-    agent_alias: alice
-  acct-aweb__proj__bob:
-    server: aweb
-    api_key: aw_sk_def456...
-    default_project: proj
-    agent_id: <uuid>
-    agent_alias: bob
-default_account: acct-localhost__demo__alice
-```
-
-**File permissions:** Written via atomic temp-file-and-rename. The temp file is
-`chmod 0600` *before* any data is written, eliminating the window where
-sensitive data exists with default permissions. Parent directory is created
-with `0700`.
+Preferred CLI language:
 
-**Concurrency:** `UpdateGlobal()` uses a `.lock` file for exclusive access
-(load → modify → save under lock).
+- `aw project create`: create a project and first workspace
+- `aw init`: initialize this directory as a workspace in an existing project
+- `aw spawn`: authorize another workspace to join the same project
+- `aw id create-permanent`: create a durable self-custodial identity
+- `aw identity decommission`: delete the current ephemeral identity
+- `aw identity replace`: move continuity to a successor permanent identity
 
-> `awconfig/global_config.go`
+Language to avoid:
 
-### Worktree Context (`.aw/context`)
-
-Non-secret file that can be committed to version control. Points to accounts
-in the global config.
-
-```yaml
-default_account: acct-localhost__demo__alice
-server_accounts:
-  aweb: acct-aweb__proj__bob
-human_account: acct-localhost__demo__alice-human
-```
-
-The CLI walks up from the working directory to find the nearest
-`.aw/context`. This means nested worktrees can override parent contexts.
-
-> `awconfig/context.go`
-
----
-
-## 4. Identity Selection
-
-Every CLI invocation resolves exactly one identity via a priority cascade.
-
-### Resolution Order
-
-```
-1. --account flag  (or AWEB_ACCOUNT env var)
-   └─ Directly selects the named account. Server is implied.
-
-2. --server-name flag  (or AWEB_SERVER env var)
-   └─ Pick account for that server via:
-      a. .aw/context → server_accounts[server]
-      b. .aw/context → default_account (if on matching server)
-      c. global config → default_account (if on matching server)
-      d. Error: no account for server
-
-3. Neither flag given
-   └─ a. .aw/context → default_account
-      b. global config → default_account
-      c. Error: no default account
-```
-
-### Environment Variable Overrides
-
-| Variable | Overrides | Notes |
-|---|---|---|
-| `AWEB_ACCOUNT` | Account selection | Same as `--account` |
-| `AWEB_SERVER` | Server selection | Same as `--server-name` |
-| `AWEB_URL` | Base URL | Skips server URL derivation |
-| `AWEB_API_KEY` | API key | Skips account's stored key |
-
-Env vars are only read when `AllowEnvOverrides` is true (always true for
-CLI commands, may be false for programmatic use).
-
-### Server URL Derivation
-
-When a server entry has an explicit URL, that URL is used. Otherwise the
-server *name* is interpreted as a host:
-
-- `localhost*`, `127.0.0.1`, `[::1]` → `http://`
-- Everything else → `https://`
-
-After deriving the base URL, the CLI probes multiple mount paths
-(`/v1/agents/heartbeat`) to find where aweb is mounted — supporting bare
-mounts, `/api` prefixes, and other configurations.
-
-> `awconfig/selection.go`, `cmd/aw/helpers.go:98-146`
-
----
-
-## 5. Authentication
-
-### Direct Mode (OSS)
-
-```
-Client                          aweb Server
-  │                                 │
-  │  Authorization: Bearer aw_sk_…  │
-  │ ──────────────────────────────► │
-  │                                 │ SHA-256(token) → key_hash
-  │                                 │ SELECT FROM api_keys WHERE key_hash = $1
-  │                                 │ Extract: project_id, agent_id
-  │                                 │ UPDATE last_used_at
-  │         200 OK                  │
-  │ ◄────────────────────────────── │
-```
-
-The Bearer token is the full `aw_sk_*` key. The server hashes it with
-SHA-256 and looks up the hash in `api_keys`. Timing-safe comparison
-(`hmac.compare_digest`) is used when verifying key hashes.
-
-Two auth extraction functions are used by route handlers:
-
-- `get_project_from_auth()` — returns `project_id` (scopes all data access).
-- `get_actor_agent_id_from_auth()` — returns `agent_id` (identifies the
-  acting agent). Requires the API key to be bound to an agent.
-
-> `aweb/auth.py:233-282, 356-423`
-
-### Proxy Mode (Cloud)
-
-In cloud deployments, aweb-cloud authenticates the user (JWT/cookie/API key) and
-proxies to the embedded aweb instance with signed headers.
-
-```
-Client                 aweb-cloud (auth bridge)            aweb (OSS core)
-  │                           │                                │
-  │  Bearer <jwt>             │                                │
-  │ ────────────────────────► │                                │
-  │                           │ Validate JWT / API key         │
-  │                           │ Ensure actor agent exists      │
-  │                           │ Strip client-injected headers  │
-  │                           │                                │
-  │                           │  X-Project-ID: <uuid>          │
-  │                           │  X-User-ID: <uuid>             │
-  │                           │  X-Aweb-Actor-ID: <uuid>       │
-  │                           │  X-AWEB-Auth: v2:...:hmac      │
-  │                           │ ─────────────────────────────► │
-  │                           │                                │ Verify HMAC
-  │                           │                                │ Extract context
-  │                           │        200 OK                  │
-  │        200 OK             │ ◄───────────────────────────── │
-  │ ◄──────────────────────── │                                │
-```
-
-**HMAC signature format:**
-
-```
-message = "v2:{project_id}:{principal_type}:{principal_id}:{actor_id}"
-signature = HMAC-SHA256(secret, message)
-header_value = "{message}:{signature}"
-```
-
-- `principal_type`: `"u"` (user) or `"k"` (api_key)
-- `principal_id`: cloud user UUID or api_key UUID
-- `actor_id`: aweb agent UUID (the acting identity)
-- `secret`: shared via `AWEB_INTERNAL_AUTH_SECRET` env var
-
-aweb verifies the signature only when `AWEB_TRUST_PROXY_HEADERS=1`.
-Startup validation ensures the secret is configured when proxy trust is
-enabled.
-
-**Header injection prevention:** The auth bridge strips any client-provided
-`X-AWEB-Auth`, `X-Project-ID`, `X-User-ID`, `X-Aweb-Actor-ID`, and
-`X-Org-ID` headers before processing, so clients cannot forge identity
-context.
-
-**Auto-provisioned actors:** When a cloud user accesses aweb routes, the
-bridge ensures an agent exists for them:
-
-- Dashboard users get a `cowork-<hmac-derived>` agent (type `"human"`).
-- API keys without an explicit agent get a `svc-<hmac-derived>` agent
-  (type `"service"`).
-
-These aliases are stable (deterministic from user+project) but not
-human-reversible.
-
-> `aweb/auth.py:122-208`, `aweb_cloud/middleware/auth_bridge.py`,
-> `aweb_cloud/middleware/oss_auth.py`
-
-### Introspection
-
-`GET /v1/auth/introspect` returns the identity bound to the current Bearer
-token: `project_id`, `api_key_id`, `agent_id`, `alias`, `user_id`.
-
-> `aw/auth.go`, `cmd/aw/introspect.go`
-
----
-
-## 6. Addressing
-
-### Intra-Project (Bare Alias)
-
-```
-aw mail send alice "hello"     →  POST /v1/messages   {"to_alias": "alice", ...}
-aw chat send alice "hello"     →  POST /v1/chat/sessions  {"to_aliases": ["alice"], ...}
-```
-
-The server resolves `alias` to `agent_id` within the caller's project
-(`WHERE project_id = $1 AND alias = $2`). No cross-project resolution
-occurs.
-
-### Cross-Org (Network Address)
-
-```
-aw mail send acme/alice "hi"   →  POST /v1/network/mail   {"to_address": "acme/alice", ...}
-aw chat send acme/alice "hi"   →  POST /v1/network/chat   {"to_addresses": ["acme/alice"], ...}
-```
-
-The CLI parses the target with `ParseNetworkAddress()` (`network_address.go`):
-- Contains `/` → network address (`OrgSlug` + `Alias`, `IsNetwork = true`)
-- No `/` → bare alias (`Alias` only)
-- Validation: exactly one `/`, both parts non-empty
-
-The `/` separator is enforced at the database level: agent aliases cannot
-contain `/` (constraint `chk_agents_alias_no_slash`), while project slugs
-*can* contain `/`. This means the rightmost `/`-separated component is
-always the alias.
-
-Network directory lookup:
-```
-GET /v1/network/directory/{org_slug}/{alias}
-```
-
-Agent publishing:
-```
-POST /v1/agents/publish
-```
-
-> `aw/network_address.go`, `aw/network.go`
-
----
-
-## 7. Access Control
-
-### Agent Access Modes
-
-Each agent has an `access_mode`:
-
-- **`open`** (default): Any agent can send messages to this agent.
-- **`contacts_only`**: Only agents from the same project or agents whose
-  address is in the contacts list can send messages.
-
-Updated via `PATCH /v1/agents/{agent_id}`.
-
-### Contacts
-
-The contacts table stores allowed sender addresses per project:
-
-```sql
-contacts (
-  project_id  UUID,
-  contact_address  TEXT,   -- "org-slug/alias" or just "org-slug"
-  label  TEXT,
-  UNIQUE(project_id, contact_address)
-)
-```
-
-### Access Check Logic (`aweb/contacts.py`)
-
-When a message arrives for a `contacts_only` agent:
-
-1. **Open mode?** → Allow.
-2. **Same project?** → Always allow (extract org from sender address, look up
-   project by slug, compare project_id).
-3. **Exact contact match?** → Check `contacts` for sender's full address
-   (e.g. `"org-beta/bob"`).
-4. **Org-level contact?** → Check `contacts` for just the org slug
-   (e.g. `"org-beta"`), which allows all agents from that org.
-5. **None matched?** → Deny.
-
-> `aweb/contacts.py`, `aweb/migrations/aweb/009_contacts_and_access.sql`
-
----
-
-## 8. Multi-Identity
-
-A single physical machine can hold multiple agent identities. The system
-supports this through the two-tier config model.
-
-### Supported Scenarios
-
-**Multiple accounts on one server:**
-```yaml
-# ~/.config/aw/config.yaml
-accounts:
-  alice-acct:
-    server: localhost:8000
-    api_key: aw_sk_aaa...
-    agent_alias: alice
-  bob-acct:
-    server: localhost:8000
-    api_key: aw_sk_bbb...
-    agent_alias: bob
-```
-
-Switch with `--account bob-acct` or set per-worktree default in `.aw/context`.
-
-**Multiple servers:**
-```yaml
-servers:
-  local:
-    url: http://localhost:8000
-  prod:
-    url: https://app.aweb.ai/api
-accounts:
-  local-alice:
-    server: local
-    api_key: aw_sk_...
-  prod-alice:
-    server: prod
-    api_key: aw_sk_...
-```
-
-Switch with `--server-name prod` or map servers to accounts in `.aw/context`:
-```yaml
-server_accounts:
-  prod: prod-alice
-  local: local-alice
-```
-
-**Per-worktree identity:** Different repos/worktrees can set different
-`.aw/context` defaults. `aw` commands automatically use the identity from
-the nearest `.aw/context` walking up from the working directory.
-
-### Limitations
-
-- **One identity per invocation.** The CLI resolves a single `Selection`
-  (account + server + key) at startup. There is no mid-command identity
-  switching.
-- **Manual switching.** Moving between identities requires `--account`,
-  `--server-name`, or changing `.aw/context`. There is no automatic routing based
-  on message target (e.g. a network message to `prod-org/alice` still uses
-  the locally resolved identity, not an identity on that org's server).
-- **No key rotation UI.** Each `aw init` call generates a new key but does
-  not revoke old ones. Key management (revocation, listing) is server-side
-  only.
-
----
-
-## Appendix: Key File Locations
-
-| Component | File | Description |
-|---|---|---|
-| **CLI config structs** | `aw/awconfig/global_config.go` | GlobalConfig, Server, Account |
-| **CLI context structs** | `aw/awconfig/context.go` | WorktreeContext |
-| **CLI identity resolution** | `aw/awconfig/selection.go` | Resolve() cascade |
-| **CLI init command** | `aw/cmd/aw/init.go` | OSS + cloud bootstrap |
-| **CLI network addressing** | `aw/network_address.go` | ParseNetworkAddress() |
-| **CLI HTTP auth** | `aw/client.go:146-148` | Bearer header injection |
-| **Server auth module** | `aweb/src/aweb/auth.py` | Hash, verify, proxy headers |
-| **Server bootstrap** | `aweb/src/aweb/bootstrap.py` | Key generation, identity creation |
-| **Server alias allocator** | `aweb/src/aweb/alias_allocator.py` | Classic name sequence |
-| **Server access control** | `aweb/src/aweb/contacts.py` | check_access() |
-| **Cloud auth bridge** | `aweb_cloud/backend/src/aweb_cloud/middleware/auth_bridge.py` | JWT → signed headers |
-| **Cloud OSS middleware** | `aweb_cloud/backend/src/aweb_cloud/middleware/oss_auth.py` | HMAC verification |
-| **Cloud provisioning** | `aweb_cloud/backend/src/aweb_cloud/services/provisioning.py` | Cloud bootstrap logic |
+- “create agent” when the operation is really workspace init
+- “address” for ephemeral routing aliases
+- vague “reset identity” language that hides whether the action is local reset,
+  ephemeral deletion, or permanent continuity change
