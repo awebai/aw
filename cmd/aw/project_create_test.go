@@ -107,6 +107,9 @@ func TestAwProjectCreateAgainstHosted(t *testing.T) {
 	}
 
 	// Verify request body.
+	if gotBody["project_slug"] != "myteam" {
+		t.Fatalf("project_slug=%v", gotBody["project_slug"])
+	}
 	if gotBody["namespace_slug"] != "myteam" {
 		t.Fatalf("namespace_slug=%v", gotBody["namespace_slug"])
 	}
@@ -153,6 +156,121 @@ func TestAwProjectCreateAgainstHosted(t *testing.T) {
 				t.Fatalf("agent_alias=%q", acct.IdentityHandle)
 			}
 			if acct.NamespaceSlug != "myteam" {
+				t.Fatalf("namespace_slug=%q", acct.NamespaceSlug)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected account with headless API key in config:\n%s", string(cfgData))
+	}
+}
+
+func TestAwProjectCreateSupportsSeparateNamespaceSlug(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name_prefix": "deploy-bot", "roles": []string{}})
+		case "/api/v1/create-project":
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project_id":     "proj-1",
+				"project_slug":   "platform",
+				"namespace_slug": "acme",
+				"namespace":      "acme.aweb.ai",
+				"identity_id":    "identity-1",
+				"alias":          "deploy-bot",
+				"address":        "acme.aweb.ai/deploy-bot",
+				"api_key":        "aw_sk_headless_test",
+				"did":            "did:key:z6MkTest",
+				"stable_id":      "stable-1",
+				"custody":        "self",
+				"lifetime":       "ephemeral",
+				"created":        true,
+			})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, string(out))
+	}
+
+	run := exec.CommandContext(ctx, bin, "project", "create",
+		"--project", "platform",
+		"--namespace", "acme",
+		"--alias", "deploy-bot",
+		"--json",
+		"--write-context=false",
+		"--print-exports=false",
+	)
+	run.Stdin = strings.NewReader("")
+	run.Env = append(os.Environ(),
+		"AWEB_URL="+server.URL,
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_API_KEY=",
+		"AWEB_ALIAS=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+
+	if gotBody["project_slug"] != "platform" {
+		t.Fatalf("project_slug=%v", gotBody["project_slug"])
+	}
+	if gotBody["namespace_slug"] != "acme" {
+		t.Fatalf("namespace_slug=%v", gotBody["namespace_slug"])
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(extractJSON(t, out), &resp); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	}
+	if resp["project_slug"] != "platform" {
+		t.Fatalf("response project_slug=%v", resp["project_slug"])
+	}
+	if resp["namespace_slug"] != "acme" {
+		t.Fatalf("response namespace_slug=%v", resp["namespace_slug"])
+	}
+
+	cfgData, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg awconfig.GlobalConfig
+	if err := yaml.Unmarshal(cfgData, &cfg); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	found := false
+	for _, acct := range cfg.Accounts {
+		if acct.APIKey == "aw_sk_headless_test" {
+			found = true
+			if acct.NamespaceSlug != "acme" {
 				t.Fatalf("namespace_slug=%q", acct.NamespaceSlug)
 			}
 			break

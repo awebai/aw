@@ -69,9 +69,16 @@ Usage:
 aw project create --project myteam
 ```
 
+If the authoritative namespace must differ from the project slug:
+
+```bash
+aw project create --project platform --namespace acme
+```
+
 Creates:
 
 - a project
+- its authoritative namespace
 - its first local workspace
 - that workspace's first identity
 

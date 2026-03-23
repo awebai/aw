@@ -83,7 +83,7 @@ aw connect
 2. New local project and first workspace:
 
 ```bash
-aw project create --server-url https://app.aweb.ai/api --project <project-slug> --human-name <human-name>
+aw project create --server-url https://app.aweb.ai/api --project <project-slug> [--namespace <namespace-slug>] --human-name <human-name>
 ```
 
 3. Existing project workspace bootstrap:

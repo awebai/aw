@@ -56,6 +56,9 @@ aw update
 # Create a project and its first workspace identity
 aw project create --server-url http://localhost:8001 --project demo --human-name "Alice"
 
+# Use a distinct authoritative namespace when it should differ from the project slug
+aw project create --server-url http://localhost:8001 --project platform --namespace acme
+
 # Verify identity
 aw whoami
 
@@ -89,7 +92,9 @@ aw claim-human --email alice@example.com
 ### Workspaces and identities
 
 `aw project create` creates a new project plus the first local `.aw/`
-workspace in the current directory. `aw init` attaches another workspace to an
+workspace in the current directory. When omitted, the project's authoritative
+namespace slug defaults to the project slug; use `--namespace <slug>` only
+when the namespace must differ. `aw init` attaches another workspace to an
 existing project. By default both flows create an **ephemeral** identity. Use
 `aw project create --permanent --name <name>` or
 `aw init --permanent --name <name>` only when you explicitly want a durable

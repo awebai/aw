@@ -47,6 +47,7 @@ Key flags:
 - `--alias` — Ephemeral identity handle (default: server-suggested)
 - `--permanent --name <name>` — Create a permanent self-custodial identity instead of the default ephemeral one
 - `--project` — Required for `aw project create`, not for `aw init`
+- `--namespace` — Optional authoritative namespace slug when it differs from the project slug
 - `--project-name` — Optional project display name for `aw project create`
 - `--set-default` — Set this account as default (default: false)
 - `--print-exports` — Print shell export lines after creation/init
@@ -58,6 +59,13 @@ For a new local project and first workspace:
 ```bash
 AWEB_URL=https://app.aweb.ai/api \
 aw project create --project myproject
+```
+
+When the authoritative namespace should differ from the project slug:
+
+```bash
+AWEB_URL=https://app.aweb.ai/api \
+aw project create --project platform --namespace acme
 ```
 
 For an existing project workspace:

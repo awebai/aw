@@ -29,8 +29,9 @@ var initCmd = &cobra.Command{
 
 var (
 	initServerURL     string
+	initProjectSlug   string
+	initProjectName   string
 	initNamespaceSlug string
-	initNamespaceName string
 	initAlias         string
 	initName          string
 	initReachability  string
@@ -66,8 +67,9 @@ type initOptions struct {
 	WorkingDir          string
 	BaseURL             string
 	ServerName          string
+	ProjectSlug         string
+	ProjectName         string
 	NamespaceSlug       string
-	NamespaceName       string
 	IdentityAlias       string
 	IdentityName        string
 	AddressReachability string
@@ -220,39 +222,47 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 		}
 	}
 
-	// --- Suggestion (one call, reused for namespace + alias + roles) ---
+	// --- Suggestion (one call, reused for project + alias + roles) ---
 
-	nsSlugForSuggestion := ""
+	projectSlugForSuggestion := ""
 	if flow != flowProjectKey {
-		nsSlugForSuggestion = resolveNamespaceSlug()
+		projectSlugForSuggestion = resolveProjectSlug()
 	}
-	suggestion := fetchInitSuggestion(baseURL, nsSlugForSuggestion, authToken)
+	suggestion := fetchInitSuggestion(baseURL, projectSlugForSuggestion, authToken)
 
 	// --- Project ---
 
-	nsSlug := ""
+	projectSlug := ""
 	if flow != flowProjectKey {
-		nsSlug = resolveNamespaceSlug()
+		projectSlug = resolveProjectSlug()
 	}
-	if nsSlug == "" && suggestion != nil {
-		nsSlug = strings.TrimSpace(suggestion.ProjectSlug)
+	if projectSlug == "" && suggestion != nil {
+		projectSlug = strings.TrimSpace(suggestion.ProjectSlug)
 	}
-	if nsSlug == "" && flow != flowProjectKey {
+	if projectSlug == "" && flow != flowProjectKey {
 		if isTTY() {
 			suggested := sanitizeSlug(filepath.Base(workingDir))
 			v, err := promptString("Project", suggested)
 			if err != nil {
 				return initOptions{}, err
 			}
-			nsSlug = v
+			projectSlug = v
 		} else {
 			return initOptions{}, usageError("missing project slug (use --project or AWEB_PROJECT)")
 		}
 	}
 
-	nsName := strings.TrimSpace(initNamespaceName)
-	if nsName == "" && flow != flowProjectKey {
-		nsName = strings.TrimSpace(os.Getenv("AWEB_PROJECT_NAME"))
+	projectName := strings.TrimSpace(initProjectName)
+	if projectName == "" && flow != flowProjectKey {
+		projectName = strings.TrimSpace(os.Getenv("AWEB_PROJECT_NAME"))
+	}
+
+	namespaceSlug := ""
+	if flow == flowHeadless {
+		namespaceSlug = resolveExplicitNamespaceSlug()
+		if namespaceSlug == "" {
+			namespaceSlug = projectSlug
+		}
 	}
 
 	// --- Human name and agent type ---
@@ -308,8 +318,9 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 		WorkingDir:          workingDir,
 		BaseURL:             baseURL,
 		ServerName:          serverName,
-		NamespaceSlug:       nsSlug,
-		NamespaceName:       nsName,
+		ProjectSlug:         projectSlug,
+		ProjectName:         projectName,
+		NamespaceSlug:       namespaceSlug,
 		IdentityAlias:       alias,
 		IdentityName:        name,
 		AddressReachability: normalizeAddressReachability(strings.TrimSpace(initReachability)),
@@ -367,14 +378,24 @@ func normalizeAddressReachability(raw string) string {
 	}
 }
 
-func resolveNamespaceSlug() string {
-	if v := strings.TrimSpace(initNamespaceSlug); v != "" {
+func resolveProjectSlug() string {
+	if v := strings.TrimSpace(initProjectSlug); v != "" {
 		return v
 	}
 	if v := strings.TrimSpace(os.Getenv("AWEB_PROJECT_SLUG")); v != "" {
 		return v
 	}
 	if v := strings.TrimSpace(os.Getenv("AWEB_PROJECT")); v != "" {
+		return v
+	}
+	return ""
+}
+
+func resolveExplicitNamespaceSlug() string {
+	if v := strings.TrimSpace(initNamespaceSlug); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("AWEB_NAMESPACE_SLUG")); v != "" {
 		return v
 	}
 	return ""
@@ -455,9 +476,9 @@ func executeInit(opts initOptions) (*initResult, error) {
 	did := awid.ComputeDIDKey(pub)
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
-	namespaceName := strings.TrimSpace(opts.NamespaceName)
-	if namespaceName == "" {
-		namespaceName = strings.TrimSpace(opts.NamespaceSlug)
+	projectName := strings.TrimSpace(opts.ProjectName)
+	if projectName == "" {
+		projectName = strings.TrimSpace(opts.ProjectSlug)
 	}
 	lifetime := strings.TrimSpace(opts.Lifetime)
 	if lifetime == "" {
@@ -476,8 +497,8 @@ func executeInit(opts initOptions) (*initResult, error) {
 			return nil, err
 		}
 		req := &awid.WorkspaceInitRequest{
-			ProjectSlug:         opts.NamespaceSlug,
-			ProjectName:         namespaceName,
+			ProjectSlug:         opts.ProjectSlug,
+			ProjectName:         projectName,
 			HumanName:           opts.HumanName,
 			AgentType:           opts.AgentType,
 			DID:                 did,
@@ -503,8 +524,8 @@ func executeInit(opts initOptions) (*initResult, error) {
 			return nil, err
 		}
 		createReq := &awid.CreateProjectRequest{
-			ProjectSlug:         opts.NamespaceSlug,
-			ProjectName:         namespaceName,
+			ProjectSlug:         opts.ProjectSlug,
+			ProjectName:         projectName,
 			NamespaceSlug:       opts.NamespaceSlug,
 			HumanName:           opts.HumanName,
 			AgentType:           opts.AgentType,
