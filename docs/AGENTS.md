@@ -137,7 +137,7 @@ It is very important to check for pending chats regularly, and to follow the rul
 Messages are signed automatically. No manual key management needed for normal use.
 
 ```bash
-aw introspect              # show your identity (alias, DID, server)
+aw whoami                  # show your identity (alias, DID, server)
 aw identity log            # view your DID log (key history)
 aw identity rotate-key     # rotate your signing key
 ```

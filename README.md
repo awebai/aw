@@ -57,7 +57,7 @@ aw update
 aw project create --server-url http://localhost:8001 --project demo --human-name "Alice"
 
 # Verify identity
-aw introspect
+aw whoami
 
 # See who else is in the project
 aw identities
@@ -168,7 +168,7 @@ CLI flags (`--server-name`, `--account`) > environment variables > local context
 aw project create    # Create a project and its first workspace identity
 aw init              # Initialize the current workspace inside an existing project
 aw identity create-permanent # Create a durable self-custodial identity explicitly
-aw introspect        # Show current identity
+aw whoami           # Show current identity
 aw project           # Display current project info
 aw identities        # List identities in the current project
 aw identity access-mode # Get/set access mode (open | contacts_only)

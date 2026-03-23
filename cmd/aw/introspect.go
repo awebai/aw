@@ -18,8 +18,8 @@ type introspectOutput struct {
 }
 
 var introspectCmd = &cobra.Command{
-	Use:     "introspect",
-	Aliases: []string{"whoami"},
+	Use:     "whoami",
+	Aliases: []string{"introspect"},
 	Short:   "Show the current identity",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, sel, err := resolveClientSelection()

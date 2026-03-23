@@ -373,9 +373,40 @@ func TestAwTopLevelHelpGroupsCommandsByArchitecture(t *testing.T) {
 		t.Fatalf("expected mcp-config in Identity group:\n%s", text)
 	}
 
+	whoamiIdx := strings.Index(text, "whoami")
+	if whoamiIdx < identityIdx || whoamiIdx > networkIdx {
+		t.Fatalf("expected whoami in Identity group:\n%s", text)
+	}
+
 	runIdx := strings.Index(text, "run")
 	if runIdx < coordinationIdx {
 		t.Fatalf("expected run in Coordination & Runtime group:\n%s", text)
+	}
+}
+
+func TestAwWhoAmIIsCanonicalCommandName(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+
+	helpCmd := exec.CommandContext(ctx, bin, "whoami", "--help")
+	helpCmd.Dir = tmp
+	out, err := helpCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("whoami help failed: %v\n%s", err, string(out))
+	}
+
+	text := string(out)
+	if !strings.Contains(text, "Usage:\n  aw whoami [flags]") {
+		t.Fatalf("expected canonical whoami usage:\n%s", text)
+	}
+	if !strings.Contains(text, "Aliases:\n  whoami, introspect") {
+		t.Fatalf("expected introspect alias in help:\n%s", text)
 	}
 }
 
