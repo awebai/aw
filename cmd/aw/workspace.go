@@ -330,12 +330,15 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(os.Stderr, "Initializing aw...")
 		}
 
-		// add-worktree uses the parent agent's key to create a new agent
-		// in the same project. This is always the cloud bootstrap path
-		// (/api/v1/agents/bootstrap), not /v1/init. The parent's aw_sk_
-		// key is agent-scoped, not a dashboard project key.
+		// Resolve the git remote origin for the new worktree — the server
+		// uses this to identify the project when the key is agent-scoped.
+		worktreeOrigin, _ := resolveWorkspaceRepoOrigin(worktreePath, "")
+		if worktreeOrigin == "" {
+			worktreeOrigin, _ = resolveWorkspaceRepoOrigin(root, "")
+		}
+
 		initOpts := initOptions{
-			Flow:            flowCloudJWT,
+			Flow:            flowProjectKey,
 			WorkingDir:      worktreePath,
 			BaseURL:         sourceBaseURL,
 			ServerName:      sourceServerName,
@@ -352,6 +355,7 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 			TargetNamespace: "",
 			AccountName:     "",
 			WorkspaceRole:   role,
+			RepoOrigin:      worktreeOrigin,
 			Lifetime:        awid.LifetimeEphemeral,
 		}
 
