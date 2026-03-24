@@ -45,6 +45,24 @@ func formatToolCallLines(call ToolCall) []string {
 	return lines
 }
 
+func formatToolResultLines(text string) []string {
+	lines := trimOuterBlankLines(strings.Split(strings.ReplaceAll(text, "\r", ""), "\n"))
+	if len(lines) == 0 {
+		return nil
+	}
+
+	const maxLines = 6
+	formatted := make([]string, 0, min(len(lines), maxLines)+1)
+	for i, line := range lines {
+		if i >= maxLines {
+			formatted = append(formatted, fmt.Sprintf("  = ... +%d lines", len(lines)-maxLines))
+			break
+		}
+		formatted = append(formatted, "  = "+truncateLine(line, 150))
+	}
+	return formatted
+}
+
 func formatCoordinationToolCall(call ToolCall) (string, bool) {
 	if !strings.EqualFold(strings.TrimSpace(call.Name), "Bash") {
 		return "", false
@@ -226,4 +244,27 @@ func truncateText(s string, max int) string {
 		return s[:max]
 	}
 	return s[:max-3] + "..."
+}
+
+func truncateLine(s string, max int) string {
+	runes := []rune(strings.TrimRight(s, " "))
+	if len(runes) <= max {
+		return string(runes)
+	}
+	if max <= 3 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-3]) + "..."
+}
+
+func trimOuterBlankLines(lines []string) []string {
+	start := 0
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	end := len(lines)
+	for end > start && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	return lines[start:end]
 }

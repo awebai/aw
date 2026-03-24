@@ -294,6 +294,24 @@ func TestScreenControllerFooterSeparatesCurrentTextFromPrompt(t *testing.T) {
 	}
 }
 
+func TestScreenControllerFooterSeparatesTranscriptHistoryFromPrompt(t *testing.T) {
+	screen := &ScreenController{
+		promptLabel: ">> ",
+		lines:       []string{"assistant reply"},
+		inputLine:   ">> next",
+		inputCursor: len([]rune("next")),
+		styles:      newScreenStyles(),
+	}
+
+	lines := screen.renderFooterLinesLocked(40)
+	if len(lines) < 1 || lines[0] != "" {
+		t.Fatalf("expected leading blank line before prompt when transcript exists, got %#v", lines)
+	}
+	if !strings.Contains(lines[1], "next") {
+		t.Fatalf("expected prompt after leading blank line, got %#v", lines)
+	}
+}
+
 func TestScreenControllerRenderStatusLineShowsBusySpinner(t *testing.T) {
 	screen := &ScreenController{
 		statusLine:   "working",
