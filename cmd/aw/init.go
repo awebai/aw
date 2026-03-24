@@ -496,9 +496,10 @@ func executeInit(opts initOptions) (*initResult, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Project-scoped API key carries the project context — do not
+		// send project_slug or project_name (server rejects them as
+		// extra inputs when the key already identifies the project).
 		req := &awid.WorkspaceInitRequest{
-			ProjectSlug:         opts.ProjectSlug,
-			ProjectName:         projectName,
 			HumanName:           opts.HumanName,
 			AgentType:           opts.AgentType,
 			DID:                 did,
