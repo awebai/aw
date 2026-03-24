@@ -234,6 +234,93 @@ func TestScreenControllerHistoryNavigation(t *testing.T) {
 	}
 }
 
+func TestScreenControllerBracketedPasteInsertsNewlines(t *testing.T) {
+	screen := &ScreenController{
+		promptLabel:   ">> ",
+		inputLine:     ">> ",
+		historyIndex:  -1,
+		desiredColumn: -1,
+		events:        make(chan ControlEvent, 64),
+	}
+
+	// Simulate bracketed paste: ESC[200~ hello\nworld\nparagraph ESC[201~
+	paste := []byte("\x1b[200~hello\nworld\nparagraph\x1b[201~")
+	screen.handleInlineInput(paste)
+
+	value := InputValueFromLine(screen.inputLine, screen.promptLabel)
+	if value != "hello\nworld\nparagraph" {
+		t.Fatalf("expected multi-line paste in buffer, got %q", value)
+	}
+	if screen.pasting {
+		t.Fatal("expected pasting=false after paste end bracket")
+	}
+
+	// Should not have submitted anything yet — still in the input buffer
+	var prompts []string
+	for {
+		select {
+		case evt := <-screen.events:
+			if evt.Type == ControlPrompt {
+				prompts = append(prompts, evt.Text)
+			}
+		default:
+			goto done
+		}
+	}
+done:
+	if len(prompts) != 0 {
+		t.Fatalf("expected no prompt submissions during paste, got %v", prompts)
+	}
+
+	// Now press Enter to submit the full multi-line text
+	screen.handleInlineInput([]byte{'\r'})
+	var submitted string
+	for {
+		select {
+		case evt := <-screen.events:
+			if evt.Type == ControlPrompt {
+				submitted = evt.Text
+				goto submitted
+			}
+		default:
+			t.Fatal("expected prompt event after Enter")
+		}
+	}
+submitted:
+	if submitted != "hello\nworld\nparagraph" {
+		t.Fatalf("expected full multi-line text in submission, got %q", submitted)
+	}
+}
+
+func TestScreenControllerNewlineStillSubmitsOutsidePaste(t *testing.T) {
+	screen := &ScreenController{
+		promptLabel:   ">> ",
+		inputLine:     ">> ",
+		historyIndex:  -1,
+		desiredColumn: -1,
+		events:        make(chan ControlEvent, 64),
+	}
+
+	screen.handleInlineInput([]byte("hello\r"))
+
+	var submitted string
+	for {
+		select {
+		case evt := <-screen.events:
+			if evt.Type == ControlPrompt {
+				submitted = evt.Text
+				goto done
+			}
+		default:
+			t.Fatal("expected prompt event after Enter")
+		}
+	}
+done:
+	if submitted != "hello" {
+		t.Fatalf("expected single-line submission, got %q", submitted)
+	}
+}
+
 func TestScreenControllerUpMovesWithinWrappedInputBeforeHistory(t *testing.T) {
 	value := strings.Repeat("x", 100)
 	screen := &ScreenController{

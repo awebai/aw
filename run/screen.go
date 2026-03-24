@@ -34,6 +34,7 @@ type ScreenController struct {
 	historyIndex  int
 	historyDraft  string
 	desiredColumn int
+	pasting       bool
 
 	events chan ControlEvent
 	doneCh chan error
@@ -114,9 +115,11 @@ func (s *ScreenController) Start() error {
 	}
 
 	s.active = true
+	s.pasting = false
 	s.styles = newScreenStyles()
 	s.cancelReader = cancelReader
 	s.rawState = rawState
+	fmt.Fprint(s.outputFile, "\033[?2004h")
 	doneCh := make(chan error, 1)
 	s.doneCh = doneCh
 	s.renderFooterLocked()
@@ -165,8 +168,12 @@ func (s *ScreenController) Stop() error {
 
 	s.mu.Lock()
 	s.teardownFooterLocked()
+	s.pasting = false
 	s.mu.Unlock()
 
+	if s.outputFile != nil {
+		fmt.Fprint(s.outputFile, "\033[?2004l")
+	}
 	if rawState != nil {
 		if err := term.Restore(int(s.inputFile.Fd()), rawState); err != nil && loopErr == nil {
 			loopErr = err
@@ -332,7 +339,48 @@ func (s *ScreenController) handleInlineInput(data []byte) {
 	defer s.mu.Unlock()
 
 	for i := 0; i < len(data); {
+		// Bracketed paste: ESC[200~ starts paste, ESC[201~ ends it.
+		// The 6-byte sequence must arrive in a single read buffer; if
+		// split across calls the bytes fall through as normal input.
+		// In practice bufio's 4096-byte buffer prevents this.
+		if i+5 < len(data) && data[i] == 0x1b && data[i+1] == '[' && data[i+2] == '2' && data[i+3] == '0' {
+			if data[i+4] == '0' && data[i+5] == '~' {
+				s.pasting = true
+				i += 6
+				continue
+			}
+			if data[i+4] == '1' && data[i+5] == '~' {
+				s.pasting = false
+				i += 6
+				continue
+			}
+		}
+
 		b := data[i]
+
+		if s.pasting {
+			if b == '\r' {
+				i++
+				continue
+			}
+			if b == '\n' {
+				s.handleInlineRuneLocked('\n')
+				i++
+				continue
+			}
+			if b < 0x20 {
+				i++
+				continue
+			}
+			r, size := utf8.DecodeRune(data[i:])
+			if r == utf8.RuneError && size == 1 {
+				r = rune(b)
+			}
+			s.handleInlineRuneLocked(r)
+			i += size
+			continue
+		}
+
 		switch b {
 		case 0x03:
 			if s.exitConfirm {
@@ -486,6 +534,7 @@ func (s *ScreenController) handleInlineSubmitLocked() {
 	}
 
 	value := InputValueFromLine(s.inputLine, s.promptLabel)
+	s.pasting = false
 	s.pending = false
 	s.inputLine = s.promptLabel
 	s.inputCursor = 0
