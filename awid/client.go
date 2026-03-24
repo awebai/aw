@@ -83,6 +83,7 @@ const (
 type agentMeta struct {
 	Lifetime string // "persistent" or "ephemeral"
 	Custody  string // "self" or "custodial"
+	Resolved bool
 }
 
 // Client is an aweb HTTP client.
@@ -208,19 +209,44 @@ func (c *Client) LatestClientVersion() string {
 	return ""
 }
 
+func (c *Client) canonicalTrustAddress(address string) string {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return ""
+	}
+	if strings.Contains(address, "/") || strings.Contains(address, "~") {
+		return address
+	}
+	if namespace := c.namespaceSlug(); namespace != "" {
+		return namespace + "/" + address
+	}
+	return address
+}
+
 // resolveAgentMeta returns cached lifetime/custody metadata for a sender address.
 // On first contact, resolves via the client's IdentityResolver and caches the result.
-// Returns defaults (persistent, self) if no resolver is set or resolution fails.
+// Returns an unresolved marker if no resolver is set or resolution fails.
 func (c *Client) resolveAgentMeta(ctx context.Context, address string) *agentMeta {
+	rawAddress := strings.TrimSpace(address)
+	address = c.canonicalTrustAddress(rawAddress)
 	if address == "" {
-		return &agentMeta{Lifetime: LifetimePersistent, Custody: CustodySelf}
+		return &agentMeta{}
 	}
 	if v, ok := c.metaCache.Load(address); ok {
 		return v.(*agentMeta)
 	}
+	fallback := &agentMeta{
+		Lifetime: LifetimePersistent,
+		Custody:  CustodySelf,
+		Resolved: true,
+	}
 	if c.resolver != nil {
 		if identity, err := c.resolver.Resolve(ctx, address); err == nil {
-			meta := &agentMeta{Lifetime: LifetimePersistent, Custody: CustodySelf}
+			meta := &agentMeta{
+				Lifetime: LifetimePersistent,
+				Custody:  CustodySelf,
+				Resolved: true,
+			}
 			if identity.Lifetime != "" {
 				meta.Lifetime = identity.Lifetime
 			}
@@ -231,9 +257,16 @@ func (c *Client) resolveAgentMeta(ctx context.Context, address string) *agentMet
 			return meta
 		}
 	}
-	// Resolver absent or failed: return defaults but don't cache,
-	// so a transient failure retries on the next message.
-	return &agentMeta{Lifetime: LifetimePersistent, Custody: CustodySelf}
+	// Bare local aliases are ambiguous across projects; fail closed unless the
+	// resolver resolved them under the current namespace. Fully qualified
+	// addresses keep the historical fallback behavior.
+	if rawAddress != address {
+		return &agentMeta{}
+	}
+	// Resolver absent or failed for an already-qualified address: return
+	// defaults but don't cache, so a transient failure retries on the next
+	// message.
+	return fallback
 }
 
 // CheckTOFUPin checks a verified message against the TOFU pin store.
@@ -258,7 +291,11 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 		fromStableID = "" // Treat invalid prefix as absent.
 	}
 
-	meta := c.resolveAgentMeta(ctx, fromAlias)
+	trustAddress := c.canonicalTrustAddress(fromAlias)
+	meta := c.resolveAgentMeta(ctx, trustAddress)
+	if !meta.Resolved {
+		return status
+	}
 
 	if meta.Custody == CustodyCustodial && status == Verified {
 		status = VerifiedCustodial
@@ -273,20 +310,20 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 
 		// Upgrade-on-first-sight: if we have a did:key pin for this address
 		// and the did:key matches, migrate to stable_id pin before the check.
-		if existingDID, ok := c.pinStore.Addresses[fromAlias]; ok && existingDID == fromDID {
+		if existingDID, ok := c.pinStore.Addresses[trustAddress]; ok && existingDID == fromDID {
 			if existingPin, hasDIDPin := c.pinStore.Pins[fromDID]; hasDIDPin {
 				delete(c.pinStore.Pins, fromDID)
 				existingPin.StableID = fromStableID
 				c.pinStore.Pins[fromStableID] = existingPin
-				c.pinStore.Addresses[fromAlias] = fromStableID
+				c.pinStore.Addresses[trustAddress] = fromStableID
 			}
 		}
 	}
 
-	pinResult := c.pinStore.CheckPin(fromAlias, pinKey, meta.Lifetime)
+	pinResult := c.pinStore.CheckPin(trustAddress, pinKey, meta.Lifetime)
 	switch pinResult {
 	case PinNew:
-		c.pinStore.StorePin(pinKey, fromAlias, "", "")
+		c.pinStore.StorePin(pinKey, trustAddress, "", "")
 		if fromStableID != "" {
 			c.pinStore.Pins[pinKey].StableID = fromStableID
 			c.pinStore.Pins[pinKey].DIDKey = fromDID
@@ -296,31 +333,31 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 		if fromStableID != "" {
 			if pin, ok := c.pinStore.Pins[pinKey]; ok && strings.TrimSpace(pin.DIDKey) != "" && pin.DIDKey != fromDID {
 				if (ra == nil || !c.verifyRotationAnnouncement(ra, fromDID, pin.DIDKey)) &&
-					(repl == nil || !c.verifyReplacementAnnouncement(ctx, fromAlias, repl, fromDID, pin.DIDKey)) {
+					(repl == nil || !c.verifyReplacementAnnouncement(ctx, trustAddress, repl, fromDID, pin.DIDKey)) {
 					return IdentityMismatch
 				}
 			}
 		}
-		c.pinStore.StorePin(pinKey, fromAlias, "", "")
+		c.pinStore.StorePin(pinKey, trustAddress, "", "")
 		if fromStableID != "" {
 			c.pinStore.Pins[pinKey].StableID = fromStableID
 			c.pinStore.Pins[pinKey].DIDKey = fromDID
 		}
 		c.savePinStore()
 	case PinMismatch:
-		pinnedKey := c.pinStore.Addresses[fromAlias]
+		pinnedKey := c.pinStore.Addresses[trustAddress]
 		if fromStableID != "" && pinnedKey == fromStableID {
 			if pin, ok := c.pinStore.Pins[pinnedKey]; ok {
 				if strings.TrimSpace(pin.DIDKey) != "" && pin.DIDKey == fromDID {
-					c.pinStore.StorePin(pinnedKey, fromAlias, "", "")
+					c.pinStore.StorePin(pinnedKey, trustAddress, "", "")
 					c.pinStore.Pins[pinnedKey].StableID = fromStableID
 					c.savePinStore()
 					return status
 				}
 				if strings.TrimSpace(pin.DIDKey) != "" &&
 					((ra != nil && c.verifyRotationAnnouncement(ra, fromDID, pin.DIDKey)) ||
-						(repl != nil && c.verifyReplacementAnnouncement(ctx, fromAlias, repl, fromDID, pin.DIDKey))) {
-					c.pinStore.StorePin(pinnedKey, fromAlias, "", "")
+						(repl != nil && c.verifyReplacementAnnouncement(ctx, trustAddress, repl, fromDID, pin.DIDKey))) {
+					c.pinStore.StorePin(pinnedKey, trustAddress, "", "")
 					c.pinStore.Pins[pinnedKey].StableID = fromStableID
 					c.pinStore.Pins[pinnedKey].DIDKey = fromDID
 					c.savePinStore()
@@ -329,9 +366,9 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 			}
 		}
 		if (ra != nil && c.verifyRotationAnnouncement(ra, fromDID, pinnedKey)) ||
-			(repl != nil && c.verifyReplacementAnnouncement(ctx, fromAlias, repl, fromDID, pinnedKey)) {
+			(repl != nil && c.verifyReplacementAnnouncement(ctx, trustAddress, repl, fromDID, pinnedKey)) {
 			delete(c.pinStore.Pins, pinnedKey)
-			c.pinStore.StorePin(pinKey, fromAlias, "", "")
+			c.pinStore.StorePin(pinKey, trustAddress, "", "")
 			if fromStableID != "" {
 				c.pinStore.Pins[pinKey].StableID = fromStableID
 				c.pinStore.Pins[pinKey].DIDKey = fromDID
