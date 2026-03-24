@@ -160,9 +160,9 @@ func formatIncomingChatContext(fromAlias string, body string) string {
 	alias := formatWakeAlias(fromAlias)
 	body = strings.TrimSpace(body)
 	if body == "" {
-		return fmt.Sprintf("<- %s", alias)
+		return fmt.Sprintf("<- %s (chat)", alias)
 	}
-	return formatIncomingCommBlock("<- "+alias, "", body)
+	return formatIncomingCommBlock("<- "+alias+" (chat)", "", body)
 }
 
 func formatIncomingMailContext(fromAlias string, subject string, body string) string {

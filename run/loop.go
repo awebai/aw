@@ -324,10 +324,15 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 	st.StructuredOut = false
 	observedSessionID := ""
 	var agentText strings.Builder
-	providerInput := &providerInputState{}
-	st.ProviderInput = providerInput
+	var providerInput *providerInputState
+	if opts.ProviderPTY {
+		providerInput = &providerInputState{}
+		st.ProviderInput = providerInput
+	}
 	defer func() {
-		providerInput.Clear()
+		if providerInput != nil {
+			providerInput.Clear()
+		}
 		st.ProviderInput = nil
 		if l.OnRunComplete == nil {
 			return
@@ -354,12 +359,12 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 	}
 
 	sinks := &commandOutputSinks{
-		stdinReady: func(w io.WriteCloser) {
-			providerInput.SetWriter(w)
-		},
 		usePTY: opts.ProviderPTY,
 	}
 	if opts.ProviderPTY {
+		sinks.stdinReady = func(w io.WriteCloser) {
+			providerInput.SetWriter(w)
+		}
 		sinks.ptyPartial = func(chunk string) {
 			l.handleRawProviderChunk("", chunk, presenter)
 		}
@@ -1332,21 +1337,25 @@ func RealCommandRunner(ctx context.Context, dir string, argv []string, onLine fu
 		return err
 	}
 
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return err
-	}
-
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return err
 	}
 
+	stdinCallback := stdinReadyCallback(stderrSink)
+	var stdin io.WriteCloser
+	if stdinCallback != nil {
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			return err
+		}
+	}
+
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	if callback := stdinReadyCallback(stderrSink); callback != nil {
-		callback(stdin)
+	if stdinCallback != nil {
+		stdinCallback(stdin)
 	}
 
 	stderrResultCh := make(chan pipeScanResult, 1)

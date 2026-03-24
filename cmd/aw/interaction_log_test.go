@@ -52,7 +52,7 @@ func TestFormatInteractionRecapRendersConversationLikeSummary(t *testing.T) {
 	if !strings.Contains(recap, "I can do that with a small local recap.") {
 		t.Fatalf("expected agent line, got %q", recap)
 	}
-	if !strings.Contains(recap, "<- rose: please keep it narrow") {
+	if !strings.Contains(recap, "<- rose (chat): please keep it narrow") {
 		t.Fatalf("expected chat line, got %q", recap)
 	}
 	if !strings.Contains(recap, "-> henry (mail): review — please take a look") {

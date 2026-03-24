@@ -224,6 +224,52 @@ func TestLoopMaintainsCodexSessionContinuity(t *testing.T) {
 	}
 }
 
+func TestLoopDoesNotExposeProviderInputWithoutPTY(t *testing.T) {
+	loop := NewLoop(fakeProvider{event: &Event{Type: EventDone}}, &bytes.Buffer{})
+	var sawStdinReady bool
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		sinks, _ := stderrSink.(*commandOutputSinks)
+		sawStdinReady = sinks != nil && sinks.stdinReady != nil
+		onLine("ignored")
+		return nil
+	}
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	loop.Dispatch = &fakeDispatcher{
+		decisions: []DispatchDecision{{Mission: "first", WaitSeconds: 0}},
+	}
+
+	err := loop.Run(context.Background(), LoopOptions{MaxRuns: 1})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if sawStdinReady {
+		t.Fatal("expected non-PTY run to avoid provider stdin wiring")
+	}
+}
+
+func TestLoopExposesProviderInputWithPTY(t *testing.T) {
+	loop := NewLoop(fakeProvider{event: &Event{Type: EventDone}}, &bytes.Buffer{})
+	var sawStdinReady bool
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		sinks, _ := stderrSink.(*commandOutputSinks)
+		sawStdinReady = sinks != nil && sinks.stdinReady != nil
+		onLine("ignored")
+		return nil
+	}
+	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
+	loop.Dispatch = &fakeDispatcher{
+		decisions: []DispatchDecision{{Mission: "first", WaitSeconds: 0}},
+	}
+
+	err := loop.Run(context.Background(), LoopOptions{MaxRuns: 1, ProviderPTY: true})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !sawStdinReady {
+		t.Fatal("expected PTY run to keep provider stdin wiring")
+	}
+}
+
 func TestLoopMarksUIBusyDuringRun(t *testing.T) {
 	ui := newRecordingUI()
 	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
@@ -1689,6 +1735,47 @@ func TestRealCommandRunnerAcceptsProviderInput(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for provider stdin round-trip")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RealCommandRunner returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for RealCommandRunner to finish")
+	}
+}
+
+func TestRealCommandRunnerUsesNullStdinWhenProviderInputIsUnused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+
+	lineSeen := make(chan string, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- RealCommandRunner(context.Background(), "", []string{
+			"sh", "-c", "if read answer; then printf 'data\\n'; else printf 'eof\\n'; fi",
+		}, func(line string) {
+			select {
+			case lineSeen <- line:
+			default:
+			}
+		}, &commandOutputSinks{})
+	}()
+
+	select {
+	case got := <-lineSeen:
+		if got != "eof" {
+			t.Fatalf("unexpected stdout line %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for unused stdin to resolve as EOF")
 	}
 
 	select {

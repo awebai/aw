@@ -184,9 +184,9 @@ func formatInteractionEntry(entry InteractionEntry) string {
 	case interactionKindAgent:
 		return text
 	case interactionKindChatIn:
-		return fmt.Sprintf("<- %s: %s", interactionParty(entry.From, "someone"), text)
+		return fmt.Sprintf("<- %s (chat): %s", interactionParty(entry.From, "someone"), text)
 	case interactionKindChatOut:
-		return fmt.Sprintf("-> %s: %s", interactionParty(entry.To, "someone"), text)
+		return fmt.Sprintf("-> %s (chat): %s", interactionParty(entry.To, "someone"), text)
 	case interactionKindMailIn:
 		if subject := strings.TrimSpace(entry.Subject); subject != "" {
 			return fmt.Sprintf("<- %s (mail): %s — %s", interactionParty(entry.From, "someone"), subject, text)
