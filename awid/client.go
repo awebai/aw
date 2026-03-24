@@ -293,14 +293,27 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 
 	trustAddress := c.canonicalTrustAddress(fromAlias)
 	meta := c.resolveAgentMeta(ctx, trustAddress)
-	return c.checkTOFUPinWithMeta(ctx, status, trustAddress, fromDID, fromStableID, ra, repl, meta)
+	return c.checkTOFUPinWithMeta(ctx, status, strings.TrimSpace(fromAlias), trustAddress, fromDID, fromStableID, ra, repl, meta)
 }
 
-func (c *Client) checkTOFUPinWithMeta(ctx context.Context, status VerificationStatus, trustAddress, fromDID, fromStableID string, ra *RotationAnnouncement, repl *ReplacementAnnouncement, meta *agentMeta) VerificationStatus {
+func (c *Client) checkTOFUPinWithMeta(ctx context.Context, status VerificationStatus, rawAddress, trustAddress, fromDID, fromStableID string, ra *RotationAnnouncement, repl *ReplacementAnnouncement, meta *agentMeta) VerificationStatus {
 	if c.pinStore == nil || (status != Verified && status != VerifiedCustodial) || fromDID == "" || trustAddress == "" || meta == nil {
 		return status
 	}
 	if !meta.Resolved {
+		return status
+	}
+	if meta.Lifetime == LifetimeEphemeral {
+		c.pinStore.mu.Lock()
+		removed := c.pinStore.RemoveAddress(trustAddress)
+		rawAddress = strings.TrimSpace(rawAddress)
+		if rawAddress != "" && rawAddress != trustAddress {
+			removed = c.pinStore.RemoveAddress(rawAddress) || removed
+		}
+		c.pinStore.mu.Unlock()
+		if removed {
+			c.savePinStore()
+		}
 		return status
 	}
 

@@ -172,7 +172,7 @@ func (c *Client) Inbox(ctx context.Context, p InboxParams) (*InboxResponse, erro
 		if strings.TrimSpace(m.FromStableID) == "" || (meta.Resolved && meta.Lifetime == LifetimeEphemeral) {
 			m.IsContact = nil
 		}
-		m.VerificationStatus = c.checkTOFUPinWithMeta(ctx, m.VerificationStatus, c.canonicalTrustAddress(from), m.FromDID, m.FromStableID, m.RotationAnnouncement, m.ReplacementAnnouncement, meta)
+		m.VerificationStatus = c.checkTOFUPinWithMeta(ctx, m.VerificationStatus, from, c.canonicalTrustAddress(from), m.FromDID, m.FromStableID, m.RotationAnnouncement, m.ReplacementAnnouncement, meta)
 	}
 	return &out, nil
 }
