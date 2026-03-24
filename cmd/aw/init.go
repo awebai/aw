@@ -149,27 +149,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	} else {
 		printInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.SigningKeyPath, "Initialized workspace")
 	}
-	if initPrintExports {
-		fmt.Println("")
-		fmt.Println("# Copy/paste to configure your shell:")
-		fmt.Println("export AWEB_URL=" + result.ExportBaseURL)
-		fmt.Println("export AWEB_API_KEY=" + result.Response.APIKey)
-		fmt.Println("export AWEB_PROJECT=" + result.ExportNamespace)
-		if strings.TrimSpace(result.Response.Alias) != "" {
-			fmt.Println("export AWEB_ALIAS=" + result.Response.Alias)
-		}
-	}
-	repoRoot := resolveRepoRoot(opts.WorkingDir)
-	if initInjectDocs {
-		printInjectDocsResult(InjectAgentDocs(repoRoot))
-	}
-	if initSetupHooks {
-		hookResult := SetupClaudeHooks(repoRoot, isTTY())
-		printClaudeHooksResult(hookResult)
-	}
-	if !jsonFlag {
-		printInitNextSteps(initInjectDocs, initSetupHooks)
-	}
+	printPostInitActions(result, opts.WorkingDir)
 	return nil
 }
 
@@ -222,18 +202,11 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 
 	// --- Suggestion (one call, reused for project + alias + roles) ---
 
-	projectSlugForSuggestion := ""
-	if flow != flowProjectKey {
-		projectSlugForSuggestion = resolveProjectSlug()
-	}
-	suggestion := fetchInitSuggestion(baseURL, projectSlugForSuggestion, authToken)
-
-	// --- Project ---
-
 	projectSlug := ""
 	if flow != flowProjectKey {
 		projectSlug = resolveProjectSlug()
 	}
+	suggestion := fetchInitSuggestion(baseURL, projectSlug, authToken)
 	if projectSlug == "" && suggestion != nil {
 		projectSlug = strings.TrimSpace(suggestion.ProjectSlug)
 	}
@@ -293,7 +266,7 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 	if suggestion != nil {
 		suggestedRoles = suggestion.Roles
 	}
-	role, err := resolveRoleWithPrompt(suggestedRoles)
+	role, err := resolveRoleFromFlags(suggestedRoles)
 	if err != nil {
 		return initOptions{}, err
 	}
@@ -426,21 +399,16 @@ func resolveAgentType() string {
 	return "agent"
 }
 
-func resolveRoleWithPrompt(suggestedRoles []string) (string, error) {
+func resolveRoleFromFlags(suggestedRoles []string) (string, error) {
 	requested := strings.TrimSpace(initRole)
 	if requested == "" {
 		requested = strings.TrimSpace(os.Getenv("AWEB_ROLE"))
 	}
 	if len(suggestedRoles) > 0 {
-		// Server has a role policy — validate against available roles,
-		// or prompt the user to choose from the list.
 		return selectRoleFromAvailableRoles(requested, suggestedRoles, isTTY() && requested == "", os.Stdin, os.Stderr)
 	}
-	// No role policy on the server — accept whatever the user provides.
-	if requested != "" {
-		return normalizeWorkspaceRole(requested), nil
-	}
-	return "", nil
+	// No roles from suggestion — accept whatever is provided.
+	return normalizeWorkspaceRole(requested), nil
 }
 
 // fetchInitSuggestion calls the suggest-alias-prefix endpoint.
@@ -741,6 +709,30 @@ func printInitSummary(resp *awid.BootstrapIdentityResponse, accountName, serverN
 		case "local_dir":
 			fmt.Println("Context:    attached local directory")
 		}
+	}
+}
+
+func printPostInitActions(result *initResult, workingDir string) {
+	if initPrintExports {
+		fmt.Println("")
+		fmt.Println("# Copy/paste to configure your shell:")
+		fmt.Println("export AWEB_URL=" + result.ExportBaseURL)
+		fmt.Println("export AWEB_API_KEY=" + result.Response.APIKey)
+		fmt.Println("export AWEB_PROJECT=" + result.ExportNamespace)
+		if strings.TrimSpace(result.Response.Alias) != "" {
+			fmt.Println("export AWEB_ALIAS=" + result.Response.Alias)
+		}
+	}
+	repoRoot := resolveRepoRoot(workingDir)
+	if initInjectDocs {
+		printInjectDocsResult(InjectAgentDocs(repoRoot))
+	}
+	if initSetupHooks {
+		hookResult := SetupClaudeHooks(repoRoot, isTTY())
+		printClaudeHooksResult(hookResult)
+	}
+	if !jsonFlag {
+		printInitNextSteps(initInjectDocs, initSetupHooks)
 	}
 }
 

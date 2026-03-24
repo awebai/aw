@@ -359,27 +359,7 @@ func runSpawnAcceptInvite(cmd *cobra.Command, args []string) error {
 	} else {
 		printInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.SigningKeyPath, "Accepted spawn invite")
 	}
-	if initPrintExports {
-		fmt.Println("")
-		fmt.Println("# Copy/paste to configure your shell:")
-		fmt.Println("export AWEB_URL=" + result.ExportBaseURL)
-		fmt.Println("export AWEB_API_KEY=" + result.Response.APIKey)
-		fmt.Println("export AWEB_PROJECT=" + result.ExportNamespace)
-		if result.Response.Alias != "" {
-			fmt.Println("export AWEB_ALIAS=" + result.Response.Alias)
-		}
-	}
-	repoRoot := resolveRepoRoot(opts.WorkingDir)
-	if initInjectDocs {
-		printInjectDocsResult(InjectAgentDocs(repoRoot))
-	}
-	if initSetupHooks {
-		hookResult := SetupClaudeHooks(repoRoot, isTTY())
-		printClaudeHooksResult(hookResult)
-	}
-	if !jsonFlag {
-		printInitNextSteps(initInjectDocs, initSetupHooks)
-	}
+	printPostInitActions(result, opts.WorkingDir)
 	return nil
 }
 
