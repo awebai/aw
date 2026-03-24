@@ -163,24 +163,24 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	if runContinueMode {
-		if recap := loadRunContinueRecap(workingDir, writerSupportsANSI(cmd.OutOrStdout())); recap != "" {
+		if recap := loadRunContinueRecap(workingDir, cmd.OutOrStdout()); recap != "" {
 			fmt.Fprint(cmd.OutOrStdout(), recap)
 		}
 	}
 
 	opts := awrun.LoopOptions{
-		InitialPrompt:       initialPrompt,
-		BasePrompt:          settings.BasePrompt,
-		WaitSeconds:         settings.WaitSeconds,
-		IdleWaitSeconds:     settings.IdleWaitSeconds,
-		MaxRuns:             runMaxRuns,
-		Autofeed:            runAutofeedWork,
-		ContinueMode:        runContinueMode,
-		WorkingDir:          workingDir,
-		AllowedTools:        runAllowedTools,
-		Model:               runModel,
-		ProviderPTY: runProviderPTY && screen != nil,
-		Services:    settings.Services,
+		InitialPrompt:   initialPrompt,
+		BasePrompt:      settings.BasePrompt,
+		WaitSeconds:     settings.WaitSeconds,
+		IdleWaitSeconds: settings.IdleWaitSeconds,
+		MaxRuns:         runMaxRuns,
+		Autofeed:        runAutofeedWork,
+		ContinueMode:    runContinueMode,
+		WorkingDir:      workingDir,
+		AllowedTools:    runAllowedTools,
+		Model:           runModel,
+		ProviderPTY:     runProviderPTY && screen != nil,
+		Services:        settings.Services,
 	}
 
 	err = runExecuteLoop(loop, ctx, opts)
@@ -190,12 +190,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 	return err
 }
 
-func loadRunContinueRecap(workingDir string, ansi bool) string {
+func loadRunContinueRecap(workingDir string, out io.Writer) string {
 	entries, err := readInteractionLog(interactionLogPath(workingDir), 8)
 	if err != nil {
 		return ""
 	}
-	return formatInteractionRecapStyled(entries, 8, ansi)
+	return formatInteractionRecapStyled(entries, 8, writerSupportsANSI(out), writerDisplayWidth(out))
 }
 
 func writerSupportsANSI(w io.Writer) bool {
@@ -204,6 +204,18 @@ func writerSupportsANSI(w io.Writer) bool {
 		return false
 	}
 	return term.IsTerminal(int(f.Fd()))
+}
+
+func writerDisplayWidth(w io.Writer) int {
+	f, ok := w.(*os.File)
+	if !ok {
+		return 80
+	}
+	width, _, err := term.GetSize(int(f.Fd()))
+	if err != nil || width <= 0 {
+		return 80
+	}
+	return width
 }
 
 func runDetectRepoSlug(dir string) string {

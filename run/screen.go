@@ -53,6 +53,7 @@ type screenStyles struct {
 	prompt    lipgloss.Style
 	separator lipgloss.Style
 	tool      lipgloss.Style
+	comms     lipgloss.Style
 	result    lipgloss.Style
 	done      lipgloss.Style
 	info      lipgloss.Style
@@ -603,13 +604,13 @@ func (s *ScreenController) renderFooterLinesLocked(width int) []string {
 
 func (s *ScreenController) renderFooterLayoutLocked(width int) promptLayout {
 	currentLines := s.renderCurrentLinesLocked(width)
-	lines := append(currentLines, s.styles.separator.Render(strings.Repeat("─", max(1, width))))
+	lines := append([]string{}, currentLines...)
 	prompt := buildPromptLayout(s.promptLabel, InputValueFromLine(s.inputLine, s.promptLabel), s.inputCursor, width)
 	lines = append(lines, prompt.lines...)
 	lines = append(lines, "")
 	lines = append(lines, s.renderStatusLineLocked(width))
 	prompt.lines = lines
-	prompt.cursorLine += len(currentLines) + 1
+	prompt.cursorLine += len(currentLines)
 	return prompt
 }
 
@@ -629,7 +630,9 @@ func (s *ScreenController) renderStatusLineLocked(width int) string {
 }
 
 func (s *ScreenController) printOutputLineLocked(line string) {
-	writeScreenLines(s.outputFile, []string{styleScreenLine(line, s.styles), ""})
+	lines := appendWrappedStyledScreenLine(nil, line, s.terminalWidthLocked(), s.styles)
+	lines = append(lines, "")
+	writeScreenLines(s.outputFile, lines)
 }
 
 func (s *ScreenController) teardownFooterLocked() {
@@ -817,6 +820,7 @@ func newScreenStyles() screenStyles {
 		prompt:    lipgloss.NewStyle().Bold(true),
 		separator: lipgloss.NewStyle(),
 		tool:      lipgloss.NewStyle(),
+		comms:     lipgloss.NewStyle().Bold(true),
 		result:    lipgloss.NewStyle(),
 		done:      lipgloss.NewStyle(),
 		info:      lipgloss.NewStyle(),
@@ -973,7 +977,7 @@ func wrapScreenLine(line string, width int) []string {
 		return []string{line}
 	}
 
-	indent := leadingWhitespace(line)
+	indent := continuationIndent(line)
 	tokens := splitWrapTokens(line)
 	if len(tokens) == 0 {
 		return []string{line}
@@ -1064,6 +1068,14 @@ func leadingWhitespace(s string) string {
 	return s[:idx]
 }
 
+func continuationIndent(line string) string {
+	trimmed := strings.TrimLeft(line, " \t")
+	if strings.HasPrefix(trimmed, "<- ") || strings.HasPrefix(trimmed, "-> ") {
+		return leadingWhitespace(line) + "   "
+	}
+	return leadingWhitespace(line)
+}
+
 func abs(v int) int {
 	if v < 0 {
 		return -v
@@ -1079,6 +1091,8 @@ func styleScreenLine(line string, styles screenStyles) string {
 		return styles.separator.Render(line)
 	case "tool":
 		return styleScreenToolLine(line, styles)
+	case "comms":
+		return styleScreenCommLine(line, styles)
 	case "result":
 		return styles.result.Render(line)
 	case "done":
@@ -1105,6 +1119,27 @@ func styleScreenToolClosingParen(line string, styles screenStyles) string {
 	return line[:suffixStart] + styles.tool.Render(")") + line[len(trimmed):]
 }
 
+func styleScreenCommLine(line string, styles screenStyles) string {
+	indent := leadingWhitespace(line)
+	trimmed := strings.TrimPrefix(line, indent)
+	if !strings.HasPrefix(trimmed, "<- ") && !strings.HasPrefix(trimmed, "-> ") {
+		return line
+	}
+
+	marker := trimmed[:3]
+	rest := trimmed[3:]
+	aliasEnd := len(rest)
+	for i, r := range rest {
+		if r == ' ' || r == ':' {
+			aliasEnd = i
+			break
+		}
+	}
+	head := marker + rest[:aliasEnd]
+	tail := rest[aliasEnd:]
+	return indent + styles.comms.Render(head) + tail
+}
+
 func screenLineStyleKind(line string) string {
 	trimmed := strings.TrimSpace(line)
 	switch {
@@ -1114,7 +1149,11 @@ func screenLineStyleKind(line string) string {
 		return "prompt"
 	case strings.HasPrefix(trimmed, ">_ "):
 		return "tool"
-	case strings.HasPrefix(trimmed, "->") || strings.HasPrefix(trimmed, "  ->"):
+	case strings.HasPrefix(line, "  ->"):
+		return "result"
+	case strings.HasPrefix(trimmed, "<- ") || strings.HasPrefix(trimmed, "-> "):
+		return "comms"
+	case strings.HasPrefix(trimmed, "->"):
 		return "result"
 	case strings.HasPrefix(trimmed, "done"):
 		return "done"

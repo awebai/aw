@@ -59,3 +59,22 @@ func TestFormatInteractionRecapRendersConversationLikeSummary(t *testing.T) {
 		t.Fatalf("expected outbound mail line, got %q", recap)
 	}
 }
+
+func TestFormatInteractionRecapWrapsCommLinesWithHangingIndent(t *testing.T) {
+	recap := formatInteractionRecapStyled([]InteractionEntry{
+		{
+			Timestamp: "2026-03-22T10:02:00Z",
+			Kind:      interactionKindMailIn,
+			From:      "dave",
+			Subject:   "Claude UX follow-up",
+			Text:      "Merged to main. Good call on the streaming-safe approach for delta output.",
+		},
+	}, 8, false, 44)
+
+	if !strings.Contains(recap, "<- dave (mail):") {
+		t.Fatalf("expected comm prefix, got %q", recap)
+	}
+	if !strings.Contains(recap, "\n   ") {
+		t.Fatalf("expected wrapped continuation indent, got %q", recap)
+	}
+}

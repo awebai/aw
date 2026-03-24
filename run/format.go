@@ -36,12 +36,76 @@ func formatDone(event *Event) string {
 }
 
 func formatToolCallLines(call ToolCall) []string {
+	if line, ok := formatCoordinationToolCall(call); ok {
+		return []string{line}
+	}
 	args := formatToolSummaryArgs(call.Input)
 	lines := formatToolSummaryLines(call.Name, args)
 	if description := formatToolDescription(call.Input); description != "" {
 		lines = append(lines, "  "+description)
 	}
 	return lines
+}
+
+func formatCoordinationToolCall(call ToolCall) (string, bool) {
+	if !strings.EqualFold(strings.TrimSpace(call.Name), "Bash") {
+		return "", false
+	}
+	command, _ := call.Input["command"].(string)
+	if command == "" {
+		return "", false
+	}
+	return formatAWCoordinationCommand(command)
+}
+
+func formatAWCoordinationCommand(command string) (string, bool) {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) < 3 || fields[0] != "aw" {
+		return "", false
+	}
+
+	switch fields[1] {
+	case "mail":
+		if fields[2] != "send" {
+			return "", false
+		}
+		alias := findFlagValue(fields[3:], "--to")
+		if alias == "" {
+			return "", false
+		}
+		return "-> " + alias + " (mail)", true
+	case "chat":
+		switch fields[2] {
+		case "send-and-wait", "send-and-leave":
+			alias := firstNonFlag(fields[3:])
+			if alias == "" {
+				return "", false
+			}
+			return "-> " + alias + " (chat)", true
+		default:
+			return "", false
+		}
+	default:
+		return "", false
+	}
+}
+
+func findFlagValue(fields []string, flag string) string {
+	for i := 0; i < len(fields)-1; i++ {
+		if fields[i] == flag {
+			return fields[i+1]
+		}
+	}
+	return ""
+}
+
+func firstNonFlag(fields []string) string {
+	for _, field := range fields {
+		if !strings.HasPrefix(field, "-") {
+			return field
+		}
+	}
+	return ""
 }
 
 func formatToolSummaryLines(name string, args []string) []string {

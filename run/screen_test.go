@@ -30,6 +30,8 @@ func TestStyleScreenLineCategories(t *testing.T) {
 	}{
 		{line: "> fix the bug", want: "prompt"},
 		{line: `>_ go test ./... 2>&1`, want: "tool"},
+		{line: "<- dave (mail): please review this", want: "comms"},
+		{line: "-> henry (chat)", want: "comms"},
 		{line: "  -> ok", want: "result"},
 		{line: "done  2.1s", want: "done"},
 		{line: "info: session", want: "info"},
@@ -60,6 +62,15 @@ func TestStyleScreenLineColorsClosingParenOnContinuation(t *testing.T) {
 	want := `       offset=48` + styles.tool.Render(`)`)
 	if got != want {
 		t.Fatalf("unexpected styled continuation line %q", got)
+	}
+}
+
+func TestStyleScreenLineBoldsCommArrowAndAlias(t *testing.T) {
+	styles := newScreenStyles()
+	got := styleScreenLine(`<- dave (mail): merged to main`, styles)
+	want := styles.comms.Render(`<- dave`) + ` (mail): merged to main`
+	if got != want {
+		t.Fatalf("unexpected styled comm line %q", got)
 	}
 }
 
@@ -158,7 +169,19 @@ func TestWrapScreenLineKeepsToolArgIndent(t *testing.T) {
 	}
 }
 
-func TestScreenControllerFooterPlacesPromptAboveStatus(t *testing.T) {
+func TestWrapScreenLineUsesHangingIndentForCommLines(t *testing.T) {
+	lines := wrapScreenLine(`<- dave (mail): this is a long coordination update that should wrap cleanly`, 28)
+	if len(lines) < 2 {
+		t.Fatalf("expected wrapped lines, got %#v", lines)
+	}
+	for _, line := range lines[1:] {
+		if !strings.HasPrefix(line, "   ") {
+			t.Fatalf("expected hanging indent under alias start, got %#v", lines)
+		}
+	}
+}
+
+func TestScreenControllerFooterPlacesPromptAboveStatusWithoutDivider(t *testing.T) {
 	screen := &ScreenController{
 		promptLabel: ">> ",
 		statusLine:  "paused",
@@ -168,13 +191,10 @@ func TestScreenControllerFooterPlacesPromptAboveStatus(t *testing.T) {
 	}
 
 	lines := screen.renderFooterLinesLocked(40)
-	dividerIdx := -1
 	promptIdx := -1
 	statusIdx := -1
 	for i, line := range lines {
 		switch {
-		case strings.Contains(line, "────"):
-			dividerIdx = i
 		case strings.Contains(line, "hello"):
 			promptIdx = i
 		case strings.Contains(line, "paused"):
@@ -182,11 +202,8 @@ func TestScreenControllerFooterPlacesPromptAboveStatus(t *testing.T) {
 		}
 	}
 
-	if dividerIdx < 0 || promptIdx < 0 || statusIdx < 0 {
-		t.Fatalf("expected divider, prompt, and status in footer, got %#v", lines)
-	}
-	if dividerIdx >= promptIdx {
-		t.Fatalf("expected divider before prompt, got %#v", lines)
+	if promptIdx < 0 || statusIdx < 0 {
+		t.Fatalf("expected prompt and status in footer, got %#v", lines)
 	}
 	if promptIdx >= statusIdx {
 		t.Fatalf("expected prompt before status, got %#v", lines)
@@ -196,6 +213,11 @@ func TestScreenControllerFooterPlacesPromptAboveStatus(t *testing.T) {
 	}
 	if lines[statusIdx-1] != "" {
 		t.Fatalf("expected blank line before status, got %#v", lines)
+	}
+	for _, line := range lines {
+		if strings.Contains(line, "────") {
+			t.Fatalf("expected footer divider to be absent, got %#v", lines)
+		}
 	}
 }
 
