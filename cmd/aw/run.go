@@ -28,7 +28,6 @@ var (
 	runWorkingDir   string
 	runAllowedTools string
 	runModel        string
-	runCompactPct   int
 	runProviderName string
 	runProviderPTY  bool
 	runAutofeedWork bool
@@ -75,7 +74,6 @@ func init() {
 	runCmd.Flags().StringVar(&runCommsPrompt, "comms-prompt-suffix", "", "Override the configured comms cycle prompt suffix for this run")
 	runCmd.Flags().IntVar(&runWaitSeconds, "wait", awrun.DefaultWaitSeconds, "Idle seconds per wake-stream wait cycle")
 	runCmd.Flags().IntVar(&runIdleWait, "idle-wait", awrun.DefaultIdleWaitSeconds, "Reserved idle-wait setting for future dispatch modes")
-	runCmd.Flags().IntVar(&runCompactPct, "compact-threshold-pct", awrun.DefaultCompactThreshold, "Run /compact after a successful cycle when context usage exceeds this percent (0 disables)")
 	runCmd.Flags().BoolVar(&runContinueMode, "continue", false, "Continue the most recent provider session across runs")
 	runCmd.Flags().BoolVar(&runContinueMode, "session", false, "Deprecated alias for --continue")
 	_ = runCmd.Flags().MarkDeprecated("session", "use --continue instead")
@@ -115,7 +113,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 		CommsPromptSuffix: changedStringPtr(cmd, "comms-prompt-suffix", runCommsPrompt),
 		WaitSeconds:       changedIntPtr(cmd, "wait", runWaitSeconds),
 		IdleWaitSeconds:   changedIntPtr(cmd, "idle-wait", runIdleWait),
-		CompactThreshold:  changedIntPtr(cmd, "compact-threshold-pct", runCompactPct),
 	})
 	if err != nil {
 		return err
@@ -182,9 +179,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 		WorkingDir:          workingDir,
 		AllowedTools:        runAllowedTools,
 		Model:               runModel,
-		ProviderPTY:         runProviderPTY && screen != nil,
-		CompactThresholdPct: settings.CompactThreshold,
-		Services:            settings.Services,
+		ProviderPTY: runProviderPTY && screen != nil,
+		Services:    settings.Services,
 	}
 
 	err = runExecuteLoop(loop, ctx, opts)
@@ -254,7 +250,6 @@ func initRunCommandVars() {
 	runWorkingDir = ""
 	runAllowedTools = ""
 	runModel = ""
-	runCompactPct = awrun.DefaultCompactThreshold
 	runProviderName = "claude"
 	runProviderPTY = true
 	runAutofeedWork = false

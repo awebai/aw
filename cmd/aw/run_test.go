@@ -107,11 +107,10 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 			t.Fatalf("expected wait override, got %#v", overrides.WaitSeconds)
 		}
 		return awrun.Settings{
-			BasePrompt:       "resolved base",
-			WaitSeconds:      9,
-			IdleWaitSeconds:  12,
-			CompactThreshold: 61,
-			Services:         []awrun.ServiceConfig{{Name: "api", Command: "make api", Description: "API"}},
+			BasePrompt:      "resolved base",
+			WaitSeconds:     9,
+			IdleWaitSeconds: 12,
+			Services:        []awrun.ServiceConfig{{Name: "api", Command: "make api", Description: "API"}},
 		}, nil
 	}
 	runNewProvider = func(name string) (awrun.Provider, error) {
@@ -157,7 +156,6 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 	runProviderName = "claude"
 	runProviderPTY = true
 	runAutofeedWork = true
-	runCompactPct = 61
 	runBasePrompt = "flag base"
 	runWaitSeconds = 7
 	cmd.Command.Flags().Set("base-prompt", "flag base")
@@ -511,7 +509,6 @@ func TestRunUsesWakeEventToTriggerSecondCycle(t *testing.T) {
 			BasePrompt:       "persistent mission",
 			WaitSeconds:      30,
 			IdleWaitSeconds:  1,
-			CompactThreshold: awrun.DefaultCompactThreshold,
 		}, nil
 	}
 
@@ -623,7 +620,6 @@ func TestRunUsesActionableWakeEventToTriggerSecondCycle(t *testing.T) {
 			BasePrompt:       "persistent mission",
 			WaitSeconds:      30,
 			IdleWaitSeconds:  1,
-			CompactThreshold: awrun.DefaultCompactThreshold,
 		}, nil
 	}
 
@@ -759,7 +755,6 @@ func (c *cobraCommandClone) ResetFlagsForTest() {
 	c.Command.Flags().StringVar(&runCommsPrompt, "comms-prompt-suffix", "", "")
 	c.Command.Flags().IntVar(&runWaitSeconds, "wait", awrun.DefaultWaitSeconds, "")
 	c.Command.Flags().IntVar(&runIdleWait, "idle-wait", awrun.DefaultIdleWaitSeconds, "")
-	c.Command.Flags().IntVar(&runCompactPct, "compact-threshold-pct", awrun.DefaultCompactThreshold, "")
 	c.Command.Flags().BoolVar(&runContinueMode, "continue", false, "")
 	c.Command.Flags().BoolVar(&runContinueMode, "session", false, "")
 	c.Command.Flags().IntVar(&runMaxRuns, "max-runs", 0, "")

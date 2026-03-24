@@ -366,20 +366,15 @@ func TestFormatWaitStatusShowsConnectionStateAndAutofeed(t *testing.T) {
 	}
 }
 
-func TestFormatRunStatusShowsContextAndCost(t *testing.T) {
+func TestFormatRunStatusShowsCostAndAutofeed(t *testing.T) {
 	st := &state{
-		RunLabel:    "run 1",
-		HasRunUsage: true,
-		LastRunUsage: UsageStats{
-			InputTokens:       45000,
-			ContextWindowSize: 100000,
-		},
+		RunLabel:          "run 1",
 		CumulativeCostUSD: 0.05,
 		Autofeed:          true,
 		ConnState:         ConnStreaming,
 	}
 	got := formatRunStatus(st)
-	want := "ctx 45% · $0.05 · autofeed · streaming"
+	want := "$0.05 · autofeed · streaming"
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}
@@ -440,95 +435,6 @@ func TestHandleOutputLineAccumulatesCost(t *testing.T) {
 	loop.handleOutputLine("event2", presenter, st, &sid, nil)
 	if st.CumulativeCostUSD != 0.10 {
 		t.Fatalf("expected 0.10, got %f", st.CumulativeCostUSD)
-	}
-}
-
-func TestAutoCompactShowsDistinctLabel(t *testing.T) {
-	var out bytes.Buffer
-	provider := fakeProvider{
-		event: &Event{
-			Type:    EventDone,
-			Session: "sess-42",
-			Usage: &UsageStats{
-				InputTokens:       90000,
-				ContextWindowSize: 100000,
-			},
-		},
-	}
-	loop := NewLoop(provider, &out)
-	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
-		onLine("done")
-		return nil
-	}
-	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
-	loop.Dispatch = &fakeDispatcher{
-		decisions: []DispatchDecision{
-			{Mission: "work", WaitSeconds: 0},
-		},
-	}
-
-	err := loop.Run(context.Background(), LoopOptions{
-		MaxRuns:             1,
-		CompactThresholdPct: 80,
-	})
-	if err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-
-	output := out.String()
-	if !strings.Contains(output, "info: compacting context") {
-		t.Fatalf("expected compact info line, got %q", output)
-	}
-	if strings.Count(output, "> work") != 1 {
-		t.Fatalf("expected exactly one '> work' prompt (not duplicated by compact), got %q", output)
-	}
-}
-
-func TestAutoCompactDoesNotCountTowardMaxRuns(t *testing.T) {
-	var out bytes.Buffer
-	realRunCount := 0
-	compactRunCount := 0
-	provider := fakeProvider{
-		event: &Event{
-			Type:    EventDone,
-			Session: "sess-42",
-			Usage: &UsageStats{
-				InputTokens:       90000,
-				ContextWindowSize: 100000,
-			},
-		},
-	}
-	loop := NewLoop(provider, &out)
-	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
-		if len(argv) > 1 && argv[1] == "/compact" {
-			compactRunCount++
-		} else {
-			realRunCount++
-		}
-		onLine("done")
-		return nil
-	}
-	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
-	loop.Dispatch = &fakeDispatcher{
-		decisions: []DispatchDecision{
-			{Mission: "work", WaitSeconds: 0},
-			{Mission: "work", WaitSeconds: 0},
-		},
-	}
-
-	err := loop.Run(context.Background(), LoopOptions{
-		MaxRuns:             2,
-		CompactThresholdPct: 80,
-	})
-	if err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-
-	if realRunCount != 2 {
-		t.Fatalf("expected 2 real runs, got %d", realRunCount)
-	}
-	if compactRunCount != 2 {
-		t.Fatalf("expected 2 compact runs (one after each real run), got %d", compactRunCount)
 	}
 }
 

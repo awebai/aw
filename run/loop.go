@@ -36,7 +36,6 @@ type Loop struct {
 
 type state struct {
 	Run                int
-	CompactRuns        int
 	RunLabel           string
 	CumulativeCostUSD  float64
 	SessionID          string
@@ -228,20 +227,6 @@ func (l *Loop) Run(ctx context.Context, opts LoopOptions) error {
 				return err
 			}
 		}
-		compacted, err := l.maybeAutoCompact(ctx, opts, state)
-		if err != nil {
-			if state.StopRequested && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-				return nil
-			}
-			return err
-		}
-		if compacted {
-			if opts.MaxRuns > 0 && state.Run >= opts.MaxRuns {
-				l.printf("\ndone: reached max-runs (%d)\n", opts.MaxRuns)
-				return nil
-			}
-			continue
-		}
 		if opts.MaxRuns > 0 && state.Run >= opts.MaxRuns {
 			l.printf("\ndone: reached max-runs (%d)\n", opts.MaxRuns)
 			return nil
@@ -328,16 +313,11 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 		l.printf("\n%s\n", runSeparator)
 	}
 
-	if display == "/compact" {
-		st.RunLabel = "compact"
-		l.printf("\ninfo: compacting context\n\n")
+	st.RunLabel = "active"
+	if strings.HasPrefix(strings.TrimSpace(display), "<- ") {
+		l.printf("\n%s\n\n", display)
 	} else {
-		st.RunLabel = "active"
-		if strings.HasPrefix(strings.TrimSpace(display), "<- ") {
-			l.printf("\n%s\n\n", display)
-		} else {
-			l.printf("\n> %s\n\n", display)
-		}
+		l.printf("\n> %s\n\n", display)
 	}
 	l.setStatusLine(formatRunStatus(st))
 	l.renderInputPrompt(st)
@@ -351,7 +331,7 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 	defer func() {
 		providerInput.Clear()
 		st.ProviderInput = nil
-		if l.OnRunComplete == nil || display == "/compact" {
+		if l.OnRunComplete == nil {
 			return
 		}
 		text := strings.TrimSpace(agentText.String())
@@ -457,22 +437,6 @@ func (l *Loop) resetSessionContinuity(st *state, message string) {
 	st.SessionID = ""
 	st.RanOnce = false
 	l.printf("warning: %s\n", message)
-}
-
-func (l *Loop) maybeAutoCompact(ctx context.Context, opts LoopOptions, st *state) (bool, error) {
-	if opts.CompactThresholdPct <= 0 || st == nil || !st.HasRunUsage {
-		return false, nil
-	}
-	pct := st.LastRunUsage.ContextPct()
-	if pct <= float64(opts.CompactThresholdPct) {
-		return false, nil
-	}
-	st.CompactRuns++
-	l.printf("\ninfo: context %.1f%% exceeds %d%%; running compact\n", pct, opts.CompactThresholdPct)
-	if err := l.runOnce(ctx, opts, st, "/compact", "/compact", ""); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 func (l *Loop) drainPendingControlEvents(st *state, activeRun bool) {
