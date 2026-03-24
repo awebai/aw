@@ -57,6 +57,7 @@ type screenStyles struct {
 	prompt    lipgloss.Style
 	separator lipgloss.Style
 	tool      lipgloss.Style
+	toolMuted lipgloss.Style
 	comms     lipgloss.Style
 	result    lipgloss.Style
 	done      lipgloss.Style
@@ -891,6 +892,7 @@ func newScreenStyles() screenStyles {
 		prompt:    lipgloss.NewStyle().Bold(true),
 		separator: lipgloss.NewStyle(),
 		tool:      lipgloss.NewStyle(),
+		toolMuted: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "242", Dark: "244"}),
 		comms:     lipgloss.NewStyle().Bold(true),
 		result:    lipgloss.NewStyle(),
 		done:      lipgloss.NewStyle(),
@@ -1037,8 +1039,9 @@ func appendScreenText(lines *[]string, current *string, text string) {
 }
 
 func appendWrappedStyledScreenLine(lines []string, line string, width int, styles screenStyles) []string {
-	for _, wrapped := range wrapScreenLine(line, width) {
-		lines = append(lines, styleScreenLine(wrapped, styles))
+	kind := screenLineStyleKind(line)
+	for idx, wrapped := range wrapScreenLine(line, width) {
+		lines = append(lines, styleWrappedScreenLine(wrapped, kind, idx, styles))
 	}
 	return lines
 }
@@ -1158,13 +1161,22 @@ func abs(v int) int {
 }
 
 func styleScreenLine(line string, styles screenStyles) string {
-	switch screenLineStyleKind(line) {
+	return styleWrappedScreenLine(line, screenLineStyleKind(line), 0, styles)
+}
+
+func styleWrappedScreenLine(line string, kind string, wrapIndex int, styles screenStyles) string {
+	switch kind {
 	case "prompt":
 		return styles.prompt.Render(line)
 	case "separator":
 		return styles.separator.Render(line)
 	case "tool":
+		if wrapIndex > 0 {
+			return styles.toolMuted.Render(line)
+		}
 		return styleScreenToolLine(line, styles)
+	case "tool_detail":
+		return styles.toolMuted.Render(line)
 	case "comms":
 		return styleScreenCommLine(line, styles)
 	case "result":
@@ -1181,7 +1193,29 @@ func styleScreenLine(line string, styles screenStyles) string {
 }
 
 func styleScreenToolLine(line string, styles screenStyles) string {
-	return styles.tool.Render(line)
+	const prefix = ">_ "
+	if !strings.HasPrefix(line, prefix) {
+		return styles.tool.Render(line)
+	}
+
+	rest := line[len(prefix):]
+	if rest == "" {
+		return styles.tool.Render(line)
+	}
+
+	headEnd := len(rest)
+	if idx := strings.Index(rest, "("); idx >= 0 {
+		headEnd = idx
+	} else if idx := strings.Index(rest, " "); idx >= 0 {
+		headEnd = idx
+	}
+	if headEnd <= 0 || headEnd >= len(rest) {
+		return styles.tool.Render(line)
+	}
+
+	head := prefix + rest[:headEnd]
+	tail := rest[headEnd:]
+	return styles.tool.Render(head) + styles.toolMuted.Render(tail)
 }
 
 func styleScreenToolClosingParen(line string, styles screenStyles) string {
@@ -1223,6 +1257,8 @@ func screenLineStyleKind(line string) string {
 		return "prompt"
 	case strings.HasPrefix(trimmed, ">_ "):
 		return "tool"
+	case isToolDetailLine(line):
+		return "tool_detail"
 	case strings.HasPrefix(line, "  ->"):
 		return "result"
 	case strings.HasPrefix(trimmed, "<- ") || strings.HasPrefix(trimmed, "-> "):
@@ -1238,4 +1274,19 @@ func screenLineStyleKind(line string) string {
 	default:
 		return "plain"
 	}
+}
+
+func isToolDetailLine(line string) bool {
+	indent := leadingWhitespace(line)
+	if len(indent) < 2 {
+		return false
+	}
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, ">") || strings.HasPrefix(trimmed, "<-") || strings.HasPrefix(trimmed, "->") {
+		return false
+	}
+	return true
 }

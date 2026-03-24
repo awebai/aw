@@ -309,10 +309,6 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 		return err
 	}
 
-	if followUpRun {
-		l.printf("\n%s\n", runSeparator)
-	}
-
 	st.RunLabel = "active"
 	l.setBusy(true)
 	defer l.setBusy(false)

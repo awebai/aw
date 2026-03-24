@@ -82,7 +82,7 @@ func init() {
 	runCmd.Flags().StringVar(&runAllowedTools, "allowed-tools", "", "Provider-specific allowed tools string")
 	runCmd.Flags().StringVar(&runModel, "model", "", "Provider-specific model override")
 	runCmd.Flags().StringVar(&runProviderName, "provider", "claude", "Agent provider to run")
-	runCmd.Flags().BoolVar(&runProviderPTY, "provider-pty", true, "Run the provider subprocess inside a pseudo-terminal when interactive controls are available")
+	runCmd.Flags().BoolVar(&runProviderPTY, "provider-pty", false, "Run the provider subprocess inside a pseudo-terminal instead of plain pipes when interactive controls are available")
 	runCmd.Flags().BoolVar(&runAutofeedWork, "autofeed-work", false, "Wake for work-related events in addition to incoming mail/chat")
 	runCmd.Flags().BoolVar(&runInitConfig, "init", false, "Prompt for ~/.config/aw/run.json values and write them")
 
@@ -179,7 +179,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		WorkingDir:      workingDir,
 		AllowedTools:    runAllowedTools,
 		Model:           runModel,
-		ProviderPTY:     runProviderPTY && screen != nil,
+		ProviderPTY:     effectiveProviderPTY(cmd, screen != nil),
 		Services:        settings.Services,
 	}
 
@@ -216,6 +216,16 @@ func writerDisplayWidth(w io.Writer) int {
 		return 80
 	}
 	return width
+}
+
+func effectiveProviderPTY(cmd *cobra.Command, interactive bool) bool {
+	if !interactive {
+		return false
+	}
+	if cmd != nil && cmd.Flags().Changed("provider-pty") {
+		return runProviderPTY
+	}
+	return false
 }
 
 func runDetectRepoSlug(dir string) string {
@@ -263,7 +273,7 @@ func initRunCommandVars() {
 	runAllowedTools = ""
 	runModel = ""
 	runProviderName = "claude"
-	runProviderPTY = true
+	runProviderPTY = false
 	runAutofeedWork = false
 	runInitConfig = false
 }

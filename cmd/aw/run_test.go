@@ -295,8 +295,135 @@ func TestRunAllowsEmptyPromptWhenInteractiveScreenIsAvailable(t *testing.T) {
 	if capturedOpts.InitialPrompt != "" || capturedOpts.BasePrompt != "" {
 		t.Fatalf("expected empty prompts to be allowed interactively, got %+v", capturedOpts)
 	}
+	if capturedOpts.ProviderPTY {
+		t.Fatalf("expected interactive run to default ProviderPTY=false, got %+v", capturedOpts)
+	}
+}
+
+func TestRunDefaultsCodexToNonPTYWhenInteractive(t *testing.T) {
+	initRunCommandVars()
+
+	oldLoad := runLoadUserConfig
+	oldResolveSettings := runResolveSettings
+	oldNewProvider := runNewProvider
+	oldResolveClient := runResolveClientForDir
+	oldNewLoop := runNewLoop
+	oldExecuteLoop := runExecuteLoop
+	oldNewEventBus := runNewEventBus
+	oldNewScreen := runNewScreenController
+	t.Cleanup(func() {
+		runLoadUserConfig = oldLoad
+		runResolveSettings = oldResolveSettings
+		runNewProvider = oldNewProvider
+		runResolveClientForDir = oldResolveClient
+		runNewLoop = oldNewLoop
+		runExecuteLoop = oldExecuteLoop
+		runNewEventBus = oldNewEventBus
+		runNewScreenController = oldNewScreen
+		initRunCommandVars()
+	})
+
+	runLoadUserConfig = func(dir string) (awrun.UserConfig, error) { return awrun.UserConfig{}, nil }
+	runResolveSettings = func(cfg awrun.UserConfig, overrides awrun.SettingOverrides) (awrun.Settings, error) {
+		return awrun.Settings{}, nil
+	}
+	runNewProvider = func(name string) (awrun.Provider, error) {
+		return awrun.CodexProvider{}, nil
+	}
+	runResolveClientForDir = func(dir string) (*aweb.Client, *awconfig.Selection, error) {
+		return &aweb.Client{}, &awconfig.Selection{NamespaceSlug: "team", IdentityHandle: "rose"}, nil
+	}
+	runNewEventBus = func(client *aweb.Client) *awrun.EventBus { return nil }
+	runNewScreenController = func(in io.Reader, out io.Writer) *awrun.ScreenController {
+		return &awrun.ScreenController{}
+	}
+	runNewLoop = func(provider awrun.Provider, out io.Writer) *awrun.Loop {
+		return awrun.NewLoop(provider, out)
+	}
+
+	var capturedOpts awrun.LoopOptions
+	runExecuteLoop = func(loop *awrun.Loop, ctx context.Context, opts awrun.LoopOptions) error {
+		capturedOpts = opts
+		return nil
+	}
+
+	cmd := &cobraCommandClone{Command: *runCmd}
+	cmd.ResetFlagsForTest()
+	cmd.Command.SetContext(context.Background())
+	runProviderName = "codex"
+	var stdout, stderr bytes.Buffer
+	setRunCommandIO(&cmd.Command, strings.NewReader(""), &stdout, &stderr)
+
+	if err := runRun(&cmd.Command, nil); err != nil {
+		t.Fatalf("runRun returned error: %v", err)
+	}
+	if capturedOpts.ProviderPTY {
+		t.Fatalf("expected interactive codex run to default ProviderPTY=false, got %+v", capturedOpts)
+	}
+}
+
+func TestRunHonorsExplicitCodexPTYOverride(t *testing.T) {
+	initRunCommandVars()
+
+	oldLoad := runLoadUserConfig
+	oldResolveSettings := runResolveSettings
+	oldNewProvider := runNewProvider
+	oldResolveClient := runResolveClientForDir
+	oldNewLoop := runNewLoop
+	oldExecuteLoop := runExecuteLoop
+	oldNewEventBus := runNewEventBus
+	oldNewScreen := runNewScreenController
+	t.Cleanup(func() {
+		runLoadUserConfig = oldLoad
+		runResolveSettings = oldResolveSettings
+		runNewProvider = oldNewProvider
+		runResolveClientForDir = oldResolveClient
+		runNewLoop = oldNewLoop
+		runExecuteLoop = oldExecuteLoop
+		runNewEventBus = oldNewEventBus
+		runNewScreenController = oldNewScreen
+		initRunCommandVars()
+	})
+
+	runLoadUserConfig = func(dir string) (awrun.UserConfig, error) { return awrun.UserConfig{}, nil }
+	runResolveSettings = func(cfg awrun.UserConfig, overrides awrun.SettingOverrides) (awrun.Settings, error) {
+		return awrun.Settings{}, nil
+	}
+	runNewProvider = func(name string) (awrun.Provider, error) {
+		return awrun.CodexProvider{}, nil
+	}
+	runResolveClientForDir = func(dir string) (*aweb.Client, *awconfig.Selection, error) {
+		return &aweb.Client{}, &awconfig.Selection{NamespaceSlug: "team", IdentityHandle: "rose"}, nil
+	}
+	runNewEventBus = func(client *aweb.Client) *awrun.EventBus { return nil }
+	runNewScreenController = func(in io.Reader, out io.Writer) *awrun.ScreenController {
+		return &awrun.ScreenController{}
+	}
+	runNewLoop = func(provider awrun.Provider, out io.Writer) *awrun.Loop {
+		return awrun.NewLoop(provider, out)
+	}
+
+	var capturedOpts awrun.LoopOptions
+	runExecuteLoop = func(loop *awrun.Loop, ctx context.Context, opts awrun.LoopOptions) error {
+		capturedOpts = opts
+		return nil
+	}
+
+	cmd := &cobraCommandClone{Command: *runCmd}
+	cmd.ResetFlagsForTest()
+	cmd.Command.SetContext(context.Background())
+	runProviderName = "codex"
+	if err := cmd.Command.Flags().Set("provider-pty", "true"); err != nil {
+		t.Fatalf("set provider-pty: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	setRunCommandIO(&cmd.Command, strings.NewReader(""), &stdout, &stderr)
+
+	if err := runRun(&cmd.Command, nil); err != nil {
+		t.Fatalf("runRun returned error: %v", err)
+	}
 	if !capturedOpts.ProviderPTY {
-		t.Fatalf("expected interactive run to keep ProviderPTY enabled, got %+v", capturedOpts)
+		t.Fatalf("expected explicit provider-pty override to be honored, got %+v", capturedOpts)
 	}
 }
 
@@ -506,9 +633,9 @@ func TestRunUsesWakeEventToTriggerSecondCycle(t *testing.T) {
 	runLoadUserConfig = func(string) (awrun.UserConfig, error) { return awrun.UserConfig{}, nil }
 	runResolveSettings = func(cfg awrun.UserConfig, overrides awrun.SettingOverrides) (awrun.Settings, error) {
 		return awrun.Settings{
-			BasePrompt:       "persistent mission",
-			WaitSeconds:      30,
-			IdleWaitSeconds:  1,
+			BasePrompt:      "persistent mission",
+			WaitSeconds:     30,
+			IdleWaitSeconds: 1,
 		}, nil
 	}
 
@@ -617,9 +744,9 @@ func TestRunUsesActionableWakeEventToTriggerSecondCycle(t *testing.T) {
 	runLoadUserConfig = func(string) (awrun.UserConfig, error) { return awrun.UserConfig{}, nil }
 	runResolveSettings = func(cfg awrun.UserConfig, overrides awrun.SettingOverrides) (awrun.Settings, error) {
 		return awrun.Settings{
-			BasePrompt:       "persistent mission",
-			WaitSeconds:      30,
-			IdleWaitSeconds:  1,
+			BasePrompt:      "persistent mission",
+			WaitSeconds:     30,
+			IdleWaitSeconds: 1,
 		}, nil
 	}
 
@@ -762,7 +889,7 @@ func (c *cobraCommandClone) ResetFlagsForTest() {
 	c.Command.Flags().StringVar(&runAllowedTools, "allowed-tools", "", "")
 	c.Command.Flags().StringVar(&runModel, "model", "", "")
 	c.Command.Flags().StringVar(&runProviderName, "provider", "claude", "")
-	c.Command.Flags().BoolVar(&runProviderPTY, "provider-pty", true, "")
+	c.Command.Flags().BoolVar(&runProviderPTY, "provider-pty", false, "")
 	c.Command.Flags().BoolVar(&runAutofeedWork, "autofeed-work", false, "")
 	c.Command.Flags().BoolVar(&runInitConfig, "init", false, "")
 }

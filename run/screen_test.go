@@ -30,6 +30,7 @@ func TestStyleScreenLineCategories(t *testing.T) {
 	}{
 		{line: "> fix the bug", want: "prompt"},
 		{line: `>_ go test ./... 2>&1`, want: "tool"},
+		{line: `  file_path="/tmp/image.png"`, want: "tool_detail"},
 		{line: "<- dave (mail): please review this", want: "comms"},
 		{line: "-> henry (chat)", want: "comms"},
 		{line: "  -> ok", want: "result"},
@@ -50,7 +51,16 @@ func TestStyleScreenLineCategories(t *testing.T) {
 func TestStyleScreenLineKeepsToolArgumentsNeutralOnFirstLine(t *testing.T) {
 	styles := newScreenStyles()
 	got := styleScreenLine(`>_ View /tmp/image.png`, styles)
-	want := styles.tool.Render(`>_ View /tmp/image.png`)
+	want := styles.tool.Render(`>_ View`) + styles.toolMuted.Render(` /tmp/image.png`)
+	if got != want {
+		t.Fatalf("unexpected styled tool line %q", got)
+	}
+}
+
+func TestStyleScreenLineDeemphasizesToolArgsAfterOpeningParen(t *testing.T) {
+	styles := newScreenStyles()
+	got := styleScreenLine(`>_ browser_click(ref="abc", element="Submit")`, styles)
+	want := styles.tool.Render(`>_ browser_click`) + styles.toolMuted.Render(`(ref="abc", element="Submit")`)
 	if got != want {
 		t.Fatalf("unexpected styled tool line %q", got)
 	}
@@ -59,7 +69,7 @@ func TestStyleScreenLineKeepsToolArgumentsNeutralOnFirstLine(t *testing.T) {
 func TestStyleScreenLineColorsClosingParenOnContinuation(t *testing.T) {
 	styles := newScreenStyles()
 	got := styleScreenLine(`       offset=48)`, styles)
-	want := `       offset=48` + styles.tool.Render(`)`)
+	want := styles.toolMuted.Render(`       offset=48)`)
 	if got != want {
 		t.Fatalf("unexpected styled continuation line %q", got)
 	}
@@ -189,6 +199,24 @@ func TestWrapScreenLineUsesHangingIndentForTopLevelToolLines(t *testing.T) {
 	for _, line := range lines[1:] {
 		if !strings.HasPrefix(line, "   ") {
 			t.Fatalf("expected wrapped tool continuation to align under the command, got %#v", lines)
+		}
+	}
+}
+
+func TestAppendWrappedStyledScreenLineDeemphasizesToolContinuations(t *testing.T) {
+	styles := newScreenStyles()
+	source := `>_ aw mail inbox --unread-only --format json 2>/dev/null | python3 -c "print(1)"`
+	wrapped := wrapScreenLine(source, 34)
+	lines := appendWrappedStyledScreenLine(nil, source, 34, styles)
+	if len(lines) != len(wrapped) || len(lines) < 2 {
+		t.Fatalf("expected wrapped styled lines, got %#v", lines)
+	}
+	if !strings.Contains(lines[0], styles.toolMuted.Render(` --unread-only`)) {
+		t.Fatalf("expected first line arguments to be muted, got %#v", lines)
+	}
+	for i, line := range lines[1:] {
+		if line != styles.toolMuted.Render(wrapped[i+1]) {
+			t.Fatalf("expected continuation lines to be muted, got %#v", lines)
 		}
 	}
 }

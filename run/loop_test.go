@@ -519,7 +519,7 @@ func TestHandleOutputLineAccumulatesCost(t *testing.T) {
 	}
 }
 
-func TestRunSeparatorAppearsBetweenRuns(t *testing.T) {
+func TestFollowUpRunsDoNotEmitSeparatorLine(t *testing.T) {
 	var out bytes.Buffer
 	loop := NewLoop(ClaudeProvider{}, &out)
 	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
@@ -540,42 +540,16 @@ func TestRunSeparatorAppearsBetweenRuns(t *testing.T) {
 	}
 
 	output := out.String()
-	if !strings.Contains(output, runSeparator) {
-		t.Fatalf("expected run separator between runs, got:\n%s", output)
+	if strings.Contains(output, strings.Repeat("─", 40)) {
+		t.Fatalf("expected no run separator line, got:\n%s", output)
 	}
 	firstPromptIdx := strings.Index(output, "> first")
-	separatorIdx := strings.Index(output, runSeparator)
 	secondPromptIdx := strings.Index(output, "> second")
-	if separatorIdx <= firstPromptIdx {
-		t.Fatalf("separator should appear after first prompt")
+	if firstPromptIdx < 0 || secondPromptIdx < 0 {
+		t.Fatalf("expected both prompts in output, got:\n%s", output)
 	}
-	if separatorIdx >= secondPromptIdx {
-		t.Fatalf("separator should appear before second prompt")
-	}
-}
-
-func TestNoSeparatorBeforeFirstRun(t *testing.T) {
-	var out bytes.Buffer
-	loop := NewLoop(ClaudeProvider{}, &out)
-	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
-		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
-		return nil
-	}
-	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
-	loop.Dispatch = &fakeDispatcher{
-		decisions: []DispatchDecision{
-			{Mission: "first", WaitSeconds: 0},
-		},
-	}
-
-	err := loop.Run(context.Background(), LoopOptions{MaxRuns: 1})
-	if err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-
-	output := out.String()
-	if strings.Contains(output, runSeparator) {
-		t.Fatalf("expected no separator before first run, got:\n%s", output)
+	if secondPromptIdx <= firstPromptIdx {
+		t.Fatalf("expected second prompt after first prompt, got:\n%s", output)
 	}
 }
 
