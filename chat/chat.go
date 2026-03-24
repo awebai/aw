@@ -208,6 +208,15 @@ func parseSSEEvent(sseEvent *awid.SSEEvent) Event {
 
 // findSession finds the session ID for a conversation with targetAlias.
 // Checks pending first (captures sender_waiting), falls back to listing sessions.
+//
+// Selection priority for pending sessions:
+//  1. sender_waiting sessions over non-waiting (urgent conversations first)
+//  2. smallest participant count (1:1 over group)
+//  3. most recent LastActivity (tiebreaker)
+//
+// Selection priority for fallback (all sessions):
+//  1. smallest participant count
+//  2. most recent CreatedAt (tiebreaker)
 func findSession(ctx context.Context, client *awid.Client, targetAlias string) (sessionID string, senderWaiting bool, err error) {
 	pendingResp, err := client.ChatPending(ctx)
 	if err != nil {
@@ -216,17 +225,33 @@ func findSession(ctx context.Context, client *awid.Client, targetAlias string) (
 
 	var bestPendingID string
 	var bestPendingWaiting bool
+	var bestPendingActivity string
 	bestPendingSize := 0
 	for _, p := range pendingResp.Pending {
 		for _, participant := range p.Participants {
-			if participant == targetAlias {
-				if bestPendingSize == 0 || len(p.Participants) < bestPendingSize {
-					bestPendingID = p.SessionID
-					bestPendingWaiting = p.SenderWaiting
-					bestPendingSize = len(p.Participants)
-				}
-				break
+			if participant != targetAlias {
+				continue
 			}
+			better := bestPendingSize == 0
+			if !better {
+				// Prefer sender_waiting over non-waiting.
+				if p.SenderWaiting && !bestPendingWaiting {
+					better = true
+				} else if !p.SenderWaiting && bestPendingWaiting {
+					better = false
+				} else if len(p.Participants) < bestPendingSize {
+					better = true
+				} else if len(p.Participants) == bestPendingSize && p.LastActivity > bestPendingActivity {
+					better = true
+				}
+			}
+			if better {
+				bestPendingID = p.SessionID
+				bestPendingWaiting = p.SenderWaiting
+				bestPendingSize = len(p.Participants)
+				bestPendingActivity = p.LastActivity
+			}
+			break
 		}
 	}
 	if bestPendingID != "" {
@@ -239,16 +264,27 @@ func findSession(ctx context.Context, client *awid.Client, targetAlias string) (
 		return "", false, fmt.Errorf("listing chat sessions: %w", err)
 	}
 	var bestSessionID string
+	var bestSessionCreated string
 	bestSessionSize := 0
 	for _, s := range sessionsResp.Sessions {
 		for _, participant := range s.Participants {
-			if participant == targetAlias {
-				if bestSessionSize == 0 || len(s.Participants) < bestSessionSize {
-					bestSessionID = s.SessionID
-					bestSessionSize = len(s.Participants)
-				}
-				break
+			if participant != targetAlias {
+				continue
 			}
+			better := bestSessionSize == 0
+			if !better {
+				if len(s.Participants) < bestSessionSize {
+					better = true
+				} else if len(s.Participants) == bestSessionSize && s.CreatedAt > bestSessionCreated {
+					better = true
+				}
+			}
+			if better {
+				bestSessionID = s.SessionID
+				bestSessionSize = len(s.Participants)
+				bestSessionCreated = s.CreatedAt
+			}
+			break
 		}
 	}
 	if bestSessionID != "" {

@@ -1476,6 +1476,88 @@ func TestFindSessionPrefersSmallestFallback(t *testing.T) {
 	}
 }
 
+func TestFindSessionPendingPrefersWaiting(t *testing.T) {
+	t.Parallel()
+
+	// Two same-size sessions: one where sender is waiting, one not.
+	// findSession should prefer the one where the sender is waiting.
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{SessionID: "s-idle", Participants: []string{"alice", "bob"}, SenderWaiting: false, LastActivity: "2026-01-01T00:00:02Z"},
+					{SessionID: "s-waiting", Participants: []string{"alice", "bob"}, SenderWaiting: true, LastActivity: "2026-01-01T00:00:01Z"},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	sessionID, senderWaiting, err := findSession(context.Background(), mustClient(t, server.URL), "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-waiting" {
+		t.Fatalf("session_id=%s, want s-waiting (sender_waiting should take priority)", sessionID)
+	}
+	if !senderWaiting {
+		t.Fatal("sender_waiting=false, want true")
+	}
+}
+
+func TestFindSessionPendingTiebreaksOnActivity(t *testing.T) {
+	t.Parallel()
+
+	// Two same-size, same-waiting-status sessions: prefer most recent activity.
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{SessionID: "s-old", Participants: []string{"alice", "bob"}, LastActivity: "2026-01-01T00:00:01Z"},
+					{SessionID: "s-recent", Participants: []string{"alice", "bob"}, LastActivity: "2026-01-01T00:00:05Z"},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	sessionID, _, err := findSession(context.Background(), mustClient(t, server.URL), "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-recent" {
+		t.Fatalf("session_id=%s, want s-recent (most recent activity wins tiebreak)", sessionID)
+	}
+}
+
+func TestFindSessionFallbackTiebreaksOnCreatedAt(t *testing.T) {
+	t.Parallel()
+
+	// Two same-size sessions in fallback: prefer most recently created.
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{SessionID: "s-old", Participants: []string{"alice", "bob"}, CreatedAt: "2026-01-01T00:00:01Z"},
+					{SessionID: "s-recent", Participants: []string{"alice", "bob"}, CreatedAt: "2026-01-01T00:00:05Z"},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	sessionID, _, err := findSession(context.Background(), mustClient(t, server.URL), "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-recent" {
+		t.Fatalf("session_id=%s, want s-recent (most recent created_at wins tiebreak)", sessionID)
+	}
+}
+
 func TestParseSSEEventSenderWaiting(t *testing.T) {
 	t.Parallel()
 
