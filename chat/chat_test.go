@@ -529,8 +529,8 @@ func TestSendWithTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "sent" {
-		t.Fatalf("status=%s (expected sent after timeout)", result.Status)
+	if result.Status != "timeout" {
+		t.Fatalf("status=%s (expected timeout)", result.Status)
 	}
 	if result.WaitedSeconds < 1 {
 		t.Fatalf("waited_seconds=%d", result.WaitedSeconds)
@@ -1899,5 +1899,173 @@ func TestBuildMessagesWiresIsContact(t *testing.T) {
 	}
 	if events[1].IsContact != nil {
 		t.Fatalf("events[1].IsContact=%v, want nil", events[1].IsContact)
+	}
+}
+
+// --- Fix: send-and-wait marks messages as read when received via SSE ---
+
+func TestSendWithReplyMarksRead(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	var markReadCalled bool
+	var markReadUpTo string
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply-1", "from_agent": "bob", "body": "hi back!",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+		"POST /v1/chat/sessions/s1/read": func(w http.ResponseWriter, r *http.Request) {
+			markReadCalled = true
+			var req awid.ChatMarkReadRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			markReadUpTo = req.UpToMessageID
+			jsonResponse(w, awid.ChatMarkReadResponse{Success: true, MessagesMarked: 1})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if !markReadCalled {
+		t.Fatal("ChatMarkRead was not called after receiving reply via SSE")
+	}
+	if markReadUpTo != "msg-reply-1" {
+		t.Fatalf("mark_read up_to=%s, want msg-reply-1", markReadUpTo)
+	}
+}
+
+func TestListenMarksRead(t *testing.T) {
+	t.Parallel()
+
+	var markReadCalled bool
+	var markReadUpTo string
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{SessionID: "s1", Participants: []string{"alice", "bob"}},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			msgData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-1", "from_agent": "bob", "body": "are you there?",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", msgData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+		"POST /v1/chat/sessions/s1/read": func(w http.ResponseWriter, r *http.Request) {
+			markReadCalled = true
+			var req awid.ChatMarkReadRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			markReadUpTo = req.UpToMessageID
+			jsonResponse(w, awid.ChatMarkReadResponse{Success: true, MessagesMarked: 1})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := Listen(ctx, mustClient(t, server.URL), "bob", DefaultWait, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if !markReadCalled {
+		t.Fatal("ChatMarkRead was not called after receiving message via SSE in Listen")
+	}
+	if markReadUpTo != "msg-1" {
+		t.Fatalf("mark_read up_to=%s, want msg-1", markReadUpTo)
+	}
+}
+
+func TestSendMarkReadFailureDoesNotBreakSend(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply-1", "from_agent": "bob", "body": "hi back!",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+		"POST /v1/chat/sessions/s1/read": func(w http.ResponseWriter, _ *http.Request) {
+			// Server returns error — should not break Send.
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 5}, nil)
+	if err != nil {
+		t.Fatalf("Send should succeed even if mark-read fails: %v", err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if result.Reply != "hi back!" {
+		t.Fatalf("reply=%s", result.Reply)
 	}
 }

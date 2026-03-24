@@ -289,6 +289,23 @@ func buildMessages(messages []awid.ChatMessage) []Event {
 	return events
 }
 
+// markLastRead marks the last received message as read (best-effort).
+// This prevents the notify hook from showing messages that were already
+// delivered via SSE during send-and-wait or listen.
+func markLastRead(ctx context.Context, client *awid.Client, sessionID string, events []Event) {
+	if sessionID == "" {
+		return
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == "message" && events[i].MessageID != "" {
+			_, _ = client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
+				UpToMessageID: events[i].MessageID,
+			})
+			return
+		}
+	}
+}
+
 // streamOpener opens an SSE stream for a chat session.
 // after controls replay: non-nil replays messages after that timestamp; nil skips replay.
 type streamOpener func(ctx context.Context, sessionID string, deadline time.Time, after *time.Time) (*awid.SSEStream, error)
@@ -548,11 +565,9 @@ func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpene
 		return nil, err
 	}
 
-	if waitResult.Status == "timeout" {
-		result.Status = "sent" // backward compat: "sent" means "sent but no reply"
-	} else {
-		result.Status = waitResult.Status
-	}
+	markLastRead(ctx, client, resp.SessionID, waitResult.Events)
+
+	result.Status = waitResult.Status
 	result.Reply = waitResult.Reply
 	result.Events = waitResult.Events
 	result.SenderWaiting = waitResult.SenderWaiting
@@ -574,6 +589,8 @@ func Listen(ctx context.Context, client *awid.Client, targetAlias string, waitSe
 	if err != nil {
 		return nil, err
 	}
+
+	markLastRead(ctx, client, sessionID, result.Events)
 
 	result.TargetAgent = targetAlias
 	return result, nil
