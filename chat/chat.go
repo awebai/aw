@@ -578,12 +578,13 @@ func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpene
 	}
 
 	// Build message acceptor: skip replays, accept only from targets.
+	// The gate opens when we see our sent message by ID. If the server
+	// didn't return a message ID (sentMessageID==""), the gate starts open.
 	sentMessageID := resp.MessageID
 	seenSentMessage := sentMessageID == ""
 	acceptor := func(ev Event) (accept, skip bool) {
 		if !seenSentMessage {
-			if (ev.MessageID != "" && ev.MessageID == sentMessageID) ||
-				(ev.MessageID == "" && ev.FromAgent == myAlias && ev.Body == message) {
+			if ev.MessageID == sentMessageID {
 				seenSentMessage = true
 			}
 			return false, true

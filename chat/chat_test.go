@@ -2151,3 +2151,63 @@ func TestSendMarkReadFailureDoesNotBreakSend(t *testing.T) {
 		t.Fatalf("reply=%s", result.Reply)
 	}
 }
+
+// TestSendAcceptorIgnoresBodyMatchFallback verifies that the replay-skip gate
+// uses only message IDs, not body matching. A replayed message without a
+// message_id but with the same body as the sent message must NOT open the gate.
+func TestSendAcceptorIgnoresBodyMatchFallback(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			// Replayed old message: same sender, same body, but no message_id.
+			// This should NOT open the gate.
+			oldData, _ := json.Marshal(map[string]any{
+				"type": "message", "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", oldData)
+
+			// The actual sent message with the correct ID — opens the gate.
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+
+			// Reply from bob.
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply-1", "from_agent": "bob", "body": "hi back!",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	// Only the reply should be in events — all pre-gate messages must be skipped.
+	if len(result.Events) != 1 {
+		t.Fatalf("events count=%d, want 1 (only the reply); body-match fallback may have opened the gate early", len(result.Events))
+	}
+	if result.Events[0].MessageID != "msg-reply-1" {
+		t.Fatalf("event[0].message_id=%s, want msg-reply-1", result.Events[0].MessageID)
+	}
+}
