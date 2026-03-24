@@ -54,16 +54,17 @@ type ScreenController struct {
 var _ UI = (*ScreenController)(nil)
 
 type screenStyles struct {
-	prompt    lipgloss.Style
-	separator lipgloss.Style
-	tool      lipgloss.Style
-	toolMuted lipgloss.Style
-	comms     lipgloss.Style
-	result    lipgloss.Style
-	done      lipgloss.Style
-	info      lipgloss.Style
-	status    lipgloss.Style
-	hint      lipgloss.Style
+	prompt      lipgloss.Style
+	separator   lipgloss.Style
+	tool        lipgloss.Style
+	toolMuted   lipgloss.Style
+	commsBullet lipgloss.Style
+	comms       lipgloss.Style
+	result      lipgloss.Style
+	done        lipgloss.Style
+	info        lipgloss.Style
+	status      lipgloss.Style
+	hint        lipgloss.Style
 }
 
 const screenFooterBaseLines = 3
@@ -894,14 +895,15 @@ func (s *ScreenController) handleExitConfirmed() {
 
 func newScreenStyles() screenStyles {
 	return screenStyles{
-		prompt:    lipgloss.NewStyle().Bold(true),
-		separator: lipgloss.NewStyle(),
-		tool:      lipgloss.NewStyle(),
-		toolMuted: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "242", Dark: "244"}),
-		comms:     lipgloss.NewStyle().Bold(true),
-		result:    lipgloss.NewStyle(),
-		done:      lipgloss.NewStyle(),
-		info:      lipgloss.NewStyle(),
+		prompt:      lipgloss.NewStyle().Bold(true),
+		separator:   lipgloss.NewStyle(),
+		tool:        lipgloss.NewStyle(),
+		toolMuted:   lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "242", Dark: "244"}),
+		commsBullet: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "34", Dark: "42"}),
+		comms:       lipgloss.NewStyle().Bold(true),
+		result:      lipgloss.NewStyle(),
+		done:        lipgloss.NewStyle(),
+		info:        lipgloss.NewStyle(),
 		status: lipgloss.NewStyle().
 			Foreground(lipgloss.AdaptiveColor{Light: "236", Dark: "252"}).
 			Background(lipgloss.AdaptiveColor{Light: "252", Dark: "236"}).
@@ -1149,8 +1151,8 @@ func leadingWhitespace(s string) string {
 
 func continuationIndent(line string) string {
 	trimmed := strings.TrimLeft(line, " \t")
-	if strings.HasPrefix(trimmed, "<- ") || strings.HasPrefix(trimmed, "-> ") {
-		return leadingWhitespace(line) + "   "
+	if isCommLine(trimmed) {
+		return screenCommContinuationIndent(line)
 	}
 	if strings.HasPrefix(trimmed, ">_ ") {
 		return leadingWhitespace(line) + "   "
@@ -1235,21 +1237,19 @@ func styleScreenToolClosingParen(line string, styles screenStyles) string {
 func styleScreenCommLine(line string, styles screenStyles) string {
 	indent := leadingWhitespace(line)
 	trimmed := strings.TrimPrefix(line, indent)
-	if !strings.HasPrefix(trimmed, "<- ") && !strings.HasPrefix(trimmed, "-> ") {
+	if !isCommLine(trimmed) {
 		return line
 	}
 
-	marker := trimmed[:3]
-	rest := trimmed[3:]
-	aliasEnd := len(rest)
-	for i, r := range rest {
-		if r == ' ' || r == ':' {
-			aliasEnd = i
-			break
-		}
+	headEnd := len(trimmed)
+	if idx := strings.Index(trimmed, ":"); idx >= 0 {
+		headEnd = idx
 	}
-	head := marker + rest[:aliasEnd]
-	tail := rest[aliasEnd:]
+	head := trimmed[:headEnd]
+	tail := trimmed[headEnd:]
+	if strings.HasPrefix(head, "•") {
+		return indent + styles.commsBullet.Render("•") + styles.comms.Render(strings.TrimPrefix(head, "•")) + tail
+	}
 	return indent + styles.comms.Render(head) + tail
 }
 
@@ -1264,7 +1264,7 @@ func screenLineStyleKind(line string) string {
 		return "tool"
 	case strings.HasPrefix(line, "  ->"), strings.HasPrefix(line, "  ="):
 		return "result"
-	case strings.HasPrefix(trimmed, "<- ") || strings.HasPrefix(trimmed, "-> "):
+	case isCommLine(trimmed):
 		return "comms"
 	case strings.HasPrefix(trimmed, "->"):
 		return "result"
@@ -1281,6 +1281,23 @@ func screenLineStyleKind(line string) string {
 	}
 }
 
+func isCommLine(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "• from ") || strings.HasPrefix(trimmed, "• to ")
+}
+
+func screenCommContinuationIndent(line string) string {
+	indent := leadingWhitespace(line)
+	trimmed := strings.TrimPrefix(line, indent)
+	switch {
+	case strings.HasPrefix(trimmed, "• from "):
+		return indent + strings.Repeat(" ", len("• from "))
+	case strings.HasPrefix(trimmed, "• to "):
+		return indent + strings.Repeat(" ", len("• to "))
+	default:
+		return indent + "   "
+	}
+}
+
 func isToolDetailLine(line string) bool {
 	indent := leadingWhitespace(line)
 	if len(indent) < 2 {
@@ -1290,7 +1307,7 @@ func isToolDetailLine(line string) bool {
 	if trimmed == "" {
 		return false
 	}
-	if strings.HasPrefix(trimmed, ">") || strings.HasPrefix(trimmed, "<-") || strings.HasPrefix(trimmed, "->") {
+	if strings.HasPrefix(trimmed, ">") || strings.HasPrefix(trimmed, "<-") || strings.HasPrefix(trimmed, "->") || isCommLine(trimmed) {
 		return false
 	}
 	return strings.Contains(trimmed, "=")

@@ -160,9 +160,9 @@ func formatIncomingChatContext(fromAlias string, body string) string {
 	alias := formatWakeAlias(fromAlias)
 	body = strings.TrimSpace(body)
 	if body == "" {
-		return fmt.Sprintf("<- %s (chat)", alias)
+		return awrun.FormatCommLabel("from", alias, "chat")
 	}
-	return formatIncomingCommBlock("<- "+alias+" (chat)", "", body)
+	return formatIncomingCommBlock(awrun.FormatCommLabel("from", alias, "chat"), "", body)
 }
 
 func formatIncomingMailContext(fromAlias string, subject string, body string) string {
@@ -171,13 +171,13 @@ func formatIncomingMailContext(fromAlias string, subject string, body string) st
 	body = strings.TrimSpace(body)
 	switch {
 	case subject != "" && body != "":
-		return formatIncomingMailBlock("<- "+alias+" (mail)", subject, body)
+		return formatIncomingMailBlock(awrun.FormatCommLabel("from", alias, "mail"), subject, body)
 	case subject != "":
-		return fmt.Sprintf("<- %s (mail): %s", alias, subject)
+		return fmt.Sprintf("%s: %s", awrun.FormatCommLabel("from", alias, "mail"), subject)
 	case body != "":
-		return formatIncomingCommBlock("<- "+alias+" (mail)", "", body)
+		return formatIncomingCommBlock(awrun.FormatCommLabel("from", alias, "mail"), "", body)
 	default:
-		return fmt.Sprintf("<- %s (mail)", alias)
+		return awrun.FormatCommLabel("from", alias, "mail")
 	}
 }
 
@@ -209,6 +209,7 @@ func formatIncomingMailBlock(head string, subject string, body string) string {
 	}
 	return strings.Join(formatted, "\n")
 }
+
 
 func commBodyLines(body string) []string {
 	body = strings.ReplaceAll(strings.TrimSpace(body), "\r", "")

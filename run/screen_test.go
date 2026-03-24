@@ -32,8 +32,8 @@ func TestStyleScreenLineCategories(t *testing.T) {
 		{line: `>_ go test ./... 2>&1`, want: "tool"},
 		{line: `  file_path="/tmp/image.png"`, want: "tool_detail"},
 		{line: `   1. PTY default-off`, want: "plain"},
-		{line: "<- dave (mail): please review this", want: "comms"},
-		{line: "-> henry (chat)", want: "comms"},
+		{line: "• from dave (mail): please review this", want: "comms"},
+		{line: "• to henry (chat)", want: "comms"},
 		{line: "  = ok", want: "result"},
 		{line: "done  2.1s", want: "done"},
 		{line: "info: session", want: "info"},
@@ -76,10 +76,10 @@ func TestStyleScreenLineColorsClosingParenOnContinuation(t *testing.T) {
 	}
 }
 
-func TestStyleScreenLineBoldsCommArrowAndAlias(t *testing.T) {
+func TestStyleScreenLineStylesCommLabel(t *testing.T) {
 	styles := newScreenStyles()
-	got := styleScreenLine(`<- dave (mail): merged to main`, styles)
-	want := styles.comms.Render(`<- dave`) + ` (mail): merged to main`
+	got := styleScreenLine(`• from dave (mail): merged to main`, styles)
+	want := styles.commsBullet.Render(`•`) + styles.comms.Render(` from dave (mail)`) + `: merged to main`
 	if got != want {
 		t.Fatalf("unexpected styled comm line %q", got)
 	}
@@ -181,12 +181,12 @@ func TestWrapScreenLineKeepsToolArgIndent(t *testing.T) {
 }
 
 func TestWrapScreenLineUsesHangingIndentForCommLines(t *testing.T) {
-	lines := wrapScreenLine(`<- dave (mail): this is a long coordination update that should wrap cleanly`, 28)
+	lines := wrapScreenLine(`• from dave (mail): this is a long coordination update that should wrap cleanly`, 28)
 	if len(lines) < 2 {
 		t.Fatalf("expected wrapped lines, got %#v", lines)
 	}
 	for _, line := range lines[1:] {
-		if !strings.HasPrefix(line, "   ") {
+		if !strings.HasPrefix(line, strings.Repeat(" ", len("• from "))) {
 			t.Fatalf("expected hanging indent under alias start, got %#v", lines)
 		}
 	}

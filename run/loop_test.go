@@ -1522,15 +1522,15 @@ func TestRunOnceRendersIncomingCycleWithoutPromptMarker(t *testing.T) {
 		return nil
 	}
 
-	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", "<- architect: can you review the retry path?", ""); err != nil {
+	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", "• from architect (chat): can you review the retry path?", ""); err != nil {
 		t.Fatalf("runOnce returned error: %v", err)
 	}
 
 	got := out.String()
-	if strings.Contains(got, "> <- architect: can you review the retry path?") {
+	if strings.Contains(got, "> • from architect (chat): can you review the retry path?") {
 		t.Fatalf("expected inbound cycle to avoid prompt marker, got %q", got)
 	}
-	if !strings.Contains(got, "\n<- architect: can you review the retry path?\n") {
+	if !strings.Contains(got, "\n• from architect (chat): can you review the retry path?\n") {
 		t.Fatalf("expected inbound cycle line, got %q", got)
 	}
 }
