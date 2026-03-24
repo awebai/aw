@@ -275,6 +275,25 @@ func TestLoopDoesNotSuppressBdhSpecificEchoText(t *testing.T) {
 	}
 }
 
+func TestLoopRendersCodexMarkdownWithMargin(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(CodexProvider{}, &out)
+	st := &state{}
+
+	loop.handleOutputLine(`{"type":"item.completed","item":{"type":"agent_message","text":"## Title\n\n- first item\n"}}`, &presenterState{}, st, nil, nil)
+
+	got := out.String()
+	if strings.Contains(got, "## Title") {
+		t.Fatalf("expected markdown heading to be rendered, got %q", got)
+	}
+	if !strings.Contains(got, "  Title") {
+		t.Fatalf("expected rendered text to keep a left margin, got %q", got)
+	}
+	if !strings.Contains(got, "first item") {
+		t.Fatalf("expected list item content to remain, got %q", got)
+	}
+}
+
 func TestLoopInitialPromptOnlyWaitsForWakeInsteadOfTimerExit(t *testing.T) {
 	bus := newTestEventBus()
 	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})

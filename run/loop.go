@@ -484,11 +484,12 @@ func (l *Loop) handleOutputLine(line string, presenter *presenterState, st *stat
 		if agentText != nil {
 			agentText.WriteString(event.Text)
 		}
+		renderedText := renderAssistantText(l.Provider.Name(), event.Text, l.Out)
 		l.runPresenterEnsureTextSpacing(presenter)
-		l.print(event.Text)
+		l.print(renderedText)
 		presenter.lastWasText = true
 		presenter.lastWasStructured = false
-		presenter.lastTextEndedWithNewline = strings.HasSuffix(event.Text, "\n")
+		presenter.lastTextEndedWithNewline = strings.HasSuffix(renderedText, "\n")
 	case EventToolCall:
 		st.StructuredOut = true
 		l.runPresenterEnsureStructuredSpacing(presenter)
