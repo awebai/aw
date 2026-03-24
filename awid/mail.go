@@ -168,11 +168,7 @@ func (c *Client) Inbox(ctx context.Context, p InboxParams) (*InboxResponse, erro
 			m.VerificationStatus, _ = VerifyMessage(env)
 		}
 		m.VerificationStatus = c.checkRecipientBinding(m.VerificationStatus, m.ToDID)
-		meta := c.resolveAgentMeta(ctx, from)
-		if strings.TrimSpace(m.FromStableID) == "" || (meta.Resolved && meta.Lifetime == LifetimeEphemeral) {
-			m.IsContact = nil
-		}
-		m.VerificationStatus = c.checkTOFUPinWithMeta(ctx, m.VerificationStatus, from, c.canonicalTrustAddress(from), m.FromDID, m.FromStableID, m.RotationAnnouncement, m.ReplacementAnnouncement, meta)
+		m.VerificationStatus, m.IsContact = c.NormalizeSenderTrust(ctx, m.VerificationStatus, from, m.FromDID, m.FromStableID, m.RotationAnnouncement, m.ReplacementAnnouncement, m.IsContact)
 	}
 	return &out, nil
 }
