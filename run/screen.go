@@ -29,6 +29,8 @@ type ScreenController struct {
 	inputCursor   int
 	pending       bool
 	active        bool
+	busy          bool
+	spinnerFrame  int
 	exitConfirm   bool
 	history       []string
 	historyIndex  int
@@ -41,6 +43,8 @@ type ScreenController struct {
 
 	cancelReader     cancelreader.CancelReader
 	rawState         *term.State
+	spinnerStop      chan struct{}
+	spinnerDone      chan struct{}
 	footerLines      int
 	footerCursorLine int
 	footerCursorCol  int
@@ -62,6 +66,8 @@ type screenStyles struct {
 }
 
 const screenFooterBaseLines = 3
+
+var screenSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 func NewScreenController(in io.Reader, out io.Writer) *ScreenController {
 	inputFile, ok := in.(*os.File)
@@ -116,13 +122,19 @@ func (s *ScreenController) Start() error {
 	}
 
 	s.active = true
+	s.busy = false
+	s.spinnerFrame = 0
 	s.pasting = false
 	s.styles = newScreenStyles()
 	s.cancelReader = cancelReader
 	s.rawState = rawState
 	fmt.Fprint(s.outputFile, "\033[?2004h")
 	doneCh := make(chan error, 1)
+	spinnerStop := make(chan struct{})
+	spinnerDone := make(chan struct{})
 	s.doneCh = doneCh
+	s.spinnerStop = spinnerStop
+	s.spinnerDone = spinnerDone
 	s.renderFooterLocked()
 	s.mu.Unlock()
 
@@ -130,6 +142,7 @@ func (s *ScreenController) Start() error {
 		err := s.runInlineInputLoop(cancelReader)
 		doneCh <- err
 	}()
+	go s.runSpinnerLoop(spinnerStop, spinnerDone)
 
 	return nil
 }
@@ -148,10 +161,15 @@ func (s *ScreenController) Stop() error {
 	cancelReader := s.cancelReader
 	doneCh := s.doneCh
 	rawState := s.rawState
+	spinnerStop := s.spinnerStop
+	spinnerDone := s.spinnerDone
 	s.cancelReader = nil
 	s.rawState = nil
 	s.doneCh = nil
+	s.spinnerStop = nil
+	s.spinnerDone = nil
 	s.pending = false
+	s.busy = false
 	s.mu.Unlock()
 
 	if cancelReader != nil {
@@ -163,6 +181,15 @@ func (s *ScreenController) Stop() error {
 	if doneCh != nil {
 		select {
 		case loopErr = <-doneCh:
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if spinnerStop != nil {
+		close(spinnerStop)
+	}
+	if spinnerDone != nil {
+		select {
+		case <-spinnerDone:
 		case <-time.After(2 * time.Second):
 		}
 	}
@@ -272,6 +299,22 @@ func (s *ScreenController) SetStatusLine(line string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.statusLine = line
+	s.renderFooterLocked()
+}
+
+func (s *ScreenController) SetBusy(active bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.busy == active {
+		return
+	}
+	s.busy = active
+	if !active {
+		s.spinnerFrame = 0
+	}
 	s.renderFooterLocked()
 }
 
@@ -623,6 +666,14 @@ func (s *ScreenController) renderCurrentLinesLocked(width int) []string {
 
 func (s *ScreenController) renderStatusLineLocked(width int) string {
 	text := strings.TrimSpace(s.statusLine)
+	if s.busy {
+		frame := screenSpinnerFrames[s.spinnerFrame%len(screenSpinnerFrames)]
+		if text == "" {
+			text = frame + " working"
+		} else {
+			text = frame + " " + text
+		}
+	}
 	if text != "" {
 		text = truncateText(text, max(1, width-2))
 	}
@@ -800,6 +851,26 @@ func (s *ScreenController) emit(event ControlEvent) {
 	select {
 	case s.events <- event:
 	default:
+	}
+}
+
+func (s *ScreenController) runSpinnerLoop(stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(120 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			if s.active && s.busy {
+				s.spinnerFrame = (s.spinnerFrame + 1) % len(screenSpinnerFrames)
+				s.renderFooterLocked()
+			}
+			s.mu.Unlock()
+		}
 	}
 }
 
@@ -1071,6 +1142,9 @@ func leadingWhitespace(s string) string {
 func continuationIndent(line string) string {
 	trimmed := strings.TrimLeft(line, " \t")
 	if strings.HasPrefix(trimmed, "<- ") || strings.HasPrefix(trimmed, "-> ") {
+		return leadingWhitespace(line) + "   "
+	}
+	if strings.HasPrefix(trimmed, ">_ ") {
 		return leadingWhitespace(line) + "   "
 	}
 	return leadingWhitespace(line)

@@ -314,6 +314,8 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 	}
 
 	st.RunLabel = "active"
+	l.setBusy(true)
+	defer l.setBusy(false)
 	if strings.HasPrefix(strings.TrimSpace(display), "<- ") {
 		l.printf("\n%s\n\n", display)
 	} else {
@@ -1246,6 +1248,15 @@ func (l *Loop) clearStatusLine() {
 func (l *Loop) setExitConfirmation(active bool) {
 	if screen := l.screen(); screen != nil {
 		screen.SetExitConfirmation(active)
+	}
+}
+
+func (l *Loop) setBusy(active bool) {
+	if l == nil || l.Control == nil {
+		return
+	}
+	if busyUI, ok := l.Control.(interface{ SetBusy(bool) }); ok {
+		busyUI.SetBusy(active)
 	}
 }
 

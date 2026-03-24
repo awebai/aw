@@ -181,6 +181,18 @@ func TestWrapScreenLineUsesHangingIndentForCommLines(t *testing.T) {
 	}
 }
 
+func TestWrapScreenLineUsesHangingIndentForTopLevelToolLines(t *testing.T) {
+	lines := wrapScreenLine(`>_ aw mail inbox --unread-only --format json 2>/dev/null | python3 -c "print(1)"`, 34)
+	if len(lines) < 2 {
+		t.Fatalf("expected wrapped lines, got %#v", lines)
+	}
+	for _, line := range lines[1:] {
+		if !strings.HasPrefix(line, "   ") {
+			t.Fatalf("expected wrapped tool continuation to align under the command, got %#v", lines)
+		}
+	}
+}
+
 func TestScreenControllerFooterPlacesPromptAboveStatusWithoutDivider(t *testing.T) {
 	screen := &ScreenController{
 		promptLabel: ">> ",
@@ -218,6 +230,23 @@ func TestScreenControllerFooterPlacesPromptAboveStatusWithoutDivider(t *testing.
 		if strings.Contains(line, "────") {
 			t.Fatalf("expected footer divider to be absent, got %#v", lines)
 		}
+	}
+}
+
+func TestScreenControllerRenderStatusLineShowsBusySpinner(t *testing.T) {
+	screen := &ScreenController{
+		statusLine:   "working",
+		busy:         true,
+		spinnerFrame: 2,
+		styles:       newScreenStyles(),
+	}
+
+	line := screen.renderStatusLineLocked(40)
+	if !strings.Contains(line, screenSpinnerFrames[2]) {
+		t.Fatalf("expected spinner frame in status line, got %q", line)
+	}
+	if !strings.Contains(line, "working") {
+		t.Fatalf("expected status text to remain, got %q", line)
 	}
 }
 
