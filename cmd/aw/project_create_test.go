@@ -113,6 +113,9 @@ func TestAwProjectCreateAgainstHosted(t *testing.T) {
 	if gotBody["namespace_slug"] != "myteam" {
 		t.Fatalf("namespace_slug=%v", gotBody["namespace_slug"])
 	}
+	if _, ok := gotBody["project_name"]; ok {
+		t.Fatalf("project_name should be omitted, got %v", gotBody["project_name"])
+	}
 	if gotBody["alias"] != "deploy-bot" {
 		t.Fatalf("alias=%v", gotBody["alias"])
 	}

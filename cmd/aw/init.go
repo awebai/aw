@@ -30,7 +30,6 @@ var initCmd = &cobra.Command{
 var (
 	initServerURL     string
 	initProjectSlug   string
-	initProjectName   string
 	initNamespaceSlug string
 	initAlias         string
 	initName          string
@@ -68,7 +67,6 @@ type initOptions struct {
 	BaseURL             string
 	ServerName          string
 	ProjectSlug         string
-	ProjectName         string
 	NamespaceSlug       string
 	IdentityAlias       string
 	IdentityName        string
@@ -252,11 +250,6 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 		}
 	}
 
-	projectName := strings.TrimSpace(initProjectName)
-	if projectName == "" && flow != flowProjectKey {
-		projectName = strings.TrimSpace(os.Getenv("AWEB_PROJECT_NAME"))
-	}
-
 	namespaceSlug := ""
 	if flow == flowHeadless {
 		namespaceSlug = resolveExplicitNamespaceSlug()
@@ -319,7 +312,6 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 		BaseURL:             baseURL,
 		ServerName:          serverName,
 		ProjectSlug:         projectSlug,
-		ProjectName:         projectName,
 		NamespaceSlug:       namespaceSlug,
 		IdentityAlias:       alias,
 		IdentityName:        name,
@@ -476,10 +468,6 @@ func executeInit(opts initOptions) (*initResult, error) {
 	did := awid.ComputeDIDKey(pub)
 	pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
 
-	projectName := strings.TrimSpace(opts.ProjectName)
-	if projectName == "" {
-		projectName = strings.TrimSpace(opts.ProjectSlug)
-	}
 	lifetime := strings.TrimSpace(opts.Lifetime)
 	if lifetime == "" {
 		lifetime = resolveInitLifetime(initPermanent)
@@ -497,8 +485,8 @@ func executeInit(opts initOptions) (*initResult, error) {
 			return nil, err
 		}
 		// Project-scoped API key carries the project context — do not
-		// send project_slug or project_name (server rejects them as
-		// extra inputs when the key already identifies the project).
+		// send project_slug or project_name equivalents when the key
+		// already identifies the project.
 		req := &awid.WorkspaceInitRequest{
 			HumanName:           opts.HumanName,
 			AgentType:           opts.AgentType,
@@ -526,7 +514,6 @@ func executeInit(opts initOptions) (*initResult, error) {
 		}
 		createReq := &awid.CreateProjectRequest{
 			ProjectSlug:         opts.ProjectSlug,
-			ProjectName:         projectName,
 			NamespaceSlug:       opts.NamespaceSlug,
 			HumanName:           opts.HumanName,
 			AgentType:           opts.AgentType,
