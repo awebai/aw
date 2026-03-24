@@ -649,15 +649,17 @@ func (s *ScreenController) renderFooterLinesLocked(width int) []string {
 func (s *ScreenController) renderFooterLayoutLocked(width int) promptLayout {
 	currentLines := s.renderCurrentLinesLocked(width)
 	lines := append([]string{}, currentLines...)
+	spacerLines := 0
 	if len(s.lines) > 0 || len(currentLines) > 0 {
 		lines = append(lines, "")
+		spacerLines = 1
 	}
 	prompt := buildPromptLayout(s.promptLabel, InputValueFromLine(s.inputLine, s.promptLabel), s.inputCursor, width)
 	lines = append(lines, prompt.lines...)
 	lines = append(lines, "")
 	lines = append(lines, s.renderStatusLineLocked(width))
 	prompt.lines = lines
-	prompt.cursorLine += len(currentLines)
+	prompt.cursorLine += len(currentLines) + spacerLines
 	return prompt
 }
 

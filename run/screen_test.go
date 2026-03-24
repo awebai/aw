@@ -312,6 +312,21 @@ func TestScreenControllerFooterSeparatesTranscriptHistoryFromPrompt(t *testing.T
 	}
 }
 
+func TestScreenControllerFooterCursorTracksPromptAfterHistorySpacer(t *testing.T) {
+	screen := &ScreenController{
+		promptLabel: ">> ",
+		lines:       []string{"assistant reply"},
+		inputLine:   ">> asdf",
+		inputCursor: len([]rune("asdf")),
+		styles:      newScreenStyles(),
+	}
+
+	layout := screen.renderFooterLayoutLocked(40)
+	if layout.cursorLine != 1 {
+		t.Fatalf("expected cursor on prompt line after history spacer, got line %d with %#v", layout.cursorLine, layout.lines)
+	}
+}
+
 func TestScreenControllerRenderStatusLineShowsBusySpinner(t *testing.T) {
 	screen := &ScreenController{
 		statusLine:   "working",
