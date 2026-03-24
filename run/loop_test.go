@@ -34,6 +34,8 @@ type recordingUI struct {
 	*fakeInputController
 	statusMu sync.Mutex
 	statuses []string
+	busyMu   sync.Mutex
+	busy     []bool
 	outputMu sync.Mutex
 	output   string
 }
@@ -55,6 +57,11 @@ func (r *recordingUI) SetInputLine(string)      {}
 func (r *recordingUI) ClearInputLine()          {}
 func (r *recordingUI) SetExitConfirmation(bool) {}
 func (r *recordingUI) HasActiveProgram() bool   { return true }
+func (r *recordingUI) SetBusy(active bool) {
+	r.busyMu.Lock()
+	defer r.busyMu.Unlock()
+	r.busy = append(r.busy, active)
+}
 
 func (r *recordingUI) SetStatusLine(text string) {
 	r.statusMu.Lock()
@@ -83,6 +90,17 @@ func (r *recordingUI) sawOutputContaining(substr string) bool {
 	r.outputMu.Lock()
 	defer r.outputMu.Unlock()
 	return strings.Contains(r.output, substr)
+}
+
+func (r *recordingUI) sawBusy(active bool) bool {
+	r.busyMu.Lock()
+	defer r.busyMu.Unlock()
+	for _, state := range r.busy {
+		if state == active {
+			return true
+		}
+	}
+	return false
 }
 
 type fakeDispatcher struct {
@@ -203,6 +221,29 @@ func TestLoopMaintainsCodexSessionContinuity(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(commands[1], " "), "resume 019ccab4-4844-7ff3-80f2-b2d3b0c25e79") {
 		t.Fatalf("second codex run should use exact session id, got %q", strings.Join(commands[1], " "))
+	}
+}
+
+func TestLoopMarksUIBusyDuringRun(t *testing.T) {
+	ui := newRecordingUI()
+	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
+	loop.Control = ui
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
+		return nil
+	}
+	loop.Dispatch = &fakeDispatcher{
+		decisions: []DispatchDecision{{Mission: "check status", WaitSeconds: 0}},
+	}
+
+	if err := loop.Run(context.Background(), LoopOptions{MaxRuns: 1}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !ui.sawBusy(true) {
+		t.Fatal("expected loop to mark UI busy during the run")
+	}
+	if !ui.sawBusy(false) {
+		t.Fatal("expected loop to clear busy state after the run")
 	}
 }
 
