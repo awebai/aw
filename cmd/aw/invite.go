@@ -345,7 +345,7 @@ func runSpawnAcceptInvite(cmd *cobra.Command, args []string) error {
 		SetDefault:             initSetDefault,
 		WriteContext:           initWriteContext,
 		InviteToken:            token,
-		WorkspaceRole:          resolveRequestedRole(),
+		WorkspaceRole:          resolveInviteRoleFlag(),
 		Lifetime:               resolveInitLifetime(initPermanent),
 	}
 
@@ -381,4 +381,12 @@ func runSpawnAcceptInvite(cmd *cobra.Command, args []string) error {
 		printInitNextSteps(initInjectDocs, initSetupHooks)
 	}
 	return nil
+}
+
+func resolveInviteRoleFlag() string {
+	role := strings.TrimSpace(initRole)
+	if role == "" {
+		role = strings.TrimSpace(os.Getenv("AWEB_ROLE"))
+	}
+	return normalizeWorkspaceRole(role)
 }

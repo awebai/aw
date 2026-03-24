@@ -289,7 +289,14 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 
 	// --- Role ---
 
-	role := resolveRequestedRole()
+	var suggestedRoles []string
+	if suggestion != nil {
+		suggestedRoles = suggestion.Roles
+	}
+	role, err := resolveRoleWithPrompt(suggestedRoles)
+	if err != nil {
+		return initOptions{}, err
+	}
 
 	// --- TTY prompts for alias (after role, so prompts are in logical order) ---
 
@@ -419,12 +426,21 @@ func resolveAgentType() string {
 	return "agent"
 }
 
-func resolveRequestedRole() string {
-	role := strings.TrimSpace(initRole)
-	if role == "" {
-		role = strings.TrimSpace(os.Getenv("AWEB_ROLE"))
+func resolveRoleWithPrompt(suggestedRoles []string) (string, error) {
+	requested := strings.TrimSpace(initRole)
+	if requested == "" {
+		requested = strings.TrimSpace(os.Getenv("AWEB_ROLE"))
 	}
-	return normalizeWorkspaceRole(role)
+	if len(suggestedRoles) > 0 {
+		// Server has a role policy — validate against available roles,
+		// or prompt the user to choose from the list.
+		return selectRoleFromAvailableRoles(requested, suggestedRoles, isTTY() && requested == "", os.Stdin, os.Stderr)
+	}
+	// No role policy on the server — accept whatever the user provides.
+	if requested != "" {
+		return normalizeWorkspaceRole(requested), nil
+	}
+	return "", nil
 }
 
 // fetchInitSuggestion calls the suggest-alias-prefix endpoint.
