@@ -50,6 +50,7 @@ class RecordedRequest:
 @dataclass
 class CommandResult:
     name: str
+    persona: str
     cwd: str
     argv: list[str]
     exit_code: int
@@ -59,10 +60,85 @@ class CommandResult:
     expected: list[ExpectedCall] = field(default_factory=list)
     missing_expected: list[str] = field(default_factory=list)
     parsed_json: Any | None = None
+    validation_error: str | None = None
 
 
 class ValidationError(RuntimeError):
     pass
+
+
+@dataclass
+class Persona:
+    name: str
+    home: Path
+    xdg: Path
+    workspace_root: Path
+
+
+@dataclass(frozen=True)
+class EndpointInventoryItem:
+    method: str
+    path_prefix: str
+    automated: bool = True
+    note: str = ""
+
+
+ENDPOINT_INVENTORY: list[EndpointInventoryItem] = [
+    EndpointInventoryItem("GET", "/api/v1/agents/heartbeat"),
+    EndpointInventoryItem("GET", "/api/v1/projects/current"),
+    EndpointInventoryItem("GET", "/api/v1/policies/active"),
+    EndpointInventoryItem("GET", "/api/v1/agents"),
+    EndpointInventoryItem("GET", "/api/v1/agents/resolve/"),
+    EndpointInventoryItem("GET", "/api/v1/agents/me/log"),
+    EndpointInventoryItem("GET", "/api/v1/network/directory"),
+    EndpointInventoryItem("GET", "/api/v1/network/directory/"),
+    EndpointInventoryItem("GET", "/api/v1/messages/inbox"),
+    EndpointInventoryItem("GET", "/api/v1/chat/pending"),
+    EndpointInventoryItem("GET", "/api/v1/chat/sessions"),
+    EndpointInventoryItem("GET", "/api/v1/chat/sessions/", note="Covers both history and SSE stream paths"),
+    EndpointInventoryItem("GET", "/api/v1/contacts"),
+    EndpointInventoryItem("GET", "/api/v1/status"),
+    EndpointInventoryItem("GET", "/api/v1/claims"),
+    EndpointInventoryItem("GET", "/api/v1/reservations"),
+    EndpointInventoryItem("GET", "/api/v1/tasks"),
+    EndpointInventoryItem("GET", "/api/v1/tasks/ready"),
+    EndpointInventoryItem("GET", "/api/v1/tasks/blocked"),
+    EndpointInventoryItem("GET", "/api/v1/workspaces"),
+    EndpointInventoryItem("GET", "/api/v1/workspaces/team"),
+    EndpointInventoryItem("GET", "/api/v1/events/stream"),
+    EndpointInventoryItem("GET", "/api/v1/namespaces"),
+    EndpointInventoryItem("POST", "/api/v1/create-project"),
+    EndpointInventoryItem("POST", "/api/v1/agents/suggest-alias-prefix"),
+    EndpointInventoryItem("POST", "/api/v1/workspaces/init"),
+    EndpointInventoryItem("POST", "/api/v1/workspaces/register"),
+    EndpointInventoryItem("POST", "/api/v1/workspaces/attach"),
+    EndpointInventoryItem("POST", "/api/v1/spawn/create-invite"),
+    EndpointInventoryItem("POST", "/api/v1/spawn/accept-invite"),
+    EndpointInventoryItem("POST", "/api/v1/messages"),
+    EndpointInventoryItem("POST", "/api/v1/messages/", note="Covers message ack path"),
+    EndpointInventoryItem("POST", "/api/v1/chat/sessions"),
+    EndpointInventoryItem("POST", "/api/v1/chat/sessions/", note="Covers mark-read and send-message paths"),
+    EndpointInventoryItem("POST", "/api/v1/contacts"),
+    EndpointInventoryItem("POST", "/api/v1/reservations"),
+    EndpointInventoryItem("POST", "/api/v1/reservations/renew"),
+    EndpointInventoryItem("POST", "/api/v1/reservations/release"),
+    EndpointInventoryItem("POST", "/api/v1/reservations/revoke"),
+    EndpointInventoryItem("POST", "/api/v1/tasks"),
+    EndpointInventoryItem("POST", "/api/v1/tasks/", note="Covers dependency add and comment create paths"),
+    EndpointInventoryItem("POST", "/api/v1/namespaces/external"),
+    EndpointInventoryItem("POST", "/api/v1/agents/", note="Covers control signal path"),
+    EndpointInventoryItem("PATCH", "/api/v1/agents/"),
+    EndpointInventoryItem("PATCH", "/api/v1/tasks/"),
+    EndpointInventoryItem("PUT", "/api/v1/agents/me/rotate"),
+    EndpointInventoryItem("DELETE", "/api/v1/spawn/invites/"),
+    EndpointInventoryItem("DELETE", "/api/v1/contacts/"),
+    EndpointInventoryItem("DELETE", "/api/v1/tasks/"),
+    EndpointInventoryItem("DELETE", "/api/v1/tasks/", note="Covers dependency remove path"),
+    EndpointInventoryItem("DELETE", "/api/v1/agents/me"),
+    EndpointInventoryItem("DELETE", "/api/v1/namespaces/"),
+    EndpointInventoryItem("POST", "/api/v1/namespaces/", automated=False, note="Namespace verify requires real DNS fixture"),
+    EndpointInventoryItem("POST", "/api/v1/claim-human", automated=False, note="Human claim flow requires external auth fixture"),
+]
 
 
 def run(
@@ -82,6 +158,7 @@ def run(
     )
     result = CommandResult(
         name=name,
+        persona="",
         cwd=str(cwd),
         argv=argv,
         exit_code=proc.returncode,
@@ -272,14 +349,10 @@ class Validator:
     def __init__(self, args: argparse.Namespace):
         self.args = args
         self.tmp_root = Path(tempfile.mkdtemp(prefix="aw-local-cloud-validate-"))
-        self.home = self.tmp_root / "home"
-        self.xdg = self.tmp_root / "xdg"
-        self.workspaces = self.tmp_root / "workspaces"
+        self.personas_root = self.tmp_root / "personas"
         self.bin_dir = self.tmp_root / "bin"
         self.artifacts = self.tmp_root / "artifacts"
-        self.home.mkdir(parents=True, exist_ok=True)
-        self.xdg.mkdir(parents=True, exist_ok=True)
-        self.workspaces.mkdir(parents=True, exist_ok=True)
+        self.personas_root.mkdir(parents=True, exist_ok=True)
         self.bin_dir.mkdir(parents=True, exist_ok=True)
         self.artifacts.mkdir(parents=True, exist_ok=True)
         self.cloud_dir = args.cloud_dir.resolve()
@@ -294,6 +367,7 @@ class Validator:
         self.cloud: CloudStack | None = None
         self.aw_bin = self.bin_dir / "aw"
         self.command_results: list[CommandResult] = []
+        self.personas: dict[str, Persona] = {}
         self.project_api_key: str | None = None
         self.created_project_slug = args.project_slug
         self.created_namespace_slug = args.namespace_slug or args.project_slug
@@ -375,23 +449,39 @@ class Validator:
             name="build aw",
         )
 
-    def base_env(self) -> dict[str, str]:
+    def base_env(self, persona: Persona) -> dict[str, str]:
         env = os.environ.copy()
         env.update(
             {
-                "HOME": str(self.home),
-                "XDG_CONFIG_HOME": str(self.xdg),
-                "USER": "validator",
-                "AWEB_HUMAN": "Validator",
+                "HOME": str(persona.home),
+                "XDG_CONFIG_HOME": str(persona.xdg),
+                "USER": persona.name,
+                "AWEB_HUMAN": persona.name.capitalize(),
                 "NO_COLOR": "1",
             }
         )
         return env
 
-    def make_git_repo(self, name: str) -> Path:
-        repo = self.workspaces / name
+    def ensure_persona(self, name: str) -> Persona:
+        if name in self.personas:
+            return self.personas[name]
+        root = self.personas_root / name
+        persona = Persona(
+            name=name,
+            home=root / "home",
+            xdg=root / "xdg",
+            workspace_root=root / "workspaces",
+        )
+        persona.home.mkdir(parents=True, exist_ok=True)
+        persona.xdg.mkdir(parents=True, exist_ok=True)
+        persona.workspace_root.mkdir(parents=True, exist_ok=True)
+        self.personas[name] = persona
+        return persona
+
+    def make_git_repo(self, persona: Persona, name: str) -> Path:
+        repo = persona.workspace_root / name
         repo.mkdir(parents=True, exist_ok=True)
-        env = self.base_env()
+        env = self.base_env(persona)
         run(["git", "init"], cwd=repo, env=env, name=f"git init {name}")
         run(["git", "config", "user.name", "Validator"], cwd=repo, env=env, name=f"git config user.name {name}")
         run(["git", "config", "user.email", "validator@example.com"], cwd=repo, env=env, name=f"git config user.email {name}")
@@ -406,8 +496,8 @@ class Validator:
         )
         return repo
 
-    def make_plain_dir(self, name: str) -> Path:
-        directory = self.workspaces / name
+    def make_plain_dir(self, persona: Persona, name: str) -> Path:
+        directory = persona.workspace_root / name
         directory.mkdir(parents=True, exist_ok=True)
         return directory
 
@@ -415,18 +505,21 @@ class Validator:
         self,
         name: str,
         *,
+        persona: Persona,
         cwd: Path,
         args: list[str],
         env_overrides: dict[str, str] | None = None,
         expected: list[ExpectedCall] | None = None,
+        fatal: bool = False,
     ) -> CommandResult:
         if self.proxy is None:
             raise ValidationError("proxy is not running")
-        env = self.base_env()
+        env = self.base_env(persona)
         if env_overrides:
             env.update({key: value for key, value in env_overrides.items() if value is not None})
         snapshot = self.proxy.snapshot()
         result = run([str(self.aw_bin), *args], cwd=cwd, env=env, name=name, allow_failure=True)
+        result.persona = persona.name
         result.requests = self.proxy.requests_since(snapshot)
         result.expected = expected or []
         result.missing_expected = find_missing_expected(result.requests, result.expected)
@@ -436,23 +529,34 @@ class Validator:
                 result.parsed_json = json.loads(stdout)
         self.command_results.append(result)
         if result.exit_code != 0:
-            raise ValidationError(
+            result.validation_error = (
                 f"{name} failed with exit code {result.exit_code}\n"
                 f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
             )
+            if fatal:
+                raise ValidationError(result.validation_error)
+            return result
         if result.missing_expected:
-            raise ValidationError(
+            result.validation_error = (
                 f"{name} did not hit expected endpoints: {', '.join(result.missing_expected)}\n"
                 f"observed: {format_observed_requests(result.requests)}"
             )
+            if fatal:
+                raise ValidationError(result.validation_error)
+            return result
         return result
 
     def run_suite(self) -> None:
         proxy_url = self.proxy.base_url if self.proxy is not None else ""
+        owner = self.ensure_persona("owner")
+        implementer = self.ensure_persona("implementer")
+        reviewer = self.ensure_persona("reviewer")
+        connector = self.ensure_persona("connector")
 
-        project_repo = self.make_git_repo("validate-project")
+        project_repo = self.make_git_repo(owner, "project")
         create = self.run_aw(
             "project-create-ephemeral",
+            persona=owner,
             cwd=project_repo,
             args=[
                 "project",
@@ -472,45 +576,59 @@ class Validator:
             expected=[
                 ExpectedCall("GET", "/api/v1/agents/heartbeat"),
                 ExpectedCall("POST", "/api/v1/create-project"),
-                ExpectedCall("GET", "/api/v1/policies/active"),
                 ExpectedCall("POST", "/api/v1/workspaces/register"),
             ],
+            fatal=True,
         )
         create_json = ensure_json_dict(create, "project-create-ephemeral")
         self.project_api_key = str(create_json["api_key"])
+        owner_address = f"{self.created_namespace_slug}/architect"
 
         self.run_aw(
             "project-current",
+            persona=owner,
             cwd=project_repo,
             args=["project", "--json"],
             expected=[ExpectedCall("GET", "/api/v1/projects/current")],
         )
         self.run_aw(
             "policy-show",
+            persona=owner,
             cwd=project_repo,
             args=["policy", "show", "--json"],
             expected=[ExpectedCall("GET", "/api/v1/policies/active")],
         )
         self.run_aw(
+            "policy-roles",
+            persona=owner,
+            cwd=project_repo,
+            args=["policy", "roles", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/policies/active")],
+        )
+        self.run_aw(
             "whoami",
+            persona=owner,
             cwd=project_repo,
             args=["whoami", "--json"],
             expected=[ExpectedCall("GET", "/api/v1/auth/introspect")],
         )
         self.run_aw(
             "identities",
+            persona=owner,
             cwd=project_repo,
             args=["identities", "--json"],
             expected=[ExpectedCall("GET", "/api/v1/agents")],
         )
         self.run_aw(
             "identity-log",
+            persona=owner,
             cwd=project_repo,
-            args=["identity", "log"],
+            args=["identity", "log", "--json"],
             expected=[ExpectedCall("GET", "/api/v1/agents/me/log")],
         )
         self.run_aw(
             "identity-access-mode-get",
+            persona=owner,
             cwd=project_repo,
             args=["identity", "access-mode", "--json"],
             expected=[
@@ -520,6 +638,7 @@ class Validator:
         )
         self.run_aw(
             "identity-access-mode-set",
+            persona=owner,
             cwd=project_repo,
             args=["identity", "access-mode", "contacts_only", "--json"],
             expected=[
@@ -529,14 +648,38 @@ class Validator:
         )
         self.run_aw(
             "workspace-status-project",
+            persona=owner,
             cwd=project_repo,
             args=["workspace", "status", "--json"],
-            expected=[ExpectedCall("GET", "/api/v1/workspaces/team")],
+            expected=[ExpectedCall("GET", "/api/v1/workspaces/team"), ExpectedCall("GET", "/api/v1/status"), ExpectedCall("GET", "/api/v1/workspaces")],
+        )
+        self.run_aw(
+            "project-namespace-list",
+            persona=owner,
+            cwd=project_repo,
+            args=["project", "namespace", "list", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/namespaces")],
+        )
+        external_domain = f"{self.created_project_slug}-ext.example.test"
+        self.run_aw(
+            "project-namespace-add",
+            persona=owner,
+            cwd=project_repo,
+            args=["project", "namespace", "add", external_domain, "--json"],
+            expected=[ExpectedCall("POST", "/api/v1/namespaces/external")],
+        )
+        self.run_aw(
+            "project-namespace-delete",
+            persona=owner,
+            cwd=project_repo,
+            args=["project", "namespace", "delete", external_domain, "--force", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/namespaces"), ExpectedCall("DELETE", "/api/v1/namespaces/")],
         )
 
-        init_repo = self.make_git_repo("validate-init")
+        init_repo = self.make_git_repo(implementer, "ephemeral-child")
         init_result = self.run_aw(
             "existing-project-init",
+            persona=implementer,
             cwd=init_repo,
             args=[
                 "init",
@@ -556,23 +699,24 @@ class Validator:
                 ExpectedCall("POST", "/api/v1/workspaces/register"),
             ],
         )
-        init_json = ensure_json_dict(init_result, "existing-project-init")
 
-        local_dir = self.make_plain_dir("validate-local-dir")
+        local_dir = self.make_plain_dir(owner, "local-dir")
         self.run_aw(
             "existing-project-init-local-dir",
+            persona=owner,
             cwd=local_dir,
             args=[
                 "init",
                 "--json",
                 "--server",
                 proxy_url,
-                "--alias",
-                "localdir",
+                "--role",
+                "developer",
             ],
             env_overrides={"AWEB_API_KEY": self.project_api_key},
             expected=[
                 ExpectedCall("GET", "/api/v1/agents/heartbeat"),
+                ExpectedCall("POST", "/api/v1/agents/suggest-alias-prefix"),
                 ExpectedCall("POST", "/api/v1/workspaces/init"),
                 ExpectedCall("POST", "/api/v1/workspaces/attach"),
             ],
@@ -580,15 +724,18 @@ class Validator:
 
         invite_create = self.run_aw(
             "spawn-create-invite",
+            persona=owner,
             cwd=project_repo,
-            args=["spawn", "create-invite", "--alias", "reviewer", "--json"],
+            args=["spawn", "create-invite", "--alias", "implementer", "--json"],
             expected=[ExpectedCall("POST", "/api/v1/spawn/create-invite")],
+            fatal=True,
         )
         invite_json = ensure_json_dict(invite_create, "spawn-create-invite")
         self.invite_token = str(invite_json["token"])
 
         self.run_aw(
             "spawn-list-invites",
+            persona=owner,
             cwd=project_repo,
             args=["spawn", "list-invites", "--json"],
             expected=[ExpectedCall("GET", "/api/v1/spawn/invites")],
@@ -596,16 +743,19 @@ class Validator:
 
         invite_for_revoke = self.run_aw(
             "spawn-create-invite-revoke-target",
+            persona=owner,
             cwd=project_repo,
             args=["spawn", "create-invite", "--alias", "revoke-me", "--json"],
             expected=[ExpectedCall("POST", "/api/v1/spawn/create-invite")],
+            fatal=True,
         )
         invite_for_revoke_json = ensure_json_dict(invite_for_revoke, "spawn-create-invite-revoke-target")
         self.revocable_invite_prefix = str(invite_for_revoke_json["token_prefix"])
 
-        child_repo = self.make_git_repo("validate-spawn-child")
+        child_repo = self.make_git_repo(implementer, "spawn-child")
         self.run_aw(
             "spawn-accept-invite",
+            persona=implementer,
             cwd=child_repo,
             args=[
                 "spawn",
@@ -615,19 +765,34 @@ class Validator:
                 "--server",
                 proxy_url,
                 "--alias",
-                "reviewer",
+                "implementer",
                 "--role",
                 "developer",
             ],
             expected=[
                 ExpectedCall("POST", "/api/v1/spawn/accept-invite"),
-                ExpectedCall("GET", "/api/v1/policies/active"),
                 ExpectedCall("POST", "/api/v1/workspaces/register"),
             ],
+            fatal=True,
+        )
+        self.run_aw(
+            "spawn-child-whoami",
+            persona=implementer,
+            cwd=child_repo,
+            args=["whoami", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/auth/introspect")],
+        )
+        self.run_aw(
+            "spawn-child-workspace-status",
+            persona=implementer,
+            cwd=child_repo,
+            args=["workspace", "status", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/workspaces/team"), ExpectedCall("GET", "/api/v1/status"), ExpectedCall("GET", "/api/v1/workspaces")],
         )
 
         self.run_aw(
             "spawn-revoke-invite",
+            persona=owner,
             cwd=project_repo,
             args=["spawn", "revoke-invite", self.revocable_invite_prefix, "--json"],
             expected=[
@@ -636,29 +801,376 @@ class Validator:
             ],
         )
 
-        connect_home = self.tmp_root / "connect-home"
-        connect_xdg = self.tmp_root / "connect-xdg"
-        connect_dir = self.make_plain_dir("validate-connect")
-        connect_env = self.base_env()
-        connect_env["HOME"] = str(connect_home)
-        connect_env["XDG_CONFIG_HOME"] = str(connect_xdg)
-        connect_env["AWEB_URL"] = proxy_url
-        connect_env["AWEB_API_KEY"] = str(init_json["api_key"])
-        snapshot = self.proxy.snapshot()
-        connect_result = run([str(self.aw_bin), "connect", "--json"], cwd=connect_dir, env=connect_env, name="connect")
-        connect_result.requests = self.proxy.requests_since(snapshot)
-        connect_result.expected = [ExpectedCall("GET", "/api/v1/auth/introspect"), ExpectedCall("GET", "/api/v1/agents/resolve/")]
-        connect_result.missing_expected = find_missing_expected(connect_result.requests, connect_result.expected)
-        if connect_result.missing_expected:
-            raise ValidationError(
-                f"connect did not hit expected endpoints: {', '.join(connect_result.missing_expected)}\n"
-                f"observed: {format_observed_requests(connect_result.requests)}"
+        mail_send = self.run_aw(
+            "mail-send",
+            persona=owner,
+            cwd=project_repo,
+            args=["mail", "send", "--to", "implementer", "--subject", "validator", "--body", "hello implementer", "--json"],
+            expected=[ExpectedCall("POST", "/api/v1/messages")],
+        )
+        _ = mail_send
+        child_inbox = self.run_aw(
+            "mail-inbox",
+            persona=implementer,
+            cwd=child_repo,
+            args=["mail", "inbox", "--unread-only", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/messages/inbox"), ExpectedCall("GET", "/api/v1/agents/resolve/")],
+            fatal=True,
+        )
+        child_inbox_json = ensure_json_dict(child_inbox, "mail-inbox")
+        child_messages = child_inbox_json.get("messages", [])
+        if not isinstance(child_messages, list) or not child_messages:
+            raise ValidationError("mail-inbox returned no messages to acknowledge")
+        child_message_id = str(child_messages[0]["message_id"])
+        self.run_aw(
+            "mail-ack",
+            persona=implementer,
+            cwd=child_repo,
+            args=["mail", "ack", "--message-id", child_message_id, "--json"],
+            expected=[ExpectedCall("POST", "/api/v1/messages/")],
+        )
+
+        self.run_aw(
+            "chat-send-and-wait-timeout",
+            persona=owner,
+            cwd=project_repo,
+            args=["chat", "send-and-wait", "--wait", "1", "implementer", "hello over chat", "--json"],
+            expected=[ExpectedCall("POST", "/api/v1/chat/sessions"), ExpectedCall("GET", "/api/v1/chat/sessions/")],
+        )
+        self.run_aw(
+            "chat-pending",
+            persona=implementer,
+            cwd=child_repo,
+            args=["chat", "pending", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/chat/pending")],
+        )
+        self.run_aw(
+            "chat-open",
+            persona=implementer,
+            cwd=child_repo,
+            args=["chat", "open", "architect", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/chat/pending"), ExpectedCall("GET", "/api/v1/chat/sessions/"), ExpectedCall("POST", "/api/v1/chat/sessions/")],
+        )
+        self.run_aw(
+            "chat-history",
+            persona=implementer,
+            cwd=child_repo,
+            args=["chat", "history", "architect", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/chat/pending"), ExpectedCall("GET", "/api/v1/chat/sessions"), ExpectedCall("GET", "/api/v1/chat/sessions/")],
+        )
+        self.run_aw(
+            "chat-extend-wait",
+            persona=implementer,
+            cwd=child_repo,
+            args=["chat", "extend-wait", "architect", "hold on", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/chat/pending"), ExpectedCall("POST", "/api/v1/chat/sessions/")],
+        )
+
+        reviewer_repo = self.make_git_repo(reviewer, "permanent")
+        permanent_init = self.run_aw(
+            "existing-project-init-permanent",
+            persona=reviewer,
+            cwd=reviewer_repo,
+            args=[
+                "init",
+                "--json",
+                "--server",
+                proxy_url,
+                "--permanent",
+                "--name",
+                "reviewer",
+                "--role",
+                "developer",
+                "--reachability",
+                "public",
+            ],
+            env_overrides={"AWEB_API_KEY": self.project_api_key},
+            expected=[
+                ExpectedCall("GET", "/api/v1/agents/heartbeat"),
+                ExpectedCall("POST", "/api/v1/workspaces/init"),
+                ExpectedCall("GET", "/api/v1/policies/active"),
+                ExpectedCall("POST", "/api/v1/workspaces/register"),
+            ],
+            fatal=False,
+        )
+        permanent_api_key: str | None = None
+        if permanent_init.exit_code == 0 and isinstance(permanent_init.parsed_json, dict):
+            permanent_api_key = str(permanent_init.parsed_json["api_key"])
+            permanent_address = f"{self.created_namespace_slug}/reviewer"
+
+            self.run_aw(
+                "identity-reachability-get",
+                persona=reviewer,
+                cwd=reviewer_repo,
+                args=["identity", "reachability", "--json"],
+                expected=[ExpectedCall("GET", "/api/v1/auth/introspect"), ExpectedCall("GET", "/api/v1/agents")],
             )
-        stdout = connect_result.stdout.strip()
-        if stdout.startswith("{") or stdout.startswith("["):
-            with contextlib.suppress(json.JSONDecodeError):
-                connect_result.parsed_json = json.loads(stdout)
-        self.command_results.append(connect_result)
+            self.run_aw(
+                "identity-reachability-set",
+                persona=reviewer,
+                cwd=reviewer_repo,
+                args=["identity", "reachability", "public", "--json"],
+                expected=[ExpectedCall("GET", "/api/v1/auth/introspect"), ExpectedCall("PATCH", "/api/v1/agents/")],
+            )
+            self.run_aw(
+                "identity-rotate-key",
+                persona=reviewer,
+                cwd=reviewer_repo,
+                args=["identity", "rotate-key"],
+                expected=[ExpectedCall("PUT", "/api/v1/agents/me/rotate")],
+            )
+            self.run_aw(
+                "identity-log-address",
+                persona=owner,
+                cwd=project_repo,
+                args=["identity", "log", permanent_address, "--json"],
+                expected=[ExpectedCall("GET", "/api/v1/agents/")],
+            )
+
+            time.sleep(2)
+            self.run_aw(
+                "directory-search",
+                persona=owner,
+                cwd=project_repo,
+                args=["directory", "--query", "reviewer", "--json"],
+                expected=[ExpectedCall("GET", "/api/v1/network/directory")],
+            )
+            self.run_aw(
+                "directory-get",
+                persona=owner,
+                cwd=project_repo,
+                args=["directory", permanent_address, "--json"],
+                expected=[ExpectedCall("GET", "/api/v1/network/directory/")],
+            )
+            self.run_aw(
+                "contacts-add",
+                persona=owner,
+                cwd=project_repo,
+                args=["contacts", "add", permanent_address, "--label", "Reviewer", "--json"],
+                expected=[ExpectedCall("POST", "/api/v1/contacts")],
+            )
+            self.run_aw(
+                "contacts-list",
+                persona=owner,
+                cwd=project_repo,
+                args=["contacts", "list", "--json"],
+                expected=[ExpectedCall("GET", "/api/v1/contacts")],
+            )
+            self.run_aw(
+                "contacts-remove",
+                persona=owner,
+                cwd=project_repo,
+                args=["contacts", "remove", permanent_address, "--json"],
+                expected=[ExpectedCall("GET", "/api/v1/contacts"), ExpectedCall("DELETE", "/api/v1/contacts/")],
+            )
+
+        self.run_aw(
+            "lock-acquire",
+            persona=owner,
+            cwd=project_repo,
+            args=["lock", "acquire", "--resource-key", "validator/main", "--ttl-seconds", "60", "--json"],
+            expected=[ExpectedCall("POST", "/api/v1/reservations")],
+        )
+        self.run_aw(
+            "lock-list",
+            persona=owner,
+            cwd=project_repo,
+            args=["lock", "list", "--prefix", "validator", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/reservations")],
+        )
+        self.run_aw(
+            "lock-renew",
+            persona=owner,
+            cwd=project_repo,
+            args=["lock", "renew", "--resource-key", "validator/main", "--ttl-seconds", "90", "--json"],
+            expected=[ExpectedCall("POST", "/api/v1/reservations/renew")],
+        )
+        self.run_aw(
+            "lock-acquire-revokable",
+            persona=owner,
+            cwd=project_repo,
+            args=["lock", "acquire", "--resource-key", "validator/revoke-1", "--ttl-seconds", "60", "--json"],
+            expected=[ExpectedCall("POST", "/api/v1/reservations")],
+        )
+        self.run_aw(
+            "lock-revoke",
+            persona=owner,
+            cwd=project_repo,
+            args=["lock", "revoke", "--prefix", "validator/revoke", "--json"],
+            expected=[ExpectedCall("POST", "/api/v1/reservations/revoke")],
+        )
+        self.run_aw(
+            "lock-release",
+            persona=owner,
+            cwd=project_repo,
+            args=["lock", "release", "--resource-key", "validator/main", "--json"],
+            expected=[ExpectedCall("POST", "/api/v1/reservations/release")],
+        )
+
+        task_one = self.run_aw(
+            "task-create-one",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "create", "--title", "Validator task one", "--type", "task", "--priority", "2", "--json"],
+            expected=[ExpectedCall("POST", "/api/v1/tasks")],
+            fatal=True,
+        )
+        task_one_json = ensure_json_dict(task_one, "task-create-one")
+        task_one_ref = str(task_one_json["task_ref"])
+        task_two = self.run_aw(
+            "task-create-two",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "create", "--title", "Validator task two", "--type", "bug", "--priority", "1", "--json"],
+            expected=[ExpectedCall("POST", "/api/v1/tasks")],
+            fatal=True,
+        )
+        task_two_json = ensure_json_dict(task_two, "task-create-two")
+        task_two_ref = str(task_two_json["task_ref"])
+        self.run_aw(
+            "task-list",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "list", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/tasks")],
+        )
+        self.run_aw(
+            "task-show",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "show", task_one_ref, "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/tasks/")],
+        )
+        self.run_aw(
+            "task-update",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "update", task_one_ref, "--status", "in_progress", "--json"],
+            expected=[ExpectedCall("PATCH", "/api/v1/tasks/")],
+        )
+        self.run_aw(
+            "task-comment-add",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "comment", "add", task_one_ref, "validator note", "--json"],
+            expected=[ExpectedCall("POST", "/api/v1/tasks/")],
+        )
+        self.run_aw(
+            "task-comment-list",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "comment", "list", task_one_ref, "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/tasks/")],
+        )
+        self.run_aw(
+            "task-dep-add",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "dep", "add", task_one_ref, task_two_ref, "--json"],
+            expected=[ExpectedCall("POST", "/api/v1/tasks/")],
+        )
+        self.run_aw(
+            "task-dep-list",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "dep", "list", task_one_ref, "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/tasks/")],
+        )
+        self.run_aw(
+            "task-dep-remove",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "dep", "remove", task_one_ref, task_two_ref, "--json"],
+            expected=[ExpectedCall("DELETE", "/api/v1/tasks/")],
+        )
+        self.run_aw(
+            "work-ready",
+            persona=owner,
+            cwd=project_repo,
+            args=["work", "ready", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/claims"), ExpectedCall("GET", "/api/v1/tasks/ready")],
+        )
+        self.run_aw(
+            "work-active",
+            persona=owner,
+            cwd=project_repo,
+            args=["work", "active", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/tasks"), ExpectedCall("GET", "/api/v1/claims"), ExpectedCall("GET", "/api/v1/agents")],
+        )
+        self.run_aw(
+            "task-close",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "close", task_two_ref, "--json"],
+            expected=[ExpectedCall("PATCH", "/api/v1/tasks/")],
+        )
+        self.run_aw(
+            "task-reopen",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "reopen", task_two_ref, "--json"],
+            expected=[ExpectedCall("PATCH", "/api/v1/tasks/")],
+        )
+        self.run_aw(
+            "task-block",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "update", task_two_ref, "--status", "blocked", "--json"],
+            expected=[ExpectedCall("PATCH", "/api/v1/tasks/")],
+        )
+        self.run_aw(
+            "work-blocked",
+            persona=owner,
+            cwd=project_repo,
+            args=["work", "blocked", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/tasks/blocked")],
+        )
+        self.run_aw(
+            "task-stats",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "stats", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/tasks")],
+        )
+        self.run_aw(
+            "task-delete-two",
+            persona=owner,
+            cwd=project_repo,
+            args=["task", "delete", task_two_ref, "--json"],
+            expected=[ExpectedCall("DELETE", "/api/v1/tasks/")],
+        )
+        self.run_aw(
+            "events-stream",
+            persona=owner,
+            cwd=project_repo,
+            args=["events", "stream", "--timeout", "1", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/events/stream")],
+        )
+        self.run_aw(
+            "control-pause",
+            persona=owner,
+            cwd=project_repo,
+            args=["control", "pause", "--agent", "implementer", "--json"],
+            expected=[ExpectedCall("POST", "/api/v1/agents/")],
+        )
+        self.run_aw(
+            "identity-delete-ephemeral-child",
+            persona=implementer,
+            cwd=child_repo,
+            args=["identity", "delete", "--confirm"],
+            expected=[ExpectedCall("DELETE", "/api/v1/agents/me")],
+        )
+
+        connect_dir = self.make_plain_dir(connector, "connect")
+        if permanent_api_key is not None:
+            self.run_aw(
+                "connect",
+                persona=connector,
+                cwd=connect_dir,
+                args=["connect", "--json"],
+                env_overrides={"AWEB_URL": proxy_url, "AWEB_API_KEY": permanent_api_key},
+                expected=[ExpectedCall("GET", "/api/v1/auth/introspect"), ExpectedCall("GET", "/api/v1/agents/resolve/")],
+            )
 
     def write_report(self) -> None:
         ensure_parent(self.report_path)
@@ -670,6 +1182,7 @@ class Validator:
             "failure": self.failure,
             "commands": [serialize_command_result(result) for result in self.command_results],
             "observed_endpoints": summarize_observed_endpoints(self.command_results),
+            "endpoint_inventory": summarize_endpoint_inventory(self.command_results),
         }
         self.report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -677,6 +1190,7 @@ class Validator:
 def serialize_command_result(result: CommandResult) -> dict[str, Any]:
     return {
         "name": result.name,
+        "persona": result.persona,
         "cwd": result.cwd,
         "argv": result.argv,
         "exit_code": result.exit_code,
@@ -686,6 +1200,7 @@ def serialize_command_result(result: CommandResult) -> dict[str, Any]:
         "missing_expected": result.missing_expected,
         "requests": [asdict(item) for item in result.requests],
         "parsed_json": result.parsed_json,
+        "validation_error": result.validation_error,
     }
 
 
@@ -696,6 +1211,7 @@ def summarize_observed_endpoints(results: list[CommandResult]) -> list[dict[str,
             seen.append(
                 {
                     "command": result.name,
+                    "persona": result.persona,
                     "method": req.method,
                     "path": req.path,
                     "query": req.query,
@@ -703,6 +1219,31 @@ def summarize_observed_endpoints(results: list[CommandResult]) -> list[dict[str,
                 }
             )
     return seen
+
+
+def summarize_endpoint_inventory(results: list[CommandResult]) -> list[dict[str, Any]]:
+    observed: dict[tuple[str, str], list[str]] = {}
+    for result in results:
+        for req in result.requests:
+            observed.setdefault((req.method, req.path), []).append(result.name)
+
+    summary: list[dict[str, Any]] = []
+    for item in ENDPOINT_INVENTORY:
+        matched_commands: list[str] = []
+        for (method, path), commands in observed.items():
+            if method == item.method and path.startswith(item.path_prefix):
+                matched_commands.extend(commands)
+        summary.append(
+            {
+                "method": item.method,
+                "path_prefix": item.path_prefix,
+                "automated": item.automated,
+                "note": item.note,
+                "covered": bool(matched_commands),
+                "commands": sorted(set(matched_commands)),
+            }
+        )
+    return summary
 
 
 def ensure_json_dict(result: CommandResult, name: str) -> dict[str, Any]:
@@ -761,6 +1302,10 @@ def main() -> int:
             validator.start_stack()
         validator.start_proxy()
         validator.run_suite()
+        command_failures = [r.validation_error for r in validator.command_results if r.validation_error]
+        if command_failures:
+            validator.failure = "\n\n".join(command_failures)
+            exit_code = 1
     except ValidationError as exc:
         validator.failure = str(exc)
         exit_code = 1
@@ -772,6 +1317,10 @@ def main() -> int:
     if validator.proxy is not None:
         print(f"Proxy URL: {validator.proxy.base_url}")
     print(f"Observed endpoint calls: {sum(len(result.requests) for result in validator.command_results)}")
+    inventory = summarize_endpoint_inventory(validator.command_results)
+    covered = sum(1 for item in inventory if item["covered"])
+    automated_total = sum(1 for item in inventory if item["automated"])
+    print(f"Covered inventory endpoints: {covered}/{len(inventory)} total, {covered}/{automated_total} automated")
     if validator.failure:
         print(validator.failure, file=sys.stderr)
     return exit_code
