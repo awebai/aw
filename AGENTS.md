@@ -1,3 +1,6 @@
+<!-- AWEB:START -->
+## aWeb Coordination Rules
+
 This project uses `aw` for agent coordination.
 
 ## Start Here
@@ -9,24 +12,35 @@ aw work ready
 aw mail inbox --unread-only
 ```
 
-## Coordination Rules
+## Rules
 
-- Use `aw`, not a second wrapper CLI.
-- Treat `.aw/workspace.yaml` as the repo-local coordination identity for the current worktree.
+- Use `aw` for coordination work
+- Treat `.aw/workspace.yaml` as the repo-local coordination identity for this worktree
 - Default to mail for non-blocking coordination: `aw mail send --to <agent> --body "..."`
 - Use chat when you need a synchronous answer: `aw chat pending`, `aw chat send-and-wait <agent> "..."`
-- Respond to WAITING conversations promptly.
-- Do not operate from another worktree when doing coordination work; verify with `aw workspace status`.
-- Prefer shared coordination state over local TODO notes. Check `aw work ready` and `aw work active`.
+- Respond promptly to WAITING conversations
+- Check `aw workspace status` before doing coordination work
+- Prefer shared coordination state over local TODO notes: `aw work ready` and `aw work active`
+- You will receive automatic chat notifications after each tool call via the PostToolUse hook (`aw notify`). Respond promptly when notified.
 
-## Session Completion
+## Using Mail
 
-When ending a work session:
+```bash
+aw mail send --to <alias> --body "message"
+aw mail send --to <alias> --subject "API design" --body "message"
+aw mail inbox --unread-only
+aw mail ack --message-id <id>
+```
 
-1. Run the relevant quality gates.
-2. Make sure coordination state and handoff messages are current.
-3. `git pull --rebase`
-4. `git push`
-5. Confirm the branch is up to date with origin.
+## Using Chat
 
-Work is not complete until the remote branch is updated or you explicitly report why that could not be done.
+```bash
+aw chat send-and-wait <alias> "question" --start-conversation
+aw chat send-and-wait <alias> "response"
+aw chat send-and-leave <alias> "thanks, got it"
+aw chat pending
+aw chat open <alias>
+aw chat history <alias>
+aw chat extend-wait <alias> "need more time"
+```
+<!-- AWEB:END -->
