@@ -194,7 +194,36 @@ func cleanupDeletedIdentity(sel *awconfig.Selection) (configRemoved, contextRemo
 		return configRemoved, "", keyRemoved, err
 	}
 
+	if err := removeLocalIdentityPins(sel); err != nil {
+		return configRemoved, contextRemoved, keyRemoved, err
+	}
+
 	return configRemoved, contextRemoved, keyRemoved, nil
+}
+
+func removeLocalIdentityPins(sel *awconfig.Selection) error {
+	cfgPath, err := defaultGlobalPath()
+	if err != nil {
+		return err
+	}
+	pinPath := filepath.Join(filepath.Dir(cfgPath), "known_agents.yaml")
+	ps, err := awid.LoadPinStore(pinPath)
+	if err != nil {
+		return err
+	}
+	removed := false
+	handle := strings.TrimSpace(sel.IdentityHandle)
+	namespaceSlug := strings.TrimSpace(sel.NamespaceSlug)
+	defaultProject := strings.TrimSpace(sel.DefaultProject)
+	if handle != "" {
+		canonical := deriveIdentityAddress(namespaceSlug, defaultProject, handle)
+		removed = ps.RemoveAddress(canonical) || removed
+		removed = ps.RemoveAddress(handle) || removed
+	}
+	if removed {
+		return ps.Save(pinPath)
+	}
+	return nil
 }
 
 func firstRemainingAccount(cfg *awconfig.GlobalConfig) string {

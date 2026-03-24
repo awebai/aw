@@ -2877,6 +2877,7 @@ func TestCheckTOFUPinEphemeralSkipsPinning(t *testing.T) {
 		t.Fatal(err)
 	}
 	ps := NewPinStore()
+	ps.StorePin("did:key:stale", "myco/ephemeral-bot", "", "")
 	c.SetPinStore(ps, "")
 	c.SetResolver(&ServerResolver{Client: c})
 
@@ -2893,7 +2894,10 @@ func TestCheckTOFUPinEphemeralSkipsPinning(t *testing.T) {
 		t.Fatal("ephemeral agent should not be pinned")
 	}
 	if _, ok := ps.Addresses["myco/ephemeral-bot"]; ok {
-		t.Fatal("ephemeral agent should not be in address index")
+		t.Fatal("ephemeral agent should not remain in address index")
+	}
+	if _, ok := ps.Pins["did:key:stale"]; ok {
+		t.Fatal("stale ephemeral pin should be pruned")
 	}
 }
 
@@ -3240,8 +3244,8 @@ func TestInboxCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 	if _, ok := ps.Addresses["myteam/architect"]; ok {
 		t.Fatalf("ephemeral sender should not be pinned under canonical address")
 	}
-	if got := ps.Addresses["architect"]; got != "did:aw:old-architect" {
-		t.Fatalf("bare alias pin should remain untouched, got %q", got)
+	if _, ok := ps.Addresses["architect"]; ok {
+		t.Fatalf("legacy bare alias pin should be pruned for ephemeral sender")
 	}
 }
 
@@ -3328,8 +3332,8 @@ func TestChatHistoryCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 	if _, ok := ps.Addresses["myteam/architect"]; ok {
 		t.Fatalf("ephemeral sender should not be pinned under canonical address")
 	}
-	if got := ps.Addresses["architect"]; got != "did:aw:old-architect" {
-		t.Fatalf("bare alias pin should remain untouched, got %q", got)
+	if _, ok := ps.Addresses["architect"]; ok {
+		t.Fatalf("legacy bare alias pin should be pruned for ephemeral sender")
 	}
 }
 

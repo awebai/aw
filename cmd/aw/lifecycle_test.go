@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/awebai/aw/awid"
 	"gopkg.in/yaml.v3"
 	"net/http"
 	"os"
@@ -73,6 +74,12 @@ default_account: acct
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	ps := awid.NewPinStore()
+	ps.StorePin("did:key:canonical", "myco/alice", "", "")
+	ps.StorePin("did:key:handle", "alice", "", "")
+	if err := ps.Save(filepath.Join(tmp, "known_agents.yaml")); err != nil {
+		t.Fatal(err)
+	}
 
 	awDir := filepath.Join(tmp, ".aw")
 	if err := os.MkdirAll(awDir, 0o755); err != nil {
@@ -121,6 +128,16 @@ client_default_accounts:
 	}
 	if _, err := os.Stat(filepath.Join(tmp, ".aw", "context")); !os.IsNotExist(err) {
 		t.Fatalf("expected .aw/context removal, err=%v", err)
+	}
+	pins, err := awid.LoadPinStore(filepath.Join(tmp, "known_agents.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pins.Addresses["myco/alice"]; ok {
+		t.Fatal("expected canonical pin removal after delete")
+	}
+	if _, ok := pins.Addresses["alice"]; ok {
+		t.Fatal("expected handle pin removal after delete")
 	}
 }
 
