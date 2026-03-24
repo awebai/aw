@@ -294,6 +294,27 @@ func TestLoopRendersCodexMarkdownWithMargin(t *testing.T) {
 	}
 }
 
+func TestLoopAddsClaudeMarginAcrossStreamingChunks(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(ClaudeProvider{}, &out)
+	st := &state{}
+	presenter := &presenterState{}
+
+	loop.handleOutputLine(`{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"Hello "}}}`, presenter, st, nil, nil)
+	loop.handleOutputLine(`{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"world\n- item"}}}`, presenter, st, nil, nil)
+
+	got := out.String()
+	if !strings.Contains(got, "  Hello world") {
+		t.Fatalf("expected Claude text to start with a left margin, got %q", got)
+	}
+	if !strings.Contains(got, "\n  - item") {
+		t.Fatalf("expected Claude continuation line to keep the left margin, got %q", got)
+	}
+	if strings.Contains(got, "Hello   world") {
+		t.Fatalf("expected no extra indentation injected mid-line, got %q", got)
+	}
+}
+
 func TestLoopInitialPromptOnlyWaitsForWakeInsteadOfTimerExit(t *testing.T) {
 	bus := newTestEventBus()
 	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})

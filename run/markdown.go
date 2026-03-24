@@ -21,15 +21,19 @@ const (
 
 var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
-func renderAssistantText(providerName string, text string, out io.Writer) string {
+func renderAssistantText(providerName string, text string, out io.Writer, startsAtLine bool) string {
 	if strings.TrimSpace(text) == "" {
 		return text
 	}
-	if !strings.EqualFold(strings.TrimSpace(providerName), "codex") {
+
+	switch strings.ToLower(strings.TrimSpace(providerName)) {
+	case "codex":
+		return renderCodexAssistantTextWithOptions(text, displayWidth(out), outputSupportsANSI(out), out)
+	case "claude":
+		return indentStreamingText(text, displayLeftMargin, startsAtLine)
+	default:
 		return text
 	}
-
-	return renderCodexAssistantTextWithOptions(text, displayWidth(out), outputSupportsANSI(out), out)
 }
 
 func renderCodexAssistantText(text string, width int) string {
@@ -78,6 +82,27 @@ func indentDisplayText(text string, margin int) string {
 		result += "\n"
 	}
 	return result
+}
+
+func indentStreamingText(text string, margin int, startsAtLine bool) string {
+	if text == "" || margin <= 0 {
+		return text
+	}
+
+	prefix := strings.Repeat(" ", margin)
+	var out strings.Builder
+	atLineStart := startsAtLine
+	for _, r := range text {
+		if atLineStart && r != '\n' && r != '\r' {
+			out.WriteString(prefix)
+			atLineStart = false
+		}
+		out.WriteRune(r)
+		if r == '\n' || r == '\r' {
+			atLineStart = true
+		}
+	}
+	return out.String()
 }
 
 func displayWidth(out io.Writer) int {

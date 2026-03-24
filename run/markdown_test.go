@@ -40,3 +40,15 @@ func TestRenderCodexAssistantTextFallsBackToIndentedPlainText(t *testing.T) {
 		t.Fatalf("expected plain text indentation, got %#v", lines)
 	}
 }
+
+func TestIndentStreamingTextOnlyPrefixesLineStarts(t *testing.T) {
+	first := indentStreamingText("Hello ", 2, true)
+	second := indentStreamingText("world\nnext line", 2, false)
+
+	if first != "  Hello " {
+		t.Fatalf("unexpected first chunk %q", first)
+	}
+	if second != "world\n  next line" {
+		t.Fatalf("unexpected second chunk %q", second)
+	}
+}
