@@ -31,6 +31,7 @@ func TestStyleScreenLineCategories(t *testing.T) {
 		{line: "> fix the bug", want: "prompt"},
 		{line: `>_ go test ./... 2>&1`, want: "tool"},
 		{line: `  file_path="/tmp/image.png"`, want: "tool_detail"},
+		{line: `   1. PTY default-off`, want: "plain"},
 		{line: "<- dave (mail): please review this", want: "comms"},
 		{line: "-> henry (chat)", want: "comms"},
 		{line: "  -> ok", want: "result"},

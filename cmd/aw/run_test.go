@@ -454,6 +454,22 @@ func TestNewRunDispatcherBuildsMailPrompt(t *testing.T) {
 	}
 }
 
+func TestFormatIncomingMailContextIndentsMultiLineBodyUnderAlias(t *testing.T) {
+	got := formatIncomingMailContext("ivy", "Review request", "pass is complete.\n1. PTY default-off\n- cmd/aw/run.go")
+	want := "<- ivy (mail): Review request — pass is complete.\n   1. PTY default-off\n   - cmd/aw/run.go"
+	if got != want {
+		t.Fatalf("unexpected mail context:\n%s", got)
+	}
+}
+
+func TestFormatIncomingChatContextIndentsMultiLineBodyUnderAlias(t *testing.T) {
+	got := formatIncomingChatContext("dave", "first line\nsecond line")
+	want := "<- dave: first line\n   second line"
+	if got != want {
+		t.Fatalf("unexpected chat context:\n%s", got)
+	}
+}
+
 func TestNewRunDispatcherBuildsActionableChatPrompt(t *testing.T) {
 	dispatcher := newRunDispatcher(awrun.Settings{
 		CommsPromptSuffix: "comms suffix",

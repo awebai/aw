@@ -1288,5 +1288,5 @@ func isToolDetailLine(line string) bool {
 	if strings.HasPrefix(trimmed, ">") || strings.HasPrefix(trimmed, "<-") || strings.HasPrefix(trimmed, "->") {
 		return false
 	}
-	return true
+	return strings.Contains(trimmed, "=")
 }

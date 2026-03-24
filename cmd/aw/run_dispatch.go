@@ -162,7 +162,7 @@ func formatIncomingChatContext(fromAlias string, body string) string {
 	if body == "" {
 		return fmt.Sprintf("<- %s", alias)
 	}
-	return fmt.Sprintf("<- %s: %s", alias, body)
+	return formatIncomingCommBlock("<- "+alias, "", body)
 }
 
 func formatIncomingMailContext(fromAlias string, subject string, body string) string {
@@ -171,14 +171,48 @@ func formatIncomingMailContext(fromAlias string, subject string, body string) st
 	body = strings.TrimSpace(body)
 	switch {
 	case subject != "" && body != "":
-		return fmt.Sprintf("<- %s (mail): %s — %s", alias, subject, body)
+		return formatIncomingCommBlock("<- "+alias+" (mail)", subject, body)
 	case subject != "":
 		return fmt.Sprintf("<- %s (mail): %s", alias, subject)
 	case body != "":
-		return fmt.Sprintf("<- %s (mail): %s", alias, body)
+		return formatIncomingCommBlock("<- "+alias+" (mail)", "", body)
 	default:
 		return fmt.Sprintf("<- %s (mail)", alias)
 	}
+}
+
+func formatIncomingCommBlock(head string, subject string, body string) string {
+	lines := commBodyLines(body)
+	if len(lines) == 0 {
+		if subject == "" {
+			return head
+		}
+		return fmt.Sprintf("%s: %s", head, subject)
+	}
+
+	first := lines[0]
+	if subject != "" {
+		first = subject + " — " + first
+	}
+
+	formatted := []string{fmt.Sprintf("%s: %s", head, first)}
+	for _, line := range lines[1:] {
+		formatted = append(formatted, "   "+line)
+	}
+	return strings.Join(formatted, "\n")
+}
+
+func commBodyLines(body string) []string {
+	body = strings.ReplaceAll(strings.TrimSpace(body), "\r", "")
+	if body == "" {
+		return nil
+	}
+	lines := strings.Split(body, "\n")
+	formatted := make([]string, 0, len(lines))
+	for _, line := range lines {
+		formatted = append(formatted, strings.TrimRight(line, " "))
+	}
+	return formatted
 }
 
 func formatWorkWakePrompt(evt awid.AgentEvent) string {
