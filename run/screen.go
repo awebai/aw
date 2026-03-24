@@ -649,6 +649,9 @@ func (s *ScreenController) renderFooterLinesLocked(width int) []string {
 func (s *ScreenController) renderFooterLayoutLocked(width int) promptLayout {
 	currentLines := s.renderCurrentLinesLocked(width)
 	lines := append([]string{}, currentLines...)
+	if len(currentLines) > 0 {
+		lines = append(lines, "")
+	}
 	prompt := buildPromptLayout(s.promptLabel, InputValueFromLine(s.inputLine, s.promptLabel), s.inputCursor, width)
 	lines = append(lines, prompt.lines...)
 	lines = append(lines, "")
@@ -1257,14 +1260,14 @@ func screenLineStyleKind(line string) string {
 		return "prompt"
 	case strings.HasPrefix(trimmed, ">_ "):
 		return "tool"
-	case isToolDetailLine(line):
-		return "tool_detail"
-	case strings.HasPrefix(line, "  ->"):
+	case strings.HasPrefix(line, "  ->"), strings.HasPrefix(line, "  ="):
 		return "result"
 	case strings.HasPrefix(trimmed, "<- ") || strings.HasPrefix(trimmed, "-> "):
 		return "comms"
 	case strings.HasPrefix(trimmed, "->"):
 		return "result"
+	case isToolDetailLine(line):
+		return "tool_detail"
 	case strings.HasPrefix(trimmed, "done"):
 		return "done"
 	case strings.HasPrefix(trimmed, "info:"):

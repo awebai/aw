@@ -171,7 +171,7 @@ func formatIncomingMailContext(fromAlias string, subject string, body string) st
 	body = strings.TrimSpace(body)
 	switch {
 	case subject != "" && body != "":
-		return formatIncomingCommBlock("<- "+alias+" (mail)", subject, body)
+		return formatIncomingMailBlock("<- "+alias+" (mail)", subject, body)
 	case subject != "":
 		return fmt.Sprintf("<- %s (mail): %s", alias, subject)
 	case body != "":
@@ -197,6 +197,14 @@ func formatIncomingCommBlock(head string, subject string, body string) string {
 
 	formatted := []string{fmt.Sprintf("%s: %s", head, first)}
 	for _, line := range lines[1:] {
+		formatted = append(formatted, "   "+line)
+	}
+	return strings.Join(formatted, "\n")
+}
+
+func formatIncomingMailBlock(head string, subject string, body string) string {
+	formatted := []string{fmt.Sprintf("%s: %s", head, subject)}
+	for _, line := range commBodyLines(body) {
 		formatted = append(formatted, "   "+line)
 	}
 	return strings.Join(formatted, "\n")

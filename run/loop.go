@@ -507,7 +507,7 @@ func (l *Loop) handleOutputLine(line string, presenter *presenterState, st *stat
 		st.StructuredOut = true
 		l.runPresenterEnsureStructuredSpacing(presenter)
 		if text := strings.TrimSpace(event.Text); text != "" {
-			l.printf("  -> %s\n", truncateText(text, 150))
+			l.printf("  = %s\n", truncateText(text, 150))
 		}
 		presenter.lastWasStructured = true
 	case EventDone:

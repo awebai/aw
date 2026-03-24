@@ -34,7 +34,7 @@ func TestStyleScreenLineCategories(t *testing.T) {
 		{line: `   1. PTY default-off`, want: "plain"},
 		{line: "<- dave (mail): please review this", want: "comms"},
 		{line: "-> henry (chat)", want: "comms"},
-		{line: "  -> ok", want: "result"},
+		{line: "  = ok", want: "result"},
 		{line: "done  2.1s", want: "done"},
 		{line: "info: session", want: "info"},
 		{line: "type /wait, /autofeed off, /stop", want: "hint"},
@@ -259,6 +259,38 @@ func TestScreenControllerFooterPlacesPromptAboveStatusWithoutDivider(t *testing.
 		if strings.Contains(line, "────") {
 			t.Fatalf("expected footer divider to be absent, got %#v", lines)
 		}
+	}
+}
+
+func TestScreenControllerFooterSeparatesCurrentTextFromPrompt(t *testing.T) {
+	screen := &ScreenController{
+		promptLabel: ">> ",
+		current:     "assistant reply",
+		inputLine:   ">> next",
+		inputCursor: len([]rune("next")),
+		styles:      newScreenStyles(),
+	}
+
+	lines := screen.renderFooterLinesLocked(40)
+	replyIdx := -1
+	promptIdx := -1
+	for i, line := range lines {
+		switch {
+		case strings.Contains(line, "assistant reply"):
+			replyIdx = i
+		case strings.Contains(line, "next"):
+			promptIdx = i
+		}
+	}
+
+	if replyIdx < 0 || promptIdx < 0 {
+		t.Fatalf("expected current text and prompt in footer, got %#v", lines)
+	}
+	if promptIdx-replyIdx < 2 {
+		t.Fatalf("expected blank line between current text and prompt, got %#v", lines)
+	}
+	if lines[replyIdx+1] != "" {
+		t.Fatalf("expected blank line after current text, got %#v", lines)
 	}
 }
 

@@ -456,9 +456,12 @@ func TestNewRunDispatcherBuildsMailPrompt(t *testing.T) {
 
 func TestFormatIncomingMailContextIndentsMultiLineBodyUnderAlias(t *testing.T) {
 	got := formatIncomingMailContext("ivy", "Review request", "pass is complete.\n1. PTY default-off\n- cmd/aw/run.go")
-	want := "<- ivy (mail): Review request — pass is complete.\n   1. PTY default-off\n   - cmd/aw/run.go"
+	want := "<- ivy (mail): Review request\n   pass is complete.\n   1. PTY default-off\n   - cmd/aw/run.go"
 	if got != want {
 		t.Fatalf("unexpected mail context:\n%s", got)
+	}
+	if !strings.HasPrefix(got, "<- ivy (mail):") {
+		t.Fatalf("expected mail arrow at the left edge, got %q", got)
 	}
 }
 
