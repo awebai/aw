@@ -345,7 +345,7 @@ func runSpawnAcceptInvite(cmd *cobra.Command, args []string) error {
 		SetDefault:             initSetDefault,
 		WriteContext:           initWriteContext,
 		InviteToken:            token,
-		WorkspaceRole:          resolveInviteRoleFlag(),
+		WorkspaceRole:          normalizeWorkspaceRole(resolveRoleFlag()),
 		Lifetime:               resolveInitLifetime(initPermanent),
 	}
 
@@ -363,10 +363,14 @@ func runSpawnAcceptInvite(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func resolveInviteRoleFlag() string {
+// resolveRoleFlag reads the --role flag and AWEB_ROLE env var.
+// Used by flows that can't validate against the policy pre-auth
+// (e.g., spawn accept-invite where the invite token is the only
+// credential). Server-side validation happens on accept.
+func resolveRoleFlag() string {
 	role := strings.TrimSpace(initRole)
 	if role == "" {
 		role = strings.TrimSpace(os.Getenv("AWEB_ROLE"))
 	}
-	return normalizeWorkspaceRole(role)
+	return role
 }

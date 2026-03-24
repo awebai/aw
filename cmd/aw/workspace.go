@@ -231,7 +231,11 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 		return usageError("workspace add-worktree requires a git worktree")
 	}
 
-	role, err := resolveWorkspaceAddRole(client, args)
+	requested := ""
+	if len(args) > 0 {
+		requested = strings.TrimSpace(args[0])
+	}
+	role, err := resolveRole(client, requested, isTTY() && requested == "", os.Stdin, os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -451,9 +455,14 @@ func registerWorkspaceForRoot(root string, client *aweb.Client, roleOverride str
 	if role == "" && existingState != nil {
 		role = strings.TrimSpace(existingState.Role)
 	}
-	role, err = resolveWorkspacePolicyRole(client, role, isTTY(), os.Stdin, os.Stderr)
-	if err != nil {
-		return nil, err
+	// Only resolve from policy if we don't already have a role.
+	// Callers that pre-validate the role (init, project create,
+	// add-worktree, roles set) pass it here already validated.
+	if role == "" {
+		role, err = resolveRole(client, "", isTTY(), os.Stdin, os.Stderr)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -692,15 +701,9 @@ func isValidWorkspaceRole(role string) bool {
 	return true
 }
 
-func resolveWorkspaceAddRole(client *aweb.Client, args []string) (string, error) {
-	requested := ""
-	if len(args) > 0 {
-		requested = strings.TrimSpace(args[0])
-	}
-	return resolveWorkspacePolicyRole(client, requested, isTTY() && requested == "", os.Stdin, os.Stderr)
-}
-
-func fetchWorkspacePolicyRoles(client *aweb.Client) ([]string, error) {
+// fetchAvailableRoles returns the available roles from the project policy.
+// This is the single source of truth for role lists.
+func fetchAvailableRoles(client *aweb.Client) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -717,10 +720,19 @@ func fetchWorkspacePolicyRoles(client *aweb.Client) ([]string, error) {
 	return roles, nil
 }
 
-func resolveWorkspacePolicyRole(client *aweb.Client, requested string, allowPrompt bool, in io.Reader, out io.Writer) (string, error) {
-	roles, err := fetchWorkspacePolicyRoles(client)
+// resolveRole fetches available roles from the project policy, validates
+// the requested role against them, and optionally prompts the user to
+// choose. This is the single entry point for role resolution.
+func resolveRole(client *aweb.Client, requested string, allowPrompt bool, in io.Reader, out io.Writer) (string, error) {
+	roles, err := fetchAvailableRoles(client)
 	if err != nil {
-		return "", err
+		// Policy endpoint unavailable — accept the requested role as-is.
+		debugLog("fetch roles: %v", err)
+		return normalizeWorkspaceRole(requested), nil
+	}
+	if len(roles) == 0 {
+		// No policy defined — accept the requested role as-is.
+		return normalizeWorkspaceRole(requested), nil
 	}
 	return selectRoleFromAvailableRoles(requested, roles, allowPrompt, in, out)
 }

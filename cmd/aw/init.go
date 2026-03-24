@@ -399,6 +399,10 @@ func resolveAgentType() string {
 	return "agent"
 }
 
+// resolveRoleFromFlags resolves a role during workspace creation, before
+// the workspace has an authenticated client. Uses roles from the suggestion
+// endpoint (same policy source as fetchAvailableRoles, but available pre-auth).
+// After creation, registerWorkspaceForRoot trusts this pre-validated role.
 func resolveRoleFromFlags(suggestedRoles []string) (string, error) {
 	requested := strings.TrimSpace(initRole)
 	if requested == "" {
@@ -407,7 +411,6 @@ func resolveRoleFromFlags(suggestedRoles []string) (string, error) {
 	if len(suggestedRoles) > 0 {
 		return selectRoleFromAvailableRoles(requested, suggestedRoles, isTTY() && requested == "", os.Stdin, os.Stderr)
 	}
-	// No roles from suggestion — accept whatever is provided.
 	return normalizeWorkspaceRole(requested), nil
 }
 

@@ -5,7 +5,6 @@ import (
 	"os"
 	"strings"
 
-	aweb "github.com/awebai/aw"
 	"github.com/spf13/cobra"
 )
 
@@ -40,7 +39,7 @@ func runRolesList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	roles, err := fetchWorkspacePolicyRoles(client)
+	roles, err := fetchAvailableRoles(client)
 	if err != nil {
 		return err
 	}
@@ -72,7 +71,7 @@ func runRolesSet(cmd *cobra.Command, args []string) error {
 		requested = strings.TrimSpace(args[0])
 	}
 
-	role, err := resolveAndValidateRole(client, requested)
+	role, err := resolveRole(client, requested, isTTY() && requested == "", os.Stdin, os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -84,27 +83,4 @@ func runRolesSet(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("Role set to %s\n", role)
 	return nil
-}
-
-// resolveAndValidateRole resolves a role against the project policy.
-// This is the single entry point for role validation across all flows.
-// If requested is empty and TTY is available, prompts with numbered choices.
-// If requested is empty and not TTY, errors with the available roles list.
-func resolveAndValidateRole(client *aweb.Client, requested string) (string, error) {
-	roles, err := fetchWorkspacePolicyRoles(client)
-	if err != nil {
-		// Policy endpoint not available — accept the requested role as-is.
-		debugLog("fetch roles for validation: %v", err)
-		if requested != "" {
-			return normalizeWorkspaceRole(requested), nil
-		}
-		return "", nil
-	}
-
-	if len(roles) > 0 {
-		return selectRoleFromAvailableRoles(requested, roles, isTTY() && requested == "", os.Stdin, os.Stderr)
-	}
-
-	// No policy — accept whatever is provided.
-	return normalizeWorkspaceRole(requested), nil
 }
