@@ -3180,7 +3180,7 @@ func TestInboxCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
 			resolvePaths = append(resolvePaths, r.URL.Path)
-			if r.URL.Path != "/v1/agents/resolve/myteam/architect" {
+			if r.URL.Path != "/v1/agents/resolve/architect" {
 				http.NotFound(w, r)
 				return
 			}
@@ -3208,6 +3208,7 @@ func TestInboxCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 				"from_did":       senderDID,
 				"signature":      sig,
 				"signing_key_id": senderDID,
+				"is_contact":     false,
 			}},
 		})
 	}))
@@ -3230,8 +3231,11 @@ func TestInboxCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 	if resp.Messages[0].VerificationStatus != Verified {
 		t.Fatalf("status=%q, want verified", resp.Messages[0].VerificationStatus)
 	}
-	if len(resolvePaths) != 1 || resolvePaths[0] != "/v1/agents/resolve/myteam/architect" {
-		t.Fatalf("resolvePaths=%v, want [/v1/agents/resolve/myteam/architect]", resolvePaths)
+	if resp.Messages[0].IsContact != nil {
+		t.Fatalf("ephemeral sender should suppress contact tag, got %v", *resp.Messages[0].IsContact)
+	}
+	if len(resolvePaths) != 1 || resolvePaths[0] != "/v1/agents/resolve/architect" {
+		t.Fatalf("resolvePaths=%v, want [/v1/agents/resolve/architect]", resolvePaths)
 	}
 	if _, ok := ps.Addresses["myteam/architect"]; ok {
 		t.Fatalf("ephemeral sender should not be pinned under canonical address")
@@ -3268,7 +3272,7 @@ func TestChatHistoryCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
 			resolvePaths = append(resolvePaths, r.URL.Path)
-			if r.URL.Path != "/v1/agents/resolve/myteam/architect" {
+			if r.URL.Path != "/v1/agents/resolve/architect" {
 				http.NotFound(w, r)
 				return
 			}
@@ -3292,6 +3296,7 @@ func TestChatHistoryCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 				"from_did":       senderDID,
 				"signature":      sig,
 				"signing_key_id": senderDID,
+				"is_contact":     false,
 			}},
 		})
 	}))
@@ -3314,8 +3319,11 @@ func TestChatHistoryCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 	if resp.Messages[0].VerificationStatus != Verified {
 		t.Fatalf("status=%q, want verified", resp.Messages[0].VerificationStatus)
 	}
-	if len(resolvePaths) != 1 || resolvePaths[0] != "/v1/agents/resolve/myteam/architect" {
-		t.Fatalf("resolvePaths=%v, want [/v1/agents/resolve/myteam/architect]", resolvePaths)
+	if resp.Messages[0].IsContact != nil {
+		t.Fatalf("ephemeral sender should suppress contact tag, got %v", *resp.Messages[0].IsContact)
+	}
+	if len(resolvePaths) != 1 || resolvePaths[0] != "/v1/agents/resolve/architect" {
+		t.Fatalf("resolvePaths=%v, want [/v1/agents/resolve/architect]", resolvePaths)
 	}
 	if _, ok := ps.Addresses["myteam/architect"]; ok {
 		t.Fatalf("ephemeral sender should not be pinned under canonical address")

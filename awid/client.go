@@ -228,11 +228,11 @@ func (c *Client) canonicalTrustAddress(address string) string {
 // Returns an unresolved marker if no resolver is set or resolution fails.
 func (c *Client) resolveAgentMeta(ctx context.Context, address string) *agentMeta {
 	rawAddress := strings.TrimSpace(address)
-	address = c.canonicalTrustAddress(rawAddress)
-	if address == "" {
+	trustAddress := c.canonicalTrustAddress(rawAddress)
+	if trustAddress == "" {
 		return &agentMeta{}
 	}
-	if v, ok := c.metaCache.Load(address); ok {
+	if v, ok := c.metaCache.Load(trustAddress); ok {
 		return v.(*agentMeta)
 	}
 	fallback := &agentMeta{
@@ -241,7 +241,7 @@ func (c *Client) resolveAgentMeta(ctx context.Context, address string) *agentMet
 		Resolved: true,
 	}
 	if c.resolver != nil {
-		if identity, err := c.resolver.Resolve(ctx, address); err == nil {
+		if identity, err := c.resolver.Resolve(ctx, rawAddress); err == nil {
 			meta := &agentMeta{
 				Lifetime: LifetimePersistent,
 				Custody:  CustodySelf,
@@ -253,14 +253,14 @@ func (c *Client) resolveAgentMeta(ctx context.Context, address string) *agentMet
 			if identity.Custody != "" {
 				meta.Custody = identity.Custody
 			}
-			c.metaCache.Store(address, meta)
+			c.metaCache.Store(trustAddress, meta)
 			return meta
 		}
 	}
 	// Bare local aliases are ambiguous across projects; fail closed unless the
 	// resolver resolved them under the current namespace. Fully qualified
 	// addresses keep the historical fallback behavior.
-	if rawAddress != address {
+	if rawAddress != trustAddress {
 		return &agentMeta{}
 	}
 	// Resolver absent or failed for an already-qualified address: return
@@ -293,6 +293,13 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 
 	trustAddress := c.canonicalTrustAddress(fromAlias)
 	meta := c.resolveAgentMeta(ctx, trustAddress)
+	return c.checkTOFUPinWithMeta(ctx, status, trustAddress, fromDID, fromStableID, ra, repl, meta)
+}
+
+func (c *Client) checkTOFUPinWithMeta(ctx context.Context, status VerificationStatus, trustAddress, fromDID, fromStableID string, ra *RotationAnnouncement, repl *ReplacementAnnouncement, meta *agentMeta) VerificationStatus {
+	if c.pinStore == nil || (status != Verified && status != VerifiedCustodial) || fromDID == "" || trustAddress == "" || meta == nil {
+		return status
+	}
 	if !meta.Resolved {
 		return status
 	}
