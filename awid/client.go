@@ -269,20 +269,36 @@ func (c *Client) resolveAgentMeta(ctx context.Context, address string) *agentMet
 	return fallback
 }
 
+// NormalizeSenderTrust applies sender-specific trust normalization after
+// signature verification. It suppresses contact tags for ephemeral senders and
+// then applies continuity pinning using shared resolver metadata.
+func (c *Client) NormalizeSenderTrust(ctx context.Context, status VerificationStatus, rawAddress, fromDID, fromStableID string, ra *RotationAnnouncement, repl *ReplacementAnnouncement, isContact *bool) (VerificationStatus, *bool) {
+	if strings.TrimSpace(rawAddress) == "" {
+		return status, isContact
+	}
+	trustAddress := c.canonicalTrustAddress(rawAddress)
+	meta := c.resolveAgentMeta(ctx, rawAddress)
+	if strings.TrimSpace(fromStableID) == "" || (meta.Resolved && meta.Lifetime == LifetimeEphemeral) {
+		isContact = nil
+	}
+	status = c.checkTOFUPinWithMeta(ctx, status, strings.TrimSpace(rawAddress), trustAddress, fromDID, fromStableID, ra, repl, meta)
+	return status, isContact
+}
+
 // CheckTOFUPin checks a verified message against the TOFU pin store.
 // On first contact, creates a pin. On subsequent contact with matching DID,
 // updates last_seen. On DID mismatch, checks for a valid rotation announcement
 // before returning IdentityMismatch.
 // Returns the status unchanged if no pin store is set, the message is not
-// verified, or from_did/from_alias is empty.
+// verified, or from_did/from_address is empty.
 // Uses the resolver to determine the sender's lifetime (ephemeral agents
 // skip pinning) and custody (custodial agents return VerifiedCustodial).
 //
 // When fromStableID is present, pins are keyed by stable_id instead of did:key.
 // The pin stores the last observed did:key for that stable identity, so a
 // stable_id can survive key rotation while still enforcing continuity.
-func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fromAlias, fromDID, fromStableID string, ra *RotationAnnouncement, repl *ReplacementAnnouncement) VerificationStatus {
-	if c.pinStore == nil || (status != Verified && status != VerifiedCustodial) || fromDID == "" || fromAlias == "" {
+func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fromAddress, fromDID, fromStableID string, ra *RotationAnnouncement, repl *ReplacementAnnouncement) VerificationStatus {
+	if c.pinStore == nil || (status != Verified && status != VerifiedCustodial) || fromDID == "" || fromAddress == "" {
 		return status
 	}
 
@@ -291,9 +307,9 @@ func (c *Client) CheckTOFUPin(ctx context.Context, status VerificationStatus, fr
 		fromStableID = "" // Treat invalid prefix as absent.
 	}
 
-	trustAddress := c.canonicalTrustAddress(fromAlias)
+	trustAddress := c.canonicalTrustAddress(fromAddress)
 	meta := c.resolveAgentMeta(ctx, trustAddress)
-	return c.checkTOFUPinWithMeta(ctx, status, strings.TrimSpace(fromAlias), trustAddress, fromDID, fromStableID, ra, repl, meta)
+	return c.checkTOFUPinWithMeta(ctx, status, strings.TrimSpace(fromAddress), trustAddress, fromDID, fromStableID, ra, repl, meta)
 }
 
 func (c *Client) checkTOFUPinWithMeta(ctx context.Context, status VerificationStatus, rawAddress, trustAddress, fromDID, fromStableID string, ra *RotationAnnouncement, repl *ReplacementAnnouncement, meta *agentMeta) VerificationStatus {
@@ -397,8 +413,6 @@ func (c *Client) checkTOFUPinWithMeta(ctx context.Context, status VerificationSt
 			return status
 		}
 		return IdentityMismatch
-	case PinSkipped:
-		// Ephemeral agent — no pin check.
 	}
 	return status
 }
