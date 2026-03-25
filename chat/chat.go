@@ -528,11 +528,13 @@ func Send(ctx context.Context, client *awid.Client, myAlias string, targets []st
 		MessageID:        createResp.MessageID,
 		TargetsConnected: createResp.TargetsConnected,
 		TargetsLeft:      createResp.TargetsLeft,
-	}, myAlias, targets, message, opts, &sentAt, callback)
+	}, myAlias, targets, message, waitSeconds, opts, &sentAt, callback)
 }
 
 // sendCommon handles the post-send wait logic shared by Send and SendNetwork.
-func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpener, resp sendResponse, myAlias string, targets []string, message string, opts SendOptions, after *time.Time, callback StatusCallback) (*SendResult, error) {
+// resolvedWait is the actual wait duration in seconds, already accounting for
+// StartConversation upgrades. This must match what was sent to the server.
+func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpener, resp sendResponse, myAlias string, targets []string, message string, resolvedWait int, opts SendOptions, after *time.Time, callback StatusCallback) (*SendResult, error) {
 	result := &SendResult{
 		SessionID:   resp.SessionID,
 		Status:      "sent",
@@ -586,12 +588,6 @@ func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpene
 		result.TargetNotConnected = true
 	}
 
-	// Determine wait timeout
-	waitSeconds := opts.Wait
-	if opts.StartConversation && !opts.WaitExplicit {
-		waitSeconds = 300 // 5 minutes
-	}
-
 	// Build message acceptor: skip replays, accept only from targets.
 	// The gate opens when we see our sent message by ID. If the server
 	// didn't return a message ID (sentMessageID==""), the gate starts open.
@@ -612,7 +608,7 @@ func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpene
 		return false, false
 	}
 
-	waitResult, err := waitForMessage(ctx, client, openStream, resp.SessionID, waitSeconds, after, callback, acceptor)
+	waitResult, err := waitForMessage(ctx, client, openStream, resp.SessionID, resolvedWait, after, callback, acceptor)
 	if err != nil {
 		return nil, err
 	}
