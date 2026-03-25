@@ -99,10 +99,6 @@ func printEventText(ev *awid.AgentEvent) {
 	switch ev.Type {
 	case awid.AgentEventConnected:
 		fmt.Printf("[connected] agent_id=%s project_id=%s\n", ev.AgentID, ev.ProjectID)
-	case awid.AgentEventMailMessage:
-		fmt.Printf("[mail_message] from=%s message_id=%s subject=%q\n", ev.FromAlias, ev.MessageID, ev.Subject)
-	case awid.AgentEventChatMessage:
-		fmt.Printf("[chat_message] from=%s session_id=%s message_id=%s\n", ev.FromAlias, ev.SessionID, ev.MessageID)
 	case awid.AgentEventActionableMail:
 		fmt.Printf(
 			"[actionable_mail] from=%s wake_mode=%s unread=%d message_id=%s subject=%q\n",
