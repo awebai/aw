@@ -40,17 +40,28 @@ func runTaskStats(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("listing tasks: %w", err)
 	}
+	blockedResp, err := client.TaskListBlocked(ctx)
+	if err != nil {
+		return fmt.Errorf("listing blocked tasks: %w", err)
+	}
+
+	blockedRefs := make(map[string]struct{}, len(blockedResp.Tasks))
+	for _, task := range blockedResp.Tasks {
+		blockedRefs[task.TaskRef] = struct{}{}
+	}
 
 	var stats taskStatsOutput
 	for _, t := range resp.Tasks {
 		stats.Total++
+		if _, blocked := blockedRefs[t.TaskRef]; blocked {
+			stats.Blocked++
+			continue
+		}
 		switch t.Status {
 		case "open":
 			stats.Open++
 		case "in_progress":
 			stats.InProgress++
-		case "blocked":
-			stats.Blocked++
 		case "closed":
 			stats.Closed++
 		}

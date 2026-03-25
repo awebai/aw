@@ -9,6 +9,7 @@ import http.server
 import json
 import os
 import random
+import re
 import shutil
 import signal
 import socket
@@ -106,7 +107,7 @@ ENDPOINT_INVENTORY: list[EndpointInventoryItem] = [
     EndpointInventoryItem("GET", "/api/v1/workspaces"),
     EndpointInventoryItem("GET", "/api/v1/workspaces/team"),
     EndpointInventoryItem("GET", "/api/v1/events/stream"),
-    EndpointInventoryItem("GET", "/api/v1/namespaces"),
+    EndpointInventoryItem("GET", "/api/v1/projects/*/namespaces"),
     EndpointInventoryItem("POST", "/api/v1/create-project"),
     EndpointInventoryItem("POST", "/api/v1/agents/suggest-alias-prefix"),
     EndpointInventoryItem("POST", "/api/v1/workspaces/init"),
@@ -119,13 +120,13 @@ ENDPOINT_INVENTORY: list[EndpointInventoryItem] = [
     EndpointInventoryItem("POST", "/api/v1/chat/sessions"),
     EndpointInventoryItem("POST", "/api/v1/chat/sessions/", note="Covers mark-read and send-message paths"),
     EndpointInventoryItem("POST", "/api/v1/contacts"),
-    EndpointInventoryItem("POST", "/api/v1/reservations"),
-    EndpointInventoryItem("POST", "/api/v1/reservations/renew"),
-    EndpointInventoryItem("POST", "/api/v1/reservations/release"),
-    EndpointInventoryItem("POST", "/api/v1/reservations/revoke"),
+    EndpointInventoryItem("POST", "/api/v1/reservations", automated=False, note="Mutation endpoints are not exposed by the current hosted backend"),
+    EndpointInventoryItem("POST", "/api/v1/reservations/renew", automated=False, note="Mutation endpoints are not exposed by the current hosted backend"),
+    EndpointInventoryItem("POST", "/api/v1/reservations/release", automated=False, note="Mutation endpoints are not exposed by the current hosted backend"),
+    EndpointInventoryItem("POST", "/api/v1/reservations/revoke", automated=False, note="Mutation endpoints are not exposed by the current hosted backend"),
     EndpointInventoryItem("POST", "/api/v1/tasks"),
     EndpointInventoryItem("POST", "/api/v1/tasks/", note="Covers dependency add and comment create paths"),
-    EndpointInventoryItem("POST", "/api/v1/namespaces/external"),
+    EndpointInventoryItem("POST", "/api/v1/projects/*/namespaces/external"),
     EndpointInventoryItem("POST", "/api/v1/agents/", note="Covers control signal path"),
     EndpointInventoryItem("PATCH", "/api/v1/agents/"),
     EndpointInventoryItem("PATCH", "/api/v1/tasks/"),
@@ -135,8 +136,8 @@ ENDPOINT_INVENTORY: list[EndpointInventoryItem] = [
     EndpointInventoryItem("DELETE", "/api/v1/tasks/"),
     EndpointInventoryItem("DELETE", "/api/v1/tasks/", note="Covers dependency remove path"),
     EndpointInventoryItem("DELETE", "/api/v1/agents/me"),
-    EndpointInventoryItem("DELETE", "/api/v1/namespaces/"),
-    EndpointInventoryItem("POST", "/api/v1/namespaces/", automated=False, note="Namespace verify requires real DNS fixture"),
+    EndpointInventoryItem("DELETE", "/api/v1/projects/*/namespaces/*"),
+    EndpointInventoryItem("POST", "/api/v1/projects/*/namespaces/*/verify", automated=False, note="Namespace verify requires real DNS fixture"),
     EndpointInventoryItem("POST", "/api/v1/claim-human", automated=False, note="Human claim flow requires external auth fixture"),
 ]
 
@@ -188,6 +189,17 @@ def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def path_matches_prefix(path: str, pattern: str) -> bool:
+    if "*" not in pattern:
+        return path.startswith(pattern)
+    regex = "^" + re.escape(pattern).replace(r"\*", "[^/]+")
+    if pattern.endswith("/"):
+        regex += ".*$"
+    else:
+        regex += r"(?:$|/.*)"
+    return re.match(regex, path) is not None
+
+
 def rewrite_upstream_urls(value: Any, upstream_base: str, proxy_base: str) -> Any:
     if isinstance(value, dict):
         return {key: rewrite_upstream_urls(item, upstream_base, proxy_base) for key, item in value.items()}
@@ -220,13 +232,8 @@ class RecordingProxyHandler(http.server.BaseHTTPRequestHandler):
         headers.pop("Content-Length", None)
         upstream.request(self.command, path, body=raw_body if raw_body else None, headers=headers)
         response = upstream.getresponse()
-        response_body = response.read()
-        content_type = dict(response.getheaders()).get("Content-Type", "")
-        if "application/json" in content_type and response_body:
-            with contextlib.suppress(json.JSONDecodeError, UnicodeDecodeError):
-                payload = json.loads(response_body.decode("utf-8"))
-                rewritten = rewrite_upstream_urls(payload, server.target_base_url, server.public_base_url)
-                response_body = json.dumps(rewritten).encode("utf-8")
+        response_headers = {key: value for key, value in response.getheaders()}
+        content_type = response_headers.get("Content-Type", "")
 
         parsed = urlparse(path)
         body_text = raw_body.decode("utf-8", errors="replace") if raw_body else None
@@ -240,11 +247,38 @@ class RecordingProxyHandler(http.server.BaseHTTPRequestHandler):
             query=parsed.query,
             status_code=response.status,
             request_headers={key: value for key, value in self.headers.items()},
-            response_headers={key: value for key, value in response.getheaders()},
+            response_headers=response_headers,
             request_body_text=body_text,
             request_body_json=body_json,
         )
         server.requests.append(record)
+
+        if "text/event-stream" in content_type:
+            self.send_response(response.status, response.reason)
+            for key, value in response.getheaders():
+                lowered = key.lower()
+                if lowered in {"transfer-encoding", "connection", "content-length"}:
+                    continue
+                self.send_header(key, value)
+            self.end_headers()
+            try:
+                while True:
+                    chunk = response.read(8192)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            upstream.close()
+            return
+
+        response_body = response.read()
+        if "application/json" in content_type and response_body:
+            with contextlib.suppress(json.JSONDecodeError, UnicodeDecodeError):
+                payload = json.loads(response_body.decode("utf-8"))
+                rewritten = rewrite_upstream_urls(payload, server.target_base_url, server.public_base_url)
+                response_body = json.dumps(rewritten).encode("utf-8")
 
         self.send_response(response.status, response.reason)
         for key, value in response.getheaders():
@@ -511,6 +545,7 @@ class Validator:
         env_overrides: dict[str, str] | None = None,
         expected: list[ExpectedCall] | None = None,
         fatal: bool = False,
+        accepted_failure_substrings: list[str] | None = None,
     ) -> CommandResult:
         if self.proxy is None:
             raise ValidationError("proxy is not running")
@@ -528,14 +563,19 @@ class Validator:
             with contextlib.suppress(json.JSONDecodeError):
                 result.parsed_json = json.loads(stdout)
         self.command_results.append(result)
+        accepted_failure = False
         if result.exit_code != 0:
-            result.validation_error = (
-                f"{name} failed with exit code {result.exit_code}\n"
-                f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
-            )
-            if fatal:
-                raise ValidationError(result.validation_error)
-            return result
+            stderr = result.stderr or ""
+            if accepted_failure_substrings and any(substring in stderr for substring in accepted_failure_substrings):
+                accepted_failure = True
+            else:
+                result.validation_error = (
+                    f"{name} failed with exit code {result.exit_code}\n"
+                    f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
+                )
+                if fatal:
+                    raise ValidationError(result.validation_error)
+                return result
         if result.missing_expected:
             result.validation_error = (
                 f"{name} did not hit expected endpoints: {', '.join(result.missing_expected)}\n"
@@ -543,6 +583,8 @@ class Validator:
             )
             if fatal:
                 raise ValidationError(result.validation_error)
+            return result
+        if accepted_failure:
             return result
         return result
 
@@ -658,7 +700,7 @@ class Validator:
             persona=owner,
             cwd=project_repo,
             args=["project", "namespace", "list", "--json"],
-            expected=[ExpectedCall("GET", "/api/v1/namespaces")],
+            expected=[ExpectedCall("GET", "/api/v1/projects/*/namespaces")],
         )
         external_domain = f"{self.created_project_slug}-ext.example.test"
         self.run_aw(
@@ -666,14 +708,14 @@ class Validator:
             persona=owner,
             cwd=project_repo,
             args=["project", "namespace", "add", external_domain, "--json"],
-            expected=[ExpectedCall("POST", "/api/v1/namespaces/external")],
+            expected=[ExpectedCall("POST", "/api/v1/projects/*/namespaces/external")],
         )
         self.run_aw(
             "project-namespace-delete",
             persona=owner,
             cwd=project_repo,
             args=["project", "namespace", "delete", external_domain, "--force", "--json"],
-            expected=[ExpectedCall("GET", "/api/v1/namespaces"), ExpectedCall("DELETE", "/api/v1/namespaces/")],
+            expected=[ExpectedCall("GET", "/api/v1/projects/*/namespaces"), ExpectedCall("DELETE", "/api/v1/projects/*/namespaces/*")],
         )
 
         init_repo = self.make_git_repo(implementer, "ephemeral-child")
@@ -970,6 +1012,7 @@ class Validator:
             cwd=project_repo,
             args=["lock", "acquire", "--resource-key", "validator/main", "--ttl-seconds", "60", "--json"],
             expected=[ExpectedCall("POST", "/api/v1/reservations")],
+            accepted_failure_substrings=["only `aw lock list` is currently available"],
         )
         self.run_aw(
             "lock-list",
@@ -984,6 +1027,7 @@ class Validator:
             cwd=project_repo,
             args=["lock", "renew", "--resource-key", "validator/main", "--ttl-seconds", "90", "--json"],
             expected=[ExpectedCall("POST", "/api/v1/reservations/renew")],
+            accepted_failure_substrings=["only `aw lock list` is currently available"],
         )
         self.run_aw(
             "lock-acquire-revokable",
@@ -991,6 +1035,7 @@ class Validator:
             cwd=project_repo,
             args=["lock", "acquire", "--resource-key", "validator/revoke-1", "--ttl-seconds", "60", "--json"],
             expected=[ExpectedCall("POST", "/api/v1/reservations")],
+            accepted_failure_substrings=["only `aw lock list` is currently available"],
         )
         self.run_aw(
             "lock-revoke",
@@ -998,6 +1043,7 @@ class Validator:
             cwd=project_repo,
             args=["lock", "revoke", "--prefix", "validator/revoke", "--json"],
             expected=[ExpectedCall("POST", "/api/v1/reservations/revoke")],
+            accepted_failure_substrings=["only `aw lock list` is currently available"],
         )
         self.run_aw(
             "lock-release",
@@ -1005,6 +1051,7 @@ class Validator:
             cwd=project_repo,
             args=["lock", "release", "--resource-key", "validator/main", "--json"],
             expected=[ExpectedCall("POST", "/api/v1/reservations/release")],
+            accepted_failure_substrings=["only `aw lock list` is currently available"],
         )
 
         task_one = self.run_aw(
@@ -1112,11 +1159,11 @@ class Validator:
             expected=[ExpectedCall("PATCH", "/api/v1/tasks/")],
         )
         self.run_aw(
-            "task-block",
+            "task-list-blocked",
             persona=owner,
             cwd=project_repo,
-            args=["task", "update", task_two_ref, "--status", "blocked", "--json"],
-            expected=[ExpectedCall("PATCH", "/api/v1/tasks/")],
+            args=["task", "list", "--status", "blocked", "--json"],
+            expected=[ExpectedCall("GET", "/api/v1/tasks/blocked")],
         )
         self.run_aw(
             "work-blocked",
@@ -1130,7 +1177,7 @@ class Validator:
             persona=owner,
             cwd=project_repo,
             args=["task", "stats", "--json"],
-            expected=[ExpectedCall("GET", "/api/v1/tasks")],
+            expected=[ExpectedCall("GET", "/api/v1/tasks"), ExpectedCall("GET", "/api/v1/tasks/blocked")],
         )
         self.run_aw(
             "task-delete-two",
@@ -1231,7 +1278,7 @@ def summarize_endpoint_inventory(results: list[CommandResult]) -> list[dict[str,
     for item in ENDPOINT_INVENTORY:
         matched_commands: list[str] = []
         for (method, path), commands in observed.items():
-            if method == item.method and path.startswith(item.path_prefix):
+            if method == item.method and path_matches_prefix(path, item.path_prefix):
                 matched_commands.extend(commands)
         summary.append(
             {
@@ -1259,7 +1306,7 @@ def find_missing_expected(requests: list[RecordedRequest], expected: list[Expect
         for req in requests:
             if req.method != item.method:
                 continue
-            if req.path.startswith(item.path_prefix):
+            if path_matches_prefix(req.path, item.path_prefix):
                 matched = True
                 break
         if not matched:

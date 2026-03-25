@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -1209,6 +1210,62 @@ func TestListenTimeout(t *testing.T) {
 	}
 	if result.WaitedSeconds < 1 {
 		t.Fatalf("waited_seconds=%d", result.WaitedSeconds)
+	}
+}
+
+func TestWaitForMessageTreatsInitialEOFAsTimeout(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{})
+	t.Cleanup(server.Close)
+
+	result, err := waitForMessage(
+		context.Background(),
+		mustClient(t, server.URL),
+		func(context.Context, string, time.Time, *time.Time) (*awid.SSEStream, error) {
+			return nil, io.EOF
+		},
+		"s1",
+		1,
+		nil,
+		nil,
+		func(Event) (bool, bool) { return false, false },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "timeout" {
+		t.Fatalf("status=%s", result.Status)
+	}
+}
+
+func TestWaitForMessageTreatsWrappedEOFAsTimeout(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/sessions/s1/messages": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatHistoryResponse{Messages: []awid.ChatMessage{}})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := waitForMessage(
+		context.Background(),
+		mustClient(t, server.URL),
+		func(context.Context, string, time.Time, *time.Time) (*awid.SSEStream, error) {
+			return nil, &url.Error{Op: "Get", URL: server.URL + "/v1/chat/sessions/s1/stream", Err: io.EOF}
+		},
+		"s1",
+		1,
+		nil,
+		nil,
+		func(Event) (bool, bool) { return false, false },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "timeout" {
+		t.Fatalf("status=%s", result.Status)
 	}
 }
 

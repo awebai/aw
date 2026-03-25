@@ -1987,16 +1987,16 @@ func TestAwAgentAccessModeGet(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/auth/introspect":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":  "proj-1",
-				"identity_id": "agent-1",
-				"alias":       "alice",
+				"project_id": "proj-1",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
 			})
 		case "/v1/agents":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id": "proj-1",
-				"identities": []map[string]any{
+				"agents": []map[string]any{
 					{
-						"identity_id": "agent-1",
+						"agent_id":    "agent-1",
 						"alias":       "alice",
 						"online":      true,
 						"access_mode": "contacts_only",
@@ -2074,9 +2074,9 @@ func TestAwAgentAccessModeSet(t *testing.T) {
 		switch {
 		case r.URL.Path == "/v1/auth/introspect":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":  "proj-1",
-				"identity_id": "agent-1",
-				"alias":       "alice",
+				"project_id": "proj-1",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
 			})
 		case strings.HasPrefix(r.URL.Path, "/v1/agents/") && r.Method == http.MethodPatch:
 			patchPath = r.URL.Path
@@ -2084,7 +2084,7 @@ func TestAwAgentAccessModeSet(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"identity_id": "agent-1",
+				"agent_id":    "agent-1",
 				"access_mode": patchBody["access_mode"],
 			})
 		case r.URL.Path == "/v1/agents/heartbeat":
@@ -2141,8 +2141,8 @@ default_account: acct
 	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
-	if got["identity_id"] != "agent-1" {
-		t.Fatalf("identity_id=%v", got["identity_id"])
+	if got["agent_id"] != "agent-1" {
+		t.Fatalf("agent_id=%v", got["agent_id"])
 	}
 	if got["access_mode"] != "open" {
 		t.Fatalf("access_mode=%v", got["access_mode"])
@@ -2269,7 +2269,7 @@ func TestAwIdentityReachabilityGet(t *testing.T) {
 				"alias":          "alice",
 				"address":        "demo/alice",
 			})
-		case "/v1/agents/resolve/demo/alice":
+		case "/v1/agents/resolve/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"address":  "demo/alice",
 				"lifetime": "persistent",
@@ -2364,7 +2364,7 @@ func TestAwIdentityReachabilitySet(t *testing.T) {
 				"alias":          "alice",
 				"address":        "demo/alice",
 			})
-		case r.URL.Path == "/v1/agents/resolve/demo/alice":
+		case r.URL.Path == "/v1/agents/resolve/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"address":  "demo/alice",
 				"lifetime": "persistent",
@@ -2376,7 +2376,7 @@ func TestAwIdentityReachabilitySet(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"identity_id":          "agent-1",
+				"agent_id":             "agent-1",
 				"address_reachability": patchBody["address_reachability"],
 			})
 		case r.URL.Path == "/v1/agents/heartbeat":
@@ -2433,8 +2433,8 @@ default_account: acct
 	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
-	if got["identity_id"] != "agent-1" {
-		t.Fatalf("identity_id=%v", got["identity_id"])
+	if got["agent_id"] != "agent-1" {
+		t.Fatalf("agent_id=%v", got["agent_id"])
 	}
 	if got["address_reachability"] != "private" {
 		t.Fatalf("address_reachability=%v", got["address_reachability"])
@@ -3121,12 +3121,11 @@ func TestAwConnect(t *testing.T) {
 				t.Fatalf("auth=%q", r.Header.Get("Authorization"))
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":     "proj-123",
-				"identity_id":    "agent-1",
-				"namespace_slug": "myco",
-				"alias":          "alice",
-				"human_name":     "Alice",
-				"agent_type":     "agent",
+				"project_id": "proj-123",
+				"agent_id":   "agent-1",
+				"alias":      "alice",
+				"human_name": "Alice",
+				"agent_type": "agent",
 			})
 		case "/v1/projects/current":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -3134,10 +3133,11 @@ func TestAwConnect(t *testing.T) {
 				"slug":       "myco",
 				"name":       "My Company",
 			})
-		case "/v1/agents/resolve/myco/alice":
+		case "/v1/agents/resolve/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did":       did,
 				"stable_id": stableID,
+				"address":   "myco/alice",
 				"custody":   "custodial",
 				"lifetime":  "persistent",
 			})
@@ -3185,7 +3185,7 @@ func TestAwConnect(t *testing.T) {
 	if strings.Contains(string(out), "(agent-1)") {
 		t.Fatalf("connect output should not expose raw identity UUID:\n%s", string(out))
 	}
-	if !strings.Contains(string(out), "Imported identity context for alice") {
+	if !strings.Contains(string(out), "Imported identity context for myco/alice") {
 		t.Fatalf("expected identity-focused import summary, got:\n%s", string(out))
 	}
 
@@ -3258,6 +3258,9 @@ func TestAwConnect(t *testing.T) {
 func TestAwConnectPreservesExistingIdentity(t *testing.T) {
 	t.Parallel()
 
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	existingDID := awid.ComputeDIDKey(pub)
+
 	var identityCalled atomic.Bool
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -3273,6 +3276,14 @@ func TestAwConnectPreservesExistingIdentity(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project_id": "proj-123",
 				"slug":       "myco",
+			})
+		case "/v1/agents/resolve/alice":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did":       existingDID,
+				"address":   "myco/alice",
+				"stable_id": "did:aw:existing",
+				"custody":   "self",
+				"lifetime":  "persistent",
 			})
 		case "/v1/agents/me/identity":
 			identityCalled.Store(true)
@@ -3303,8 +3314,6 @@ func TestAwConnectPreservesExistingIdentity(t *testing.T) {
 	}
 
 	// Pre-populate config with existing identity.
-	pub, priv, _ := ed25519.GenerateKey(nil)
-	did := awid.ComputeDIDKey(pub)
 	keysDir := filepath.Join(tmp, "keys")
 	_ = os.MkdirAll(keysDir, 0o700)
 	_ = awid.SaveKeypair(keysDir, "myco/alice", pub, priv)
@@ -3321,7 +3330,7 @@ accounts:
     identity_id: agent-1
     identity_handle: alice
     namespace_slug: myco
-    did: "`+did+`"
+    did: "`+existingDID+`"
     signing_key: "`+keyPath+`"
     custody: self
     lifetime: persistent
@@ -3356,8 +3365,8 @@ default_account: acct-`+server.Listener.Addr().String()+`__agent-1
 	_ = yaml.Unmarshal(data, &cfg)
 	for _, acct := range cfg.Accounts {
 		if acct["api_key"] == "aw_sk_test" {
-			if acct["did"] != did {
-				t.Fatalf("did=%v, want %s (preserved)", acct["did"], did)
+			if acct["did"] != existingDID {
+				t.Fatalf("did=%v, want %s (preserved)", acct["did"], existingDID)
 			}
 			if acct["stable_id"] != "did:aw:existing" {
 				t.Fatalf("stable_id=%v, want did:aw:existing (preserved)", acct["stable_id"])
@@ -3385,7 +3394,7 @@ func TestAwConnectDoesNotOverrideExistingContextDefaultWithoutSetDefault(t *test
 				"project_id": "proj-123",
 				"slug":       "myco",
 			})
-		case "/v1/agents/resolve/myco/alice":
+		case "/v1/agents/resolve/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did":      "did:key:z6MkConnectDefault",
 				"address":  "myco/alice",
@@ -3500,7 +3509,7 @@ func TestAwConnectIdentityAlreadySetNoLocalKey(t *testing.T) {
 					"message": "identity already bound",
 				},
 			})
-		case "/v1/agents/resolve/myco/alice":
+		case "/v1/agents/resolve/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did":         serverDID,
 				"identity_id": "agent-1",
@@ -3590,7 +3599,7 @@ func TestAwConnectRecoverWith409AndLocalKey(t *testing.T) {
 					"message": "identity already bound",
 				},
 			})
-		case "/v1/agents/resolve/myco/alice":
+		case "/v1/agents/resolve/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did":         serverDID,
 				"stable_id":   serverStableID,
@@ -3701,10 +3710,11 @@ func TestAwConnectUsesServerStableID(t *testing.T) {
 				"address":        "myco/alice",
 				"agent_type":     "agent",
 			})
-		case "/v1/agents/resolve/myco/alice":
+		case "/v1/agents/resolve/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did":       did,
 				"stable_id": stableID,
+				"address":   "myco/alice",
 				"custody":   "custodial",
 				"lifetime":  "persistent",
 			})

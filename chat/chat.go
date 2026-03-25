@@ -6,7 +6,9 @@ package chat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -312,17 +314,27 @@ func waitForMessage(ctx context.Context, client *awid.Client, openStream streamO
 
 	waitTimeout := time.Duration(waitSeconds) * time.Second
 	waitDeadline := time.Now().Add(waitTimeout)
+	waitStart := time.Now()
 
 	// The server deadline is a safety net for orphaned connections —
 	// the local waitTimer manages actual wait semantics.
 	stream, err := openStream(ctx, sessionID, time.Now().Add(maxStreamDeadline), after)
 	if err != nil {
+		if ctx.Err() != nil || isEOFLike(err) {
+			if client != nil {
+				_, _ = client.ChatHistory(ctx, awid.ChatHistoryParams{
+					SessionID: sessionID,
+					Limit:     1,
+				})
+			}
+			result.WaitedSeconds = int(time.Since(waitStart).Seconds())
+			return result, nil
+		}
 		return nil, fmt.Errorf("connecting to SSE: %w", err)
 	}
 	events, streamCleanup := streamToChannel(ctx, stream)
 	defer streamCleanup()
 
-	waitStart := time.Now()
 	waitTimer := time.NewTimer(waitTimeout)
 	defer func() {
 		if !waitTimer.Stop() {
@@ -427,6 +439,13 @@ func waitForMessage(ctx context.Context, client *awid.Client, openStream streamO
 			}
 		}
 	}
+}
+
+func isEOFLike(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, io.EOF) || strings.Contains(err.Error(), "EOF")
 }
 
 // sendResponse normalizes the response from ChatCreateSession or NetworkCreateChat.
