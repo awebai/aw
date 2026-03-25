@@ -7,7 +7,7 @@ the implemented architecture in this repository.
 
 Use the current identity source of truth instead:
 
-- [../2026-03-23-sot.md](../2026-03-23-sot.md)
+- [../aweb-cloud-quinn/docs/id-sot.md](../aweb-cloud-quinn/docs/id-sot.md)
 
 Current implementation guidance lives in:
 
