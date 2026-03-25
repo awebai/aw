@@ -553,7 +553,7 @@ func Send(ctx context.Context, client *awid.Client, myAlias string, targets []st
 	}, myAlias, targets, message, waitSeconds, opts, &sentAt, callback)
 }
 
-// sendCommon handles the post-send wait logic shared by Send and SendNetwork.
+// sendCommon handles the post-send wait logic after a message has been created.
 // resolvedWait is the actual wait duration in seconds, already accounting for
 // StartConversation upgrades. This must match what was sent to the server.
 func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpener, resp sendResponse, myAlias string, targets []string, message string, resolvedWait int, opts SendOptions, after *time.Time, callback StatusCallback) (*SendResult, error) {
