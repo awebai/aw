@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/awebai/aw/awconfig"
+	awrun "github.com/awebai/aw/run"
 )
 
 const interactionLogFileName = "interaction-log.jsonl"
@@ -141,10 +143,10 @@ func readInteractionLog(path string, limit int) ([]InteractionEntry, error) {
 }
 
 func formatInteractionRecap(entries []InteractionEntry, limit int) string {
-	return formatInteractionRecapStyled(entries, limit, false)
+	return formatInteractionRecapStyled(entries, limit, false, 0)
 }
 
-func formatInteractionRecapStyled(entries []InteractionEntry, limit int, ansi bool) string {
+func formatInteractionRecapStyled(entries []InteractionEntry, limit int, ansi bool, width int) string {
 	if len(entries) == 0 {
 		return ""
 	}
@@ -159,8 +161,14 @@ func formatInteractionRecapStyled(entries []InteractionEntry, limit int, ansi bo
 		if line == "" {
 			continue
 		}
-		if entry.Kind == interactionKindUser {
+		if isInteractionComm(entry.Kind) && width > 0 {
+			line = wrapInteractionCommLine(line, width)
+		}
+		switch {
+		case entry.Kind == interactionKindUser:
 			line = maybeBoldANSI(line, ansi)
+		case isInteractionComm(entry.Kind):
+			line = maybeBoldInteractionCommPrefixANSI(line, ansi)
 		}
 		sb.WriteString(line)
 		sb.WriteString("\n")
@@ -177,19 +185,19 @@ func formatInteractionEntry(entry InteractionEntry) string {
 	case interactionKindAgent:
 		return text
 	case interactionKindChatIn:
-		return fmt.Sprintf("<- %s: %s", interactionParty(entry.From, "someone"), text)
+		return fmt.Sprintf("%s: %s", awrun.FormatCommLabel("from", interactionParty(entry.From, "someone"), "chat"), text)
 	case interactionKindChatOut:
-		return fmt.Sprintf("-> %s: %s", interactionParty(entry.To, "someone"), text)
+		return fmt.Sprintf("%s: %s", awrun.FormatCommLabel("to", interactionParty(entry.To, "someone"), "chat"), text)
 	case interactionKindMailIn:
 		if subject := strings.TrimSpace(entry.Subject); subject != "" {
-			return fmt.Sprintf("<- %s (mail): %s — %s", interactionParty(entry.From, "someone"), subject, text)
+			return fmt.Sprintf("%s: %s — %s", awrun.FormatCommLabel("from", interactionParty(entry.From, "someone"), "mail"), subject, text)
 		}
-		return fmt.Sprintf("<- %s (mail): %s", interactionParty(entry.From, "someone"), text)
+		return fmt.Sprintf("%s: %s", awrun.FormatCommLabel("from", interactionParty(entry.From, "someone"), "mail"), text)
 	case interactionKindMailOut:
 		if subject := strings.TrimSpace(entry.Subject); subject != "" {
-			return fmt.Sprintf("-> %s (mail): %s — %s", interactionParty(entry.To, "someone"), subject, text)
+			return fmt.Sprintf("%s: %s — %s", awrun.FormatCommLabel("to", interactionParty(entry.To, "someone"), "mail"), subject, text)
 		}
-		return fmt.Sprintf("-> %s (mail): %s", interactionParty(entry.To, "someone"), text)
+		return fmt.Sprintf("%s: %s", awrun.FormatCommLabel("to", interactionParty(entry.To, "someone"), "mail"), text)
 	default:
 		return text
 	}
@@ -220,4 +228,102 @@ func maybeBoldANSI(text string, ansi bool) string {
 		return text
 	}
 	return "\x1b[1m" + text + "\x1b[0m"
+}
+
+func maybeBoldInteractionCommPrefixANSI(text string, ansi bool) string {
+	if !ansi || strings.TrimSpace(text) == "" {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) == 0 {
+		return text
+	}
+	lines[0] = boldInteractionCommPrefix(lines[0], ansi)
+	return strings.Join(lines, "\n")
+}
+
+func boldInteractionCommPrefix(line string, ansi bool) string {
+	if !ansi {
+		return line
+	}
+	indent := leadingInteractionWhitespace(line)
+	trimmed := strings.TrimPrefix(line, indent)
+	if !strings.HasPrefix(trimmed, "• from ") && !strings.HasPrefix(trimmed, "• to ") {
+		return line
+	}
+	headEnd := len(trimmed)
+	if idx := strings.Index(trimmed, ":"); idx >= 0 {
+		headEnd = idx
+	}
+	head := trimmed[:headEnd]
+	tail := trimmed[headEnd:]
+	bullet := "\x1b[32m•\x1b[0m"
+	if strings.HasPrefix(head, "•") {
+		head = bullet + "\x1b[1m" + strings.TrimPrefix(head, "•") + "\x1b[0m"
+	}
+	return indent + head + tail
+}
+
+func isInteractionComm(kind string) bool {
+	switch kind {
+	case interactionKindChatIn, interactionKindChatOut, interactionKindMailIn, interactionKindMailOut:
+		return true
+	default:
+		return false
+	}
+}
+
+func wrapInteractionCommLine(line string, width int) string {
+	if width <= 0 || utf8.RuneCountInString(line) <= width {
+		return line
+	}
+	continuationIndent := interactionCommContinuationIndent(line)
+	parts := strings.SplitAfter(line, " ")
+	if len(parts) == 0 {
+		return line
+	}
+
+	lines := make([]string, 0, 4)
+	current := ""
+	for _, part := range parts {
+		if current == "" {
+			current = strings.TrimLeft(part, " ")
+			continue
+		}
+		candidate := current + part
+		if utf8.RuneCountInString(strings.TrimRight(candidate, " ")) <= width {
+			current = candidate
+			continue
+		}
+		lines = append(lines, strings.TrimRight(current, " "))
+		current = continuationIndent + strings.TrimLeft(part, " ")
+	}
+	if strings.TrimSpace(current) != "" {
+		lines = append(lines, strings.TrimRight(current, " "))
+	}
+	if len(lines) == 0 {
+		return line
+	}
+	return strings.Join(lines, "\n")
+}
+
+func interactionCommContinuationIndent(line string) string {
+	indent := leadingInteractionWhitespace(line)
+	trimmed := strings.TrimPrefix(line, indent)
+	switch {
+	case strings.HasPrefix(trimmed, "• from "):
+		return indent + strings.Repeat(" ", len("• from "))
+	case strings.HasPrefix(trimmed, "• to "):
+		return indent + strings.Repeat(" ", len("• to "))
+	default:
+		return indent + "   "
+	}
+}
+
+func leadingInteractionWhitespace(s string) string {
+	idx := 0
+	for idx < len(s) && (s[idx] == ' ' || s[idx] == '\t') {
+		idx++
+	}
+	return s[:idx]
 }

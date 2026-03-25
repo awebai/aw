@@ -28,7 +28,6 @@ var (
 	runWorkingDir   string
 	runAllowedTools string
 	runModel        string
-	runCompactPct   int
 	runProviderName string
 	runProviderPTY  bool
 	runAutofeedWork bool
@@ -75,7 +74,6 @@ func init() {
 	runCmd.Flags().StringVar(&runCommsPrompt, "comms-prompt-suffix", "", "Override the configured comms cycle prompt suffix for this run")
 	runCmd.Flags().IntVar(&runWaitSeconds, "wait", awrun.DefaultWaitSeconds, "Idle seconds per wake-stream wait cycle")
 	runCmd.Flags().IntVar(&runIdleWait, "idle-wait", awrun.DefaultIdleWaitSeconds, "Reserved idle-wait setting for future dispatch modes")
-	runCmd.Flags().IntVar(&runCompactPct, "compact-threshold-pct", awrun.DefaultCompactThreshold, "Run /compact after a successful cycle when context usage exceeds this percent (0 disables)")
 	runCmd.Flags().BoolVar(&runContinueMode, "continue", false, "Continue the most recent provider session across runs")
 	runCmd.Flags().BoolVar(&runContinueMode, "session", false, "Deprecated alias for --continue")
 	_ = runCmd.Flags().MarkDeprecated("session", "use --continue instead")
@@ -84,7 +82,7 @@ func init() {
 	runCmd.Flags().StringVar(&runAllowedTools, "allowed-tools", "", "Provider-specific allowed tools string")
 	runCmd.Flags().StringVar(&runModel, "model", "", "Provider-specific model override")
 	runCmd.Flags().StringVar(&runProviderName, "provider", "claude", "Agent provider to run")
-	runCmd.Flags().BoolVar(&runProviderPTY, "provider-pty", true, "Run the provider subprocess inside a pseudo-terminal when interactive controls are available")
+	runCmd.Flags().BoolVar(&runProviderPTY, "provider-pty", false, "Run the provider subprocess inside a pseudo-terminal instead of plain pipes when interactive controls are available")
 	runCmd.Flags().BoolVar(&runAutofeedWork, "autofeed-work", false, "Wake for work-related events in addition to incoming mail/chat")
 	runCmd.Flags().BoolVar(&runInitConfig, "init", false, "Prompt for ~/.config/aw/run.json values and write them")
 
@@ -115,7 +113,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 		CommsPromptSuffix: changedStringPtr(cmd, "comms-prompt-suffix", runCommsPrompt),
 		WaitSeconds:       changedIntPtr(cmd, "wait", runWaitSeconds),
 		IdleWaitSeconds:   changedIntPtr(cmd, "idle-wait", runIdleWait),
-		CompactThreshold:  changedIntPtr(cmd, "compact-threshold-pct", runCompactPct),
 	})
 	if err != nil {
 		return err
@@ -166,25 +163,24 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	if runContinueMode {
-		if recap := loadRunContinueRecap(workingDir, writerSupportsANSI(cmd.OutOrStdout())); recap != "" {
+		if recap := loadRunContinueRecap(workingDir, cmd.OutOrStdout()); recap != "" {
 			fmt.Fprint(cmd.OutOrStdout(), recap)
 		}
 	}
 
 	opts := awrun.LoopOptions{
-		InitialPrompt:       initialPrompt,
-		BasePrompt:          settings.BasePrompt,
-		WaitSeconds:         settings.WaitSeconds,
-		IdleWaitSeconds:     settings.IdleWaitSeconds,
-		MaxRuns:             runMaxRuns,
-		Autofeed:            runAutofeedWork,
-		ContinueMode:        runContinueMode,
-		WorkingDir:          workingDir,
-		AllowedTools:        runAllowedTools,
-		Model:               runModel,
-		ProviderPTY:         runProviderPTY && screen != nil,
-		CompactThresholdPct: settings.CompactThreshold,
-		Services:            settings.Services,
+		InitialPrompt:   initialPrompt,
+		BasePrompt:      settings.BasePrompt,
+		WaitSeconds:     settings.WaitSeconds,
+		IdleWaitSeconds: settings.IdleWaitSeconds,
+		MaxRuns:         runMaxRuns,
+		Autofeed:        runAutofeedWork,
+		ContinueMode:    runContinueMode,
+		WorkingDir:      workingDir,
+		AllowedTools:    runAllowedTools,
+		Model:           runModel,
+		ProviderPTY:     effectiveProviderPTY(cmd, screen != nil),
+		Services:        settings.Services,
 	}
 
 	err = runExecuteLoop(loop, ctx, opts)
@@ -194,12 +190,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 	return err
 }
 
-func loadRunContinueRecap(workingDir string, ansi bool) string {
+func loadRunContinueRecap(workingDir string, out io.Writer) string {
 	entries, err := readInteractionLog(interactionLogPath(workingDir), 8)
 	if err != nil {
 		return ""
 	}
-	return formatInteractionRecapStyled(entries, 8, ansi)
+	return formatInteractionRecapStyled(entries, 8, writerSupportsANSI(out), writerDisplayWidth(out))
 }
 
 func writerSupportsANSI(w io.Writer) bool {
@@ -208,6 +204,28 @@ func writerSupportsANSI(w io.Writer) bool {
 		return false
 	}
 	return term.IsTerminal(int(f.Fd()))
+}
+
+func writerDisplayWidth(w io.Writer) int {
+	f, ok := w.(*os.File)
+	if !ok {
+		return 80
+	}
+	width, _, err := term.GetSize(int(f.Fd()))
+	if err != nil || width <= 0 {
+		return 80
+	}
+	return width
+}
+
+func effectiveProviderPTY(cmd *cobra.Command, interactive bool) bool {
+	if !interactive {
+		return false
+	}
+	if cmd != nil && cmd.Flags().Changed("provider-pty") {
+		return runProviderPTY
+	}
+	return false
 }
 
 func runDetectRepoSlug(dir string) string {
@@ -254,9 +272,8 @@ func initRunCommandVars() {
 	runWorkingDir = ""
 	runAllowedTools = ""
 	runModel = ""
-	runCompactPct = awrun.DefaultCompactThreshold
 	runProviderName = "claude"
-	runProviderPTY = true
+	runProviderPTY = false
 	runAutofeedWork = false
 	runInitConfig = false
 }

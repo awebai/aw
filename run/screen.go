@@ -2,6 +2,7 @@ package run
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -29,17 +30,22 @@ type ScreenController struct {
 	inputCursor   int
 	pending       bool
 	active        bool
+	busy          bool
+	spinnerFrame  int
 	exitConfirm   bool
 	history       []string
 	historyIndex  int
 	historyDraft  string
 	desiredColumn int
+	pasting       bool
 
 	events chan ControlEvent
 	doneCh chan error
 
 	cancelReader     cancelreader.CancelReader
 	rawState         *term.State
+	spinnerStop      chan struct{}
+	spinnerDone      chan struct{}
 	footerLines      int
 	footerCursorLine int
 	footerCursorCol  int
@@ -49,17 +55,22 @@ type ScreenController struct {
 var _ UI = (*ScreenController)(nil)
 
 type screenStyles struct {
-	prompt    lipgloss.Style
-	separator lipgloss.Style
-	tool      lipgloss.Style
-	result    lipgloss.Style
-	done      lipgloss.Style
-	info      lipgloss.Style
-	status    lipgloss.Style
-	hint      lipgloss.Style
+	prompt      lipgloss.Style
+	separator   lipgloss.Style
+	tool        lipgloss.Style
+	toolMuted   lipgloss.Style
+	commsBullet lipgloss.Style
+	comms       lipgloss.Style
+	result      lipgloss.Style
+	done        lipgloss.Style
+	info        lipgloss.Style
+	status      lipgloss.Style
+	hint        lipgloss.Style
 }
 
 const screenFooterBaseLines = 3
+
+var screenSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 func NewScreenController(in io.Reader, out io.Writer) *ScreenController {
 	inputFile, ok := in.(*os.File)
@@ -114,11 +125,19 @@ func (s *ScreenController) Start() error {
 	}
 
 	s.active = true
+	s.busy = false
+	s.spinnerFrame = 0
+	s.pasting = false
 	s.styles = newScreenStyles()
 	s.cancelReader = cancelReader
 	s.rawState = rawState
+	fmt.Fprint(s.outputFile, "\033[?2004h")
 	doneCh := make(chan error, 1)
+	spinnerStop := make(chan struct{})
+	spinnerDone := make(chan struct{})
 	s.doneCh = doneCh
+	s.spinnerStop = spinnerStop
+	s.spinnerDone = spinnerDone
 	s.renderFooterLocked()
 	s.mu.Unlock()
 
@@ -126,6 +145,7 @@ func (s *ScreenController) Start() error {
 		err := s.runInlineInputLoop(cancelReader)
 		doneCh <- err
 	}()
+	go s.runSpinnerLoop(spinnerStop, spinnerDone)
 
 	return nil
 }
@@ -144,10 +164,15 @@ func (s *ScreenController) Stop() error {
 	cancelReader := s.cancelReader
 	doneCh := s.doneCh
 	rawState := s.rawState
+	spinnerStop := s.spinnerStop
+	spinnerDone := s.spinnerDone
 	s.cancelReader = nil
 	s.rawState = nil
 	s.doneCh = nil
+	s.spinnerStop = nil
+	s.spinnerDone = nil
 	s.pending = false
+	s.busy = false
 	s.mu.Unlock()
 
 	if cancelReader != nil {
@@ -162,11 +187,24 @@ func (s *ScreenController) Stop() error {
 		case <-time.After(2 * time.Second):
 		}
 	}
+	if spinnerStop != nil {
+		close(spinnerStop)
+	}
+	if spinnerDone != nil {
+		select {
+		case <-spinnerDone:
+		case <-time.After(2 * time.Second):
+		}
+	}
 
 	s.mu.Lock()
 	s.teardownFooterLocked()
+	s.pasting = false
 	s.mu.Unlock()
 
+	if s.outputFile != nil {
+		fmt.Fprint(s.outputFile, "\033[?2004l")
+	}
 	if rawState != nil {
 		if err := term.Restore(int(s.inputFile.Fd()), rawState); err != nil && loopErr == nil {
 			loopErr = err
@@ -267,6 +305,22 @@ func (s *ScreenController) SetStatusLine(line string) {
 	s.renderFooterLocked()
 }
 
+func (s *ScreenController) SetBusy(active bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.busy == active {
+		return
+	}
+	s.busy = active
+	if !active {
+		s.spinnerFrame = 0
+	}
+	s.renderFooterLocked()
+}
+
 func (s *ScreenController) ClearStatusLine() {
 	s.SetStatusLine("")
 }
@@ -332,7 +386,54 @@ func (s *ScreenController) handleInlineInput(data []byte) {
 	defer s.mu.Unlock()
 
 	for i := 0; i < len(data); {
+		// Bracketed paste: ESC[200~ starts paste, ESC[201~ ends it.
+		// The 6-byte sequence must arrive in a single read buffer; if
+		// split across calls the bytes fall through as normal input.
+		// In practice bufio's 4096-byte buffer prevents this.
+		if i+5 < len(data) && data[i] == 0x1b && data[i+1] == '[' && data[i+2] == '2' && data[i+3] == '0' {
+			if data[i+4] == '0' && data[i+5] == '~' {
+				s.pasting = true
+				i += 6
+				continue
+			}
+			if data[i+4] == '1' && data[i+5] == '~' {
+				s.pasting = false
+				i += 6
+				continue
+			}
+		}
+
 		b := data[i]
+
+		if s.pasting {
+			if b == '\r' {
+				i++
+				continue
+			}
+			if b == '\n' {
+				s.handleInlineRuneLocked('\n')
+				i++
+				continue
+			}
+			if b < 0x20 {
+				i++
+				continue
+			}
+			r, size := utf8.DecodeRune(data[i:])
+			if r == utf8.RuneError && size == 1 {
+				r = rune(b)
+			}
+			s.handleInlineRuneLocked(r)
+			i += size
+			continue
+		}
+
+		if consumed, ok := promptNewlineSequenceLen(data[i:]); ok {
+			s.handleInlineRuneLocked('\n')
+			i += consumed
+			continue
+		}
+
 		switch b {
 		case 0x03:
 			if s.exitConfirm {
@@ -348,8 +449,11 @@ func (s *ScreenController) handleInlineInput(data []byte) {
 				s.handleExitPromptRequested()
 			}
 			i++
-		case '\r', '\n':
+		case '\r':
 			s.handleInlineSubmitLocked()
+			i++
+		case '\n':
+			s.handleInlineRuneLocked('\n')
 			i++
 		case 0x7f, 0x08:
 			s.handleInlineBackspaceLocked()
@@ -403,6 +507,19 @@ func (s *ScreenController) handleInlineInput(data []byte) {
 			i += size
 		}
 	}
+}
+
+func promptNewlineSequenceLen(data []byte) (int, bool) {
+	sequences := [][]byte{
+		[]byte("\x1b[13;2u"),
+		[]byte("\x1b[27;2;13~"),
+	}
+	for _, seq := range sequences {
+		if bytes.HasPrefix(data, seq) {
+			return len(seq), true
+		}
+	}
+	return 0, false
 }
 
 func (s *ScreenController) handleInlineEscapeLocked() {
@@ -486,6 +603,7 @@ func (s *ScreenController) handleInlineSubmitLocked() {
 	}
 
 	value := InputValueFromLine(s.inputLine, s.promptLabel)
+	s.pasting = false
 	s.pending = false
 	s.inputLine = s.promptLabel
 	s.inputCursor = 0
@@ -554,13 +672,18 @@ func (s *ScreenController) renderFooterLinesLocked(width int) []string {
 
 func (s *ScreenController) renderFooterLayoutLocked(width int) promptLayout {
 	currentLines := s.renderCurrentLinesLocked(width)
-	lines := append(currentLines, s.styles.separator.Render(strings.Repeat("─", max(1, width))))
+	lines := append([]string{}, currentLines...)
+	spacerLines := 0
+	if len(s.lines) > 0 || len(currentLines) > 0 {
+		lines = append(lines, "")
+		spacerLines = 1
+	}
 	prompt := buildPromptLayout(s.promptLabel, InputValueFromLine(s.inputLine, s.promptLabel), s.inputCursor, width)
 	lines = append(lines, prompt.lines...)
 	lines = append(lines, "")
 	lines = append(lines, s.renderStatusLineLocked(width))
 	prompt.lines = lines
-	prompt.cursorLine += len(currentLines) + 1
+	prompt.cursorLine += len(currentLines) + spacerLines
 	return prompt
 }
 
@@ -573,6 +696,14 @@ func (s *ScreenController) renderCurrentLinesLocked(width int) []string {
 
 func (s *ScreenController) renderStatusLineLocked(width int) string {
 	text := strings.TrimSpace(s.statusLine)
+	if s.busy {
+		frame := screenSpinnerFrames[s.spinnerFrame%len(screenSpinnerFrames)]
+		if text == "" {
+			text = frame + " working"
+		} else {
+			text = frame + " " + text
+		}
+	}
 	if text != "" {
 		text = truncateText(text, max(1, width-2))
 	}
@@ -580,7 +711,9 @@ func (s *ScreenController) renderStatusLineLocked(width int) string {
 }
 
 func (s *ScreenController) printOutputLineLocked(line string) {
-	writeScreenLines(s.outputFile, []string{styleScreenLine(line, s.styles), ""})
+	lines := appendWrappedStyledScreenLine(nil, line, s.terminalWidthLocked(), s.styles)
+	lines = append(lines, "")
+	writeScreenLines(s.outputFile, lines)
 }
 
 func (s *ScreenController) teardownFooterLocked() {
@@ -751,6 +884,26 @@ func (s *ScreenController) emit(event ControlEvent) {
 	}
 }
 
+func (s *ScreenController) runSpinnerLoop(stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(120 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			if s.active && s.busy {
+				s.spinnerFrame = (s.spinnerFrame + 1) % len(screenSpinnerFrames)
+				s.renderFooterLocked()
+			}
+			s.mu.Unlock()
+		}
+	}
+}
+
 func (s *ScreenController) handleInterruptRequested() {
 	s.emit(ControlEvent{Type: ControlInterrupt})
 }
@@ -765,12 +918,15 @@ func (s *ScreenController) handleExitConfirmed() {
 
 func newScreenStyles() screenStyles {
 	return screenStyles{
-		prompt:    lipgloss.NewStyle().Bold(true),
-		separator: lipgloss.NewStyle(),
-		tool:      lipgloss.NewStyle(),
-		result:    lipgloss.NewStyle(),
-		done:      lipgloss.NewStyle(),
-		info:      lipgloss.NewStyle(),
+		prompt:      lipgloss.NewStyle().Bold(true),
+		separator:   lipgloss.NewStyle(),
+		tool:        lipgloss.NewStyle(),
+		toolMuted:   lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "242", Dark: "244"}),
+		commsBullet: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "34", Dark: "42"}),
+		comms:       lipgloss.NewStyle().Bold(true),
+		result:      lipgloss.NewStyle(),
+		done:        lipgloss.NewStyle(),
+		info:        lipgloss.NewStyle(),
 		status: lipgloss.NewStyle().
 			Foreground(lipgloss.AdaptiveColor{Light: "236", Dark: "252"}).
 			Background(lipgloss.AdaptiveColor{Light: "252", Dark: "236"}).
@@ -808,9 +964,8 @@ func buildPromptLayout(promptLabel string, value string, cursor int, width int) 
 	}
 
 	promptWidth := lipgloss.Width(promptLabel)
-
 	continuation := strings.Repeat(" ", promptWidth)
-	runes := []rune(strings.ReplaceAll(value, "\n", " "))
+	runes := []rune(value)
 	if cursor < 0 {
 		cursor = 0
 	}
@@ -823,44 +978,48 @@ func buildPromptLayout(promptLabel string, value string, cursor int, width int) 
 		positions:   make([]promptCursorPos, len(runes)+1),
 	}
 
-	lineStarts := []int{0}
-	linePrefixes := []string{promptLabel}
+	layout.positions[0] = promptCursorPos{line: 0, col: promptWidth}
 	currentLine := 0
 	currentCol := promptWidth
-	layout.positions[0] = promptCursorPos{line: 0, col: promptWidth}
+	lineStart := 0
+	var lineText strings.Builder
+	appendLine := func(end int) {
+		prefix := promptLabel
+		if len(layout.lines) > 0 {
+			prefix = continuation
+		}
+		text := lineText.String()
+		layout.visualLines = append(layout.visualLines, promptVisualLine{start: lineStart, end: end, text: text})
+		layout.lines = append(layout.lines, prefix+text)
+		lineText.Reset()
+	}
 
 	for i, r := range runes {
+		if r == '\n' {
+			appendLine(i)
+			currentLine++
+			lineStart = i + 1
+			currentCol = promptWidth
+			layout.positions[i+1] = promptCursorPos{line: currentLine, col: currentCol}
+			continue
+		}
+
 		runeWidth := lipgloss.Width(string(r))
 		if runeWidth <= 0 {
 			runeWidth = 1
 		}
 		if currentCol+runeWidth > width && currentCol > promptWidth {
-			lineStarts = append(lineStarts, i)
-			linePrefixes = append(linePrefixes, continuation)
+			appendLine(i)
 			currentLine++
+			lineStart = i
 			currentCol = promptWidth
 			layout.positions[i] = promptCursorPos{line: currentLine, col: currentCol}
 		}
+		lineText.WriteRune(r)
 		currentCol += runeWidth
 		layout.positions[i+1] = promptCursorPos{line: currentLine, col: currentCol}
 	}
-
-	layout.visualLines = make([]promptVisualLine, 0, len(lineStarts))
-	layout.lines = make([]string, 0, len(lineStarts))
-	for i, start := range lineStarts {
-		end := len(runes)
-		if i+1 < len(lineStarts) {
-			end = lineStarts[i+1]
-		}
-		text := string(runes[start:end])
-		layout.visualLines = append(layout.visualLines, promptVisualLine{start: start, end: end, text: text})
-		layout.lines = append(layout.lines, linePrefixes[i]+text)
-	}
-	if len(layout.lines) == 0 {
-		layout.lines = []string{promptLabel}
-		layout.visualLines = []promptVisualLine{{start: 0, end: 0, text: ""}}
-		layout.positions = []promptCursorPos{{line: 0, col: promptWidth}}
-	}
+	appendLine(len(runes))
 
 	layout.cursorLine = layout.positions[cursor].line
 	layout.cursorCol = layout.positions[cursor].col
@@ -913,8 +1072,9 @@ func appendScreenText(lines *[]string, current *string, text string) {
 }
 
 func appendWrappedStyledScreenLine(lines []string, line string, width int, styles screenStyles) []string {
-	for _, wrapped := range wrapScreenLine(line, width) {
-		lines = append(lines, styleScreenLine(wrapped, styles))
+	kind := screenLineStyleKind(line)
+	for idx, wrapped := range wrapScreenLine(line, width) {
+		lines = append(lines, styleWrappedScreenLine(wrapped, kind, idx, styles))
 	}
 	return lines
 }
@@ -924,7 +1084,7 @@ func wrapScreenLine(line string, width int) []string {
 		return []string{line}
 	}
 
-	indent := leadingWhitespace(line)
+	indent := continuationIndent(line)
 	tokens := splitWrapTokens(line)
 	if len(tokens) == 0 {
 		return []string{line}
@@ -1015,6 +1175,17 @@ func leadingWhitespace(s string) string {
 	return s[:idx]
 }
 
+func continuationIndent(line string) string {
+	trimmed := strings.TrimLeft(line, " \t")
+	if isCommLine(trimmed) {
+		return screenCommContinuationIndent(line)
+	}
+	if strings.HasPrefix(trimmed, ">_ ") {
+		return leadingWhitespace(line) + "   "
+	}
+	return leadingWhitespace(line)
+}
+
 func abs(v int) int {
 	if v < 0 {
 		return -v
@@ -1023,13 +1194,24 @@ func abs(v int) int {
 }
 
 func styleScreenLine(line string, styles screenStyles) string {
-	switch screenLineStyleKind(line) {
+	return styleWrappedScreenLine(line, screenLineStyleKind(line), 0, styles)
+}
+
+func styleWrappedScreenLine(line string, kind string, wrapIndex int, styles screenStyles) string {
+	switch kind {
 	case "prompt":
 		return styles.prompt.Render(line)
 	case "separator":
 		return styles.separator.Render(line)
 	case "tool":
+		if wrapIndex > 0 {
+			return styles.toolMuted.Render(line)
+		}
 		return styleScreenToolLine(line, styles)
+	case "tool_detail":
+		return styles.toolMuted.Render(line)
+	case "comms":
+		return styleScreenCommLine(line, styles)
 	case "result":
 		return styles.result.Render(line)
 	case "done":
@@ -1044,7 +1226,29 @@ func styleScreenLine(line string, styles screenStyles) string {
 }
 
 func styleScreenToolLine(line string, styles screenStyles) string {
-	return styles.tool.Render(line)
+	const prefix = ">_ "
+	if !strings.HasPrefix(line, prefix) {
+		return styles.tool.Render(line)
+	}
+
+	rest := line[len(prefix):]
+	if rest == "" {
+		return styles.tool.Render(line)
+	}
+
+	headEnd := len(rest)
+	if idx := strings.Index(rest, "("); idx >= 0 {
+		headEnd = idx
+	} else if idx := strings.Index(rest, " "); idx >= 0 {
+		headEnd = idx
+	}
+	if headEnd <= 0 || headEnd >= len(rest) {
+		return styles.tool.Render(line)
+	}
+
+	head := prefix + rest[:headEnd]
+	tail := rest[headEnd:]
+	return styles.tool.Render(head) + styles.toolMuted.Render(tail)
 }
 
 func styleScreenToolClosingParen(line string, styles screenStyles) string {
@@ -1056,6 +1260,25 @@ func styleScreenToolClosingParen(line string, styles screenStyles) string {
 	return line[:suffixStart] + styles.tool.Render(")") + line[len(trimmed):]
 }
 
+func styleScreenCommLine(line string, styles screenStyles) string {
+	indent := leadingWhitespace(line)
+	trimmed := strings.TrimPrefix(line, indent)
+	if !isCommLine(trimmed) {
+		return line
+	}
+
+	headEnd := len(trimmed)
+	if idx := strings.Index(trimmed, ":"); idx >= 0 {
+		headEnd = idx
+	}
+	head := trimmed[:headEnd]
+	tail := trimmed[headEnd:]
+	if strings.HasPrefix(head, "•") {
+		return indent + styles.commsBullet.Render("•") + styles.comms.Render(strings.TrimPrefix(head, "•")) + tail
+	}
+	return indent + styles.comms.Render(head) + tail
+}
+
 func screenLineStyleKind(line string) string {
 	trimmed := strings.TrimSpace(line)
 	switch {
@@ -1065,8 +1288,14 @@ func screenLineStyleKind(line string) string {
 		return "prompt"
 	case strings.HasPrefix(trimmed, ">_ "):
 		return "tool"
-	case strings.HasPrefix(trimmed, "->") || strings.HasPrefix(trimmed, "  ->"):
+	case strings.HasPrefix(line, "  ->"), strings.HasPrefix(line, "  ="):
 		return "result"
+	case isCommLine(trimmed):
+		return "comms"
+	case strings.HasPrefix(trimmed, "->"):
+		return "result"
+	case isToolDetailLine(line):
+		return "tool_detail"
 	case strings.HasPrefix(trimmed, "done"):
 		return "done"
 	case strings.HasPrefix(trimmed, "info:"):
@@ -1076,4 +1305,36 @@ func screenLineStyleKind(line string) string {
 	default:
 		return "plain"
 	}
+}
+
+func isCommLine(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "• from ") || strings.HasPrefix(trimmed, "• to ")
+}
+
+func screenCommContinuationIndent(line string) string {
+	indent := leadingWhitespace(line)
+	trimmed := strings.TrimPrefix(line, indent)
+	switch {
+	case strings.HasPrefix(trimmed, "• from "):
+		return indent + strings.Repeat(" ", len("• from "))
+	case strings.HasPrefix(trimmed, "• to "):
+		return indent + strings.Repeat(" ", len("• to "))
+	default:
+		return indent + "   "
+	}
+}
+
+func isToolDetailLine(line string) bool {
+	indent := leadingWhitespace(line)
+	if len(indent) < 2 {
+		return false
+	}
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, ">") || strings.HasPrefix(trimmed, "<-") || strings.HasPrefix(trimmed, "->") || isCommLine(trimmed) {
+		return false
+	}
+	return strings.Contains(trimmed, "=")
 }
