@@ -51,10 +51,11 @@ func runTaskStats(cmd *cobra.Command, args []string) error {
 	}
 
 	var stats taskStatsOutput
+	stats.Blocked = len(blockedRefs)
+	allRefs := make(map[string]struct{}, len(resp.Tasks)+len(blockedRefs))
 	for _, t := range resp.Tasks {
-		stats.Total++
+		allRefs[t.TaskRef] = struct{}{}
 		if _, blocked := blockedRefs[t.TaskRef]; blocked {
-			stats.Blocked++
 			continue
 		}
 		switch t.Status {
@@ -66,6 +67,10 @@ func runTaskStats(cmd *cobra.Command, args []string) error {
 			stats.Closed++
 		}
 	}
+	for ref := range blockedRefs {
+		allRefs[ref] = struct{}{}
+	}
+	stats.Total = len(allRefs)
 
 	printOutput(stats, func(v any) string {
 		s := v.(taskStatsOutput)

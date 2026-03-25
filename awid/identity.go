@@ -117,6 +117,7 @@ func (r *ServerResolver) Resolve(ctx context.Context, identifier string) (*Resol
 }
 
 func decodeServerPublicKey(raw string) (ed25519.PublicKey, error) {
+	var lastErr error
 	for _, encoding := range []*base64.Encoding{
 		base64.RawStdEncoding,
 		base64.StdEncoding,
@@ -125,12 +126,17 @@ func decodeServerPublicKey(raw string) (ed25519.PublicKey, error) {
 	} {
 		pub, err := encoding.DecodeString(raw)
 		if err != nil {
+			lastErr = err
 			continue
 		}
 		if len(pub) != ed25519.PublicKeySize {
-			return nil, fmt.Errorf("invalid public_key length %d", len(pub))
+			lastErr = fmt.Errorf("invalid public_key length %d", len(pub))
+			continue
 		}
 		return ed25519.PublicKey(pub), nil
+	}
+	if lastErr != nil {
+		return nil, lastErr
 	}
 	return nil, fmt.Errorf("unsupported public_key encoding")
 }

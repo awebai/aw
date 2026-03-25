@@ -908,6 +908,7 @@ func TestAwTaskStatsSuccess(t *testing.T) {
 				"tasks": []map[string]any{
 					{"task_ref": "P-3", "title": "c", "priority": 1, "task_type": "task", "status": "in_progress"},
 					{"task_ref": "P-5", "title": "e", "priority": 1, "task_type": "task", "status": "open"},
+					{"task_ref": "P-6", "title": "f", "priority": 2, "task_type": "task", "status": "open"},
 				},
 			})
 		case "/v1/agents/heartbeat":
@@ -949,7 +950,7 @@ default_account: acct
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
 	text := string(out)
-	for _, want := range []string{"Total: 5", "Open: 2", "In progress: 0", "Blocked: 2", "Closed: 1"} {
+	for _, want := range []string{"Total: 6", "Open: 2", "In progress: 0", "Blocked: 3", "Closed: 1"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("output missing %q:\n%s", want, text)
 		}
