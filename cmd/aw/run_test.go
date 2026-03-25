@@ -436,7 +436,7 @@ func TestNewRunDispatcherBuildsMailPrompt(t *testing.T) {
 	})
 
 	decision, err := dispatcher.Next(context.Background(), false, &awid.AgentEvent{
-		Type:      awid.AgentEventMailMessage,
+		Type:      awid.AgentEventActionableMail,
 		FromAlias: "mia",
 		Subject:   "API review",
 	})
@@ -519,6 +519,44 @@ func TestNewRunDispatcherBuildsIdleActionableChatPrompt(t *testing.T) {
 	}
 	if !strings.Contains(decision.CycleContext, "• from rose (chat): when you have a moment") {
 		t.Fatalf("expected chat content, got %q", decision.CycleContext)
+	}
+}
+
+func TestResolveChatWakeUsesExactUnreadMessageIDBeforePendingLastMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/sessions/s-1/messages":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"messages":[{"message_id":"m-1","from_agent":"dave","body":"please review the retry path","timestamp":"2026-03-25T00:00:00Z"},{"message_id":"m-2","from_agent":"dave","body":"newer follow-up","timestamp":"2026-03-25T00:01:00Z"}]}`)
+		case "/v1/chat/pending":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"pending":[{"session_id":"s-1","participants":["dave","ivy"],"last_message":"newer follow-up","last_from":"dave","unread_count":2,"last_activity":"2026-03-25T00:01:00Z","sender_waiting":true}],"messages_waiting":1}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := aweb.New(server.URL)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	resolved, err := resolveChatWake(context.Background(), client, awid.AgentEvent{
+		Type:        awid.AgentEventActionableChat,
+		MessageID:   "m-1",
+		SessionID:   "s-1",
+		FromAlias:   "dave",
+		UnreadCount: 2,
+	})
+	if err != nil {
+		t.Fatalf("resolveChatWake returned error: %v", err)
+	}
+	if !strings.Contains(resolved.CycleContext, "please review the retry path") {
+		t.Fatalf("expected exact unread message body, got %q", resolved.CycleContext)
+	}
+	if strings.Contains(resolved.CycleContext, "newer follow-up") {
+		t.Fatalf("expected resolver not to collapse to pending last_message, got %q", resolved.CycleContext)
 	}
 }
 
@@ -632,7 +670,7 @@ func TestRunUsesWakeEventToTriggerSecondCycle(t *testing.T) {
 
 			_, _ = io.WriteString(w, "event: connected\ndata: {\"agent_id\":\"a-1\",\"project_id\":\"p-1\"}\n\n")
 			flusher.Flush()
-			_, _ = io.WriteString(w, "event: chat_message\ndata: {\"message_id\":\"m-1\",\"from_alias\":\"mia\",\"session_id\":\"s-1\"}\n\n")
+			_, _ = io.WriteString(w, "event: actionable_chat\ndata: {\"message_id\":\"m-1\",\"from_alias\":\"mia\",\"session_id\":\"s-1\",\"wake_mode\":\"interrupt\",\"unread_count\":1,\"sender_waiting\":true}\n\n")
 			flusher.Flush()
 			<-r.Context().Done()
 		case r.URL.Path == "/v1/chat/pending":

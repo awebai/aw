@@ -37,7 +37,7 @@ func (d runDispatcher) Next(ctx context.Context, autofeed bool, wakeEvent *awid.
 	}
 
 	switch wakeEvent.Type {
-	case awid.AgentEventMailMessage, awid.AgentEventChatMessage, awid.AgentEventActionableMail, awid.AgentEventActionableChat:
+	case awid.AgentEventActionableMail, awid.AgentEventActionableChat:
 		resolved := runWakeResolution{
 			CycleContext: formatFallbackCommsContext(*wakeEvent),
 		}
@@ -74,9 +74,9 @@ func newRunWakeValidator(client *aweb.Client) runWakeResolver {
 	}
 	return func(ctx context.Context, evt awid.AgentEvent) (runWakeResolution, error) {
 		switch evt.Type {
-		case awid.AgentEventChatMessage, awid.AgentEventActionableChat:
+		case awid.AgentEventActionableChat:
 			return resolveChatWake(ctx, client, evt)
-		case awid.AgentEventMailMessage, awid.AgentEventActionableMail:
+		case awid.AgentEventActionableMail:
 			return resolveMailWake(ctx, client, evt)
 		case awid.AgentEventWorkAvailable, awid.AgentEventClaimUpdate, awid.AgentEventClaimRemoved:
 			return runWakeResolution{CycleContext: formatWorkWakePrompt(evt)}, nil
@@ -90,6 +90,34 @@ func resolveChatWake(ctx context.Context, client *aweb.Client, evt awid.AgentEve
 	sessionID := strings.TrimSpace(evt.SessionID)
 	if sessionID == "" {
 		return runWakeResolution{CycleContext: formatFallbackCommsContext(evt)}, nil
+	}
+	messageID := strings.TrimSpace(evt.MessageID)
+	if messageID != "" {
+		limit := evt.UnreadCount
+		if limit <= 0 {
+			limit = 20
+		} else if limit > 100 {
+			limit = 100
+		}
+		history, err := client.ChatHistory(ctx, awid.ChatHistoryParams{
+			SessionID:  sessionID,
+			UnreadOnly: true,
+			Limit:      limit,
+		})
+		if err == nil {
+			for _, msg := range history.Messages {
+				if strings.TrimSpace(msg.MessageID) != messageID {
+					continue
+				}
+				alias := strings.TrimSpace(evt.FromAlias)
+				if alias == "" {
+					alias = strings.TrimSpace(msg.FromAgent)
+				}
+				return runWakeResolution{
+					CycleContext: formatIncomingChatContext(alias, msg.Body),
+				}, nil
+			}
+		}
 	}
 	resp, err := client.ChatPending(ctx)
 	if err != nil {
@@ -165,9 +193,9 @@ func joinPromptSections(parts ...string) string {
 
 func formatFallbackCommsContext(evt awid.AgentEvent) string {
 	switch evt.Type {
-	case awid.AgentEventActionableChat, awid.AgentEventChatMessage:
+	case awid.AgentEventActionableChat:
 		return formatIncomingChatContext(evt.FromAlias, "")
-	case awid.AgentEventActionableMail, awid.AgentEventMailMessage:
+	case awid.AgentEventActionableMail:
 		return formatIncomingMailContext(evt.FromAlias, evt.Subject, "")
 	default:
 		return ""
@@ -227,7 +255,6 @@ func formatIncomingMailBlock(head string, subject string, body string) string {
 	}
 	return strings.Join(formatted, "\n")
 }
-
 
 func commBodyLines(body string) []string {
 	body = strings.ReplaceAll(strings.TrimSpace(body), "\r", "")
