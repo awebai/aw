@@ -123,6 +123,9 @@ func parseSSEEvent(sseEvent *awid.SSEEvent) Event {
 	if v, ok := data["extends_wait_seconds"].(float64); ok {
 		ev.ExtendsWaitSeconds = int(v)
 	}
+	if v, ok := data["reply_to_message_id"].(string); ok {
+		ev.ReplyToMessageID = v
+	}
 	if v, ok := data["from_did"].(string); ok {
 		ev.FromDID = v
 	}
@@ -310,6 +313,7 @@ func buildMessages(messages []awid.ChatMessage) []Event {
 			Body:                    m.Body,
 			Timestamp:               m.Timestamp,
 			SenderLeaving:           m.SenderLeaving,
+			ReplyToMessageID:        m.ReplyToMessageID,
 			FromDID:                 m.FromDID,
 			ToDID:                   m.ToDID,
 			FromStableID:            m.FromStableID,
@@ -499,11 +503,22 @@ type sendResponse struct {
 //   - default: send, if all targets in targets_left → skip wait; else wait opts.Wait seconds
 func Send(ctx context.Context, client *awid.Client, myAlias string, targets []string, message string, opts SendOptions, callback StatusCallback) (*SendResult, error) {
 	sentAt := time.Now()
-	createResp, err := client.ChatCreateSession(ctx, &awid.ChatCreateSessionRequest{
+
+	// Compute the actual wait duration so the server can track it.
+	waitSeconds := opts.Wait
+	if opts.StartConversation && !opts.WaitExplicit {
+		waitSeconds = 300
+	}
+
+	req := &awid.ChatCreateSessionRequest{
 		ToAliases: targets,
 		Message:   message,
 		Leaving:   opts.Leaving,
-	})
+	}
+	if waitSeconds > 0 {
+		req.WaitSeconds = &waitSeconds
+	}
+	createResp, err := client.ChatCreateSession(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("sending message: %w", err)
 	}

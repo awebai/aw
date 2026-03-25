@@ -2211,3 +2211,134 @@ func TestSendAcceptorIgnoresBodyMatchFallback(t *testing.T) {
 		t.Fatalf("event[0].message_id=%s, want msg-reply-1", result.Events[0].MessageID)
 	}
 }
+
+// TestSendPassesWaitSeconds verifies that Send includes wait_seconds in the
+// create-session request so the server knows the actual wait duration.
+func TestSendPassesWaitSeconds(t *testing.T) {
+	t.Parallel()
+
+	var gotWaitSeconds *int
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if v, ok := body["wait_seconds"].(float64); ok {
+				iv := int(v)
+				gotWaitSeconds = &iv
+			}
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: "msg-1",
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-1", "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply", "from_agent": "bob", "body": "hi",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	_, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 120}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotWaitSeconds == nil {
+		t.Fatal("wait_seconds not included in create-session request")
+	}
+	if *gotWaitSeconds != 120 {
+		t.Fatalf("wait_seconds=%d, want 120", *gotWaitSeconds)
+	}
+}
+
+// TestSendPassesWaitSecondsStartConversationUpgrade verifies that when
+// StartConversation upgrades the wait from default to 300s, the server
+// sees the actual 300s wait, not the nominal value.
+func TestSendPassesWaitSecondsStartConversationUpgrade(t *testing.T) {
+	t.Parallel()
+
+	var gotWaitSeconds *int
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if v, ok := body["wait_seconds"].(float64); ok {
+				iv := int(v)
+				gotWaitSeconds = &iv
+			}
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: "msg-1",
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-1", "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply", "from_agent": "bob", "body": "hi",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	// StartConversation=true, WaitExplicit=false, Wait=120 → should upgrade to 300.
+	_, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 120, StartConversation: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotWaitSeconds == nil {
+		t.Fatal("wait_seconds not included in create-session request")
+	}
+	if *gotWaitSeconds != 300 {
+		t.Fatalf("wait_seconds=%d, want 300 (StartConversation upgrade)", *gotWaitSeconds)
+	}
+}
+
+// TestParseSSEEventReplyTo verifies that reply_to_message_id is extracted from SSE events.
+func TestParseSSEEventReplyTo(t *testing.T) {
+	t.Parallel()
+
+	ev := parseSSEEvent(&awid.SSEEvent{
+		Event: "message",
+		Data:  `{"message_id":"m2","from_agent":"bob","body":"yes","reply_to_message_id":"m1"}`,
+	})
+	if ev.ReplyToMessageID != "m1" {
+		t.Fatalf("reply_to_message_id=%q, want %q", ev.ReplyToMessageID, "m1")
+	}
+}
+
+// TestBuildMessagesIncludesReplyTo verifies that buildMessages carries
+// reply_to_message_id from ChatMessage to Event.
+func TestBuildMessagesIncludesReplyTo(t *testing.T) {
+	t.Parallel()
+
+	events := buildMessages([]awid.ChatMessage{
+		{MessageID: "m2", FromAgent: "bob", Body: "yes", ReplyToMessageID: "m1"},
+	})
+	if len(events) != 1 {
+		t.Fatalf("events=%d", len(events))
+	}
+	if events[0].ReplyToMessageID != "m1" {
+		t.Fatalf("reply_to_message_id=%q, want %q", events[0].ReplyToMessageID, "m1")
+	}
+}
