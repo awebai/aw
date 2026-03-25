@@ -466,6 +466,77 @@ done:
 	}
 }
 
+func TestScreenControllerCtrlJInsertsNewlineWithoutSubmitting(t *testing.T) {
+	screen := &ScreenController{
+		promptLabel:   ">> ",
+		inputLine:     ">> ",
+		historyIndex:  -1,
+		desiredColumn: -1,
+		events:        make(chan ControlEvent, 64),
+	}
+
+	screen.handleInlineInput([]byte("hello\nworld"))
+
+	value := InputValueFromLine(screen.inputLine, screen.promptLabel)
+	if value != "hello\nworld" {
+		t.Fatalf("expected ctrl-j to insert newline, got %q", value)
+	}
+	for {
+		select {
+		case evt := <-screen.events:
+			if evt.Type == ControlPrompt {
+				t.Fatalf("expected no submission on ctrl-j, got %q", evt.Text)
+			}
+		default:
+			return
+		}
+	}
+}
+
+func TestScreenControllerShiftEnterSequenceInsertsNewlineWithoutSubmitting(t *testing.T) {
+	screen := &ScreenController{
+		promptLabel:   ">> ",
+		inputLine:     ">> ",
+		historyIndex:  -1,
+		desiredColumn: -1,
+		events:        make(chan ControlEvent, 64),
+	}
+
+	screen.handleInlineInput([]byte("hello\x1b[13;2uworld"))
+
+	value := InputValueFromLine(screen.inputLine, screen.promptLabel)
+	if value != "hello\nworld" {
+		t.Fatalf("expected shift-enter sequence to insert newline, got %q", value)
+	}
+	for {
+		select {
+		case evt := <-screen.events:
+			if evt.Type == ControlPrompt {
+				t.Fatalf("expected no submission on shift-enter, got %q", evt.Text)
+			}
+		default:
+			return
+		}
+	}
+}
+
+func TestBuildPromptLayoutPreservesExplicitNewlines(t *testing.T) {
+	layout := buildPromptLayout(">> ", "hello\nworld", len([]rune("hello\nworld")), 40)
+
+	if len(layout.lines) != 2 {
+		t.Fatalf("expected 2 prompt lines, got %#v", layout.lines)
+	}
+	if layout.lines[0] != ">> hello" {
+		t.Fatalf("unexpected first prompt line %q", layout.lines[0])
+	}
+	if layout.lines[1] != "   world" {
+		t.Fatalf("unexpected continuation prompt line %q", layout.lines[1])
+	}
+	if layout.cursorLine != 1 || layout.cursorCol != len("   world") {
+		t.Fatalf("unexpected cursor position line=%d col=%d", layout.cursorLine, layout.cursorCol)
+	}
+}
+
 func TestScreenControllerUpMovesWithinWrappedInputBeforeHistory(t *testing.T) {
 	value := strings.Repeat("x", 100)
 	screen := &ScreenController{

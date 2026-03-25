@@ -2,6 +2,7 @@ package run
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -427,6 +428,12 @@ func (s *ScreenController) handleInlineInput(data []byte) {
 			continue
 		}
 
+		if consumed, ok := promptNewlineSequenceLen(data[i:]); ok {
+			s.handleInlineRuneLocked('\n')
+			i += consumed
+			continue
+		}
+
 		switch b {
 		case 0x03:
 			if s.exitConfirm {
@@ -442,8 +449,11 @@ func (s *ScreenController) handleInlineInput(data []byte) {
 				s.handleExitPromptRequested()
 			}
 			i++
-		case '\r', '\n':
+		case '\r':
 			s.handleInlineSubmitLocked()
+			i++
+		case '\n':
+			s.handleInlineRuneLocked('\n')
 			i++
 		case 0x7f, 0x08:
 			s.handleInlineBackspaceLocked()
@@ -497,6 +507,19 @@ func (s *ScreenController) handleInlineInput(data []byte) {
 			i += size
 		}
 	}
+}
+
+func promptNewlineSequenceLen(data []byte) (int, bool) {
+	sequences := [][]byte{
+		[]byte("\x1b[13;2u"),
+		[]byte("\x1b[27;2;13~"),
+	}
+	for _, seq := range sequences {
+		if bytes.HasPrefix(data, seq) {
+			return len(seq), true
+		}
+	}
+	return 0, false
 }
 
 func (s *ScreenController) handleInlineEscapeLocked() {
@@ -941,9 +964,8 @@ func buildPromptLayout(promptLabel string, value string, cursor int, width int) 
 	}
 
 	promptWidth := lipgloss.Width(promptLabel)
-
 	continuation := strings.Repeat(" ", promptWidth)
-	runes := []rune(strings.ReplaceAll(value, "\n", " "))
+	runes := []rune(value)
 	if cursor < 0 {
 		cursor = 0
 	}
@@ -956,44 +978,48 @@ func buildPromptLayout(promptLabel string, value string, cursor int, width int) 
 		positions:   make([]promptCursorPos, len(runes)+1),
 	}
 
-	lineStarts := []int{0}
-	linePrefixes := []string{promptLabel}
+	layout.positions[0] = promptCursorPos{line: 0, col: promptWidth}
 	currentLine := 0
 	currentCol := promptWidth
-	layout.positions[0] = promptCursorPos{line: 0, col: promptWidth}
+	lineStart := 0
+	var lineText strings.Builder
+	appendLine := func(end int) {
+		prefix := promptLabel
+		if len(layout.lines) > 0 {
+			prefix = continuation
+		}
+		text := lineText.String()
+		layout.visualLines = append(layout.visualLines, promptVisualLine{start: lineStart, end: end, text: text})
+		layout.lines = append(layout.lines, prefix+text)
+		lineText.Reset()
+	}
 
 	for i, r := range runes {
+		if r == '\n' {
+			appendLine(i)
+			currentLine++
+			lineStart = i + 1
+			currentCol = promptWidth
+			layout.positions[i+1] = promptCursorPos{line: currentLine, col: currentCol}
+			continue
+		}
+
 		runeWidth := lipgloss.Width(string(r))
 		if runeWidth <= 0 {
 			runeWidth = 1
 		}
 		if currentCol+runeWidth > width && currentCol > promptWidth {
-			lineStarts = append(lineStarts, i)
-			linePrefixes = append(linePrefixes, continuation)
+			appendLine(i)
 			currentLine++
+			lineStart = i
 			currentCol = promptWidth
 			layout.positions[i] = promptCursorPos{line: currentLine, col: currentCol}
 		}
+		lineText.WriteRune(r)
 		currentCol += runeWidth
 		layout.positions[i+1] = promptCursorPos{line: currentLine, col: currentCol}
 	}
-
-	layout.visualLines = make([]promptVisualLine, 0, len(lineStarts))
-	layout.lines = make([]string, 0, len(lineStarts))
-	for i, start := range lineStarts {
-		end := len(runes)
-		if i+1 < len(lineStarts) {
-			end = lineStarts[i+1]
-		}
-		text := string(runes[start:end])
-		layout.visualLines = append(layout.visualLines, promptVisualLine{start: start, end: end, text: text})
-		layout.lines = append(layout.lines, linePrefixes[i]+text)
-	}
-	if len(layout.lines) == 0 {
-		layout.lines = []string{promptLabel}
-		layout.visualLines = []promptVisualLine{{start: 0, end: 0, text: ""}}
-		layout.positions = []promptCursorPos{{line: 0, col: promptWidth}}
-	}
+	appendLine(len(runes))
 
 	layout.cursorLine = layout.positions[cursor].line
 	layout.cursorCol = layout.positions[cursor].col
