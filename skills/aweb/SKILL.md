@@ -47,7 +47,7 @@ aw --help  # Verify aw is available
 
 ## Session Protocol
 
-1. **Check inbox** at session start: `aw mail inbox --unread-only`
+1. **Check inbox** at session start: `aw mail inbox`
 2. **Check pending chats**: `aw chat pending`
 3. **Respond** to anything urgent before starting work
 4. **Heartbeat is automatic** — every `aw` command sends a heartbeat in the background; no explicit loop needed
@@ -72,7 +72,7 @@ Flags:
 **Check inbox:**
 ```bash
 aw mail inbox                    # All messages (up to 50)
-aw mail inbox --unread-only      # Unread only
+aw mail inbox                    # Unread only
 aw mail inbox --limit 10         # Limit results
 ```
 

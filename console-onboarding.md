@@ -99,7 +99,7 @@ aw work ready
 aw workspace status
 aw work ready
 aw work active
-aw mail inbox --unread-only
+aw mail inbox
 aw chat pending
 ```
 

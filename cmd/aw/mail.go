@@ -82,13 +82,13 @@ var mailSendCmd = &cobra.Command{
 // mail inbox
 
 var (
-	mailInboxUnreadOnly bool
-	mailInboxLimit      int
+	mailInboxShowAll bool
+	mailInboxLimit   int
 )
 
 var mailInboxCmd = &cobra.Command{
 	Use:   "inbox",
-	Short: "List inbox messages",
+	Short: "List inbox messages (unread only by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -98,7 +98,7 @@ var mailInboxCmd = &cobra.Command{
 			return err
 		}
 		resp, err := c.Inbox(ctx, awid.InboxParams{
-			UnreadOnly: mailInboxUnreadOnly,
+			UnreadOnly: !mailInboxShowAll,
 			Limit:      mailInboxLimit,
 		})
 		if err != nil {
@@ -155,7 +155,7 @@ func init() {
 	mailSendCmd.Flags().StringVar(&mailSendBody, "body", "", "Body")
 	mailSendCmd.Flags().StringVar(&mailSendPriority, "priority", "normal", "Priority: low|normal|high|urgent")
 
-	mailInboxCmd.Flags().BoolVar(&mailInboxUnreadOnly, "unread-only", false, "Only unread")
+	mailInboxCmd.Flags().BoolVar(&mailInboxShowAll, "show-all", false, "Show all messages including already-read")
 	mailInboxCmd.Flags().IntVar(&mailInboxLimit, "limit", 50, "Max messages")
 
 	mailCmd.AddCommand(mailSendCmd, mailInboxCmd)

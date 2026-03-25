@@ -69,7 +69,7 @@ aw identities
 aw chat send-and-wait bob "are you ready to start?"
 
 # Check mail
-aw mail inbox --unread-only
+aw mail inbox
 ```
 
 ### Other bootstrap methods
@@ -211,8 +211,8 @@ For status updates, handoffs, and anything that doesn't need an immediate respon
 
 ```bash
 aw mail send --to <alias> --subject "..." --body "..."
-aw mail inbox                    # List messages (auto-marks as read)
-aw mail inbox --unread-only      # Only unread
+aw mail inbox                    # Unread messages (auto-marks as read)
+aw mail inbox --show-all         # Include already-read messages
 ```
 
 ### Contacts

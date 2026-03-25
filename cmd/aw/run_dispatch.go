@@ -105,6 +105,7 @@ func resolveChatWake(ctx context.Context, client *aweb.Client, evt awid.AgentEve
 			Limit:      limit,
 		})
 		if err == nil {
+			markChatHistoryRead(ctx, client, sessionID, history.Messages)
 			for _, msg := range history.Messages {
 				if strings.TrimSpace(msg.MessageID) != messageID {
 					continue
@@ -131,19 +132,14 @@ func resolveChatWake(ctx context.Context, client *aweb.Client, evt awid.AgentEve
 		if alias == "" {
 			alias = strings.TrimSpace(pending.LastFrom)
 		}
-		// Mark as read — fetch unread history to get the last message ID.
-		histResp, err := client.ChatHistory(ctx, awid.ChatHistoryParams{
+		// Mark as read — fetch unread history to find the last message ID.
+		histResp, _ := client.ChatHistory(ctx, awid.ChatHistoryParams{
 			SessionID:  sessionID,
 			UnreadOnly: true,
 			Limit:      100,
 		})
-		if err == nil && len(histResp.Messages) > 0 {
-			lastMsgID := histResp.Messages[len(histResp.Messages)-1].MessageID
-			if lastMsgID != "" {
-				_, _ = client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
-					UpToMessageID: lastMsgID,
-				})
-			}
+		if histResp != nil {
+			markChatHistoryRead(ctx, client, sessionID, histResp.Messages)
 		}
 		return runWakeResolution{
 			CycleContext: formatIncomingChatContext(alias, pending.LastMessage),
@@ -254,6 +250,18 @@ func formatIncomingMailBlock(head string, subject string, body string) string {
 		formatted = append(formatted, "   "+line)
 	}
 	return strings.Join(formatted, "\n")
+}
+
+func markChatHistoryRead(ctx context.Context, client *aweb.Client, sessionID string, messages []awid.ChatMessage) {
+	if len(messages) == 0 {
+		return
+	}
+	lastMsgID := messages[len(messages)-1].MessageID
+	if lastMsgID != "" {
+		_, _ = client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
+			UpToMessageID: lastMsgID,
+		})
+	}
 }
 
 func commBodyLines(body string) []string {

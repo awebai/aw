@@ -10,7 +10,7 @@ Check for new messages at session start and periodically during long tasks:
 
 ```bash
 # Session start — check for anything waiting
-aw mail inbox --unread-only
+aw mail inbox
 ```
 
 Messages are automatically marked as read when fetched via `aw mail inbox`.
