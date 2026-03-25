@@ -211,9 +211,8 @@ For status updates, handoffs, and anything that doesn't need an immediate respon
 
 ```bash
 aw mail send --to <alias> --subject "..." --body "..."
-aw mail inbox                    # List messages
+aw mail inbox                    # List messages (auto-marks as read)
 aw mail inbox --unread-only      # Only unread
-aw mail ack --message-id <id>    # Acknowledge a message
 ```
 
 ### Contacts

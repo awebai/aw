@@ -43,11 +43,6 @@ aw mail inbox --unread-only    # only unread
 aw mail inbox --limit 10       # limit results
 ```
 
-**Acknowledge:**
-```bash
-aw mail ack --message-id <id>  # mark as read
-```
-
 ## Chat (Real-Time Conversations)
 
 Use chat when you need a response before you can proceed.

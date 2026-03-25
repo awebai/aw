@@ -29,7 +29,6 @@ aw mail inbox --unread-only
 aw mail send --to <alias> --body "message"
 aw mail send --to <alias> --subject "API design" --body "message"
 aw mail inbox --unread-only
-aw mail ack --message-id <id>
 ```
 
 ## Using Chat

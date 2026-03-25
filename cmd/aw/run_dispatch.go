@@ -103,6 +103,20 @@ func resolveChatWake(ctx context.Context, client *aweb.Client, evt awid.AgentEve
 		if alias == "" {
 			alias = strings.TrimSpace(pending.LastFrom)
 		}
+		// Mark as read — fetch unread history to get the last message ID.
+		histResp, err := client.ChatHistory(ctx, awid.ChatHistoryParams{
+			SessionID:  sessionID,
+			UnreadOnly: true,
+			Limit:      100,
+		})
+		if err == nil && len(histResp.Messages) > 0 {
+			lastMsgID := histResp.Messages[len(histResp.Messages)-1].MessageID
+			if lastMsgID != "" {
+				_, _ = client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
+					UpToMessageID: lastMsgID,
+				})
+			}
+		}
 		return runWakeResolution{
 			CycleContext: formatIncomingChatContext(alias, pending.LastMessage),
 		}, nil
@@ -123,6 +137,10 @@ func resolveMailWake(ctx context.Context, client *aweb.Client, evt awid.AgentEve
 		alias := strings.TrimSpace(msg.FromAlias)
 		if alias == "" {
 			alias = strings.TrimSpace(evt.FromAlias)
+		}
+		// Mark as read — seeing the full content means it's read.
+		if msg.MessageID != "" {
+			_, _ = client.AckMessage(ctx, msg.MessageID)
 		}
 		return runWakeResolution{
 			CycleContext: formatIncomingMailContext(alias, msg.Subject, msg.Body),

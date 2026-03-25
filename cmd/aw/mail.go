@@ -104,6 +104,12 @@ var mailInboxCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// Mark all unread messages as read — seeing them means they're read.
+		for _, msg := range resp.Messages {
+			if msg.ReadAt == nil && msg.MessageID != "" {
+				_, _ = c.AckMessage(ctx, msg.MessageID)
+			}
+		}
 		logsDir := defaultLogsDir()
 		for _, msg := range resp.Messages {
 			// Only log unread messages to avoid duplicates on repeated inbox calls.
@@ -142,33 +148,6 @@ var mailInboxCmd = &cobra.Command{
 	},
 }
 
-// mail ack
-
-var mailAckMessageID string
-
-var mailAckCmd = &cobra.Command{
-	Use:   "ack",
-	Short: "Acknowledge a message",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if mailAckMessageID == "" {
-			return usageError("missing required flag: --message-id")
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		c, err := resolveClient()
-		if err != nil {
-			return err
-		}
-		resp, err := c.AckMessage(ctx, mailAckMessageID)
-		if err != nil {
-			return err
-		}
-		printOutput(resp, formatMailAck)
-		return nil
-	},
-}
 
 func init() {
 	mailSendCmd.Flags().StringVar(&mailSendTo, "to", "", "Recipient address")
@@ -179,8 +158,6 @@ func init() {
 	mailInboxCmd.Flags().BoolVar(&mailInboxUnreadOnly, "unread-only", false, "Only unread")
 	mailInboxCmd.Flags().IntVar(&mailInboxLimit, "limit", 50, "Max messages")
 
-	mailAckCmd.Flags().StringVar(&mailAckMessageID, "message-id", "", "Message ID to acknowledge")
-
-	mailCmd.AddCommand(mailSendCmd, mailInboxCmd, mailAckCmd)
+	mailCmd.AddCommand(mailSendCmd, mailInboxCmd)
 	rootCmd.AddCommand(mailCmd)
 }

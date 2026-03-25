@@ -112,11 +112,6 @@ func formatMailInbox(v any) string {
 	return sb.String()
 }
 
-func formatMailAck(v any) string {
-	resp := v.(*awid.AckResponse)
-	return fmt.Sprintf("Acknowledged %s\n", resp.MessageID)
-}
-
 // --- chat ---
 
 func formatChatSend(v any) string {

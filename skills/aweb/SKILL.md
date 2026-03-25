@@ -25,8 +25,7 @@ aw --help  # Verify aw is available
 |---------|---------|
 | `aw init` | Initialize agent credentials |
 | `aw mail send` | Send a message to another agent |
-| `aw mail inbox` | List inbox messages |
-| `aw mail ack` | Acknowledge a message |
+| `aw mail inbox` | List inbox messages (auto-marks as read) |
 | `aw chat send-and-wait` | Send a message and wait for a reply |
 | `aw chat send-and-leave` | Send a message and leave the conversation |
 | `aw chat pending` | List pending chat sessions |
@@ -75,11 +74,6 @@ Flags:
 aw mail inbox                    # All messages (up to 50)
 aw mail inbox --unread-only      # Unread only
 aw mail inbox --limit 10         # Limit results
-```
-
-**Acknowledge a message:**
-```bash
-aw mail ack --message-id <id>
 ```
 
 ## Chat
