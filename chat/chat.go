@@ -6,7 +6,9 @@ package chat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -369,17 +371,30 @@ func waitForMessage(ctx context.Context, client *awid.Client, openStream streamO
 
 	waitTimeout := time.Duration(waitSeconds) * time.Second
 	waitDeadline := time.Now().Add(waitTimeout)
+	waitStart := time.Now()
 
 	// The server deadline is a safety net for orphaned connections —
 	// the local waitTimer manages actual wait semantics.
 	stream, err := openStream(ctx, sessionID, time.Now().Add(maxStreamDeadline), after)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if isCleanEOF(err) {
+			if client != nil {
+				_, _ = client.ChatHistory(ctx, awid.ChatHistoryParams{
+					SessionID: sessionID,
+					Limit:     1,
+				})
+			}
+			result.WaitedSeconds = int(time.Since(waitStart).Seconds())
+			return result, nil
+		}
 		return nil, fmt.Errorf("connecting to SSE: %w", err)
 	}
 	events, streamCleanup := streamToChannel(ctx, stream)
 	defer streamCleanup()
 
-	waitStart := time.Now()
 	waitTimer := time.NewTimer(waitTimeout)
 	defer func() {
 		if !waitTimer.Stop() {
@@ -486,6 +501,13 @@ func waitForMessage(ctx context.Context, client *awid.Client, openStream streamO
 	}
 }
 
+func isCleanEOF(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, io.EOF)
+}
+
 // sendResponse normalizes the response from ChatCreateSession or NetworkCreateChat.
 type sendResponse struct {
 	SessionID        string
@@ -531,7 +553,7 @@ func Send(ctx context.Context, client *awid.Client, myAlias string, targets []st
 	}, myAlias, targets, message, waitSeconds, opts, &sentAt, callback)
 }
 
-// sendCommon handles the post-send wait logic shared by Send and SendNetwork.
+// sendCommon handles the post-send wait logic after a message has been created.
 // resolvedWait is the actual wait duration in seconds, already accounting for
 // StartConversation upgrades. This must match what was sent to the server.
 func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpener, resp sendResponse, myAlias string, targets []string, message string, resolvedWait int, opts SendOptions, after *time.Time, callback StatusCallback) (*SendResult, error) {

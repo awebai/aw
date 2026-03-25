@@ -398,10 +398,11 @@ func formatIdentityReachability(v any) string {
 func formatAgentPatch(v any) string {
 	out := v.(identityPatchOutput)
 	var sb strings.Builder
+	currentID := out.CurrentIdentityID()
 	if out.Alias != "" {
 		sb.WriteString(fmt.Sprintf("Identity:    %s\n", out.Alias))
-	} else {
-		sb.WriteString(fmt.Sprintf("Identity:    %s\n", out.IdentityID))
+	} else if currentID != "" {
+		sb.WriteString(fmt.Sprintf("Identity:    %s\n", currentID))
 	}
 	if out.AccessMode != "" {
 		sb.WriteString(fmt.Sprintf("Access mode: %s\n", out.AccessMode))

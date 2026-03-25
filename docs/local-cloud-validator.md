@@ -39,6 +39,7 @@ The suite currently drives:
 - `aw init` for a non-git local directory attachment
 - `aw project`
 - `aw project namespace list|add|delete`
+  using the current project-scoped hosted routes
 - `aw policy show`
 - `aw policy roles`
 - `aw whoami`
@@ -58,13 +59,16 @@ The suite currently drives:
 - `aw contacts add|list|remove`
 - `aw directory` search/get
 - `aw lock acquire|list|renew|release|revoke`
+  with mutations currently accepted as unsupported when the backend exposes only `aw lock list`
 - `aw task create|list|show|update|comment|dep|close|reopen|delete|stats`
 - `aw work ready|active|blocked`
 - `aw events stream`
 - `aw connect`
 
 The validator keeps going past non-critical command failures so the report can
-surface a broader set of contract mismatches from one run.
+surface a broader set of contract mismatches from one run. It also accepts a
+small set of known contract truths that are intentionally unsupported in the
+current backend, such as reservation mutations and DNS namespace verification.
 
 ## Output
 
