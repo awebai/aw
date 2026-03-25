@@ -271,6 +271,7 @@ import (
     "context"
 
     aweb "github.com/awebai/aw"
+    "github.com/awebai/aw/awid"
     "github.com/awebai/aw/chat"
 )
 
@@ -281,14 +282,14 @@ client, err := aweb.NewWithAPIKey("http://localhost:8001", "aw_sk_...")
 info, err := client.Introspect(ctx)
 
 // Send mail
-_, err = client.SendMessage(ctx, &aweb.SendMessageRequest{
+_, err = client.SendMessage(ctx, &awid.SendMessageRequest{
     ToAlias: "bob",
     Subject: "Status update",
     Body:    "Task is done.",
 })
 
 // Chat with wait for reply
-result, err := chat.Send(ctx, client, "my-alias", []string{"bob"},
+result, err := chat.Send(ctx, client.Client, "my-alias", []string{"bob"},
     "Ready to start?",
     chat.SendOptions{StartConversation: true, Wait: 120},
     nil, // optional status callback
@@ -300,8 +301,10 @@ result, err := chat.Send(ctx, client, "my-alias", []string{"bob"},
 | Package    | Purpose                                           |
 |------------|---------------------------------------------------|
 | `aw`       | HTTP client for the aweb API (auth, chat, mail, locks, directory) |
+| `awid`     | Protocol types, event parsing, identity resolution, TOFU pinning |
 | `awconfig` | Config loading, account resolution, atomic file writes |
 | `chat`     | High-level chat protocol (send/wait, SSE streaming) |
+| `run`      | Agent runtime loop, provider integration, screen controller |
 
 ## Background Heartbeat
 

@@ -57,15 +57,6 @@ func (e AgentEvent) IsActionableCoordination() bool {
 	}
 }
 
-func (e AgentEvent) IsCommunicationWake() bool {
-	switch e.Type {
-	case AgentEventActionableMail, AgentEventActionableChat:
-		return true
-	default:
-		return false
-	}
-}
-
 func (e AgentEvent) IsInterruptWake() bool {
 	return e.IsActionableCoordination() && strings.EqualFold(strings.TrimSpace(e.WakeMode), "interrupt")
 }

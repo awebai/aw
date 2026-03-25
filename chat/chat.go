@@ -299,9 +299,6 @@ func findSession(ctx context.Context, client *awid.Client, targetAlias string) (
 	return "", false, fmt.Errorf("no conversation found with %s", targetAlias)
 }
 
-// findNetworkSession finds the session ID for a network conversation with targetAddress.
-// Checks network pending conversations. No fallback to list-sessions (endpoint not available for network).
-
 // buildMessages converts ChatMessage slice to Event slice.
 func buildMessages(messages []awid.ChatMessage) []Event {
 	events := make([]Event, len(messages))
@@ -808,7 +805,3 @@ func ShowPending(ctx context.Context, client *awid.Client, targetAlias string) (
 	return nil, fmt.Errorf("no pending conversation with %s", targetAlias)
 }
 
-// --- Network variants ---
-// These mirror the OSS functions above but route through network endpoints.
-
-// ListenNetwork waits for a message in a network conversation without sending.

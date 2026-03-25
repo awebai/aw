@@ -148,7 +148,6 @@ var mailInboxCmd = &cobra.Command{
 	},
 }
 
-
 func init() {
 	mailSendCmd.Flags().StringVar(&mailSendTo, "to", "", "Recipient address")
 	mailSendCmd.Flags().StringVar(&mailSendSubject, "subject", "", "Subject")
