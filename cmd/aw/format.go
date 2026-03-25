@@ -207,9 +207,14 @@ func formatChatSend(v any) string {
 		if result.TargetNotConnected {
 			sb.WriteString(fmt.Sprintf("Note: %s was not connected.\n", result.TargetAgent))
 		}
-		if result.WaitedSeconds > 0 {
-			sb.WriteString(fmt.Sprintf("Waited %ds — no reply\n", result.WaitedSeconds))
+		return sb.String()
+
+	case "timeout":
+		sb.WriteString(fmt.Sprintf("Message sent to %s\n", result.TargetAgent))
+		if result.TargetNotConnected {
+			sb.WriteString(fmt.Sprintf("Note: %s was not connected.\n", result.TargetAgent))
 		}
+		sb.WriteString(fmt.Sprintf("Waited %ds — no reply\n", result.WaitedSeconds))
 		return sb.String()
 
 	case "targets_left":

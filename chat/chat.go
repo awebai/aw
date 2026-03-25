@@ -125,6 +125,9 @@ func parseSSEEvent(sseEvent *awid.SSEEvent) Event {
 	if v, ok := data["extends_wait_seconds"].(float64); ok {
 		ev.ExtendsWaitSeconds = int(v)
 	}
+	if v, ok := data["reply_to_message_id"].(string); ok {
+		ev.ReplyToMessageID = v
+	}
 	if v, ok := data["from_did"].(string); ok {
 		ev.FromDID = v
 	}
@@ -210,6 +213,15 @@ func parseSSEEvent(sseEvent *awid.SSEEvent) Event {
 
 // findSession finds the session ID for a conversation with targetAlias.
 // Checks pending first (captures sender_waiting), falls back to listing sessions.
+//
+// Selection priority for pending sessions:
+//  1. sender_waiting sessions over non-waiting (urgent conversations first)
+//  2. smallest participant count (1:1 over group)
+//  3. most recent LastActivity (tiebreaker)
+//
+// Selection priority for fallback (all sessions):
+//  1. smallest participant count
+//  2. most recent CreatedAt (tiebreaker)
 func findSession(ctx context.Context, client *awid.Client, targetAlias string) (sessionID string, senderWaiting bool, err error) {
 	pendingResp, err := client.ChatPending(ctx)
 	if err != nil {
@@ -218,17 +230,33 @@ func findSession(ctx context.Context, client *awid.Client, targetAlias string) (
 
 	var bestPendingID string
 	var bestPendingWaiting bool
+	var bestPendingActivity string
 	bestPendingSize := 0
 	for _, p := range pendingResp.Pending {
 		for _, participant := range p.Participants {
-			if participant == targetAlias {
-				if bestPendingSize == 0 || len(p.Participants) < bestPendingSize {
-					bestPendingID = p.SessionID
-					bestPendingWaiting = p.SenderWaiting
-					bestPendingSize = len(p.Participants)
-				}
-				break
+			if participant != targetAlias {
+				continue
 			}
+			better := bestPendingSize == 0
+			if !better {
+				// Prefer sender_waiting over non-waiting.
+				if p.SenderWaiting && !bestPendingWaiting {
+					better = true
+				} else if !p.SenderWaiting && bestPendingWaiting {
+					better = false
+				} else if len(p.Participants) < bestPendingSize {
+					better = true
+				} else if len(p.Participants) == bestPendingSize && p.LastActivity > bestPendingActivity {
+					better = true
+				}
+			}
+			if better {
+				bestPendingID = p.SessionID
+				bestPendingWaiting = p.SenderWaiting
+				bestPendingSize = len(p.Participants)
+				bestPendingActivity = p.LastActivity
+			}
+			break
 		}
 	}
 	if bestPendingID != "" {
@@ -241,16 +269,27 @@ func findSession(ctx context.Context, client *awid.Client, targetAlias string) (
 		return "", false, fmt.Errorf("listing chat sessions: %w", err)
 	}
 	var bestSessionID string
+	var bestSessionCreated string
 	bestSessionSize := 0
 	for _, s := range sessionsResp.Sessions {
 		for _, participant := range s.Participants {
-			if participant == targetAlias {
-				if bestSessionSize == 0 || len(s.Participants) < bestSessionSize {
-					bestSessionID = s.SessionID
-					bestSessionSize = len(s.Participants)
-				}
-				break
+			if participant != targetAlias {
+				continue
 			}
+			better := bestSessionSize == 0
+			if !better {
+				if len(s.Participants) < bestSessionSize {
+					better = true
+				} else if len(s.Participants) == bestSessionSize && s.CreatedAt > bestSessionCreated {
+					better = true
+				}
+			}
+			if better {
+				bestSessionID = s.SessionID
+				bestSessionSize = len(s.Participants)
+				bestSessionCreated = s.CreatedAt
+			}
+			break
 		}
 	}
 	if bestSessionID != "" {
@@ -276,6 +315,7 @@ func buildMessages(messages []awid.ChatMessage) []Event {
 			Body:                    m.Body,
 			Timestamp:               m.Timestamp,
 			SenderLeaving:           m.SenderLeaving,
+			ReplyToMessageID:        m.ReplyToMessageID,
 			FromDID:                 m.FromDID,
 			ToDID:                   m.ToDID,
 			FromStableID:            m.FromStableID,
@@ -289,6 +329,23 @@ func buildMessages(messages []awid.ChatMessage) []Event {
 		}
 	}
 	return events
+}
+
+// markLastRead marks the last received message as read (best-effort).
+// This prevents the notify hook from showing messages that were already
+// delivered via SSE during send-and-wait or listen.
+func markLastRead(ctx context.Context, client *awid.Client, sessionID string, events []Event) {
+	if sessionID == "" {
+		return
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == "message" && events[i].MessageID != "" {
+			_, _ = client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
+				UpToMessageID: events[i].MessageID,
+			})
+			return
+		}
+	}
 }
 
 // streamOpener opens an SSE stream for a chat session.
@@ -465,11 +522,22 @@ type sendResponse struct {
 //   - default: send, if all targets in targets_left → skip wait; else wait opts.Wait seconds
 func Send(ctx context.Context, client *awid.Client, myAlias string, targets []string, message string, opts SendOptions, callback StatusCallback) (*SendResult, error) {
 	sentAt := time.Now()
-	createResp, err := client.ChatCreateSession(ctx, &awid.ChatCreateSessionRequest{
+
+	// Compute the actual wait duration so the server can track it.
+	waitSeconds := opts.Wait
+	if opts.StartConversation && !opts.WaitExplicit {
+		waitSeconds = 300
+	}
+
+	req := &awid.ChatCreateSessionRequest{
 		ToAliases: targets,
 		Message:   message,
 		Leaving:   opts.Leaving,
-	})
+	}
+	if waitSeconds > 0 {
+		req.WaitSeconds = &waitSeconds
+	}
+	createResp, err := client.ChatCreateSession(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("sending message: %w", err)
 	}
@@ -544,12 +612,13 @@ func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpene
 	}
 
 	// Build message acceptor: skip replays, accept only from targets.
+	// The gate opens when we see our sent message by ID. If the server
+	// didn't return a message ID (sentMessageID==""), the gate starts open.
 	sentMessageID := resp.MessageID
 	seenSentMessage := sentMessageID == ""
 	acceptor := func(ev Event) (accept, skip bool) {
 		if !seenSentMessage {
-			if (ev.MessageID != "" && ev.MessageID == sentMessageID) ||
-				(ev.MessageID == "" && ev.FromAgent == myAlias && ev.Body == message) {
+			if ev.MessageID == sentMessageID {
 				seenSentMessage = true
 			}
 			return false, true
@@ -567,11 +636,9 @@ func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpene
 		return nil, err
 	}
 
-	if waitResult.Status == "timeout" {
-		result.Status = "sent" // backward compat: "sent" means "sent but no reply"
-	} else {
-		result.Status = waitResult.Status
-	}
+	markLastRead(ctx, client, resp.SessionID, waitResult.Events)
+
+	result.Status = waitResult.Status
 	result.Reply = waitResult.Reply
 	result.Events = waitResult.Events
 	result.SenderWaiting = waitResult.SenderWaiting
@@ -593,6 +660,8 @@ func Listen(ctx context.Context, client *awid.Client, targetAlias string, waitSe
 	if err != nil {
 		return nil, err
 	}
+
+	markLastRead(ctx, client, sessionID, result.Events)
 
 	result.TargetAgent = targetAlias
 	return result, nil
