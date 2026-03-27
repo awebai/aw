@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,7 +20,13 @@ import (
 
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Initialize a local workspace in an existing project",
+	Short: "Initialize this directory in an existing project",
+	Long: `Initialize the current directory as another agent workspace inside an
+existing aweb project.
+
+Use this when you already have a project-scoped API key. Human users
+normally start with aw run <provider>; aw init is the explicit
+existing-project bootstrap primitive.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		loadDotenvBestEffort()
 		// No heartbeat for init — no credentials yet.
@@ -46,6 +53,11 @@ var (
 	initPermanent     bool
 )
 
+var (
+	initResolveBaseURLForCollection  = resolveBaseURLForInit
+	initFetchSuggestionForCollection = fetchInitSuggestion
+)
+
 // initFlow identifies which clean-slate workspace/identity creation path to use.
 type initFlow int
 
@@ -62,25 +74,58 @@ const (
 )
 
 type initOptions struct {
-	Flow                initFlow
-	WorkingDir          string
-	BaseURL             string
-	ServerName          string
-	ProjectSlug         string
-	NamespaceSlug       string
-	IdentityAlias       string
-	IdentityName        string
-	AddressReachability string
-	HumanName           string
-	AgentType           string
-	SaveConfig          bool
-	SetDefault          bool
-	WriteContext        bool
-	AuthToken           string // Bearer token for the selected flow
-	InviteToken         string
-	AccountName         string
-	WorkspaceRole       string
-	Lifetime            string // "ephemeral" (default) or "persistent"
+	Flow                      initFlow
+	WorkingDir                string
+	PromptIn                  io.Reader
+	PromptOut                 io.Writer
+	BaseURL                   string
+	ServerName                string
+	ProjectSlug               string
+	NamespaceSlug             string
+	IdentityAlias             string
+	IdentityName              string
+	AddressReachability       string
+	HumanName                 string
+	AgentType                 string
+	SaveConfig                bool
+	SetDefault                bool
+	WriteContext              bool
+	AuthToken                 string // Bearer token for the selected flow
+	InviteToken               string
+	AccountName               string
+	WorkspaceRole             string
+	PromptAliasAfterBootstrap bool
+	PromptRoleAfterBootstrap  bool
+	Lifetime                  string // "ephemeral" (default) or "persistent"
+}
+
+type initCollectionInput struct {
+	WorkingDir       string
+	Interactive      bool
+	JSONOutput       bool
+	PromptIn         io.Reader
+	PromptOut        io.Writer
+	ServerURL        string
+	ServerName       string
+	AccountName      string
+	ProjectSlug      string
+	NamespaceSlug    string
+	Alias            string
+	Name             string
+	Reachability     string
+	HumanName        string
+	AgentType        string
+	SaveConfig       bool
+	SetDefault       bool
+	WriteContext     bool
+	Role             string
+	Permanent        bool
+	PromptRole       bool
+	PromptName       bool
+	DeferAliasPrompt bool
+	DeferRolePrompt  bool
+	AuthToken        string
+	InviteToken      string
 }
 
 type initResult struct {
@@ -147,7 +192,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if jsonFlag {
 		printJSON(result.Response)
 	} else {
-		printInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.SigningKeyPath, "Initialized workspace")
+		printInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.SigningKeyPath, opts.WorkingDir, "Initialized workspace")
 	}
 	printPostInitActions(result, opts.WorkingDir)
 	return nil
@@ -172,150 +217,55 @@ func collectInitOptionsForFlow(flow initFlow) (initOptions, error) {
 	if err != nil {
 		return initOptions{}, err
 	}
-	if err := validateInitIdentityFlags(); err != nil {
-		return initOptions{}, err
-	}
-
-	// --- Validation ---
-
-	// --- Base URL and server resolution ---
-
-	baseURL, serverName, _, err := resolveBaseURLForInit(initServerURL, serverFlag)
-	if err != nil {
-		return initOptions{}, err
-	}
-	accountName := strings.TrimSpace(accountFlag)
-
-	// --- Auth token for this flow ---
-
-	authToken := ""
-	switch flow {
-	case flowProjectKey:
-		authToken = strings.TrimSpace(os.Getenv("AWEB_API_KEY"))
-		if authToken == "" {
-			return initOptions{}, usageError("aw init requires AWEB_API_KEY with a project-scoped key; use `aw project create` for a new project")
-		}
-		if !strings.HasPrefix(authToken, "aw_sk_") {
-			return initOptions{}, usageError("aw init requires a project-scoped API key (aw_sk_...). Hosted permanent identities are created from the dashboard")
-		}
-	}
-
-	// --- Suggestion (one call, reused for project + alias + roles) ---
-
-	projectSlug := ""
-	if flow != flowProjectKey {
-		projectSlug = resolveProjectSlug()
-	}
-	suggestion := fetchInitSuggestion(baseURL, projectSlug, authToken)
-	if projectSlug == "" && suggestion != nil {
-		projectSlug = strings.TrimSpace(suggestion.ProjectSlug)
-	}
-	if projectSlug == "" && flow != flowProjectKey {
-		if isTTY() && !jsonFlag {
-			suggested := sanitizeSlug(filepath.Base(workingDir))
-			v, err := promptString("Project", suggested)
-			if err != nil {
-				return initOptions{}, err
+	return collectInitOptionsWithInput(flow, initCollectionInput{
+		WorkingDir:    workingDir,
+		Interactive:   isTTY(),
+		JSONOutput:    jsonFlag,
+		PromptIn:      os.Stdin,
+		PromptOut:     os.Stderr,
+		ServerURL:     initServerURL,
+		ServerName:    serverFlag,
+		AccountName:   strings.TrimSpace(accountFlag),
+		ProjectSlug:   resolveProjectSlug(),
+		NamespaceSlug: resolveExplicitNamespaceSlug(),
+		Alias: func() string {
+			if initPermanent {
+				return strings.TrimSpace(initAlias)
 			}
-			projectSlug = v
-		} else {
-			return initOptions{}, usageError("missing project slug (use --project or AWEB_PROJECT)")
-		}
+			return resolveAliasValue(strings.TrimSpace(initAlias))
+		}(),
+		Name:         strings.TrimSpace(initName),
+		Reachability: strings.TrimSpace(initReachability),
+		HumanName:    resolveHumanNameValue(strings.TrimSpace(initHumanName)),
+		AgentType:    resolveAgentTypeValue(strings.TrimSpace(initAgentType)),
+		SaveConfig:   initSaveConfig,
+		SetDefault:   initSetDefault,
+		WriteContext: initWriteContext,
+		Role:         resolveRequestedRole(strings.TrimSpace(initRole)),
+		Permanent:    initPermanent,
+		AuthToken:    strings.TrimSpace(os.Getenv("AWEB_API_KEY")),
+	})
+}
+
+func collectInviteInitOptionsWithInput(token string, input initCollectionInput) (initOptions, error) {
+	token = strings.TrimSpace(token)
+	if !strings.HasPrefix(token, "aw_inv_") {
+		return initOptions{}, usageError("invalid invite token (expected aw_inv_...)")
 	}
-
-	namespaceSlug := ""
-	if flow == flowHeadless {
-		namespaceSlug = resolveExplicitNamespaceSlug()
-		if namespaceSlug == "" {
-			namespaceSlug = projectSlug
-		}
-	}
-
-	// --- Human name and agent type ---
-
-	humanName := resolveHumanName()
-	agentType := resolveAgentType()
-
-	// --- Identity handle ---
-
-	alias := ""
-	aliasExplicit := false
-	name := ""
-	if initPermanent {
-		name = strings.TrimSpace(initName)
-	} else {
-		alias = strings.TrimSpace(initAlias)
-		aliasExplicit = alias != ""
-		if !aliasExplicit {
-			alias = strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
-			aliasExplicit = alias != ""
-		}
-		if !aliasExplicit {
-			if !isTTY() && flow == flowProjectKey {
-				return initOptions{}, usageError("--alias is required when initializing an existing project workspace non-interactively")
-			}
-			if suggestion != nil && strings.TrimSpace(suggestion.NamePrefix) != "" {
-				alias = strings.TrimSpace(suggestion.NamePrefix)
-			}
-		}
-	}
-
-	// --- Role ---
-
-	var suggestedRoles []string
-	if suggestion != nil {
-		suggestedRoles = suggestion.Roles
-	}
-	role, err := resolveRoleFromFlags(suggestedRoles)
-	if err != nil {
-		return initOptions{}, err
-	}
-
-	// --- TTY prompts for alias (after role, so prompts are in logical order) ---
-
-	if !initPermanent {
-		if isTTY() && !jsonFlag && !aliasExplicit {
-			v, err := promptRequiredString("Alias", alias)
-			if err != nil {
-				return initOptions{}, err
-			}
-			alias = strings.TrimSpace(v)
-		}
-		if strings.TrimSpace(alias) == "" {
-			return initOptions{}, usageError("alias is required (use --alias or accept a server-suggested alias)")
-		}
-	}
-
-	return initOptions{
-		Flow:                flow,
-		WorkingDir:          workingDir,
-		BaseURL:             baseURL,
-		ServerName:          serverName,
-		ProjectSlug:         projectSlug,
-		NamespaceSlug:       namespaceSlug,
-		IdentityAlias:       alias,
-		IdentityName:        name,
-		AddressReachability: normalizeAddressReachability(strings.TrimSpace(initReachability)),
-		HumanName:           humanName,
-		AgentType:           agentType,
-		SaveConfig:          initSaveConfig,
-		SetDefault:          initSetDefault,
-		WriteContext:        initWriteContext,
-		AuthToken:           authToken,
-		AccountName:         accountName,
-		WorkspaceRole:       role,
-		Lifetime:            resolveInitLifetime(initPermanent),
-	}, nil
+	input.InviteToken = token
+	return collectInitOptionsWithInput(flowInvite, input)
 }
 
 func validateInitIdentityFlags() error {
-	alias := strings.TrimSpace(initAlias)
-	name := strings.TrimSpace(initName)
-	reachability := normalizeAddressReachability(strings.TrimSpace(initReachability))
-	if initReachability != "" && reachability == "" {
+	return validateInitIdentityOptions(initPermanent, strings.TrimSpace(initAlias), strings.TrimSpace(initName), strings.TrimSpace(initReachability))
+}
+
+func validateInitIdentityOptions(permanent bool, alias, name, reachabilityRaw string) error {
+	reachability := normalizeAddressReachability(strings.TrimSpace(reachabilityRaw))
+	if strings.TrimSpace(reachabilityRaw) != "" && reachability == "" {
 		return usageError("invalid --reachability (use private|org-visible|contacts-only|public)")
 	}
-	if initPermanent {
+	if permanent {
 		if alias != "" {
 			return usageError("--alias cannot be used with --permanent; use --name")
 		}
@@ -374,7 +324,11 @@ func resolveExplicitNamespaceSlug() string {
 }
 
 func resolveHumanName() string {
-	if v := strings.TrimSpace(initHumanName); v != "" {
+	return resolveHumanNameValue(strings.TrimSpace(initHumanName))
+}
+
+func resolveHumanNameValue(value string) string {
+	if v := strings.TrimSpace(value); v != "" {
 		return v
 	}
 	if v := strings.TrimSpace(os.Getenv("AWEB_HUMAN")); v != "" {
@@ -390,7 +344,11 @@ func resolveHumanName() string {
 }
 
 func resolveAgentType() string {
-	if v := strings.TrimSpace(initAgentType); v != "" {
+	return resolveAgentTypeValue(strings.TrimSpace(initAgentType))
+}
+
+func resolveAgentTypeValue(value string) string {
+	if v := strings.TrimSpace(value); v != "" {
 		return v
 	}
 	if v := strings.TrimSpace(os.Getenv("AWEB_AGENT_TYPE")); v != "" {
@@ -399,19 +357,214 @@ func resolveAgentType() string {
 	return "agent"
 }
 
-// resolveRoleFromFlags resolves a role during workspace creation, before
-// the workspace has an authenticated client. Uses roles from the suggestion
-// endpoint (same policy source as fetchAvailableRoles, but available pre-auth).
-// After creation, registerWorkspaceForRoot trusts this pre-validated role.
-func resolveRoleFromFlags(suggestedRoles []string) (string, error) {
-	requested := strings.TrimSpace(initRole)
-	if requested == "" {
-		requested = strings.TrimSpace(os.Getenv("AWEB_ROLE"))
+func resolveAliasValue(explicit string) string {
+	if v := strings.TrimSpace(explicit); v != "" {
+		return v
 	}
+	return strings.TrimSpace(os.Getenv("AWEB_ALIAS"))
+}
+
+func resolveRequestedRole(explicit string) string {
+	if v := strings.TrimSpace(explicit); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv("AWEB_ROLE"))
+}
+
+func resolveRoleInput(requested string, suggestedRoles []string, allowPrompt bool, promptFreeform bool, in io.Reader, out io.Writer) (string, error) {
+	requested = normalizeWorkspaceRole(requested)
 	if len(suggestedRoles) > 0 {
-		return selectRoleFromAvailableRoles(requested, suggestedRoles, isTTY() && requested == "", os.Stdin, os.Stderr)
+		return selectRoleFromAvailableRoles(requested, suggestedRoles, allowPrompt && requested == "", in, out)
 	}
-	return normalizeWorkspaceRole(requested), nil
+	if requested != "" {
+		if !isValidWorkspaceRole(requested) {
+			return "", usageError("invalid role %q", requested)
+		}
+		return requested, nil
+	}
+	if !allowPrompt {
+		return "", nil
+	}
+	if !promptFreeform {
+		return "", nil
+	}
+	role, err := promptRequiredStringWithIO("Role", "developer", in, out)
+	if err != nil {
+		return "", err
+	}
+	role = normalizeWorkspaceRole(role)
+	if !isValidWorkspaceRole(role) {
+		return "", usageError("invalid role %q", role)
+	}
+	return role, nil
+}
+
+func promptIdentityLifetime(in io.Reader, out io.Writer) (bool, error) {
+	choice, err := promptIndexedChoice(
+		"Identity type",
+		[]string{
+			"Ephemeral",
+			"Permanent",
+		},
+		0,
+		in,
+		out,
+	)
+	if err != nil {
+		return false, err
+	}
+	return choice == "Permanent", nil
+}
+
+func collectInitOptionsWithInput(flow initFlow, input initCollectionInput) (initOptions, error) {
+	if input.PromptIn == nil {
+		input.PromptIn = os.Stdin
+	}
+	if input.PromptOut == nil {
+		input.PromptOut = os.Stderr
+	}
+	if strings.TrimSpace(input.WorkingDir) == "" {
+		return initOptions{}, fmt.Errorf("working directory is required")
+	}
+
+	baseURL, serverName, _, err := initResolveBaseURLForCollection(input.ServerURL, input.ServerName)
+	if err != nil {
+		return initOptions{}, err
+	}
+
+	authToken := strings.TrimSpace(input.AuthToken)
+	if flow == flowProjectKey {
+		if authToken == "" {
+			return initOptions{}, usageError("aw init requires AWEB_API_KEY with a project-scoped key; use `aw project create` for a new project")
+		}
+		if !strings.HasPrefix(authToken, "aw_sk_") {
+			return initOptions{}, usageError("aw init requires a project-scoped API key (aw_sk_...). Hosted permanent identities are created from the dashboard")
+		}
+	}
+
+	projectSlug := ""
+	if flow == flowHeadless {
+		projectSlug = strings.TrimSpace(input.ProjectSlug)
+	}
+	var suggestion *awid.SuggestAliasPrefixResponse
+	if flow != flowInvite {
+		suggestion = initFetchSuggestionForCollection(baseURL, projectSlug, authToken)
+	}
+	if flow == flowHeadless && projectSlug == "" && suggestion != nil {
+		projectSlug = strings.TrimSpace(suggestion.ProjectSlug)
+	}
+	if flow == flowHeadless && projectSlug == "" {
+		if input.Interactive && !input.JSONOutput {
+			suggested := sanitizeSlug(filepath.Base(input.WorkingDir))
+			v, err := promptStringWithIO("Project", suggested, input.PromptIn, input.PromptOut)
+			if err != nil {
+				return initOptions{}, err
+			}
+			projectSlug = strings.TrimSpace(v)
+		} else {
+			return initOptions{}, usageError("missing project slug (use --project or AWEB_PROJECT)")
+		}
+	}
+
+	namespaceSlug := ""
+	if flow == flowHeadless {
+		namespaceSlug = strings.TrimSpace(input.NamespaceSlug)
+		if namespaceSlug == "" {
+			namespaceSlug = projectSlug
+		}
+	}
+
+	alias := ""
+	aliasExplicit := false
+	name := strings.TrimSpace(input.Name)
+	inviteAliasOptional := flow == flowInvite && !input.Interactive
+	deferAliasPrompt := input.DeferAliasPrompt && flow == flowHeadless && !input.Permanent
+	if !input.Permanent {
+		alias = strings.TrimSpace(input.Alias)
+		aliasExplicit = alias != ""
+		if !aliasExplicit && !deferAliasPrompt {
+			if !input.Interactive && flow == flowProjectKey {
+				return initOptions{}, usageError("--alias is required when initializing an existing project workspace non-interactively")
+			}
+			if suggestion != nil && strings.TrimSpace(suggestion.NamePrefix) != "" {
+				alias = strings.TrimSpace(suggestion.NamePrefix)
+			}
+		}
+	}
+
+	var suggestedRoles []string
+	if suggestion != nil {
+		suggestedRoles = suggestion.Roles
+	}
+	role := normalizeWorkspaceRole(input.Role)
+	if input.DeferRolePrompt {
+		if role != "" && !isValidWorkspaceRole(role) {
+			return initOptions{}, usageError("invalid role %q", role)
+		}
+	} else {
+		role, err = resolveRoleInput(input.Role, suggestedRoles, input.Interactive && !input.JSONOutput, input.PromptRole, input.PromptIn, input.PromptOut)
+		if err != nil {
+			return initOptions{}, err
+		}
+	}
+
+	if input.Permanent {
+		if input.PromptName && input.Interactive && !input.JSONOutput && strings.TrimSpace(name) == "" {
+			v, err := promptRequiredStringWithIO("Name", name, input.PromptIn, input.PromptOut)
+			if err != nil {
+				return initOptions{}, err
+			}
+			name = strings.TrimSpace(v)
+		}
+	} else {
+		if input.Interactive && !input.JSONOutput && !aliasExplicit && !deferAliasPrompt {
+			if inviteAliasOptional {
+				v, err := promptStringWithIO("Alias (optional)", alias, input.PromptIn, input.PromptOut)
+				if err != nil {
+					return initOptions{}, err
+				}
+				alias = strings.TrimSpace(v)
+			} else {
+				v, err := promptRequiredStringWithIO("Alias", alias, input.PromptIn, input.PromptOut)
+				if err != nil {
+					return initOptions{}, err
+				}
+				alias = strings.TrimSpace(v)
+			}
+		}
+		if strings.TrimSpace(alias) == "" && !inviteAliasOptional && !deferAliasPrompt {
+			return initOptions{}, usageError("alias is required (use --alias or accept a server-suggested alias)")
+		}
+	}
+	if err := validateInitIdentityOptions(input.Permanent, strings.TrimSpace(alias), strings.TrimSpace(name), strings.TrimSpace(input.Reachability)); err != nil {
+		return initOptions{}, err
+	}
+
+	return initOptions{
+		Flow:                      flow,
+		WorkingDir:                input.WorkingDir,
+		PromptIn:                  input.PromptIn,
+		PromptOut:                 input.PromptOut,
+		BaseURL:                   baseURL,
+		ServerName:                serverName,
+		ProjectSlug:               projectSlug,
+		NamespaceSlug:             namespaceSlug,
+		IdentityAlias:             alias,
+		IdentityName:              name,
+		AddressReachability:       normalizeAddressReachability(strings.TrimSpace(input.Reachability)),
+		HumanName:                 resolveHumanNameValue(strings.TrimSpace(input.HumanName)),
+		AgentType:                 resolveAgentTypeValue(strings.TrimSpace(input.AgentType)),
+		SaveConfig:                input.SaveConfig,
+		SetDefault:                input.SetDefault,
+		WriteContext:              input.WriteContext,
+		AuthToken:                 authToken,
+		InviteToken:               strings.TrimSpace(input.InviteToken),
+		AccountName:               strings.TrimSpace(input.AccountName),
+		WorkspaceRole:             role,
+		PromptAliasAfterBootstrap: input.DeferAliasPrompt,
+		PromptRoleAfterBootstrap:  input.DeferRolePrompt,
+		Lifetime:                  resolveInitLifetime(input.Permanent),
+	}, nil
 }
 
 // fetchInitSuggestion calls the suggest-alias-prefix endpoint.
@@ -524,9 +677,49 @@ func executeInit(opts initOptions) (*initResult, error) {
 		return nil, err
 	}
 
+	if opts.Flow == flowHeadless && opts.PromptAliasAfterBootstrap && lifetime == awid.LifetimeEphemeral {
+		promptIn := opts.PromptIn
+		if promptIn == nil {
+			promptIn = os.Stdin
+		}
+		promptOut := opts.PromptOut
+		if promptOut == nil {
+			promptOut = os.Stderr
+		}
+		resp, pub, priv, err = maybeReplaceInitialCreateProjectIdentity(ctx, opts, resp, pub, priv, lifetime, promptIn, promptOut)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	namespaceSlug := strings.TrimSpace(resp.NamespaceSlug)
 	if namespaceSlug == "" {
 		return nil, fmt.Errorf("identity bootstrap failed: missing namespace_slug in response")
+	}
+
+	attachURL := opts.BaseURL
+	if v := strings.TrimSpace(resp.ServerURL); v != "" {
+		attachURL = v
+	}
+	authClient, authClientErr := aweb.NewWithAPIKey(attachURL, resp.APIKey)
+
+	workspaceRole := strings.TrimSpace(opts.WorkspaceRole)
+	needsPostBootstrapRoleResolution := opts.WriteContext && (opts.PromptRoleAfterBootstrap || workspaceRole == "")
+	if needsPostBootstrapRoleResolution && authClientErr == nil {
+		promptIn := opts.PromptIn
+		if promptIn == nil {
+			promptIn = os.Stdin
+		}
+		promptOut := opts.PromptOut
+		if promptOut == nil {
+			promptOut = os.Stderr
+		}
+		workspaceRole, err = resolveRole(authClient, workspaceRole, opts.PromptRoleAfterBootstrap && workspaceRole == "", promptIn, promptOut)
+		if err != nil {
+			return nil, err
+		}
+	} else if authClientErr != nil && needsPostBootstrapRoleResolution {
+		return nil, authClientErr
 	}
 
 	handle := strings.TrimSpace(resp.IdentityHandle())
@@ -598,13 +791,8 @@ func executeInit(opts initOptions) (*initResult, error) {
 
 	var attachResult *contextAttachResult
 	if opts.WriteContext {
-		attachURL := opts.BaseURL
-		if v := strings.TrimSpace(resp.ServerURL); v != "" {
-			attachURL = v
-		}
-		authClient, err := aweb.NewWithAPIKey(attachURL, resp.APIKey)
-		if err == nil {
-			attachResult, err = autoAttachContext(opts.WorkingDir, authClient, strings.TrimSpace(opts.WorkspaceRole))
+		if authClientErr == nil {
+			attachResult, err = autoAttachContext(opts.WorkingDir, authClient, workspaceRole)
 			if err != nil {
 				if shouldWarnOnWorkspaceAttach(err) {
 					debugLog("workspace attach: %v", err)
@@ -613,17 +801,14 @@ func executeInit(opts initOptions) (*initResult, error) {
 					return nil, err
 				}
 			}
+		} else {
+			return nil, authClientErr
 		}
 	}
 
-	finalRole := strings.TrimSpace(opts.WorkspaceRole)
+	finalRole := workspaceRole
 	if attachResult != nil && attachResult.Workspace != nil && strings.TrimSpace(attachResult.Workspace.Role) != "" {
 		finalRole = strings.TrimSpace(attachResult.Workspace.Role)
-	}
-
-	exportBaseURL := opts.BaseURL
-	if v := strings.TrimSpace(resp.ServerURL); v != "" {
-		exportBaseURL = v
 	}
 
 	return &initResult{
@@ -633,10 +818,83 @@ func executeInit(opts initOptions) (*initResult, error) {
 		Role:            finalRole,
 		AttachResult:    attachResult,
 		SigningKeyPath:  signingKeyPath,
-		ExportBaseURL:   exportBaseURL,
+		ExportBaseURL:   attachURL,
 		ExportNamespace: namespaceSlug,
 		JoinedViaInvite: opts.InviteToken != "",
 	}, nil
+}
+
+func maybeReplaceInitialCreateProjectIdentity(
+	ctx context.Context,
+	opts initOptions,
+	initialResp *awid.BootstrapIdentityResponse,
+	initialPub []byte,
+	initialPriv []byte,
+	lifetime string,
+	in io.Reader,
+	out io.Writer,
+) (*awid.BootstrapIdentityResponse, []byte, []byte, error) {
+	if initialResp == nil || strings.TrimSpace(initialResp.APIKey) == "" {
+		return initialResp, nil, nil, fmt.Errorf("identity bootstrap failed: missing api_key in response")
+	}
+	defaultAlias := strings.TrimSpace(initialResp.Alias)
+	if defaultAlias == "" {
+		return initialResp, initialPub, initialPriv, nil
+	}
+	attachURL := opts.BaseURL
+	if v := strings.TrimSpace(initialResp.ServerURL); v != "" {
+		attachURL = v
+	}
+	initialClient, err := aweb.NewWithAPIKey(attachURL, initialResp.APIKey)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	currentDefault := defaultAlias
+	for {
+		alias, err := promptRequiredStringWithIO("Alias", currentDefault, in, out)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		alias = strings.TrimSpace(alias)
+		if err := validateInitIdentityOptions(false, alias, "", ""); err != nil {
+			fmt.Fprintf(out, "%v\n", err)
+			continue
+		}
+		if alias == defaultAlias {
+			return initialResp, initialPub, initialPriv, nil
+		}
+
+		pub, priv, err := awid.GenerateKeypair()
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		did := awid.ComputeDIDKey(pub)
+		pubKeyB64 := base64.RawStdEncoding.EncodeToString(pub)
+		req := &awid.WorkspaceInitRequest{
+			HumanName:           opts.HumanName,
+			AgentType:           opts.AgentType,
+			DID:                 did,
+			PublicKey:           pubKeyB64,
+			Custody:             awid.CustodySelf,
+			Lifetime:            lifetime,
+			AddressReachability: opts.AddressReachability,
+			Alias:               &alias,
+		}
+		replacementResp, err := initialClient.InitWorkspace(ctx, req)
+		if err != nil {
+			if code, ok := awid.HTTPStatusCode(err); ok && (code == 409 || code == 422) {
+				fmt.Fprintf(out, "%v\n", err)
+				currentDefault = alias
+				continue
+			}
+			return nil, nil, nil, err
+		}
+		if err := initialClient.Deregister(ctx); err != nil {
+			return nil, nil, nil, err
+		}
+		return replacementResp, pub, priv, nil
+	}
 }
 
 func shouldWarnOnWorkspaceAttach(err error) bool {
@@ -649,7 +907,7 @@ func shouldWarnOnWorkspaceAttach(err error) bool {
 	return false
 }
 
-func printInitSummary(resp *awid.BootstrapIdentityResponse, accountName, serverName, role string, attachResult *contextAttachResult, signingKeyPath, headline string) {
+func printInitSummary(resp *awid.BootstrapIdentityResponse, accountName, serverName, role string, attachResult *contextAttachResult, signingKeyPath, workingDir, headline string) {
 	if resp == nil {
 		return
 	}
@@ -713,6 +971,13 @@ func printInitSummary(resp *awid.BootstrapIdentityResponse, accountName, serverN
 			fmt.Println("Context:    attached local directory")
 		}
 	}
+	if wd := abbreviateUserHome(workingDir); wd != "" {
+		fmt.Printf("Directory:  %s\n", wd)
+	}
+	if handle != "" {
+		fmt.Printf("Workspace:  this directory is now agent %s\n", handle)
+	}
+	fmt.Println("State:      .aw/ stores this agent's local identity and workspace binding")
 }
 
 func printPostInitActions(result *initResult, workingDir string) {
@@ -735,22 +1000,64 @@ func printPostInitActions(result *initResult, workingDir string) {
 		printClaudeHooksResult(hookResult)
 	}
 	if !jsonFlag {
-		printInitNextSteps(initInjectDocs, initSetupHooks)
+		printInitNextSteps(result, workingDir, initInjectDocs, initSetupHooks)
 	}
 }
 
-func printInitNextSteps(didInjectDocs, didSetupHooks bool) {
-	if didInjectDocs && didSetupHooks {
+func printInitNextSteps(result *initResult, workingDir string, didInjectDocs, didSetupHooks bool) {
+	lines := initNextStepLines(result, workingDir, didInjectDocs, didSetupHooks)
+	if len(lines) == 0 {
 		return
 	}
 	fmt.Println()
 	fmt.Println("Next steps:")
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+}
+
+func initNextStepLines(result *initResult, workingDir string, didInjectDocs, didSetupHooks bool) []string {
+	lines := []string{
+		formatInitNextStep("aw run codex", "Start Codex in this directory"),
+		formatInitNextStep("aw run claude", "Start Claude in this directory"),
+	}
+
+	if _, err := currentGitWorktreeRootFromDir(workingDir); err == nil {
+		lines = append(lines, formatInitNextStep("aw workspace add-worktree <role>", "Create another agent in this same git repo"))
+	}
+	lines = append(lines, formatInitNextStep("aw init", "Initialize another repo or plain directory as another agent"))
+
+	if shouldSuggestClaimHuman(result) {
+		lines = append(lines, formatInitNextStep("aw claim-human --email you@example.com", "Attach your human account for dashboard access"))
+	}
 	if !didInjectDocs {
-		fmt.Println("  aw init --inject-docs    Add coordination instructions to CLAUDE.md / AGENTS.md")
+		lines = append(lines, formatInitNextStep("aw init --inject-docs", "Add coordination instructions to CLAUDE.md / AGENTS.md"))
 	}
 	if !didSetupHooks {
-		fmt.Println("  aw init --setup-hooks    Set up Claude Code chat notification hook")
+		lines = append(lines, formatInitNextStep("aw init --setup-hooks", "Set up Claude Code chat notification hook"))
 	}
+	return lines
+}
+
+func formatInitNextStep(command, description string) string {
+	return fmt.Sprintf("  %-36s %s", command, description)
+}
+
+func shouldSuggestClaimHuman(result *initResult) bool {
+	if result == nil {
+		return false
+	}
+	values := []string{result.ServerName, result.ExportBaseURL}
+	for _, value := range values {
+		lower := strings.ToLower(strings.TrimSpace(value))
+		if lower == "" {
+			continue
+		}
+		if strings.Contains(lower, "app.aweb.ai") || strings.Contains(lower, "aweb.ai") {
+			return true
+		}
+	}
+	return false
 }
 
 func acceptInviteViaCloud(

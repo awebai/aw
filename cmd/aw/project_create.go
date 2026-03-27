@@ -6,8 +6,13 @@ import (
 
 var projectCreateCmd = &cobra.Command{
 	Use:   "create",
-	Short: "Create a project and initialize its first workspace",
-	RunE:  runProjectCreate,
+	Short: "Create a project and initialize this directory as its first agent",
+	Long: `Create a new aweb project and initialize the current directory as the
+first agent workspace in it.
+
+Human users normally start with aw run <provider>; aw project create is
+the explicit create-project bootstrap primitive.`,
+	RunE: runProjectCreate,
 }
 
 func init() {
@@ -45,7 +50,7 @@ func runProjectCreate(cmd *cobra.Command, args []string) error {
 	if jsonFlag {
 		printJSON(result.Response)
 	} else {
-		printInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.SigningKeyPath, "Created project and initialized workspace")
+		printInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.SigningKeyPath, opts.WorkingDir, "Created project and initialized workspace")
 	}
 	printPostInitActions(result, opts.WorkingDir)
 	return nil

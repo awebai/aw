@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,26 +13,27 @@ import (
 	"time"
 
 	aweb "github.com/awebai/aw"
+	"github.com/awebai/aw/awconfig"
 	awrun "github.com/awebai/aw/run"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
 
 var (
-	runWaitSeconds  int
-	runContinueMode bool
-	runMaxRuns      int
-	runIdleWait     int
-	runBasePrompt   string
-	runWorkPrompt   string
-	runCommsPrompt  string
-	runWorkingDir   string
-	runAllowedTools string
-	runModel        string
-	runProviderName string
-	runProviderPTY  bool
-	runAutofeedWork bool
-	runInitConfig   bool
+	runWaitSeconds   int
+	runContinueMode  bool
+	runMaxRuns       int
+	runIdleWait      int
+	runInitialPrompt string
+	runBasePrompt    string
+	runWorkPrompt    string
+	runCommsPrompt   string
+	runWorkingDir    string
+	runAllowedTools  string
+	runModel         string
+	runProviderPTY   bool
+	runAutofeedWork  bool
+	runInitConfig    bool
 )
 
 var (
@@ -46,15 +48,25 @@ var (
 			Stream: awrun.NewEventStreamOpener(client.Client),
 		})
 	}
-	runNewScreenController = awrun.NewScreenController
-	runResolveClientForDir = resolveClientSelectionForDir
-	runGetwd               = os.Getwd
+	runNewScreenController  = awrun.NewScreenController
+	runResolveClientForDir  = resolveClientSelectionForDir
+	runExecuteInitFlow      = executeInit
+	runWorkspaceStateForDir = resolveRunWorkspaceStateForDir
+	runPrintInitSummary     = printInitSummary
+	runGetwd                = os.Getwd
+	runInjectDocs           = InjectAgentDocs
+	runSetupHooks           = SetupClaudeHooks
 )
 
 var runCmd = &cobra.Command{
-	Use:   "run [prompt]",
-	Short: "Run an AI coding agent in a loop",
-	Long: `Run an AI coding agent in a loop.
+	Use:   "run <provider>",
+	Short: "Start an AI coding agent here, onboarding this directory if needed",
+	Long: `Start the requested AI coding agent in this directory.
+
+In a TTY, if this directory is not initialized yet, aw run can guide you
+through new-project creation or existing-project init before starting the
+provider. The explicit bootstrap commands remain available for scripts and
+expert use: aw project create, aw init, aw spawn accept-invite, and aw connect.
 
 Current implementation includes:
   - repeated provider invocations (currently Claude and Codex)
@@ -64,11 +76,12 @@ Current implementation includes:
   - optional background services declared in aw run config
 
 This aw-first command intentionally excludes bead-specific dispatch and policy glue.`,
-	Args: cobra.ArbitraryArgs,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runRun,
 }
 
 func init() {
+	runCmd.Flags().StringVar(&runInitialPrompt, "prompt", "", "Initial prompt for the first provider run")
 	runCmd.Flags().StringVar(&runBasePrompt, "base-prompt", "", "Override the configured base mission prompt for this run")
 	runCmd.Flags().StringVar(&runWorkPrompt, "work-prompt-suffix", "", "Override the configured work cycle prompt suffix for this run")
 	runCmd.Flags().StringVar(&runCommsPrompt, "comms-prompt-suffix", "", "Override the configured comms cycle prompt suffix for this run")
@@ -81,7 +94,6 @@ func init() {
 	runCmd.Flags().StringVar(&runWorkingDir, "dir", "", "Working directory for the agent process")
 	runCmd.Flags().StringVar(&runAllowedTools, "allowed-tools", "", "Provider-specific allowed tools string")
 	runCmd.Flags().StringVar(&runModel, "model", "", "Provider-specific model override")
-	runCmd.Flags().StringVar(&runProviderName, "provider", "claude", "Agent provider to run")
 	runCmd.Flags().BoolVar(&runProviderPTY, "provider-pty", false, "Run the provider subprocess inside a pseudo-terminal instead of plain pipes when interactive controls are available")
 	runCmd.Flags().BoolVar(&runAutofeedWork, "autofeed-work", false, "Wake for work-related events in addition to incoming mail/chat")
 	runCmd.Flags().BoolVar(&runInitConfig, "init", false, "Prompt for ~/.config/aw/run.json values and write them")
@@ -118,25 +130,31 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	initialPrompt := strings.TrimSpace(strings.Join(args, " "))
 	screen := runNewScreenController(cmd.InOrStdin(), cmd.OutOrStdout())
-	allowInteractiveEmptyPrompt := screen != nil
-	if strings.TrimSpace(settings.BasePrompt) == "" && initialPrompt == "" && !allowInteractiveEmptyPrompt {
-		return usageError("missing prompt (pass a prompt argument, --base-prompt, or configure base_prompt with `aw run --init`)")
-	}
-
-	provider, err := runNewProvider(runProviderName)
+	promptInput := bufferedPromptReader(cmd.InOrStdin())
+	providerName, initialPrompt, err := resolveRunInvocation(cmd, args, screen != nil, promptInput)
 	if err != nil {
 		return err
 	}
+	client, sel, onboarding, err := resolveRunClientForDir(cmd, workingDir, screen != nil, promptInput)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(initialPrompt) == "" && onboarding != nil && strings.TrimSpace(onboarding.InitialPrompt) != "" {
+		initialPrompt = strings.TrimSpace(onboarding.InitialPrompt)
+	}
+	allowInteractiveEmptyPrompt := screen != nil
+	if strings.TrimSpace(settings.BasePrompt) == "" && initialPrompt == "" && !allowInteractiveEmptyPrompt {
+		return usageError("missing prompt (pass --prompt, --base-prompt, or configure base_prompt with `aw run --init`)")
+	}
 
-	client, sel, err := runResolveClientForDir(workingDir)
+	provider, err := runNewProvider(providerName)
 	if err != nil {
 		return err
 	}
 
 	repoSlug := runDetectRepoSlug(workingDir)
-	statusIdentity := awrun.StatusIdentity(runProviderName, sel.NamespaceSlug, repoSlug, sel.IdentityHandle)
+	statusIdentity := awrun.StatusIdentity(providerName, sel.NamespaceSlug, repoSlug, sel.IdentityHandle)
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 	defer stop()
@@ -266,13 +284,13 @@ func initRunCommandVars() {
 	runContinueMode = false
 	runMaxRuns = 0
 	runIdleWait = awrun.DefaultIdleWaitSeconds
+	runInitialPrompt = ""
 	runBasePrompt = ""
 	runWorkPrompt = ""
 	runCommsPrompt = ""
 	runWorkingDir = ""
 	runAllowedTools = ""
 	runModel = ""
-	runProviderName = "claude"
 	runProviderPTY = false
 	runAutofeedWork = false
 	runInitConfig = false
@@ -282,4 +300,209 @@ func setRunCommandIO(cmd *cobra.Command, in io.Reader, out io.Writer, errOut io.
 	cmd.SetIn(in)
 	cmd.SetOut(out)
 	cmd.SetErr(errOut)
+}
+
+func resolveRunInvocation(cmd *cobra.Command, args []string, interactive bool, promptInput io.Reader) (string, string, error) {
+	providerName := ""
+	if len(args) > 0 {
+		providerName = strings.TrimSpace(args[0])
+	}
+	if providerName == "" {
+		if !interactive {
+			return "", "", usageError("missing provider (use `aw run <provider>`)")
+		}
+		selected, err := promptIndexedChoice("Provider", []string{"claude", "codex"}, 0, promptInput, cmd.ErrOrStderr())
+		if err != nil {
+			return "", "", err
+		}
+		providerName = strings.TrimSpace(selected)
+	}
+	return providerName, strings.TrimSpace(runInitialPrompt), nil
+}
+
+type runWorkspaceState int
+
+const (
+	runWorkspaceStateInitialized runWorkspaceState = iota
+	runWorkspaceStateMissing
+)
+
+type runOnboardingResult struct {
+	InitialPrompt string
+}
+
+func resolveRunClientForDir(cmd *cobra.Command, workingDir string, interactive bool, promptInput io.Reader) (*aweb.Client, *awconfig.Selection, *runOnboardingResult, error) {
+	state, err := runWorkspaceStateForDir(workingDir)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if state == runWorkspaceStateMissing {
+		if !interactive {
+			return nil, nil, nil, usageError("current directory is not initialized for aw; run `aw project create`, `aw init`, `aw spawn accept-invite`, or `aw connect`, or rerun in a TTY for guided onboarding")
+		}
+		proceed, promptErr := promptRunYesNo(
+			"This directory is not initialized as an aweb workspace. Initialize now?",
+			true,
+			promptInput,
+			cmd.ErrOrStderr(),
+		)
+		if promptErr != nil {
+			return nil, nil, nil, promptErr
+		}
+		if !proceed {
+			return nil, nil, nil, usageError("current directory is not initialized for aw; run `aw project create`, `aw init`, `aw spawn accept-invite`, or `aw connect`")
+		}
+
+		onboarding, onboardingErr := runOnboardingWizard(cmd, workingDir, promptInput)
+		if onboardingErr != nil {
+			return nil, nil, nil, onboardingErr
+		}
+		client, sel, err := runResolveClientForDir(workingDir)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return client, sel, onboarding, nil
+	}
+
+	client, sel, err := runResolveClientForDir(workingDir)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return client, sel, nil, nil
+}
+
+func resolveRunWorkspaceStateForDir(workingDir string) (runWorkspaceState, error) {
+	_, _, err := awconfig.LoadWorktreeContextFromDir(workingDir)
+	if err == nil {
+		return runWorkspaceStateInitialized, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return runWorkspaceStateMissing, nil
+	}
+	return runWorkspaceStateInitialized, fmt.Errorf("invalid local workspace context: %w", err)
+}
+
+func promptRunYesNo(label string, defaultYes bool, in io.Reader, out io.Writer) (bool, error) {
+	defaultValue := "y"
+	if !defaultYes {
+		defaultValue = "n"
+	}
+	answer, err := promptStringWithIO(label+" (y/n)", defaultValue, in, out)
+	if err != nil {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true, nil
+	case "n", "no":
+		return false, nil
+	default:
+		return false, usageError("please answer y or n")
+	}
+}
+
+func runOnboardingWizard(cmd *cobra.Command, workingDir string, promptInput io.Reader) (*runOnboardingResult, error) {
+	if strings.TrimSpace(os.Getenv("AWEB_API_KEY")) != "" {
+		return runWizardInitExistingProject(cmd, workingDir, promptInput, strings.TrimSpace(os.Getenv("AWEB_API_KEY")))
+	}
+	return runWizardCreateProject(cmd, workingDir, promptInput)
+}
+
+func runWizardInitExistingProject(cmd *cobra.Command, workingDir string, promptInput io.Reader, apiKey string) (*runOnboardingResult, error) {
+	serverURL, err := promptRequiredStringWithIO("Server URL", defaultWizardServerURL(), promptInput, cmd.ErrOrStderr())
+	if err != nil {
+		return nil, err
+	}
+	permanent, err := promptIdentityLifetime(promptInput, cmd.ErrOrStderr())
+	if err != nil {
+		return nil, err
+	}
+	opts, err := collectInitOptionsWithInput(flowProjectKey, initCollectionInput{
+		WorkingDir:   workingDir,
+		Interactive:  true,
+		PromptIn:     promptInput,
+		PromptOut:    cmd.ErrOrStderr(),
+		ServerURL:    serverURL,
+		ServerName:   serverFlag,
+		Alias:        resolveAliasValue(""),
+		HumanName:    resolveHumanName(),
+		AgentType:    resolveAgentType(),
+		SaveConfig:   true,
+		WriteContext: true,
+		AuthToken:    strings.TrimSpace(apiKey),
+		Permanent:    permanent,
+		PromptRole:   true,
+		PromptName:   true,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := runExecuteInitFlow(opts)
+	if err != nil {
+		return nil, err
+	}
+	runPrintInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.SigningKeyPath, workingDir, "Initialized workspace")
+	return &runOnboardingResult{}, nil
+}
+
+func runWizardCreateProject(cmd *cobra.Command, workingDir string, promptInput io.Reader) (*runOnboardingResult, error) {
+	serverURL, err := promptRequiredStringWithIO("Server URL", defaultWizardServerURL(), promptInput, cmd.ErrOrStderr())
+	if err != nil {
+		return nil, err
+	}
+	projectSlug, err := promptStringWithIO("Project", sanitizeSlug(filepath.Base(workingDir)), promptInput, cmd.ErrOrStderr())
+	if err != nil {
+		return nil, err
+	}
+	permanent, err := promptIdentityLifetime(promptInput, cmd.ErrOrStderr())
+	if err != nil {
+		return nil, err
+	}
+	opts, err := collectInitOptionsWithInput(flowHeadless, initCollectionInput{
+		WorkingDir:       workingDir,
+		Interactive:      true,
+		PromptIn:         promptInput,
+		PromptOut:        cmd.ErrOrStderr(),
+		ServerURL:        serverURL,
+		ServerName:       serverFlag,
+		ProjectSlug:      sanitizeSlug(projectSlug),
+		Alias:            "",
+		HumanName:        resolveHumanName(),
+		AgentType:        resolveAgentType(),
+		SaveConfig:       true,
+		WriteContext:     true,
+		Permanent:        permanent,
+		PromptName:       true,
+		DeferAliasPrompt: true,
+		DeferRolePrompt:  true,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := runExecuteInitFlow(opts)
+	if err != nil {
+		return nil, err
+	}
+	runPrintInitSummary(result.Response, result.AccountName, result.ServerName, result.Role, result.AttachResult, result.SigningKeyPath, workingDir, "Created project and initialized workspace")
+
+	if docs, err := promptRunYesNo("Inject agent docs into this repo?", false, promptInput, cmd.ErrOrStderr()); err == nil && docs {
+		printInjectDocsResult(runInjectDocs(resolveRepoRoot(workingDir)))
+	} else if err != nil {
+		return nil, err
+	}
+	if hooks, err := promptRunYesNo("Set up Claude hooks for aw notify?", false, promptInput, cmd.ErrOrStderr()); err == nil && hooks {
+		printClaudeHooksResult(runSetupHooks(resolveRepoRoot(workingDir), false))
+	} else if err != nil {
+		return nil, err
+	}
+	return &runOnboardingResult{InitialPrompt: "Download and study the agent guide at https://aweb.ai/agent-guide.txt before doing anything else."}, nil
+}
+
+func defaultWizardServerURL() string {
+	if serverURL := strings.TrimSpace(os.Getenv("AWEB_URL")); serverURL != "" {
+		return serverURL
+	}
+	return DefaultServerURL
 }
