@@ -3,6 +3,7 @@ package run
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -368,7 +369,7 @@ func TestLoopDoesNotSuppressBdhSpecificEchoText(t *testing.T) {
 	}
 }
 
-func TestLoopRendersCodexMarkdownWithMargin(t *testing.T) {
+func TestLoopRendersCodexMarkdownWithBulletLane(t *testing.T) {
 	var out bytes.Buffer
 	loop := NewLoop(CodexProvider{}, &out)
 	st := &state{}
@@ -379,15 +380,15 @@ func TestLoopRendersCodexMarkdownWithMargin(t *testing.T) {
 	if strings.Contains(got, "## Title") {
 		t.Fatalf("expected markdown heading to be rendered, got %q", got)
 	}
-	if !strings.Contains(got, "  Title") {
-		t.Fatalf("expected rendered text to keep a left margin, got %q", got)
+	if !strings.Contains(got, "• Title") {
+		t.Fatalf("expected rendered text to start in the assistant bullet lane, got %q", got)
 	}
 	if !strings.Contains(got, "first item") {
 		t.Fatalf("expected list item content to remain, got %q", got)
 	}
 }
 
-func TestLoopAddsClaudeMarginAcrossStreamingChunks(t *testing.T) {
+func TestLoopAddsClaudeBulletLaneAcrossStreamingChunks(t *testing.T) {
 	var out bytes.Buffer
 	loop := NewLoop(ClaudeProvider{}, &out)
 	st := &state{}
@@ -397,11 +398,11 @@ func TestLoopAddsClaudeMarginAcrossStreamingChunks(t *testing.T) {
 	loop.handleOutputLine(`{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"world\n- item"}}}`, presenter, st, nil, nil)
 
 	got := out.String()
-	if !strings.Contains(got, "  Hello world") {
-		t.Fatalf("expected Claude text to start with a left margin, got %q", got)
+	if !strings.Contains(got, "• Hello world") {
+		t.Fatalf("expected Claude text to start with the assistant bullet lane, got %q", got)
 	}
 	if !strings.Contains(got, "\n  - item") {
-		t.Fatalf("expected Claude continuation line to keep the left margin, got %q", got)
+		t.Fatalf("expected Claude continuation line to keep the hanging indent, got %q", got)
 	}
 	if strings.Contains(got, "Hello   world") {
 		t.Fatalf("expected no extra indentation injected mid-line, got %q", got)
@@ -1390,7 +1391,7 @@ func TestRemoteInterruptDuringIdleDoesNotLeakIntoNextRun(t *testing.T) {
 		t.Fatal("expected RunInterrupted=false after idle interrupt handling")
 	}
 
-	if err := loop.runOnce(context.Background(), LoopOptions{}, st, "review", []DisplayLine{{Kind: DisplayKindPrompt, Text: "> review"}}, "review"); err != nil {
+	if err := loop.runOnce(context.Background(), LoopOptions{}, st, "review", nil, []DisplayLine{{Kind: DisplayKindPrompt, Text: "> review"}}, "review"); err != nil {
 		t.Fatalf("runOnce returned error: %v", err)
 	}
 
@@ -1508,7 +1509,7 @@ func TestRunOnceSurfacesProviderStderr(t *testing.T) {
 		return nil
 	}
 
-	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", []DisplayLine{{Kind: DisplayKindPrompt, Text: "> review"}}, "review"); err != nil {
+	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", nil, []DisplayLine{{Kind: DisplayKindPrompt, Text: "> review"}}, "review"); err != nil {
 		t.Fatalf("runOnce returned error: %v", err)
 	}
 
@@ -1531,7 +1532,7 @@ func TestRunOnceSurfacesProviderStdoutPartial(t *testing.T) {
 		return nil
 	}
 
-	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", []DisplayLine{{Kind: DisplayKindPrompt, Text: "> review"}}, "review"); err != nil {
+	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", nil, []DisplayLine{{Kind: DisplayKindPrompt, Text: "> review"}}, "review"); err != nil {
 		t.Fatalf("runOnce returned error: %v", err)
 	}
 
@@ -1550,7 +1551,7 @@ func TestRunOnceRendersIncomingCycleWithoutPromptMarker(t *testing.T) {
 		return nil
 	}
 
-	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", []DisplayLine{{Kind: DisplayKindCommunication, Text: "• from architect (chat): can you review the retry path?"}}, ""); err != nil {
+	if err := loop.runOnce(context.Background(), LoopOptions{}, &state{}, "review", nil, []DisplayLine{{Kind: DisplayKindCommunication, Text: "• from architect (chat): can you review the retry path?"}}, ""); err != nil {
 		t.Fatalf("runOnce returned error: %v", err)
 	}
 
@@ -1601,7 +1602,7 @@ func TestRunOnceAddsWorktreeGitDirToBuildOptions(t *testing.T) {
 		return nil
 	}
 
-	if err := loop.runOnce(context.Background(), LoopOptions{WorkingDir: worktree}, &state{}, "review", []DisplayLine{{Kind: DisplayKindPrompt, Text: "> review"}}, "review"); err != nil {
+	if err := loop.runOnce(context.Background(), LoopOptions{WorkingDir: worktree}, &state{}, "review", nil, []DisplayLine{{Kind: DisplayKindPrompt, Text: "> review"}}, "review"); err != nil {
 		t.Fatalf("runOnce returned error: %v", err)
 	}
 	if len(provider.builds) != 1 {
@@ -1609,6 +1610,28 @@ func TestRunOnceAddsWorktreeGitDirToBuildOptions(t *testing.T) {
 	}
 	if len(provider.builds[0].AddDirs) != 1 || provider.builds[0].AddDirs[0] != gitDir {
 		t.Fatalf("expected worktree gitdir in AddDirs, got %#v", provider.builds[0].AddDirs)
+	}
+	if provider.builds[0].PromptTransport != PromptTransportStdin {
+		t.Fatalf("expected stdin prompt transport, got %q", provider.builds[0].PromptTransport)
+	}
+}
+
+func TestRunOnceKeepsArgPromptTransportForPTY(t *testing.T) {
+	provider := &buildOptionsProvider{}
+	loop := NewLoop(provider, &bytes.Buffer{})
+	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
+		onLine("done")
+		return nil
+	}
+
+	if err := loop.runOnce(context.Background(), LoopOptions{ProviderPTY: true}, &state{}, "review", nil, []DisplayLine{{Kind: DisplayKindPrompt, Text: "> review"}}, "review"); err != nil {
+		t.Fatalf("runOnce returned error: %v", err)
+	}
+	if len(provider.builds) != 1 {
+		t.Fatalf("expected one BuildCommand call, got %d", len(provider.builds))
+	}
+	if provider.builds[0].PromptTransport != PromptTransportArg {
+		t.Fatalf("expected arg prompt transport for PTY, got %q", provider.builds[0].PromptTransport)
 	}
 }
 
@@ -1853,6 +1876,51 @@ func TestRealCommandRunnerUsesNullStdinWhenProviderInputIsUnused(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for unused stdin to resolve as EOF")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RealCommandRunner returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for RealCommandRunner to finish")
+	}
+}
+
+func TestRealCommandRunnerWritesInitialPromptToStdin(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+
+	const prompt = "mail history:\n```text\nline one\n> quoted\n```\n"
+	lineSeen := make(chan string, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- RealCommandRunner(context.Background(), "", []string{
+			"python3", "-c", "import json, sys; print(json.dumps(sys.stdin.read()))",
+		}, func(line string) {
+			select {
+			case lineSeen <- line:
+			default:
+			}
+		}, &commandOutputSinks{
+			stdinText: prompt,
+		})
+	}()
+
+	select {
+	case got := <-lineSeen:
+		var payload string
+		if err := json.Unmarshal([]byte(got), &payload); err != nil {
+			t.Fatalf("unmarshal payload %q: %v", got, err)
+		}
+		if payload != prompt {
+			t.Fatalf("unexpected prompt payload %q", payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for prompt payload")
 	}
 
 	select {

@@ -36,9 +36,19 @@ type BuildOptions struct {
 	ContinueSession bool
 	AllowedTools    string
 	Model           string
+	TripOnDanger    bool
 	AddDirs         []string
+	ImagePaths      []string
+	PromptTransport PromptTransport
 	ProviderArgs    []string
 }
+
+type PromptTransport string
+
+const (
+	PromptTransportArg   PromptTransport = "arg"
+	PromptTransportStdin PromptTransport = "stdin"
+)
 
 type Provider interface {
 	Name() string
@@ -168,6 +178,7 @@ type DispatchDecision struct {
 	CycleContext string
 	DisplayLines []DisplayLine
 	UserPrompt   string
+	ImagePaths   []string
 	WaitSeconds  int
 	Skip         bool
 }
@@ -191,6 +202,7 @@ type LoopOptions struct {
 	WorkingDir      string
 	AllowedTools    string
 	Model           string
+	TripOnDanger    bool
 	ClaimedTaskRef  string
 	ProviderArgs    []string
 	ProviderPTY     bool

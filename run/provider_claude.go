@@ -18,12 +18,13 @@ func (ClaudeProvider) BuildCommand(prompt string, opts BuildOptions) ([]string, 
 	command := []string{
 		"claude",
 		"-p",
-		prompt,
-		"--dangerously-skip-permissions",
 		"--output-format",
 		"stream-json",
 		"--verbose",
 		"--include-partial-messages",
+	}
+	if !opts.TripOnDanger {
+		command = append(command, "--dangerously-skip-permissions")
 	}
 
 	if opts.ContinueSession {
@@ -43,7 +44,13 @@ func (ClaudeProvider) BuildCommand(prompt string, opts BuildOptions) ([]string, 
 		}
 		command = append(command, "--add-dir", dir)
 	}
+	// The installed Claude CLI here does not support local --image attachments.
+	// Image paths are surfaced in prompt text instead, while Codex gets native
+	// --image flags through opts.ImagePaths.
 	command = append(command, opts.ProviderArgs...)
+	if opts.PromptTransport != PromptTransportStdin {
+		command = append(command, prompt)
+	}
 
 	return command, nil
 }
@@ -55,6 +62,9 @@ func (ClaudeProvider) BuildResumeCommand(opts BuildOptions) ([]string, error) {
 	}
 
 	command := []string{"claude", "--resume", sessionID}
+	if !opts.TripOnDanger {
+		command = append(command, "--dangerously-skip-permissions")
+	}
 	if strings.TrimSpace(opts.Model) != "" {
 		command = append(command, "--model", opts.Model)
 	}
