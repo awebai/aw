@@ -48,10 +48,13 @@ func ComposeStatusLine(identity string, transient string) string {
 }
 
 func formatRunStatus(st *state) string {
-	if st == nil || st.RunLabel == "" {
+	if st == nil || st.RunPhase != RunPhaseWorking {
 		return ""
 	}
 	var parts []string
+	if taskRef := strings.TrimSpace(st.ClaimedTaskRef); taskRef != "" {
+		parts = append(parts, "task "+taskRef)
+	}
 	if st.CumulativeCostUSD > 0 {
 		parts = append(parts, fmt.Sprintf("$%.2f", st.CumulativeCostUSD))
 	}
@@ -77,6 +80,11 @@ func formatWaitStatus(label string, st *state) string {
 	}
 
 	parts := []string{label}
+	if st != nil {
+		if taskRef := strings.TrimSpace(st.ClaimedTaskRef); taskRef != "" {
+			parts = append(parts, "task "+taskRef)
+		}
+	}
 	if st != nil && st.Autofeed {
 		parts = append(parts, "autofeed")
 	}

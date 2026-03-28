@@ -154,10 +154,15 @@ func init() {
 	initCmd.Flags().BoolVar(&initSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
 	initCmd.Flags().BoolVar(&initWriteContext, "write-context", true, "Write/update .aw/context in the current directory (non-secret pointer)")
 	initCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
-	initCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (must match a role in the active project policy)")
+	addWorkspaceRoleFlags(initCmd, &initRole, "Workspace role name (must match a role in the active project roles bundle)")
 	initCmd.Flags().BoolVar(&initPermanent, "permanent", false, "Create a durable self-custodial identity instead of the default ephemeral identity")
 
 	rootCmd.AddCommand(initCmd)
+}
+
+func addWorkspaceRoleFlags(cmd *cobra.Command, target *string, description string) {
+	cmd.Flags().StringVar(target, "role-name", "", description)
+	cmd.Flags().StringVar(target, "role", "", "Compatibility alias for --role-name")
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
@@ -368,6 +373,9 @@ func resolveRequestedRole(explicit string) string {
 	if v := strings.TrimSpace(explicit); v != "" {
 		return v
 	}
+	if v := strings.TrimSpace(os.Getenv("AWEB_ROLE_NAME")); v != "" {
+		return v
+	}
 	return strings.TrimSpace(os.Getenv("AWEB_ROLE"))
 }
 
@@ -519,13 +527,13 @@ func collectInitOptionsWithInput(flow initFlow, input initCollectionInput) (init
 	} else {
 		if input.Interactive && !input.JSONOutput && !aliasExplicit && !deferAliasPrompt {
 			if inviteAliasOptional {
-				v, err := promptStringWithIO("Alias (optional)", alias, input.PromptIn, input.PromptOut)
+				v, err := promptStringWithIO("Agent alias (optional)", alias, input.PromptIn, input.PromptOut)
 				if err != nil {
 					return initOptions{}, err
 				}
 				alias = strings.TrimSpace(v)
 			} else {
-				v, err := promptRequiredStringWithIO("Alias", alias, input.PromptIn, input.PromptOut)
+				v, err := promptRequiredStringWithIO("Agent alias", alias, input.PromptIn, input.PromptOut)
 				if err != nil {
 					return initOptions{}, err
 				}
@@ -852,7 +860,7 @@ func maybeReplaceInitialCreateProjectIdentity(
 
 	currentDefault := defaultAlias
 	for {
-		alias, err := promptRequiredStringWithIO("Alias", currentDefault, in, out)
+		alias, err := promptRequiredStringWithIO("Agent alias", currentDefault, in, out)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -1025,7 +1033,6 @@ func initNextStepLines(result *initResult, workingDir string, didInjectDocs, did
 	if _, err := currentGitWorktreeRootFromDir(workingDir); err == nil {
 		lines = append(lines, formatInitNextStep("aw workspace add-worktree <role>", "Create another agent in this same git repo"))
 	}
-	lines = append(lines, formatInitNextStep("aw init", "Initialize another repo or plain directory as another agent"))
 
 	if shouldSuggestClaimHuman(result) {
 		lines = append(lines, formatInitNextStep("aw claim-human --email you@example.com", "Attach your human account for dashboard access"))

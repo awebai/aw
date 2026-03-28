@@ -86,9 +86,9 @@ func TestAwWorkspaceInitWritesWorkspaceState(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/policies/active":
+		case "/v1/roles/active":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"policy_id": "pol-1",
+				"project_roles_id": "pol-1",
 				"roles": map[string]any{
 					"developer": map[string]any{"title": "Developer"},
 				},
@@ -247,9 +247,9 @@ func TestAwInitAutoAttachesRepoContext(t *testing.T) {
 				"human_name":       "Alice",
 				"created":          true,
 			})
-		case "/v1/policies/active":
+		case "/v1/roles/active":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"policy_id": "pol-1",
+				"project_roles_id": "pol-1",
 				"roles": map[string]any{
 					"developer": map[string]any{"title": "Developer"},
 				},
@@ -327,24 +327,38 @@ func TestAwWorkspaceStatusShowsTeamState(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"workspaces": []map[string]any{
 					{
-						"workspace_id":   selfID,
-						"alias":          "alice",
-						"role":           "developer",
-						"status":         "active",
-						"hostname":       "devbox",
-						"workspace_path": "/tmp/repo",
-						"repo":           "github.com/acme/repo",
-						"branch":         "main",
+						"workspace_id":     selfID,
+						"alias":            "alice",
+						"role":             "developer",
+						"status":           "active",
+						"hostname":         "devbox",
+						"workspace_path":   "/tmp/repo",
+						"repo":             "github.com/acme/repo",
+						"branch":           "main",
+						"focus_task_ref":   "aweb-aaaa",
+						"focus_task_title": "Restore rich coordination status",
+						"apex_id":          "AWEB-AAAA",
+						"apex_title":       "Restore rich coordination status",
+						"apex_type":        "epic",
 						"claims": []map[string]any{
 							{"bead_id": "TASK-001", "title": "Own task", "claimed_at": "2026-03-10T10:00:00Z"},
 						},
 					},
 					{
-						"workspace_id": peerID,
-						"alias":        "bob",
-						"role":         "reviewer",
-						"status":       "idle",
-						"last_seen":    "2026-03-10T10:05:00Z",
+						"workspace_id":     peerID,
+						"alias":            "bob",
+						"role":             "reviewer",
+						"status":           "idle",
+						"last_seen":        "2026-03-10T10:05:00Z",
+						"hostname":         "reviewbox",
+						"workspace_path":   "/Users/bob/repo-other",
+						"repo":             "github.com/acme/other",
+						"branch":           "review-branch",
+						"focus_task_ref":   "TASK-002",
+						"focus_task_title": "Peer task",
+						"apex_id":          "TASK-900",
+						"apex_title":       "Review release",
+						"apex_type":        "task",
 						"claims": []map[string]any{
 							{"bead_id": "TASK-002", "title": "Peer task", "claimed_at": "2026-03-10T10:01:00Z"},
 						},
@@ -371,7 +385,7 @@ func TestAwWorkspaceStatusShowsTeamState(t *testing.T) {
 						"holder_alias":    "bob",
 						"acquired_at":     "2026-03-10T10:00:00Z",
 						"expires_at":      "2099-03-10T10:00:00Z",
-						"metadata":        map[string]any{},
+						"metadata":        map[string]any{"reason": "review follow-up"},
 					},
 				},
 			})
@@ -450,14 +464,22 @@ default_account: acct
 		"## Self",
 		"- Alias: alice",
 		"- Context: repo_worktree",
-		"## Claims",
-		"TASK-001",
-		"## Locks",
-		"src/main.go",
+		"- Repo: github.com/acme/repo",
+		"- Branch: main",
+		"- Focus: aweb-aaaa (Restore rich coordination status)",
+		"- Epic: AWEB-AAAA (Restore rich coordination status)",
+		"- Claims: TASK-001 \"Own task\" (",
+		"[stale]",
+		"- Locks: src/main.go (TTL:",
 		"## Team",
-		"bob (reviewer) — idle, 1 claim(s)",
-		"TASK-002",
-		"lock src/review.go",
+		"bob (reviewer) — idle, seen ",
+		"Host: reviewbox  Path: /Users/bob/repo-other",
+		"Repo: github.com/acme/other  Branch: review-branch",
+		"Focus: TASK-002 (Peer task)",
+		"Working on: TASK-900 (Review release)",
+		"Claims: TASK-002 \"Peer task\" (",
+		"Locks: src/review.go (TTL:",
+		"reason: review follow-up",
 		"Escalations pending: 2",
 		"Claim conflicts: 1",
 	} {
@@ -489,9 +511,20 @@ func TestAwWorkspaceStatusWithoutLocalWorkspaceShowsAgentContext(t *testing.T) {
 						"alias":        "reviewer-jane",
 						"role":         "coordinator",
 						"status":       "active",
+						"repo":         "github.com/acme/ac",
+						"branch":       "main",
+						"apex_id":      "EPIC-22",
+						"apex_title":   "Release coordination",
+						"apex_type":    "epic",
 						"claims": []map[string]any{
 							{"bead_id": "TASK-100", "title": "Coordinate release", "claimed_at": "2026-03-10T10:01:00Z"},
 						},
+					},
+					{
+						"workspace_id": "55555555-5555-5555-5555-555555555555",
+						"alias":        "floating",
+						"status":       "idle",
+						"claims":       []map[string]any{},
 					},
 				},
 				"has_more": false,
@@ -559,14 +592,125 @@ default_account: acct
 		"- Alias: coordinator",
 		"- Context: none",
 		"- Status: offline",
+		"- Focus: none",
+		"- Claims: none",
+		"- Locks: none",
 		"## Team",
-		"reviewer-jane (coordinator) — active, 1 claim(s)",
-		"TASK-100",
+		"reviewer-jane (coordinator) — active",
+		"Repo: github.com/acme/ac",
+		"Focus: none",
+		"Epic: EPIC-22 (Release coordination)",
+		"Claims: TASK-100 \"Coordinate release\" (",
+		"Locks: none",
+		"floating — idle",
 		"Escalations pending: 1",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("output missing %q:\n%s", want, text)
 		}
+	}
+	if strings.Contains(text, "floating — idle\n  Repo:") {
+		t.Fatalf("expected repo line to be omitted when repo/branch are empty:\n%s", text)
+	}
+	if strings.Contains(text, "Repo: github.com/acme/ac  Branch: main") {
+		t.Fatalf("expected main branch to be hidden for team workspaces:\n%s", text)
+	}
+}
+
+func TestAwWorkspaceStatusTruncatesTeamLocks(t *testing.T) {
+	t.Parallel()
+
+	const selfID = "11111111-1111-1111-1111-111111111111"
+	const peerID = "44444444-4444-4444-4444-444444444444"
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
+			t.Fatalf("auth=%q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/v1/workspaces/team":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspaces": []map[string]any{
+					{
+						"workspace_id": selfID,
+						"alias":        "alice",
+						"status":       "active",
+					},
+					{
+						"workspace_id": peerID,
+						"alias":        "bob",
+						"status":       "active",
+					},
+				},
+				"has_more": false,
+			})
+		case "/v1/reservations":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"reservations": []map[string]any{
+					{"project_id": "proj-1", "resource_key": "src/1.go", "holder_agent_id": peerID, "holder_alias": "bob", "acquired_at": "2026-03-10T10:00:00Z", "expires_at": "2099-03-10T10:00:00Z", "metadata": map[string]any{}},
+					{"project_id": "proj-1", "resource_key": "src/2.go", "holder_agent_id": peerID, "holder_alias": "bob", "acquired_at": "2026-03-10T10:00:00Z", "expires_at": "2099-03-10T10:00:00Z", "metadata": map[string]any{}},
+					{"project_id": "proj-1", "resource_key": "src/3.go", "holder_agent_id": peerID, "holder_alias": "bob", "acquired_at": "2026-03-10T10:00:00Z", "expires_at": "2099-03-10T10:00:00Z", "metadata": map[string]any{}},
+					{"project_id": "proj-1", "resource_key": "src/4.go", "holder_agent_id": peerID, "holder_alias": "bob", "acquired_at": "2026-03-10T10:00:00Z", "expires_at": "2099-03-10T10:00:00Z", "metadata": map[string]any{}},
+				},
+			})
+		case "/v1/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspace": map[string]any{"project_id": "proj-1", "project_slug": "demo", "workspace_count": 2},
+				"agents":    []map[string]any{},
+				"claims":    []map[string]any{},
+				"conflicts": []map[string]any{},
+				"timestamp": "2026-03-10T10:10:00Z",
+			})
+		case "/v1/workspaces":
+			_ = json.NewEncoder(w).Encode(map[string]any{"workspaces": []map[string]any{}, "has_more": false})
+		case "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	buildAwBinary(t, ctx, bin)
+
+	if err := os.WriteFile(cfgPath, []byte(strings.TrimSpace(`
+servers:
+  local:
+    url: `+server.URL+`
+accounts:
+  acct:
+    server: local
+    api_key: aw_sk_test
+    identity_id: `+selfID+`
+    identity_handle: alice
+    namespace_slug: demo
+default_account: acct
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "workspace", "status")
+	run.Env = append(os.Environ(),
+		"AW_CONFIG_PATH="+cfgPath,
+		"AWEB_URL=",
+		"AWEB_API_KEY=",
+	)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run failed: %v\n%s", err, string(out))
+	}
+	text := string(out)
+	if !strings.Contains(text, "Locks: src/1.go (TTL:") || !strings.Contains(text, "...1 more") {
+		t.Fatalf("expected truncated team lock summary:\n%s", text)
+	}
+	if strings.Contains(text, "src/4.go") {
+		t.Fatalf("expected fourth lock to be hidden behind overflow indicator:\n%s", text)
 	}
 }
 
@@ -1130,9 +1274,9 @@ func TestAwWorkspaceAddWorktreeCreatesSiblingWorktree(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/policies/active":
+		case "/v1/roles/active":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"policy_id": "pol-1",
+				"project_roles_id": "pol-1",
 				"roles": map[string]any{
 					"developer": map[string]any{"title": "Developer"},
 				},
@@ -1338,9 +1482,9 @@ func TestAwWorkspaceAddWorktreeRequiresRoleInNonTTYMode(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/policies/active":
+		case "/v1/roles/active":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"policy_id": "pol-1",
+				"project_roles_id": "pol-1",
 				"roles": map[string]any{
 					"coordinator": map[string]any{"title": "Coordinator"},
 					"developer":   map[string]any{"title": "Developer"},
@@ -1416,9 +1560,9 @@ func TestAwWorkspaceAddWorktreeRejectsInvalidExplicitAlias(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/policies/active":
+		case "/v1/roles/active":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"policy_id": "pol-1",
+				"project_roles_id": "pol-1",
 				"roles": map[string]any{
 					"developer": map[string]any{"title": "Developer"},
 				},
@@ -1530,9 +1674,9 @@ func TestAwWorkspaceAddWorktreeExplicitAliasCreatesSiblingWorktree(t *testing.T)
 				"human_name":       "Wendy",
 				"created":          true,
 			})
-		case "/v1/policies/active":
+		case "/v1/roles/active":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"policy_id": "pol-1",
+				"project_roles_id": "pol-1",
 				"roles": map[string]any{
 					"developer": map[string]any{"title": "Developer"},
 				},
@@ -1619,9 +1763,9 @@ func TestAwWorkspaceAddWorktreeCleansUpOnInitFailure(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/policies/active":
+		case "/v1/roles/active":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"policy_id": "pol-1",
+				"project_roles_id": "pol-1",
 				"roles": map[string]any{
 					"developer": map[string]any{"title": "Developer"},
 				},
@@ -1730,9 +1874,9 @@ func TestAwWorkspaceAddWorktreeRetriesAliasTakenSuggestion(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/policies/active":
+		case "/v1/roles/active":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"policy_id": "pol-1",
+				"project_roles_id": "pol-1",
 				"roles": map[string]any{
 					"developer": map[string]any{"title": "Developer"},
 				},

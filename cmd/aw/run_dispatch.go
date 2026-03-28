@@ -53,6 +53,7 @@ func (d runDispatcher) Next(ctx context.Context, autofeed bool, wakeEvent *awid.
 		}
 		return awrun.DispatchDecision{
 			CycleContext: joinPromptSections(resolved.CycleContext, d.commsPromptSuffix),
+			DisplayLines: awrun.SplitDisplayText(awrun.DisplayKindCommunication, resolved.CycleContext),
 			WaitSeconds:  awrun.DefaultWaitSeconds,
 		}, nil
 	case awid.AgentEventWorkAvailable, awid.AgentEventClaimUpdate, awid.AgentEventClaimRemoved:
@@ -61,6 +62,7 @@ func (d runDispatcher) Next(ctx context.Context, autofeed bool, wakeEvent *awid.
 		}
 		return awrun.DispatchDecision{
 			CycleContext: joinPromptSections(formatWorkWakePrompt(*wakeEvent), d.workPromptSuffix),
+			DisplayLines: formatWorkWakeDisplay(*wakeEvent),
 			WaitSeconds:  awrun.DefaultWaitSeconds,
 		}, nil
 	default:
@@ -68,14 +70,15 @@ func (d runDispatcher) Next(ctx context.Context, autofeed bool, wakeEvent *awid.
 	}
 }
 
-func newRunWakeValidator(client *aweb.Client) runWakeResolver {
+func newRunWakeValidator(client *aweb.Client, selfAlias string) runWakeResolver {
 	if client == nil || client.Client == nil {
 		return nil
 	}
+	selfAlias = strings.TrimSpace(selfAlias)
 	return func(ctx context.Context, evt awid.AgentEvent) (runWakeResolution, error) {
 		switch evt.Type {
 		case awid.AgentEventActionableChat:
-			return resolveChatWake(ctx, client, evt)
+			return resolveChatWakeForAlias(ctx, client, selfAlias, evt)
 		case awid.AgentEventActionableMail:
 			return resolveMailWake(ctx, client, evt)
 		case awid.AgentEventWorkAvailable, awid.AgentEventClaimUpdate, awid.AgentEventClaimRemoved:
@@ -87,6 +90,10 @@ func newRunWakeValidator(client *aweb.Client) runWakeResolver {
 }
 
 func resolveChatWake(ctx context.Context, client *aweb.Client, evt awid.AgentEvent) (runWakeResolution, error) {
+	return resolveChatWakeForAlias(ctx, client, "", evt)
+}
+
+func resolveChatWakeForAlias(ctx context.Context, client *aweb.Client, selfAlias string, evt awid.AgentEvent) (runWakeResolution, error) {
 	sessionID := strings.TrimSpace(evt.SessionID)
 	if sessionID == "" {
 		return runWakeResolution{CycleContext: formatFallbackCommsContext(evt)}, nil
@@ -109,6 +116,9 @@ func resolveChatWake(ctx context.Context, client *aweb.Client, evt awid.AgentEve
 			for _, msg := range history.Messages {
 				if strings.TrimSpace(msg.MessageID) != messageID {
 					continue
+				}
+				if chatMessageFromSelf(msg, selfAlias) {
+					return runWakeResolution{Skip: true}, nil
 				}
 				alias := strings.TrimSpace(evt.FromAlias)
 				if alias == "" {
@@ -140,12 +150,45 @@ func resolveChatWake(ctx context.Context, client *aweb.Client, evt awid.AgentEve
 		})
 		if histResp != nil {
 			markChatHistoryRead(ctx, client, sessionID, histResp.Messages)
+			if latest := latestIncomingChatMessage(histResp.Messages, selfAlias); latest != nil {
+				alias := strings.TrimSpace(latest.FromAgent)
+				if alias == "" {
+					alias = strings.TrimSpace(evt.FromAlias)
+				}
+				return runWakeResolution{
+					CycleContext: formatIncomingChatContext(alias, latest.Body),
+				}, nil
+			}
+			if len(histResp.Messages) > 0 {
+				return runWakeResolution{Skip: true}, nil
+			}
+		}
+		if selfAlias != "" && strings.EqualFold(strings.TrimSpace(pending.LastFrom), selfAlias) {
+			return runWakeResolution{Skip: true}, nil
 		}
 		return runWakeResolution{
 			CycleContext: formatIncomingChatContext(alias, pending.LastMessage),
 		}, nil
 	}
 	return runWakeResolution{Skip: true}, nil
+}
+
+func chatMessageFromSelf(msg awid.ChatMessage, selfAlias string) bool {
+	selfAlias = strings.TrimSpace(selfAlias)
+	if selfAlias == "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(msg.FromAgent), selfAlias)
+}
+
+func latestIncomingChatMessage(messages []awid.ChatMessage, selfAlias string) *awid.ChatMessage {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if chatMessageFromSelf(messages[i], selfAlias) {
+			continue
+		}
+		return &messages[i]
+	}
+	return nil
 }
 
 func resolveMailWake(ctx context.Context, client *aweb.Client, evt awid.AgentEvent) (runWakeResolution, error) {
@@ -302,6 +345,24 @@ func formatWorkWakePrompt(evt awid.AgentEvent) string {
 	default:
 		return ""
 	}
+}
+
+func formatWorkWakeDisplay(evt awid.AgentEvent) []awrun.DisplayLine {
+	var text string
+	switch evt.Type {
+	case awid.AgentEventWorkAvailable:
+		text = "• work available" + formatWakeTask(evt)
+	case awid.AgentEventClaimUpdate:
+		text = "• claim changed" + formatWakeTask(evt)
+		if status := strings.TrimSpace(evt.Status); status != "" {
+			text += " — " + status
+		}
+	case awid.AgentEventClaimRemoved:
+		text = "• claim removed" + formatWakeTask(evt)
+	default:
+		return nil
+	}
+	return awrun.SplitDisplayText(awrun.DisplayKindTaskActivity, text)
 }
 
 func formatWakeAlias(alias string) string {

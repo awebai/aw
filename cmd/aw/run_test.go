@@ -82,6 +82,7 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 	oldNewEventBus := runNewEventBus
 	oldNewScreen := runNewScreenController
 	oldWorkspaceState := runWorkspaceStateForDir
+	oldResolveClaimedTaskRef := runResolveClaimedTaskRef
 	t.Cleanup(func() {
 		runLoadUserConfig = oldLoad
 		runResolveSettings = oldResolveSettings
@@ -92,6 +93,7 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 		runNewEventBus = oldNewEventBus
 		runNewScreenController = oldNewScreen
 		runWorkspaceStateForDir = oldWorkspaceState
+		runResolveClaimedTaskRef = oldResolveClaimedTaskRef
 		initRunCommandVars()
 	})
 
@@ -125,7 +127,7 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 		if !strings.HasSuffix(dir, "testdata") {
 			t.Fatalf("expected selection dir to match working dir, got %q", dir)
 		}
-		return &aweb.Client{}, &awconfig.Selection{NamespaceSlug: "team", IdentityHandle: "rose"}, nil
+		return &aweb.Client{}, &awconfig.Selection{NamespaceSlug: "team", IdentityHandle: "rose", IdentityID: "ws-1"}, nil
 	}
 	runWorkspaceStateForDir = func(dir string) (runWorkspaceState, error) {
 		return runWorkspaceStateInitialized, nil
@@ -135,6 +137,12 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 			t.Fatal("expected client for event bus")
 		}
 		return nil
+	}
+	runResolveClaimedTaskRef = func(ctx context.Context, client *aweb.Client, workspaceID string) (string, error) {
+		if workspaceID == "" {
+			t.Fatal("expected workspace id for claim lookup")
+		}
+		return "aweb-aaag", nil
 	}
 	runNewScreenController = func(in io.Reader, out io.Writer) *awrun.ScreenController { return nil }
 
@@ -198,6 +206,9 @@ func TestRunBuildsLoopOptionsFromConfigAndFlags(t *testing.T) {
 	}
 	if capturedOpts.MaxRuns != 3 || capturedOpts.AllowedTools != "Read,Write" || capturedOpts.Model != "sonnet" {
 		t.Fatalf("unexpected opts: %+v", capturedOpts)
+	}
+	if capturedOpts.ClaimedTaskRef != "aweb-aaag" {
+		t.Fatalf("expected claimed task ref in opts, got %+v", capturedOpts)
 	}
 	if capturedOpts.ProviderPTY {
 		t.Fatalf("expected ProviderPTY=false when no interactive screen is available, got %+v", capturedOpts)
@@ -773,6 +784,9 @@ func TestNewRunDispatcherBuildsMailPrompt(t *testing.T) {
 	if !strings.Contains(decision.CycleContext, "• from mia (mail): API review — please take a look") {
 		t.Fatalf("expected hydrated mail content, got %q", decision.CycleContext)
 	}
+	if len(decision.DisplayLines) == 0 || decision.DisplayLines[0].Kind != awrun.DisplayKindCommunication {
+		t.Fatalf("expected communication display lines, got %+v", decision.DisplayLines)
+	}
 	if !strings.Contains(decision.CycleContext, "comms suffix") {
 		t.Fatalf("expected comms suffix in prompt, got %q", decision.CycleContext)
 	}
@@ -821,6 +835,9 @@ func TestNewRunDispatcherBuildsActionableChatPrompt(t *testing.T) {
 	if !strings.Contains(decision.CycleContext, "• from henry (chat): ping") {
 		t.Fatalf("expected hydrated chat content, got %q", decision.CycleContext)
 	}
+	if len(decision.DisplayLines) == 0 || decision.DisplayLines[0].Kind != awrun.DisplayKindCommunication {
+		t.Fatalf("expected communication display lines, got %+v", decision.DisplayLines)
+	}
 }
 
 func TestNewRunDispatcherBuildsIdleActionableChatPrompt(t *testing.T) {
@@ -843,6 +860,9 @@ func TestNewRunDispatcherBuildsIdleActionableChatPrompt(t *testing.T) {
 	}
 	if !strings.Contains(decision.CycleContext, "• from rose (chat): when you have a moment") {
 		t.Fatalf("expected chat content, got %q", decision.CycleContext)
+	}
+	if len(decision.DisplayLines) == 0 || decision.DisplayLines[0].Kind != awrun.DisplayKindCommunication {
+		t.Fatalf("expected communication display lines, got %+v", decision.DisplayLines)
 	}
 }
 
@@ -902,6 +922,29 @@ func TestNewRunDispatcherSkipsWorkWakeWithoutAutofeed(t *testing.T) {
 	}
 }
 
+func TestNewRunDispatcherBuildsTaskActivityDisplayForWorkWake(t *testing.T) {
+	dispatcher := newRunDispatcher(awrun.Settings{}, nil)
+
+	decision, err := dispatcher.Next(context.Background(), true, &awid.AgentEvent{
+		Type:   awid.AgentEventClaimUpdate,
+		TaskID: "aweb-aaat.1",
+		Title:  "Introduce a semantic run display model",
+		Status: "in_progress",
+	})
+	if err != nil {
+		t.Fatalf("Next returned error: %v", err)
+	}
+	if len(decision.DisplayLines) != 1 {
+		t.Fatalf("expected one task activity display line, got %+v", decision.DisplayLines)
+	}
+	if decision.DisplayLines[0].Kind != awrun.DisplayKindTaskActivity {
+		t.Fatalf("expected task activity kind, got %+v", decision.DisplayLines)
+	}
+	if !strings.Contains(decision.DisplayLines[0].Text, "claim changed") {
+		t.Fatalf("expected claim activity text, got %+v", decision.DisplayLines)
+	}
+}
+
 func TestNewRunDispatcherSkipsStaleActionableChat(t *testing.T) {
 	dispatcher := newRunDispatcher(awrun.Settings{}, func(context.Context, awid.AgentEvent) (runWakeResolution, error) {
 		return runWakeResolution{Skip: true}, nil
@@ -936,6 +979,10 @@ func (p *recordingRunProvider) BuildCommand(prompt string, opts awrun.BuildOptio
 	p.prompts = append(p.prompts, prompt)
 	p.builds = append(p.builds, opts)
 	return []string{"fake-provider", prompt}, nil
+}
+
+func (p *recordingRunProvider) BuildResumeCommand(opts awrun.BuildOptions) ([]string, error) {
+	return []string{"fake-provider", "resume", opts.SessionID}, nil
 }
 
 func (p *recordingRunProvider) ParseOutput(string) (*awrun.Event, error) {
@@ -1035,6 +1082,9 @@ func TestRunUsesWakeEventToTriggerSecondCycle(t *testing.T) {
 		loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
 			onLine("done")
 			return nil
+		}
+		loop.Sleep = func(ctx context.Context, d time.Duration) error {
+			return context.Canceled
 		}
 		return loop
 	}
@@ -1256,6 +1306,135 @@ func TestRunContinuePrintsRecentInteractionRecap(t *testing.T) {
 	}
 	if strings.Contains(out, "[10:00]") {
 		t.Fatalf("did not expect timestamps in recap, got %q", out)
+	}
+}
+
+func TestSplitRunInvocationArgsSeparatesProviderArgsAfterDash(t *testing.T) {
+	positional, providerArgs, err := splitRunInvocationArgs([]string{"claude", "--verbose", "--model", "sonnet"}, 1)
+	if err != nil {
+		t.Fatalf("splitRunInvocationArgs returned error: %v", err)
+	}
+	if len(positional) != 1 || positional[0] != "claude" {
+		t.Fatalf("unexpected positional args: %#v", positional)
+	}
+	if strings.Join(providerArgs, " ") != "--verbose --model sonnet" {
+		t.Fatalf("unexpected provider args: %#v", providerArgs)
+	}
+}
+
+func TestSplitRunInvocationArgsRejectsExtraArgsWithoutDash(t *testing.T) {
+	if _, _, err := splitRunInvocationArgs([]string{"claude", "--verbose"}, -1); err == nil {
+		t.Fatal("expected missing -- separator to return an error")
+	}
+}
+
+type exitCommandProvider struct {
+	resumeOpts awrun.BuildOptions
+}
+
+func (p *exitCommandProvider) Name() string { return "claude" }
+
+func (p *exitCommandProvider) BuildCommand(prompt string, opts awrun.BuildOptions) ([]string, error) {
+	return []string{"fake-provider", prompt}, nil
+}
+
+func (p *exitCommandProvider) BuildResumeCommand(opts awrun.BuildOptions) ([]string, error) {
+	p.resumeOpts = opts
+	return []string{"claude", "--resume", opts.SessionID, "--add-dir", "/tmp/gitdir", "--debug"}, nil
+}
+
+func (p *exitCommandProvider) ParseOutput(string) (*awrun.Event, error) {
+	return &awrun.Event{Type: awrun.EventDone}, nil
+}
+
+func (p *exitCommandProvider) SessionID(event *awrun.Event) string {
+	if event == nil {
+		return ""
+	}
+	return event.Session
+}
+
+func TestRunPrintsContinueAndProviderCommandsOnExit(t *testing.T) {
+	initRunCommandVars()
+
+	oldLoad := runLoadUserConfig
+	oldResolveSettings := runResolveSettings
+	oldNewProvider := runNewProvider
+	oldResolveClient := runResolveClientForDir
+	oldNewLoop := runNewLoop
+	oldExecuteLoop := runExecuteLoop
+	oldNewEventBus := runNewEventBus
+	oldNewScreen := runNewScreenController
+	oldWorkspaceState := runWorkspaceStateForDir
+	t.Cleanup(func() {
+		runLoadUserConfig = oldLoad
+		runResolveSettings = oldResolveSettings
+		runNewProvider = oldNewProvider
+		runResolveClientForDir = oldResolveClient
+		runNewLoop = oldNewLoop
+		runExecuteLoop = oldExecuteLoop
+		runNewEventBus = oldNewEventBus
+		runNewScreenController = oldNewScreen
+		runWorkspaceStateForDir = oldWorkspaceState
+		initRunCommandVars()
+	})
+
+	tmp := t.TempDir()
+	runWorkingDir = tmp
+	runLoadUserConfig = func(string) (awrun.UserConfig, error) { return awrun.UserConfig{}, nil }
+	runResolveSettings = func(cfg awrun.UserConfig, overrides awrun.SettingOverrides) (awrun.Settings, error) {
+		return awrun.Settings{BasePrompt: "mission", WaitSeconds: 5, IdleWaitSeconds: 5}, nil
+	}
+	provider := &exitCommandProvider{}
+	runNewProvider = func(name string) (awrun.Provider, error) { return provider, nil }
+	runResolveClientForDir = func(string) (*aweb.Client, *awconfig.Selection, error) {
+		return &aweb.Client{}, &awconfig.Selection{NamespaceSlug: "team", IdentityHandle: "rose"}, nil
+	}
+	runWorkspaceStateForDir = func(string) (runWorkspaceState, error) { return runWorkspaceStateInitialized, nil }
+	runNewEventBus = func(client *aweb.Client) *awrun.EventBus { return nil }
+	runNewScreenController = func(in io.Reader, out io.Writer) *awrun.ScreenController { return nil }
+	runNewLoop = func(provider awrun.Provider, out io.Writer) *awrun.Loop {
+		return awrun.NewLoop(provider, out)
+	}
+	runExecuteLoop = func(loop *awrun.Loop, ctx context.Context, opts awrun.LoopOptions) error {
+		if loop.OnBuildCommand == nil || loop.OnSessionID == nil {
+			t.Fatal("expected exit command callbacks to be set")
+		}
+		loop.OnBuildCommand(nil, awrun.BuildOptions{
+			Model:        "sonnet",
+			AddDirs:      []string{"/tmp/gitdir"},
+			ProviderArgs: []string{"--debug"},
+		})
+		loop.OnSessionID("sess-42")
+		return nil
+	}
+
+	cmd := &cobraCommandClone{Command: *runCmd}
+	cmd.ResetFlagsForTest()
+	cmd.Command.SetContext(context.Background())
+	runWorkingDir = tmp
+	var stdout, stderr bytes.Buffer
+	setRunCommandIO(&cmd.Command, strings.NewReader(""), &stdout, &stderr)
+
+	if err := runRun(&cmd.Command, []string{"claude"}); err != nil {
+		t.Fatalf("runRun returned error: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "Session sess-42") {
+		t.Fatalf("expected session id in exit summary, got %q", out)
+	}
+	if !strings.Contains(out, "aw run --dir "+tmp+" claude --continue") {
+		t.Fatalf("expected aw continue command, got %q", out)
+	}
+	if !strings.Contains(out, "claude --resume sess-42 --add-dir /tmp/gitdir --debug") {
+		t.Fatalf("expected provider resume command, got %q", out)
+	}
+	if provider.resumeOpts.SessionID != "sess-42" {
+		t.Fatalf("expected provider resume command to receive session id, got %+v", provider.resumeOpts)
+	}
+	if len(provider.resumeOpts.ProviderArgs) != 1 || provider.resumeOpts.ProviderArgs[0] != "--debug" {
+		t.Fatalf("expected provider args to carry through, got %+v", provider.resumeOpts)
 	}
 }
 

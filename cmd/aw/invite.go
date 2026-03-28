@@ -139,9 +139,10 @@ var spawnAcceptInviteCmd = &cobra.Command{
 	Long: `Accept a spawn invite and initialize the current directory as a new
 agent workspace in the target project.
 
-In a TTY, aw will prompt for the identity type plus any missing alias,
-name, or role information before initializing the workspace. For
-non-interactive use, pass the required flags explicitly.`,
+In a TTY, aw will prompt for any missing alias, name, or role
+information before initializing the workspace. Identities are
+ephemeral by default; pass --permanent to create a durable
+self-custodial identity instead.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSpawnAcceptInvite,
 }
@@ -165,7 +166,7 @@ func init() {
 	spawnAcceptInviteCmd.Flags().BoolVar(&initSetDefault, "set-default", false, "Set this account as default_account in ~/.config/aw/config.yaml")
 	spawnAcceptInviteCmd.Flags().BoolVar(&initWriteContext, "write-context", true, "Write/update .aw/context in the current directory (non-secret pointer)")
 	spawnAcceptInviteCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
-	spawnAcceptInviteCmd.Flags().StringVar(&initRole, "role", "", "Workspace role (must match a role in the active project policy)")
+	addWorkspaceRoleFlags(spawnAcceptInviteCmd, &initRole, "Workspace role name (must match a role in the active project roles bundle)")
 	spawnAcceptInviteCmd.Flags().BoolVar(&initPermanent, "permanent", false, "Create a durable self-custodial identity instead of the default ephemeral identity")
 
 	spawnCmd.AddCommand(spawnCreateInviteCmd)
@@ -316,13 +317,6 @@ func runSpawnAcceptInvite(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	permanent := initPermanent
-	if isTTY() && !jsonFlag && !cmd.Flags().Changed("permanent") {
-		var err error
-		permanent, err = promptIdentityLifetime(os.Stdin, os.Stderr)
-		if err != nil {
-			return err
-		}
-	}
 
 	workingDir, err := os.Getwd()
 	if err != nil {

@@ -455,7 +455,7 @@ func registerWorkspaceForRoot(root string, client *aweb.Client, roleOverride str
 	if role == "" && existingState != nil {
 		role = strings.TrimSpace(existingState.Role)
 	}
-	// Only resolve from policy if we don't already have a role.
+	// Only resolve from project roles if we don't already have a role.
 	// Callers that pre-validate the role (init, project create,
 	// add-worktree, roles set) pass it here already validated.
 	if role == "" {
@@ -704,15 +704,15 @@ func isValidWorkspaceRole(role string) bool {
 	return true
 }
 
-// fetchAvailableRoles returns the available roles from the project policy.
+// fetchAvailableRoles returns the available roles from the project roles bundle.
 // This is the single source of truth for role lists.
 func fetchAvailableRoles(client *aweb.Client) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	resp, err := client.ActivePolicy(ctx, aweb.ActivePolicyParams{OnlySelected: false})
+	resp, err := client.ActiveProjectRoles(ctx, aweb.ActiveProjectRolesParams{OnlySelected: false})
 	if err != nil {
-		return nil, fmt.Errorf("fetching policy roles: %w", err)
+		return nil, fmt.Errorf("fetching project roles: %w", err)
 	}
 
 	roles := make([]string, 0, len(resp.Roles))
@@ -723,18 +723,18 @@ func fetchAvailableRoles(client *aweb.Client) ([]string, error) {
 	return roles, nil
 }
 
-// resolveRole fetches available roles from the project policy, validates
+// resolveRole fetches available roles from the project roles bundle, validates
 // the requested role against them, and optionally prompts the user to
 // choose. This is the single entry point for role resolution.
 func resolveRole(client *aweb.Client, requested string, allowPrompt bool, in io.Reader, out io.Writer) (string, error) {
 	roles, err := fetchAvailableRoles(client)
 	if err != nil {
-		// Policy endpoint unavailable — accept the requested role as-is.
+		// Roles endpoint unavailable — accept the requested role as-is.
 		debugLog("fetch roles: %v", err)
 		return normalizeWorkspaceRole(requested), nil
 	}
 	if len(roles) == 0 {
-		// No policy defined — accept the requested role as-is.
+		// No project roles defined — accept the requested role as-is.
 		return normalizeWorkspaceRole(requested), nil
 	}
 	return selectRoleFromAvailableRoles(requested, roles, allowPrompt, in, out)
@@ -742,7 +742,7 @@ func resolveRole(client *aweb.Client, requested string, allowPrompt bool, in io.
 
 func selectRoleFromAvailableRoles(requested string, roles []string, allowPrompt bool, in io.Reader, out io.Writer) (string, error) {
 	if len(roles) == 0 {
-		return "", usageError("no roles defined in the active project policy")
+		return "", usageError("no roles defined in the active project roles")
 	}
 
 	normalizedRoles := make(map[string]string, len(roles))
@@ -912,6 +912,7 @@ func apiStructuredErrorCode(err error) (string, bool) {
 func formatWorkspaceStatus(v any) string {
 	out := v.(workspaceStatusOutput)
 	var sb strings.Builder
+	now := time.Now()
 
 	sb.WriteString("## Self\n")
 	sb.WriteString(fmt.Sprintf("- Alias: %s\n", out.Workspace.Alias))
@@ -932,53 +933,39 @@ func formatWorkspaceStatus(v any) string {
 	if out.Workspace.Branch != nil && strings.TrimSpace(*out.Workspace.Branch) != "" {
 		sb.WriteString(fmt.Sprintf("- Branch: %s\n", strings.TrimSpace(*out.Workspace.Branch)))
 	}
-
-	if len(out.Workspace.Claims) > 0 {
-		sb.WriteString("\n## Claims\n")
-		for _, claim := range out.Workspace.Claims {
-			title := ""
-			if claim.Title != nil && strings.TrimSpace(*claim.Title) != "" {
-				title = fmt.Sprintf(" \"%s\"", strings.TrimSpace(*claim.Title))
-			}
-			sb.WriteString(fmt.Sprintf("- %s%s — %s\n", claim.BeadID, title, formatTimeAgo(claim.ClaimedAt)))
-		}
+	sb.WriteString(fmt.Sprintf("- Focus: %s\n", formatWorkspaceFocus(out.Workspace)))
+	if apexLine := formatWorkspaceApexLine(out.Workspace); apexLine != "" {
+		sb.WriteString(fmt.Sprintf("- %s\n", apexLine))
 	}
-
-	if len(out.Locks) > 0 {
-		sb.WriteString("\n## Locks\n")
-		now := time.Now()
-		for _, lock := range out.Locks {
-			sb.WriteString(fmt.Sprintf("- %s — expires in %s\n", lock.ResourceKey, formatDuration(ttlRemainingSeconds(lock.ExpiresAt, now))))
-		}
-	}
+	sb.WriteString(fmt.Sprintf("- Claims: %s\n", formatWorkspaceClaimsSummary(out.Workspace.Claims)))
+	sb.WriteString(fmt.Sprintf("- Locks: %s\n", formatWorkspaceLocksSummary(out.Locks, now, 0)))
 
 	sb.WriteString("\n## Team\n")
 	if len(out.Team) == 0 {
 		sb.WriteString("No other workspaces.\n")
 	} else {
 		for _, workspace := range out.Team {
-			line := fmt.Sprintf("- %s", workspace.Alias)
+			line := workspace.Alias
 			if workspace.Role != nil && strings.TrimSpace(*workspace.Role) != "" {
 				line += " (" + strings.TrimSpace(*workspace.Role) + ")"
 			}
 			line += " — " + workspace.Status
-			if len(workspace.Claims) > 0 {
-				line += fmt.Sprintf(", %d claim(s)", len(workspace.Claims))
-			}
 			if lastSeen := derefString(workspace.LastSeen); lastSeen != "" {
 				line += ", seen " + formatTimeAgo(lastSeen)
 			}
 			sb.WriteString(line + "\n")
-			for _, claim := range workspace.Claims {
-				title := ""
-				if claim.Title != nil && strings.TrimSpace(*claim.Title) != "" {
-					title = fmt.Sprintf(" \"%s\"", strings.TrimSpace(*claim.Title))
-				}
-				sb.WriteString(fmt.Sprintf("  %s%s\n", claim.BeadID, title))
+			if hostPathLine := formatWorkspaceHostPath(workspace); hostPathLine != "" {
+				sb.WriteString(fmt.Sprintf("  %s\n", hostPathLine))
 			}
-			for _, lock := range out.TeamLocks[workspace.WorkspaceID] {
-				sb.WriteString(fmt.Sprintf("  lock %s\n", lock.ResourceKey))
+			if repoLine := formatWorkspaceRepoBranch(workspace, true); repoLine != "" {
+				sb.WriteString(fmt.Sprintf("  %s\n", repoLine))
 			}
+			sb.WriteString(fmt.Sprintf("  Focus: %s\n", formatWorkspaceFocus(workspace)))
+			if apexLine := formatWorkspaceApexLine(workspace); apexLine != "" {
+				sb.WriteString(fmt.Sprintf("  %s\n", apexLine))
+			}
+			sb.WriteString(fmt.Sprintf("  Claims: %s\n", formatWorkspaceClaimsSummary(workspace.Claims)))
+			sb.WriteString(fmt.Sprintf("  Locks: %s\n", formatWorkspaceLocksSummary(out.TeamLocks[workspace.WorkspaceID], now, 3)))
 		}
 	}
 
@@ -987,6 +974,120 @@ func formatWorkspaceStatus(v any) string {
 		sb.WriteString(fmt.Sprintf("Claim conflicts: %d\n", out.ConflictCount))
 	}
 	return sb.String()
+}
+
+func formatWorkspaceHostPath(workspace aweb.WorkspaceInfo) string {
+	hostname := strings.TrimSpace(derefString(workspace.Hostname))
+	path := strings.TrimSpace(derefString(workspace.WorkspacePath))
+	if path != "" {
+		path = abbreviateUserHome(path)
+	}
+	switch {
+	case hostname != "" && path != "":
+		return fmt.Sprintf("Host: %s  Path: %s", hostname, path)
+	case hostname != "":
+		return fmt.Sprintf("Host: %s", hostname)
+	case path != "":
+		return fmt.Sprintf("Path: %s", path)
+	default:
+		return ""
+	}
+}
+
+func formatWorkspaceRepoBranch(workspace aweb.WorkspaceInfo, hideDefaultBranch bool) string {
+	repo := strings.TrimSpace(derefString(workspace.Repo))
+	branch := strings.TrimSpace(derefString(workspace.Branch))
+	if hideDefaultBranch && isDefaultBranch(branch) {
+		branch = ""
+	}
+	switch {
+	case repo != "" && branch != "":
+		return fmt.Sprintf("Repo: %s  Branch: %s", repo, branch)
+	case repo != "":
+		return fmt.Sprintf("Repo: %s", repo)
+	case branch != "":
+		return fmt.Sprintf("Branch: %s", branch)
+	default:
+		return ""
+	}
+}
+
+func formatWorkspaceFocus(workspace aweb.WorkspaceInfo) string {
+	focusRef := strings.TrimSpace(derefString(workspace.FocusTaskRef))
+	if focusRef == "" {
+		return "none"
+	}
+	if focusTitle := strings.TrimSpace(derefString(workspace.FocusTaskTitle)); focusTitle != "" {
+		return fmt.Sprintf("%s (%s)", focusRef, focusTitle)
+	}
+	return focusRef
+}
+
+func formatWorkspaceApexLine(workspace aweb.WorkspaceInfo) string {
+	apexID := strings.TrimSpace(derefString(workspace.ApexID))
+	if apexID == "" {
+		return ""
+	}
+	prefix := "Working on"
+	if strings.EqualFold(derefString(workspace.ApexType), "epic") {
+		prefix = "Epic"
+	}
+	if apexTitle := strings.TrimSpace(derefString(workspace.ApexTitle)); apexTitle != "" {
+		return fmt.Sprintf("%s: %s (%s)", prefix, apexID, apexTitle)
+	}
+	return fmt.Sprintf("%s: %s", prefix, apexID)
+}
+
+func formatWorkspaceClaimsSummary(claims []aweb.WorkspaceClaim) string {
+	if len(claims) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(claims))
+	for _, claim := range claims {
+		part := claim.BeadID
+		if title := strings.TrimSpace(derefString(claim.Title)); title != "" {
+			part += fmt.Sprintf(" \"%s\"", title)
+		}
+		if strings.TrimSpace(claim.ClaimedAt) != "" {
+			part += fmt.Sprintf(" (%s)", formatTimeAgo(claim.ClaimedAt))
+			if isClaimStale(claim.ClaimedAt) {
+				part += " [stale]"
+			}
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatWorkspaceLocksSummary(locks []aweb.ReservationView, now time.Time, limit int) string {
+	if len(locks) == 0 {
+		return "none"
+	}
+	display := locks
+	if limit > 0 && len(display) > limit {
+		display = display[:limit]
+	}
+	parts := make([]string, 0, len(display)+1)
+	for _, lock := range display {
+		part := fmt.Sprintf("%s (TTL: %s", lock.ResourceKey, formatDuration(ttlRemainingSeconds(lock.ExpiresAt, now)))
+		if reason := formatWorkspaceLockReason(lock.Metadata); reason != "" {
+			part += fmt.Sprintf(", reason: %s", reason)
+		}
+		part += ")"
+		parts = append(parts, part)
+	}
+	if limit > 0 && len(locks) > limit {
+		parts = append(parts, fmt.Sprintf("...%d more", len(locks)-limit))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatWorkspaceLockReason(metadata map[string]any) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	reason, _ := metadata["reason"].(string)
+	return strings.TrimSpace(reason)
 }
 
 func derefString(v *string) string {

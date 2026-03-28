@@ -36,11 +36,14 @@ type BuildOptions struct {
 	ContinueSession bool
 	AllowedTools    string
 	Model           string
+	AddDirs         []string
+	ProviderArgs    []string
 }
 
 type Provider interface {
 	Name() string
 	BuildCommand(prompt string, opts BuildOptions) ([]string, error)
+	BuildResumeCommand(opts BuildOptions) ([]string, error)
 	ParseOutput(line string) (*Event, error)
 	SessionID(event *Event) string
 }
@@ -69,6 +72,40 @@ type Event struct {
 	Session    string
 	IsError    bool
 	Usage      *UsageStats
+}
+
+type RunPhase string
+
+const (
+	RunPhaseIdle             RunPhase = "idle"
+	RunPhaseWaitingForPrompt RunPhase = "waiting_for_prompt"
+	RunPhaseWaitingForWork   RunPhase = "waiting_for_work"
+	RunPhaseWorking          RunPhase = "working"
+	RunPhasePaused           RunPhase = "paused"
+)
+
+type DisplayKind string
+
+const (
+	DisplayKindPlain          DisplayKind = "plain"
+	DisplayKindPrompt         DisplayKind = "prompt"
+	DisplayKindAgentText      DisplayKind = "agent_text"
+	DisplayKindTool           DisplayKind = "tool"
+	DisplayKindToolDetail     DisplayKind = "tool_detail"
+	DisplayKindCommunication  DisplayKind = "communication"
+	DisplayKindTaskActivity   DisplayKind = "task_activity"
+	DisplayKindProviderStdout DisplayKind = "provider_stdout"
+	DisplayKindProviderStderr DisplayKind = "provider_stderr"
+	DisplayKindResult         DisplayKind = "result"
+	DisplayKindDone           DisplayKind = "done"
+	DisplayKindInfo           DisplayKind = "info"
+	DisplayKindHint           DisplayKind = "hint"
+	DisplayKindSeparator      DisplayKind = "separator"
+)
+
+type DisplayLine struct {
+	Kind DisplayKind
+	Text string
 }
 
 type ControlEventType string
@@ -129,6 +166,7 @@ type ServiceSupervisor interface {
 type DispatchDecision struct {
 	Mission      string
 	CycleContext string
+	DisplayLines []DisplayLine
 	UserPrompt   string
 	WaitSeconds  int
 	Skip         bool
@@ -153,6 +191,8 @@ type LoopOptions struct {
 	WorkingDir      string
 	AllowedTools    string
 	Model           string
+	ClaimedTaskRef  string
+	ProviderArgs    []string
 	ProviderPTY     bool
 	Services        []ServiceConfig
 }
