@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const deliveredCacheTTL = 5 * time.Minute
+const deliveredCacheTTL = 10 * time.Minute
 
 // FilterSeen removes events whose MessageID is in the seen set.
 // Events without a MessageID are kept.
@@ -62,21 +62,26 @@ func LoadDeliveredIDs(dir, sessionID string) map[string]bool {
 	return seen
 }
 
-// SaveDeliveredIDs appends message IDs to the session's delivered-IDs cache.
+// SaveDeliveredIDs writes message IDs to the session's delivered-IDs cache,
+// merging with any existing IDs that are still within the TTL.
 func SaveDeliveredIDs(dir, sessionID string, ids []string) {
 	if len(ids) == 0 {
 		return
 	}
-	path := deliveredCachePath(dir, sessionID)
-	var sb strings.Builder
+	// Merge with existing cache to preserve previously-seen IDs.
+	existing := LoadDeliveredIDs(dir, sessionID)
+	merged := make(map[string]bool, len(existing)+len(ids))
+	for id := range existing {
+		merged[id] = true
+	}
 	for _, id := range ids {
+		merged[id] = true
+	}
+	var sb strings.Builder
+	for id := range merged {
 		sb.WriteString(id)
 		sb.WriteByte('\n')
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.WriteString(sb.String())
+	path := deliveredCachePath(dir, sessionID)
+	_ = os.WriteFile(path, []byte(sb.String()), 0600)
 }

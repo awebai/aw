@@ -124,6 +124,34 @@ func TestDeliveredCacheIgnoresExpiredFile(t *testing.T) {
 	}
 }
 
+func TestDeliveredCacheSaveAfterExpiryPurgesOldIDs(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	sessionID := "test-session-purge"
+
+	SaveDeliveredIDs(dir, sessionID, []string{"old1", "old2"})
+
+	// Backdate the file past the TTL.
+	path := deliveredCachePath(dir, sessionID)
+	old := time.Now().Add(-deliveredCacheTTL - time.Minute)
+	_ = os.Chtimes(path, old, old)
+
+	// Save new IDs — old ones should be purged since the file is expired.
+	SaveDeliveredIDs(dir, sessionID, []string{"new1"})
+
+	seen := LoadDeliveredIDs(dir, sessionID)
+	if len(seen) != 1 {
+		t.Fatalf("seen=%d, want 1 (old IDs should be purged)", len(seen))
+	}
+	if !seen["new1"] {
+		t.Fatal("missing new1")
+	}
+	if seen["old1"] || seen["old2"] {
+		t.Fatal("old IDs should have been purged after TTL expiry")
+	}
+}
+
 func TestDeliveredCachePathIsDeterministic(t *testing.T) {
 	t.Parallel()
 

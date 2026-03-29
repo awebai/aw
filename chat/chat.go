@@ -343,6 +343,7 @@ func markLastRead(ctx context.Context, client *awid.Client, sessionID string, ev
 			if err != nil {
 				// Retry once — transient failures here cause echo/replay bugs
 				// where the notify hook re-surfaces already-delivered messages.
+				time.Sleep(100 * time.Millisecond)
 				_, _ = client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
 					UpToMessageID: events[i].MessageID,
 				})
@@ -705,6 +706,7 @@ func Open(ctx context.Context, client *awid.Client, targetAlias string) (*OpenRe
 	if err != nil {
 		// Retry once — transient failures here cause echo/replay bugs
 		// where the notify hook re-surfaces already-delivered messages.
+		time.Sleep(100 * time.Millisecond)
 		_, err = client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
 			UpToMessageID: lastMessageID,
 		})

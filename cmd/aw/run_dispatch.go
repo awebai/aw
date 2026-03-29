@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/awid"
@@ -257,7 +258,16 @@ func markChatHistoryRead(ctx context.Context, client *aweb.Client, sessionID str
 		return
 	}
 	lastMsgID := messages[len(messages)-1].MessageID
-	if lastMsgID != "" {
+	if lastMsgID == "" {
+		return
+	}
+	_, err := client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
+		UpToMessageID: lastMsgID,
+	})
+	if err != nil {
+		// Retry once — transient failures leave messages as "unread",
+		// causing the notify hook to re-surface them.
+		time.Sleep(100 * time.Millisecond)
 		_, _ = client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
 			UpToMessageID: lastMsgID,
 		})
