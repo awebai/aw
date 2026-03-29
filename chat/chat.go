@@ -328,7 +328,7 @@ func buildMessages(messages []awid.ChatMessage) []Event {
 	return events
 }
 
-// markLastRead marks the last received message as read (best-effort).
+// markLastRead marks the last received message as read (best-effort with retry).
 // This prevents the notify hook from showing messages that were already
 // delivered via SSE during send-and-wait or listen.
 func markLastRead(ctx context.Context, client *awid.Client, sessionID string, events []Event) {
@@ -337,9 +337,16 @@ func markLastRead(ctx context.Context, client *awid.Client, sessionID string, ev
 	}
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Type == "message" && events[i].MessageID != "" {
-			_, _ = client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
+			_, err := client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
 				UpToMessageID: events[i].MessageID,
 			})
+			if err != nil {
+				// Retry once — transient failures here cause echo/replay bugs
+				// where the notify hook re-surfaces already-delivered messages.
+				_, _ = client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
+					UpToMessageID: events[i].MessageID,
+				})
+			}
 			return
 		}
 	}
@@ -695,6 +702,13 @@ func Open(ctx context.Context, client *awid.Client, targetAlias string) (*OpenRe
 	_, err = client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
 		UpToMessageID: lastMessageID,
 	})
+	if err != nil {
+		// Retry once — transient failures here cause echo/replay bugs
+		// where the notify hook re-surfaces already-delivered messages.
+		_, err = client.ChatMarkRead(ctx, sessionID, &awid.ChatMarkReadRequest{
+			UpToMessageID: lastMessageID,
+		})
+	}
 	if err == nil {
 		result.MarkedRead = len(messagesResp.Messages)
 	}

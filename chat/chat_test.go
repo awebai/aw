@@ -2452,3 +2452,107 @@ func TestBuildMessagesIncludesReplyTo(t *testing.T) {
 		t.Fatalf("reply_to_message_id=%q, want %q", events[0].ReplyToMessageID, "m1")
 	}
 }
+
+// TestMarkLastReadRetriesOnFailure verifies that markLastRead retries once
+// when ChatMarkRead fails, so transient errors don't leave messages unread.
+func TestMarkLastReadRetriesOnFailure(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	var markReadCalls int
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply-1", "from_agent": "bob", "body": "hi!",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+		"POST /v1/chat/sessions/s1/read": func(w http.ResponseWriter, r *http.Request) {
+			markReadCalls++
+			if markReadCalls == 1 {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			jsonResponse(w, awid.ChatMarkReadResponse{Success: true, MessagesMarked: 1})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "hello", SendOptions{Wait: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if markReadCalls != 2 {
+		t.Fatalf("mark_read calls=%d, want 2 (initial + retry)", markReadCalls)
+	}
+}
+
+// TestOpenRetriesMarkRead verifies that Open retries ChatMarkRead once
+// on transient failure, so messages are properly marked as read.
+func TestOpenRetriesMarkRead(t *testing.T) {
+	t.Parallel()
+
+	var markReadCalls int
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{SessionID: "s1", Participants: []string{"alice", "bob"}},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/messages": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatHistoryResponse{
+				Messages: []awid.ChatMessage{
+					{MessageID: "m1", FromAgent: "bob", Body: "hello", Timestamp: "2025-01-01T00:00:00Z"},
+				},
+			})
+		},
+		"POST /v1/chat/sessions/s1/read": func(w http.ResponseWriter, r *http.Request) {
+			markReadCalls++
+			if markReadCalls == 1 {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			jsonResponse(w, awid.ChatMarkReadResponse{Success: true, MessagesMarked: 1})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Open(context.Background(), mustClient(t, server.URL), "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MarkedRead != 1 {
+		t.Fatalf("marked_read=%d, want 1", result.MarkedRead)
+	}
+	if markReadCalls != 2 {
+		t.Fatalf("mark_read calls=%d, want 2 (initial + retry)", markReadCalls)
+	}
+}

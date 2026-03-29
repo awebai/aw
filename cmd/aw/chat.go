@@ -214,6 +214,21 @@ var chatOpenCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+
+		// Defense-in-depth: filter out messages already delivered in a
+		// recent Open call, in case mark-read failed and they still
+		// appear as "unread" on the server.
+		cacheDir := os.TempDir()
+		seen := chat.LoadDeliveredIDs(cacheDir, result.SessionID)
+		var allIDs []string
+		for _, m := range result.Messages {
+			if m.MessageID != "" {
+				allIDs = append(allIDs, m.MessageID)
+			}
+		}
+		result.Messages = chat.FilterSeen(result.Messages, seen)
+		chat.SaveDeliveredIDs(cacheDir, result.SessionID, allIDs)
+
 		logsDir := defaultLogsDir()
 		myAddr := deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.IdentityHandle)
 		for _, m := range result.Messages {
