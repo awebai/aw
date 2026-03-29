@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/awid"
+	"github.com/awebai/aw/chat"
 	awrun "github.com/awebai/aw/run"
 )
 
@@ -253,10 +255,25 @@ func formatIncomingMailBlock(head string, subject string, body string) string {
 	return strings.Join(formatted, "\n")
 }
 
-func markChatHistoryRead(ctx context.Context, client *aweb.Client, sessionID string, messages []awid.ChatMessage) {
+func markChatHistoryRead(ctx context.Context, client *aweb.Client, sessionID string, messages []awid.ChatMessage, cacheDir ...string) {
 	if len(messages) == 0 {
 		return
 	}
+
+	// Save delivered IDs to the dedup cache so aw chat open can filter
+	// them if mark-read fails on both attempts.
+	dir := os.TempDir()
+	if len(cacheDir) > 0 && cacheDir[0] != "" {
+		dir = cacheDir[0]
+	}
+	var ids []string
+	for _, m := range messages {
+		if m.MessageID != "" {
+			ids = append(ids, m.MessageID)
+		}
+	}
+	chat.SaveDeliveredIDs(dir, sessionID, ids)
+
 	lastMsgID := messages[len(messages)-1].MessageID
 	if lastMsgID == "" {
 		return

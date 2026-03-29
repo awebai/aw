@@ -10,6 +10,7 @@ import (
 
 	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/awid"
+	"github.com/awebai/aw/chat"
 )
 
 func mustWebClient(t *testing.T, url string) *aweb.Client {
@@ -61,6 +62,67 @@ func TestResolveMailWakeMarksRead(t *testing.T) {
 	}
 	if ackedMessageID != "msg-1" {
 		t.Fatalf("expected ack for msg-1, got %q", ackedMessageID)
+	}
+}
+
+// TestMarkChatHistoryReadRetriesOnFailure verifies that markChatHistoryRead
+// retries once when ChatMarkRead fails.
+func TestMarkChatHistoryReadRetriesOnFailure(t *testing.T) {
+	t.Parallel()
+
+	var markReadCalls int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/read") {
+			markReadCalls++
+			if markReadCalls == 1 {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(awid.ChatMarkReadResponse{Success: true, MessagesMarked: 1})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustWebClient(t, server.URL)
+	markChatHistoryRead(context.Background(), client, "s1", []awid.ChatMessage{
+		{MessageID: "m1", FromAgent: "bob", Body: "hello"},
+	})
+	if markReadCalls != 2 {
+		t.Fatalf("mark_read calls=%d, want 2 (initial + retry)", markReadCalls)
+	}
+}
+
+// TestMarkChatHistoryReadSavesDeliveredIDs verifies that markChatHistoryRead
+// writes delivered message IDs to the dedup cache so aw chat open can filter
+// them if mark-read fails.
+func TestMarkChatHistoryReadSavesDeliveredIDs(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/read") {
+			json.NewEncoder(w).Encode(awid.ChatMarkReadResponse{Success: true, MessagesMarked: 1})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	cacheDir := t.TempDir()
+	client := mustWebClient(t, server.URL)
+	markChatHistoryRead(context.Background(), client, "s1", []awid.ChatMessage{
+		{MessageID: "m1", FromAgent: "bob", Body: "hello"},
+		{MessageID: "m2", FromAgent: "bob", Body: "world"},
+	}, cacheDir)
+
+	seen := chat.LoadDeliveredIDs(cacheDir, "s1")
+	if len(seen) != 2 {
+		t.Fatalf("delivered cache has %d IDs, want 2", len(seen))
+	}
+	if !seen["m1"] || !seen["m2"] {
+		t.Fatalf("missing expected message IDs in cache: %v", seen)
 	}
 }
 
