@@ -272,7 +272,9 @@ func markChatHistoryRead(ctx context.Context, client *aweb.Client, sessionID str
 			ids = append(ids, m.MessageID)
 		}
 	}
-	chat.SaveDeliveredIDs(dir, sessionID, ids)
+	if len(ids) > 0 {
+		chat.SaveDeliveredIDs(dir, sessionID, ids)
+	}
 
 	lastMsgID := messages[len(messages)-1].MessageID
 	if lastMsgID == "" {

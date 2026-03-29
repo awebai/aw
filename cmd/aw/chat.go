@@ -227,7 +227,9 @@ var chatOpenCmd = &cobra.Command{
 			}
 		}
 		result.Messages = chat.FilterSeen(result.Messages, seen)
-		chat.SaveDeliveredIDs(cacheDir, result.SessionID, allIDs)
+		if len(allIDs) > 0 {
+			chat.SaveDeliveredIDs(cacheDir, result.SessionID, allIDs)
+		}
 
 		logsDir := defaultLogsDir()
 		myAddr := deriveIdentityAddress(sel.NamespaceSlug, sel.DefaultProject, sel.IdentityHandle)
