@@ -1306,6 +1306,97 @@ func TestApplyBusInterruptResumeClearsPause(t *testing.T) {
 	}
 }
 
+func TestEmptyBufferResumesFromPause(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(ClaudeProvider{}, &out)
+	st := &state{
+		Paused:           true,
+		PendingInput:     true,
+		InputBuffer:      "partial text",
+		PauseNoticeShown: true,
+	}
+
+	// Simulate the user deleting all text — buffer becomes empty
+	loop.applyControlEvent(ControlEvent{Type: ControlBufferUpdated, Text: ""}, st, false, nil)
+
+	if st.PendingInput {
+		t.Fatal("expected PendingInput=false after empty buffer")
+	}
+	if st.Paused {
+		t.Fatal("expected Paused=false after buffer emptied")
+	}
+}
+
+func TestCtrlCClearsInputAndResumes(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(ClaudeProvider{}, &out)
+	st := &state{
+		Paused:       true,
+		PendingInput: true,
+		InputBuffer:  "some text",
+	}
+
+	// Ctrl-C with pending input should clear and resume
+	loop.applyControlEvent(ControlEvent{Type: ControlInterrupt}, st, false, nil)
+
+	if st.PendingInput {
+		t.Fatal("expected PendingInput=false after Ctrl-C")
+	}
+	if st.Paused {
+		t.Fatal("expected Paused=false after Ctrl-C cleared input")
+	}
+}
+
+func TestEmptyBufferDoesNotOverrideWaitPause(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(ClaudeProvider{}, &out)
+	st := &state{
+		Paused:           true,
+		PauseAfterRun:    true,
+		PauseNoticeShown: true,
+		PendingInput:     true,
+		InputBuffer:      "partial text",
+	}
+
+	// User backspaces to empty after /wait — should NOT unpause
+	loop.applyControlEvent(ControlEvent{Type: ControlBufferUpdated, Text: ""}, st, false, nil)
+
+	if !st.Paused {
+		t.Fatal("expected Paused=true — /wait pause should survive empty buffer")
+	}
+	if !st.PauseAfterRun {
+		t.Fatal("expected PauseAfterRun=true — /wait should be preserved")
+	}
+}
+
+func TestCtrlCDoesNotOverrideWaitPause(t *testing.T) {
+	var out bytes.Buffer
+	loop := NewLoop(ClaudeProvider{}, &out)
+	st := &state{
+		Paused:        true,
+		PauseAfterRun: true,
+		PendingInput:  true,
+		InputBuffer:   "some text",
+	}
+
+	// Ctrl-C with /wait active — should clear input but not unpause
+	loop.applyControlEvent(ControlEvent{Type: ControlInterrupt}, st, false, nil)
+
+	if !st.Paused {
+		t.Fatal("expected Paused=true — /wait pause should survive Ctrl-C")
+	}
+	if st.PendingInput {
+		t.Fatal("expected PendingInput=false — input should be cleared")
+	}
+}
+
+func TestSlashResumeIsNotRecognized(t *testing.T) {
+	event := ParseControlSubmission("/resume")
+	if event.Type == ControlResume {
+		t.Fatal("/resume should no longer be recognized as a resume command")
+	}
+}
+
 func TestApplyBusInterruptIgnoresCommunicationWakeEvents(t *testing.T) {
 	var out bytes.Buffer
 	loop := NewLoop(ClaudeProvider{}, &out)
