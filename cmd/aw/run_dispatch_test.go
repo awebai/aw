@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +24,21 @@ func mustWebClient(t *testing.T, url string) *aweb.Client {
 		t.Fatal(err)
 	}
 	return c
+}
+
+func mustIdentityWebClient(t *testing.T, url string, alias string) *aweb.Client {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := awid.NewWithIdentity(url, priv, awid.ComputeDIDKey(priv.Public().(ed25519.PublicKey)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw.SetStableID("did:aw:self-" + alias)
+	raw.SetAddress("example.com/" + alias)
+	return &aweb.Client{Client: raw}
 }
 
 func deliveredIDsTestPath(t *testing.T) string {
@@ -85,6 +102,316 @@ func TestResolveMailWakeMarksRead(t *testing.T) {
 	}
 }
 
+func TestResolveMailWakeUsesFromAddressWhenAliasMissing(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/messages/inbox":
+			json.NewEncoder(w).Encode(awid.InboxResponse{
+				Messages: []awid.InboxMessage{
+					{
+						MessageID:   "msg-1",
+						FromAlias:   "",
+						FromAddress: "otherco/alice",
+						Subject:     "hello",
+						Body:        "world",
+					},
+				},
+			})
+		case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/v1/messages/") && strings.HasSuffix(r.URL.Path, "/ack"):
+			json.NewEncoder(w).Encode(awid.AckResponse{MessageID: "msg-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustWebClient(t, server.URL)
+	result, err := resolveMailWake(context.Background(), client, awid.AgentEvent{
+		Type:      awid.AgentEventActionableMail,
+		MessageID: "msg-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected wake, got %+v", result)
+	}
+	if !strings.Contains(result.CycleContext, "from otherco/alice (mail)") {
+		t.Fatalf("expected wake context to use sender address, got %q", result.CycleContext)
+	}
+}
+
+func TestResolveMailWakeUsesStableIDWhenAliasAndAddressMissing(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/messages/inbox":
+			json.NewEncoder(w).Encode(awid.InboxResponse{
+				Messages: []awid.InboxMessage{
+					{
+						MessageID:    "msg-1",
+						FromAlias:    "",
+						FromAddress:  "",
+						FromStableID: "did:aw:alice",
+						Subject:      "hello",
+						Body:         "world",
+					},
+				},
+			})
+		case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/v1/messages/") && strings.HasSuffix(r.URL.Path, "/ack"):
+			json.NewEncoder(w).Encode(awid.AckResponse{MessageID: "msg-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustWebClient(t, server.URL)
+	result, err := resolveMailWake(context.Background(), client, awid.AgentEvent{
+		Type:      awid.AgentEventActionableMail,
+		MessageID: "msg-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected wake, got %+v", result)
+	}
+	if !strings.Contains(result.CycleContext, "from did:aw:alice (mail)") {
+		t.Fatalf("expected wake context to use sender stable id, got %q", result.CycleContext)
+	}
+}
+
+func TestResolveMailWakePrefersStableIDOverAliasWhenAddressMissing(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/messages/inbox":
+			json.NewEncoder(w).Encode(awid.InboxResponse{
+				Messages: []awid.InboxMessage{
+					{
+						MessageID:    "msg-1",
+						FromAlias:    "alice",
+						FromAddress:  "",
+						FromStableID: "did:aw:alice",
+						Subject:      "hello",
+						Body:         "world",
+					},
+				},
+			})
+		case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/v1/messages/") && strings.HasSuffix(r.URL.Path, "/ack"):
+			json.NewEncoder(w).Encode(awid.AckResponse{MessageID: "msg-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustWebClient(t, server.URL)
+	result, err := resolveMailWake(context.Background(), client, awid.AgentEvent{
+		Type:      awid.AgentEventActionableMail,
+		MessageID: "msg-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected wake, got %+v", result)
+	}
+	if !strings.Contains(result.CycleContext, "from did:aw:alice (mail)") {
+		t.Fatalf("expected wake context to prefer stable id over alias, got %q", result.CycleContext)
+	}
+}
+
+func TestResolveMailWakeFallsBackToEventStableIDWhenInboxIdentityMissing(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/messages/inbox":
+			json.NewEncoder(w).Encode(awid.InboxResponse{
+				Messages: []awid.InboxMessage{
+					{
+						MessageID:   "msg-1",
+						FromAlias:   "",
+						FromAddress: "",
+						Subject:     "hello",
+						Body:        "world",
+					},
+				},
+			})
+		case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/v1/messages/") && strings.HasSuffix(r.URL.Path, "/ack"):
+			json.NewEncoder(w).Encode(awid.AckResponse{MessageID: "msg-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustWebClient(t, server.URL)
+	result, err := resolveMailWake(context.Background(), client, awid.AgentEvent{
+		Type:      awid.AgentEventActionableMail,
+		MessageID: "msg-1",
+		FromDID:   "did:aw:alice",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected wake, got %+v", result)
+	}
+	if !strings.Contains(result.CycleContext, "from did:aw:alice (mail)") {
+		t.Fatalf("expected wake context to fall back to event stable id, got %q", result.CycleContext)
+	}
+}
+
+func TestResolveMailWakeFallsBackToEventFromStableIDWhenCurrentDIDAlsoPresent(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/messages/inbox":
+			json.NewEncoder(w).Encode(awid.InboxResponse{
+				Messages: []awid.InboxMessage{
+					{
+						MessageID:   "msg-1",
+						FromAlias:   "",
+						FromAddress: "",
+						Subject:     "hello",
+						Body:        "world",
+					},
+				},
+			})
+		case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/v1/messages/") && strings.HasSuffix(r.URL.Path, "/ack"):
+			json.NewEncoder(w).Encode(awid.AckResponse{MessageID: "msg-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustWebClient(t, server.URL)
+	result, err := resolveMailWake(context.Background(), client, awid.AgentEvent{
+		Type:         awid.AgentEventActionableMail,
+		MessageID:    "msg-1",
+		FromStableID: "did:aw:alice",
+		FromDID:      "did:key:z6MkAliceCurrent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected wake, got %+v", result)
+	}
+	if !strings.Contains(result.CycleContext, "from did:aw:alice (mail)") {
+		t.Fatalf("expected wake context to prefer event stable id, got %q", result.CycleContext)
+	}
+}
+
+func TestResolveMailWakeSkipsSelfWhenOnlyEventCarriesStableID(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/messages/inbox":
+			json.NewEncoder(w).Encode(awid.InboxResponse{
+				Messages: []awid.InboxMessage{
+					{
+						MessageID:   "msg-1",
+						FromAlias:   "",
+						FromAddress: "",
+						Subject:     "hello",
+						Body:        "world",
+					},
+				},
+			})
+		case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/v1/messages/") && strings.HasSuffix(r.URL.Path, "/ack"):
+			json.NewEncoder(w).Encode(awid.AckResponse{MessageID: "msg-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustIdentityWebClient(t, server.URL, "rose")
+	result, err := resolveMailWake(context.Background(), client, awid.AgentEvent{
+		Type:      awid.AgentEventActionableMail,
+		MessageID: "msg-1",
+		FromDID:   "did:aw:self-rose",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Skip {
+		t.Fatalf("expected self-authored mail wake to skip when only event carries stable id, got %+v", result)
+	}
+}
+
+func TestResolveMailWakeSkipsSelfAuthoredMessageByAddress(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/messages/inbox":
+			json.NewEncoder(w).Encode(awid.InboxResponse{
+				Messages: []awid.InboxMessage{
+					{
+						MessageID:   "msg-self-mail",
+						FromAlias:   "",
+						FromAddress: "example.com/rose",
+						Subject:     "note",
+						Body:        "self reminder",
+					},
+				},
+			})
+		case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/v1/messages/") && strings.HasSuffix(r.URL.Path, "/ack"):
+			json.NewEncoder(w).Encode(awid.AckResponse{MessageID: "msg-self-mail"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustIdentityWebClient(t, server.URL, "rose")
+	result, err := resolveMailWake(context.Background(), client, awid.AgentEvent{
+		Type:      awid.AgentEventActionableMail,
+		MessageID: "msg-self-mail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Skip {
+		t.Fatalf("expected self-authored mail wake to skip, got %+v", result)
+	}
+}
+
+func TestFormatFallbackCommsContextPrefersFromAddress(t *testing.T) {
+	t.Parallel()
+
+	chatCtx := formatFallbackCommsContext(awid.AgentEvent{
+		Type:        awid.AgentEventActionableChat,
+		FromAlias:   "alice",
+		FromAddress: "otherco/alice",
+	})
+	if !strings.Contains(chatCtx, "from otherco/alice (chat)") {
+		t.Fatalf("expected chat fallback to prefer address, got %q", chatCtx)
+	}
+
+	mailCtx := formatFallbackCommsContext(awid.AgentEvent{
+		Type:        awid.AgentEventActionableMail,
+		FromAlias:   "alice",
+		FromAddress: "otherco/alice",
+		Subject:     "hello",
+	})
+	if !strings.Contains(mailCtx, "from otherco/alice (mail)") {
+		t.Fatalf("expected mail fallback to prefer address, got %q", mailCtx)
+	}
+}
+
 // TestResolveChatWakeMarksRead verifies that resolveChatWake marks messages
 // as read after fetching the pending conversation.
 func TestResolveChatWakeMarksRead(t *testing.T) {
@@ -141,6 +468,174 @@ func TestResolveChatWakeMarksRead(t *testing.T) {
 	}
 }
 
+func TestResolveChatWakeUsesFromAddressWhenAliasMissing(t *testing.T) {
+	_ = deliveredIDsTestPath(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v1/chat/sessions/s1/messages"):
+			json.NewEncoder(w).Encode(awid.ChatHistoryResponse{
+				Messages: []awid.ChatMessage{
+					{
+						MessageID:   "chat-msg-1",
+						FromAgent:   "",
+						FromAddress: "otherco/alice",
+						Body:        "hey",
+					},
+				},
+			})
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/read"):
+			json.NewEncoder(w).Encode(awid.ChatMarkReadResponse{Success: true, MessagesMarked: 1})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustWebClient(t, server.URL)
+	result, err := resolveChatWake(context.Background(), client, awid.AgentEvent{
+		Type:      awid.AgentEventActionableChat,
+		SessionID: "s1",
+		MessageID: "chat-msg-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected wake, got %+v", result)
+	}
+	if !strings.Contains(result.CycleContext, "from otherco/alice (chat)") {
+		t.Fatalf("expected wake context to use sender address, got %q", result.CycleContext)
+	}
+}
+
+func TestResolveChatWakeUsesStableIDWhenAliasAndAddressMissing(t *testing.T) {
+	_ = deliveredIDsTestPath(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v1/chat/sessions/s1/messages"):
+			json.NewEncoder(w).Encode(awid.ChatHistoryResponse{
+				Messages: []awid.ChatMessage{
+					{
+						MessageID:    "chat-msg-1",
+						FromAgent:    "",
+						FromAddress:  "",
+						FromStableID: "did:aw:alice",
+						Body:         "hey",
+					},
+				},
+			})
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/read"):
+			json.NewEncoder(w).Encode(awid.ChatMarkReadResponse{Success: true, MessagesMarked: 1})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustWebClient(t, server.URL)
+	result, err := resolveChatWake(context.Background(), client, awid.AgentEvent{
+		Type:      awid.AgentEventActionableChat,
+		SessionID: "s1",
+		MessageID: "chat-msg-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected wake, got %+v", result)
+	}
+	if !strings.Contains(result.CycleContext, "from did:aw:alice (chat)") {
+		t.Fatalf("expected wake context to use sender stable id, got %q", result.CycleContext)
+	}
+}
+
+func TestResolveChatWakeFallsBackToEventFromStableIDWhenCurrentDIDAlsoPresent(t *testing.T) {
+	_ = deliveredIDsTestPath(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v1/chat/sessions/s1/messages"):
+			json.NewEncoder(w).Encode(awid.ChatHistoryResponse{
+				Messages: []awid.ChatMessage{
+					{
+						MessageID: "chat-msg-1",
+						Body:      "hey",
+					},
+				},
+			})
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/read"):
+			json.NewEncoder(w).Encode(awid.ChatMarkReadResponse{Success: true, MessagesMarked: 1})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustWebClient(t, server.URL)
+	result, err := resolveChatWake(context.Background(), client, awid.AgentEvent{
+		Type:         awid.AgentEventActionableChat,
+		SessionID:    "s1",
+		MessageID:    "chat-msg-1",
+		FromStableID: "did:aw:alice",
+		FromDID:      "did:key:z6MkAliceCurrent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected wake, got %+v", result)
+	}
+	if !strings.Contains(result.CycleContext, "from did:aw:alice (chat)") {
+		t.Fatalf("expected wake context to prefer event stable id, got %q", result.CycleContext)
+	}
+}
+
+func TestResolveChatWakePendingFallsBackToEventFromAddress(t *testing.T) {
+	_ = deliveredIDsTestPath(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/chat/pending":
+			json.NewEncoder(w).Encode(awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:     "s1",
+						Participants:  []string{"alice", "carol"},
+						LastMessage:   "hey",
+						LastFrom:      "carol",
+						SenderWaiting: true,
+						UnreadCount:   1,
+					},
+				},
+			})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v1/chat/sessions/s1/messages"):
+			json.NewEncoder(w).Encode(awid.ChatHistoryResponse{Messages: []awid.ChatMessage{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustWebClient(t, server.URL)
+	result, err := resolveChatWake(context.Background(), client, awid.AgentEvent{
+		Type:        awid.AgentEventActionableChat,
+		SessionID:   "s1",
+		FromAlias:   "carol",
+		FromAddress: "otherco/carol",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected wake, got %+v", result)
+	}
+	if !strings.Contains(result.CycleContext, "from otherco/carol (chat)") {
+		t.Fatalf("expected pending wake context to fall back to event from_address, got %q", result.CycleContext)
+	}
+}
+
 func TestResolveChatWakeForAliasSkipsSelfAuthoredExactMessage(t *testing.T) {
 	t.Parallel()
 
@@ -172,6 +667,309 @@ func TestResolveChatWakeForAliasSkipsSelfAuthoredExactMessage(t *testing.T) {
 	}
 	if !result.Skip {
 		t.Fatalf("expected self-authored chat wake to skip, got %+v", result)
+	}
+}
+
+func TestResolveChatWakeForAliasPendingFallsBackToStableID(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/chat/pending":
+			json.NewEncoder(w).Encode(awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:       "s1",
+						Participants:    []string{"", ""},
+						ParticipantDIDs: []string{"did:aw:rose", "did:aw:carol"},
+						LastMessage:     "follow up",
+						LastFrom:        "",
+						LastFromDID:     "did:aw:carol",
+						UnreadCount:     1,
+						SenderWaiting:   true,
+					},
+				},
+				MessagesWaiting: 1,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustIdentityWebClient(t, server.URL, "rose")
+
+	result, err := resolveChatWakeForAlias(context.Background(), client, "rose", awid.AgentEvent{
+		Type:        awid.AgentEventActionableChat,
+		SessionID:   "s1",
+		MessageID:   "chat-msg-1",
+		FromAlias:   "",
+		FromAddress: "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected wake, got %+v", result)
+	}
+	if !strings.Contains(result.CycleContext, "from did:aw:carol (chat)") {
+		t.Fatalf("expected pending wake context to preserve stable identity fallback, got %q", result.CycleContext)
+	}
+}
+
+func TestResolveChatWakeForAliasPendingPrefersParticipantStableIDOverLastFromCurrentDID(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/chat/pending":
+			json.NewEncoder(w).Encode(awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:       "s1",
+						Participants:    []string{"", ""},
+						ParticipantDIDs: []string{"did:aw:rose", "did:aw:carol"},
+						LastMessage:     "follow up",
+						LastFrom:        "",
+						LastFromDID:     "did:key:z6MkCarolCurrent",
+						UnreadCount:     1,
+						SenderWaiting:   true,
+					},
+				},
+				MessagesWaiting: 1,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustIdentityWebClient(t, server.URL, "rose")
+
+	result, err := resolveChatWakeForAlias(context.Background(), client, "rose", awid.AgentEvent{
+		Type:        awid.AgentEventActionableChat,
+		SessionID:   "s1",
+		MessageID:   "chat-msg-1",
+		FromAlias:   "",
+		FromAddress: "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected wake, got %+v", result)
+	}
+	if !strings.Contains(result.CycleContext, "from did:aw:carol (chat)") {
+		t.Fatalf("expected pending wake context to prefer participant stable identity, got %q", result.CycleContext)
+	}
+	if strings.Contains(result.CycleContext, "did:key:z6MkCarolCurrent") {
+		t.Fatalf("pending wake context should not leak current did, got %q", result.CycleContext)
+	}
+}
+
+func TestResolveChatWakeForAliasPendingFallsBackToEventStableIDWhenPendingIsAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/chat/pending":
+			json.NewEncoder(w).Encode(awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:       "s1",
+						Participants:    []string{"", "", ""},
+						ParticipantDIDs: []string{"did:aw:rose", "did:aw:carol", "did:aw:dave"},
+						LastMessage:     "follow up",
+						LastFrom:        "",
+						LastFromDID:     "",
+						UnreadCount:     1,
+						SenderWaiting:   true,
+					},
+				},
+				MessagesWaiting: 1,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustIdentityWebClient(t, server.URL, "rose")
+
+	result, err := resolveChatWakeForAlias(context.Background(), client, "rose", awid.AgentEvent{
+		Type:         awid.AgentEventActionableChat,
+		SessionID:    "s1",
+		MessageID:    "chat-msg-1",
+		FromAlias:    "",
+		FromAddress:  "",
+		FromStableID: "did:aw:carol",
+		FromDID:      "did:key:z6MkCarolCurrent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected wake, got %+v", result)
+	}
+	if strings.Contains(result.CycleContext, "from another agent (chat)") {
+		t.Fatalf("expected event stable id to disambiguate sparse pending wake, got %q", result.CycleContext)
+	}
+	if !strings.Contains(result.CycleContext, "from did:aw:carol (chat)") {
+		t.Fatalf("expected pending wake context to use event stable identity fallback, got %q", result.CycleContext)
+	}
+}
+
+func TestResolveChatWakeForAliasSkipsSelfWhenOnlyEventStableIDIdentifiesSender(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/chat/pending":
+			json.NewEncoder(w).Encode(awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:       "s1",
+						Participants:    []string{"", ""},
+						ParticipantDIDs: []string{"did:aw:self-rose", "did:aw:carol"},
+						LastMessage:     "self echo",
+						LastFrom:        "",
+						LastFromDID:     "",
+						UnreadCount:     1,
+						SenderWaiting:   true,
+					},
+				},
+				MessagesWaiting: 1,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustIdentityWebClient(t, server.URL, "rose")
+
+	result, err := resolveChatWakeForAlias(context.Background(), client, "rose", awid.AgentEvent{
+		Type:         awid.AgentEventActionableChat,
+		SessionID:    "s1",
+		MessageID:    "chat-msg-self",
+		FromAlias:    "",
+		FromAddress:  "",
+		FromStableID: "did:aw:self-rose",
+		FromDID:      "did:key:z6MkSelfRoseCurrent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Skip {
+		t.Fatalf("expected self-authored sparse pending wake to skip, got %+v", result)
+	}
+}
+
+func TestResolveChatWakeForAliasSkipsSelfAuthoredAddressMessage(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v1/chat/sessions/s1/messages"):
+			json.NewEncoder(w).Encode(awid.ChatHistoryResponse{
+				Messages: []awid.ChatMessage{
+					{MessageID: "chat-msg-self-address", FromAgent: "", FromAddress: "example.com/rose", Body: "thanks, got it"},
+				},
+			})
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/read"):
+			json.NewEncoder(w).Encode(awid.ChatMarkReadResponse{Success: true, MessagesMarked: 1})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustIdentityWebClient(t, server.URL, "rose")
+	result, err := resolveChatWake(context.Background(), client, awid.AgentEvent{
+		Type:      awid.AgentEventActionableChat,
+		SessionID: "s1",
+		MessageID: "chat-msg-self-address",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Skip {
+		t.Fatalf("expected self-authored address chat wake to skip, got %+v", result)
+	}
+}
+
+func TestResolveChatWakeForAliasDoesNotSkipDifferentIdentityWithSameAlias(t *testing.T) {
+	t.Parallel()
+	_ = deliveredIDsTestPath(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v1/chat/sessions/s1/messages"):
+			json.NewEncoder(w).Encode(awid.ChatHistoryResponse{
+				Messages: []awid.ChatMessage{
+					{
+						MessageID:    "chat-msg-foreign-rose",
+						FromAgent:    "rose",
+						FromDID:      "did:aw:other-rose",
+						FromStableID: "did:aw:other-rose",
+						Body:         "hello from another rose",
+					},
+				},
+			})
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/read"):
+			json.NewEncoder(w).Encode(awid.ChatMarkReadResponse{Success: true, MessagesMarked: 1})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustIdentityWebClient(t, server.URL, "rose")
+	result, err := resolveChatWakeForAlias(context.Background(), client, "rose", awid.AgentEvent{
+		Type:      awid.AgentEventActionableChat,
+		SessionID: "s1",
+		MessageID: "chat-msg-foreign-rose",
+		FromAlias: "rose",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected different identity with same alias to wake, got %+v", result)
+	}
+}
+
+func TestResolveChatWakeForAliasDoesNotSkipPendingFallbackForDifferentIdentitySameAlias(t *testing.T) {
+	t.Parallel()
+	_ = deliveredIDsTestPath(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/chat/pending":
+			json.NewEncoder(w).Encode(awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{SessionID: "s1", Participants: []string{"rose", "bob"}, LastMessage: "hello from another rose", LastFrom: "rose", SenderWaiting: true, UnreadCount: 1},
+				},
+			})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v1/chat/sessions/s1/messages"):
+			http.Error(w, "boom", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustIdentityWebClient(t, server.URL, "rose")
+	result, err := resolveChatWakeForAlias(context.Background(), client, "rose", awid.AgentEvent{
+		Type:      awid.AgentEventActionableChat,
+		SessionID: "s1",
+		FromAlias: "rose",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected pending fallback from different identity with same alias to wake, got %+v", result)
 	}
 }
 
@@ -211,6 +1009,175 @@ func TestResolveChatWakeForAliasSkipsPendingFallbackWhenUnreadHistoryIsOnlySelfA
 	}
 	if !result.Skip {
 		t.Fatalf("expected pending self-echo to skip, got %+v", result)
+	}
+}
+
+func TestResolveChatWakeForAliasSkipsPendingFallbackForSelfStableIDWhenHistoryUnavailable(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/chat/pending":
+			json.NewEncoder(w).Encode(awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:       "s1",
+						Participants:    []string{"", ""},
+						ParticipantDIDs: []string{"did:aw:self-rose", "did:aw:bob"},
+						LastMessage:     "note to self",
+						LastFrom:        "",
+						LastFromDID:     "did:aw:self-rose",
+						SenderWaiting:   true,
+						UnreadCount:     1,
+					},
+				},
+			})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v1/chat/sessions/s1/messages"):
+			http.Error(w, "boom", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustIdentityWebClient(t, server.URL, "rose")
+	result, err := resolveChatWakeForAlias(context.Background(), client, "rose", awid.AgentEvent{
+		Type:      awid.AgentEventActionableChat,
+		SessionID: "s1",
+		FromAlias: "",
+		FromDID:   "did:aw:self-rose",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Skip {
+		t.Fatalf("expected self-authored pending stable-id fallback to skip, got %+v", result)
+	}
+}
+
+func TestResolveChatWakeForAliasSkipsPendingFallbackForSelfParticipantAddressWhenHistoryUnavailable(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/chat/pending":
+			json.NewEncoder(w).Encode(awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:            "s1",
+						Participants:         []string{"rose", "bob"},
+						ParticipantAddresses: []string{"example.com/rose", "otherco/bob"},
+						LastMessage:          "note to self",
+						LastFrom:             "rose",
+						LastFromAddress:      "",
+						SenderWaiting:        true,
+						UnreadCount:          1,
+					},
+				},
+			})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v1/chat/sessions/s1/messages"):
+			http.Error(w, "boom", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustIdentityWebClient(t, server.URL, "rose")
+	result, err := resolveChatWakeForAlias(context.Background(), client, "rose", awid.AgentEvent{
+		Type:      awid.AgentEventActionableChat,
+		SessionID: "s1",
+		FromAlias: "rose",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Skip {
+		t.Fatalf("expected self-authored pending participant-address fallback to skip, got %+v", result)
+	}
+}
+
+func TestResolveChatWakeForAliasSkipsPendingFallbackForSelfParticipantStableIDWhenHistoryUnavailable(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/chat/pending":
+			json.NewEncoder(w).Encode(awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:       "s1",
+						Participants:    []string{"rose", "bob"},
+						ParticipantDIDs: []string{"did:aw:self-rose", "did:aw:bob"},
+						LastMessage:     "note to self",
+						LastFrom:        "rose",
+						LastFromDID:     "",
+						SenderWaiting:   true,
+						UnreadCount:     1,
+					},
+				},
+			})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v1/chat/sessions/s1/messages"):
+			http.Error(w, "boom", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustIdentityWebClient(t, server.URL, "rose")
+	result, err := resolveChatWakeForAlias(context.Background(), client, "rose", awid.AgentEvent{
+		Type:      awid.AgentEventActionableChat,
+		SessionID: "s1",
+		FromAlias: "rose",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Skip {
+		t.Fatalf("expected self-authored pending participant-stable-id fallback to skip, got %+v", result)
+	}
+}
+
+func TestResolveChatWakeForAliasDoesNotSkipPendingFallbackForDifferentAddressHandleWhenHistoryUnavailable(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/chat/pending":
+			json.NewEncoder(w).Encode(awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:            "s1",
+						Participants:         []string{"rose", "bob"},
+						ParticipantAddresses: []string{"otherco/rose", "acme.com/bob"},
+						LastMessage:          "hello from another rose",
+						LastFrom:             "rose",
+						LastFromAddress:      "",
+						SenderWaiting:        true,
+						UnreadCount:          1,
+					},
+				},
+			})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v1/chat/sessions/s1/messages"):
+			http.Error(w, "boom", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := mustIdentityWebClient(t, server.URL, "rose")
+	result, err := resolveChatWakeForAlias(context.Background(), client, "rose", awid.AgentEvent{
+		Type:      awid.AgentEventActionableChat,
+		SessionID: "s1",
+		FromAlias: "rose",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skip {
+		t.Fatalf("expected different-address same-handle pending fallback to wake, got %+v", result)
 	}
 }
 

@@ -6,41 +6,6 @@ import (
 	"github.com/awebai/aw/awid"
 )
 
-type WorkspaceRegisterRequest struct {
-	RepoOrigin    string `json:"repo_origin"`
-	Role          string `json:"role,omitempty"`
-	Hostname      string `json:"hostname,omitempty"`
-	WorkspacePath string `json:"workspace_path,omitempty"`
-}
-
-type WorkspaceRegisterResponse struct {
-	WorkspaceID     string `json:"workspace_id"`
-	ProjectID       string `json:"project_id"`
-	ProjectSlug     string `json:"project_slug"`
-	RepoID          string `json:"repo_id"`
-	CanonicalOrigin string `json:"canonical_origin"`
-	Alias           string `json:"alias"`
-	HumanName       string `json:"human_name"`
-	Created         bool   `json:"created"`
-}
-
-type WorkspaceAttachRequest struct {
-	AttachmentType string `json:"attachment_type"`
-	Role           string `json:"role,omitempty"`
-	Hostname       string `json:"hostname,omitempty"`
-	WorkspacePath  string `json:"workspace_path,omitempty"`
-}
-
-type WorkspaceAttachResponse struct {
-	WorkspaceID    string `json:"workspace_id"`
-	ProjectID      string `json:"project_id"`
-	ProjectSlug    string `json:"project_slug"`
-	Alias          string `json:"alias"`
-	HumanName      string `json:"human_name"`
-	AttachmentType string `json:"attachment_type"`
-	Created        bool   `json:"created"`
-}
-
 type WorkspaceClaim struct {
 	TaskRef     string  `json:"task_ref,omitempty"`
 	BeadID      string  `json:"bead_id,omitempty"`
@@ -57,9 +22,6 @@ type WorkspaceInfo struct {
 	Alias             string           `json:"alias"`
 	HumanName         *string          `json:"human_name,omitempty"`
 	ContextKind       *string          `json:"context_kind,omitempty"`
-	ProjectID         *string          `json:"project_id,omitempty"`
-	ProjectSlug       *string          `json:"project_slug,omitempty"`
-	NamespaceSlug     *string          `json:"namespace_slug,omitempty"`
 	Program           *string          `json:"program,omitempty"`
 	Model             *string          `json:"model,omitempty"`
 	Repo              *string          `json:"repo,omitempty"`
@@ -89,6 +51,13 @@ type WorkspaceListResponse struct {
 	NextCursor *string         `json:"next_cursor,omitempty"`
 }
 
+type DeleteWorkspaceResponse struct {
+	WorkspaceID     string `json:"workspace_id"`
+	Alias           string `json:"alias"`
+	DeletedAt       string `json:"deleted_at"`
+	IdentityDeleted bool   `json:"identity_deleted"`
+}
+
 type WorkspaceTeamParams struct {
 	HumanName                string
 	Repo                     string
@@ -99,17 +68,25 @@ type WorkspaceTeamParams struct {
 	Limit                    int
 }
 
-func (c *Client) WorkspaceRegister(ctx context.Context, req *WorkspaceRegisterRequest) (*WorkspaceRegisterResponse, error) {
-	var out WorkspaceRegisterResponse
-	if err := c.Post(ctx, "/v1/workspaces/register", req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+type PatchCurrentWorkspaceRequest struct {
+	Hostname      string `json:"hostname,omitempty"`
+	WorkspacePath string `json:"workspace_path,omitempty"`
+	Role          string `json:"role,omitempty"`
+	HumanName     string `json:"human_name,omitempty"`
 }
 
-func (c *Client) WorkspaceAttach(ctx context.Context, req *WorkspaceAttachRequest) (*WorkspaceAttachResponse, error) {
-	var out WorkspaceAttachResponse
-	if err := c.Post(ctx, "/v1/workspaces/attach", req, &out); err != nil {
+type PatchCurrentWorkspaceResponse struct {
+	AgentID       string `json:"agent_id"`
+	Alias         string `json:"alias"`
+	Hostname      string `json:"hostname,omitempty"`
+	WorkspacePath string `json:"workspace_path,omitempty"`
+	Role          string `json:"role,omitempty"`
+	HumanName     string `json:"human_name,omitempty"`
+}
+
+func (c *Client) PatchCurrentWorkspace(ctx context.Context, req *PatchCurrentWorkspaceRequest) (*PatchCurrentWorkspaceResponse, error) {
+	var out PatchCurrentWorkspaceResponse
+	if err := c.Patch(ctx, "/v1/agents/me", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -144,15 +121,17 @@ func (c *Client) WorkspaceTeam(ctx context.Context, params WorkspaceTeamParams) 
 }
 
 // WorkspaceDelete soft-deletes a workspace by its ID.
-// Returns nil if the workspace was already deleted (404).
-func (c *Client) WorkspaceDelete(ctx context.Context, workspaceID string) error {
-	err := c.Delete(ctx, "/v1/workspaces/"+urlPathEscape(workspaceID))
+// Returns nil, nil if the workspace was already deleted (404).
+func (c *Client) WorkspaceDelete(ctx context.Context, workspaceID string) (*DeleteWorkspaceResponse, error) {
+	var out DeleteWorkspaceResponse
+	err := c.Do(ctx, "DELETE", "/v1/workspaces/"+urlPathEscape(workspaceID), nil, &out)
 	if err != nil {
 		if code, ok := awid.HTTPStatusCode(err); ok && code == 404 {
-			return nil
+			return nil, nil
 		}
+		return nil, err
 	}
-	return err
+	return &out, nil
 }
 
 type WorkspaceListParams struct {

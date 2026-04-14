@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/awebai/aw/awconfig"
@@ -25,25 +26,17 @@ func chatSend(ctx context.Context, toAlias, message string, opts chat.SendOption
 	if err != nil {
 		return nil, nil, err
 	}
-	r, err := chat.Send(ctx, c.Client, sel.IdentityHandle, []string{toAlias}, message, opts, chatStderrCallback)
+	r, err := chat.Send(ctx, c.Client, sel.Alias, []string{toAlias}, message, opts, chatStderrCallback)
 	return r, sel, err
 }
 
 // logChatEvent logs a single chat event to the communication log.
-func logChatEvent(logsDir, logName, myAddress string, ev chat.Event) {
+func logChatEvent(logsDir, logName, myAddress string, ev chat.Event, selfDIDs ...string) {
 	dir := "recv"
 	kind := interactionKindChatIn
-	from := ev.FromAddress
-	if from == "" {
-		from = ev.FromAgent
-	}
-	to := ev.ToAddress
-	if ev.FromAddress != "" {
-		if ev.FromAddress == myAddress {
-			dir = "send"
-			kind = interactionKindChatOut
-		}
-	} else if ev.FromAgent == myAddress {
+	from := preferredIdentityDisplayLabel(ev.FromAgent, ev.FromAddress, ev.FromStableID, ev.FromDID, "")
+	to := preferredIdentityDisplayLabel("", ev.ToAddress, ev.ToStableID, ev.ToDID, "")
+	if chatEventIsFromSelf(ev, myAddress, selfDIDs...) {
 		dir = "send"
 		kind = interactionKindChatOut
 	}
@@ -75,14 +68,33 @@ func logChatEvent(logsDir, logName, myAddress string, ev chat.Event) {
 	})
 }
 
+func chatEventIsFromSelf(ev chat.Event, myAddress string, selfDIDs ...string) bool {
+	return identityMatchesSelf(
+		strings.TrimSpace(ev.FromAgent),
+		strings.TrimSpace(ev.FromAddress),
+		strings.TrimSpace(ev.FromStableID),
+		strings.TrimSpace(ev.FromDID),
+		handleFromAddress(myAddress),
+		myAddress,
+		selfDIDs...,
+	)
+}
+
 // logChatEvents logs all message events from a list.
-func logChatEvents(logsDir, logName, myAddress string, events []chat.Event) {
+func logChatEvents(logsDir, logName, myAddress string, events []chat.Event, selfDIDs ...string) {
 	for _, ev := range events {
 		if ev.Type != "message" {
 			continue
 		}
-		logChatEvent(logsDir, logName, myAddress, ev)
+		logChatEvent(logsDir, logName, myAddress, ev, selfDIDs...)
 	}
+}
+
+func selectionIdentityDIDs(sel *awconfig.Selection) []string {
+	if sel == nil {
+		return nil
+	}
+	return uniqueIdentityDIDs(sel.StableID, sel.DID)
 }
 
 // chat send-and-wait
@@ -130,7 +142,7 @@ var chatSendAndWaitCmd = &cobra.Command{
 			Text:      args[1],
 		})
 		// Log any reply events.
-		logChatEvents(logsDir, logName, myAddr, result.Events)
+		logChatEvents(logsDir, logName, myAddr, result.Events, selectionIdentityDIDs(sel)...)
 		printOutput(result, formatChatSend)
 		return nil
 	},
@@ -218,7 +230,7 @@ var chatOpenCmd = &cobra.Command{
 		logsDir := defaultLogsDir()
 		myAddr := selectionAddress(sel)
 		for _, m := range result.Messages {
-			logChatEvent(logsDir, commLogNameForSelection(sel), myAddr, m)
+			logChatEvent(logsDir, commLogNameForSelection(sel), myAddr, m, selectionIdentityDIDs(sel)...)
 		}
 		printOutput(result, formatChatOpen)
 		return nil
@@ -310,7 +322,7 @@ var chatListenCmd = &cobra.Command{
 		}
 		logsDir := defaultLogsDir()
 		myAddr := selectionAddress(sel)
-		logChatEvents(logsDir, commLogNameForSelection(sel), myAddr, result.Events)
+		logChatEvents(logsDir, commLogNameForSelection(sel), myAddr, result.Events, selectionIdentityDIDs(sel)...)
 		printOutput(result, formatChatSend)
 		return nil
 	},
@@ -336,7 +348,7 @@ var chatShowPendingCmd = &cobra.Command{
 		}
 		logsDir := defaultLogsDir()
 		myAddr := selectionAddress(sel)
-		logChatEvents(logsDir, commLogNameForSelection(sel), myAddr, result.Events)
+		logChatEvents(logsDir, commLogNameForSelection(sel), myAddr, result.Events, selectionIdentityDIDs(sel)...)
 		printOutput(result, formatChatSend)
 		return nil
 	},

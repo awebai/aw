@@ -49,6 +49,38 @@ func mustClient(t *testing.T, url string) *awid.Client {
 	return c
 }
 
+func mustIdentityClient(t *testing.T, url string) *awid.Client {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := awid.NewWithIdentity(url, priv, awid.ComputeDIDKey(pub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+type stubIdentityResolver struct {
+	resolve func(context.Context, string) (*awid.ResolvedIdentity, error)
+	verify  func(context.Context, string, string) *awid.StableIdentityVerification
+}
+
+func (r stubIdentityResolver) Resolve(ctx context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+	if r.resolve == nil {
+		return nil, errors.New("no resolver configured")
+	}
+	return r.resolve(ctx, identifier)
+}
+
+func (r stubIdentityResolver) VerifyStableIdentity(ctx context.Context, address, stableID string) *awid.StableIdentityVerification {
+	if r.verify == nil {
+		return nil
+	}
+	return r.verify(ctx, address, stableID)
+}
+
 func jsonResponse(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
@@ -133,6 +165,68 @@ func TestPendingReturnsConversations(t *testing.T) {
 	}
 }
 
+func TestPendingMapsLastFromAliasToParticipantAddress(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:            "s1",
+						Participants:         []string{"alice", "bob"},
+						ParticipantAddresses: []string{"acme/alice", "otherco/bob"},
+						LastMessage:          "hi",
+						LastFrom:             "bob",
+						LastFromAddress:      "",
+						UnreadCount:          1,
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Pending(context.Background(), mustClient(t, server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Pending[0].LastFromAddress; got != "otherco/bob" {
+		t.Fatalf("last_from_address=%q", got)
+	}
+}
+
+func TestPendingMapsLastFromAliasToParticipantStableID(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:       "s1",
+						Participants:    []string{"alice", "bob"},
+						ParticipantDIDs: []string{"did:aw:alice", "did:aw:bob"},
+						LastMessage:     "hi",
+						LastFrom:        "bob",
+						LastFromDID:     "",
+						UnreadCount:     1,
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Pending(context.Background(), mustClient(t, server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Pending[0].LastFromStableID; got != "did:aw:bob" {
+		t.Fatalf("last_from_stable_id=%q", got)
+	}
+}
+
 func TestExtendWait(t *testing.T) {
 	t.Parallel()
 
@@ -173,6 +267,7 @@ func TestExtendWait(t *testing.T) {
 
 func TestOpen(t *testing.T) {
 	t.Parallel()
+	deliveredIDsTestPath(t)
 
 	server := newMockServer(map[string]http.HandlerFunc{
 		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
@@ -219,6 +314,122 @@ func TestOpen(t *testing.T) {
 	}
 	if !result.SenderWaiting {
 		t.Fatal("sender_waiting=false")
+	}
+}
+
+func TestOpenSupportsAddressTargetViaUniqueHandleMatch(t *testing.T) {
+	deliveredIDsTestPath(t)
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{SessionID: "s1", Participants: []string{"alice", "monitor"}, SenderWaiting: true},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/messages": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatHistoryResponse{
+				Messages: []awid.ChatMessage{
+					{MessageID: "m1", FromAgent: "monitor", FromAddress: "otherco/monitor", Body: "hello", Timestamp: "2025-01-01T00:00:00Z"},
+				},
+			})
+		},
+		"POST /v1/chat/sessions/s1/read": func(w http.ResponseWriter, r *http.Request) {
+			var req awid.ChatMarkReadRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			jsonResponse(w, awid.ChatMarkReadResponse{
+				Success:        true,
+				MessagesMarked: 1,
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Open(context.Background(), mustClient(t, server.URL), "otherco/monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != "s1" {
+		t.Fatalf("session_id=%s", result.SessionID)
+	}
+}
+
+func TestOpenAddressTargetFailsWhenHandleMatchesMultiplePendingConversations(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{SessionID: "s1", Participants: []string{"alice", "monitor"}, SenderWaiting: true},
+					{SessionID: "s2", Participants: []string{"carol", "monitor"}, SenderWaiting: false},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	_, err := Open(context.Background(), mustClient(t, server.URL), "otherco/monitor")
+	if err == nil {
+		t.Fatal("expected ambiguity error")
+	}
+	if !strings.Contains(err.Error(), "multiple conversations match otherco/monitor") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestOpenSupportsStableDIDTargetViaResolvedAddress(t *testing.T) {
+	deliveredIDsTestPath(t)
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{SessionID: "s1", Participants: []string{"alice", "monitor"}, SenderWaiting: true},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/messages": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatHistoryResponse{
+				Messages: []awid.ChatMessage{
+					{MessageID: "m1", FromAgent: "monitor", FromAddress: "otherco/monitor", Body: "hello", Timestamp: "2025-01-01T00:00:00Z"},
+				},
+			})
+		},
+		"POST /v1/chat/sessions/s1/read": func(w http.ResponseWriter, r *http.Request) {
+			var req awid.ChatMarkReadRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			jsonResponse(w, awid.ChatMarkReadResponse{
+				Success:        true,
+				MessagesMarked: 1,
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			if identifier != "did:aw:monitor" && identifier != "otherco/monitor" {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &awid.ResolvedIdentity{
+				DID:         "did:key:z6MkMonitor",
+				StableID:    "did:aw:monitor",
+				Address:     "otherco/monitor",
+				Handle:      "monitor",
+				ResolvedVia: "registry",
+			}, nil
+		},
+	})
+
+	result, err := Open(context.Background(), client, "did:aw:monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != "s1" {
+		t.Fatalf("session_id=%s", result.SessionID)
 	}
 }
 
@@ -422,6 +633,420 @@ func TestShowPending(t *testing.T) {
 	}
 }
 
+func TestShowPendingSupportsAddressTargetViaUniqueHandleMatch(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{SessionID: "s1", Participants: []string{"alice", "monitor"}, LastMessage: "help!", LastFrom: "monitor", SenderWaiting: true},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := ShowPending(context.Background(), mustClient(t, server.URL), "otherco/monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != "s1" {
+		t.Fatalf("session_id=%s", result.SessionID)
+	}
+	if result.TargetAgent != "otherco/monitor" {
+		t.Fatalf("target=%s", result.TargetAgent)
+	}
+}
+
+func TestShowPendingSupportsStableDIDTargetViaResolvedAddress(t *testing.T) {
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{SessionID: "s1", Participants: []string{"alice", "monitor"}, LastMessage: "help!", LastFrom: "monitor", SenderWaiting: true},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(&stubIdentityResolver{
+		resolve: func(ctx context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			if identifier != "did:aw:monitor" {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &awid.ResolvedIdentity{
+				DID:         "did:key:z6MkMonitor",
+				StableID:    "did:aw:monitor",
+				Address:     "otherco/monitor",
+				Handle:      "monitor",
+				RegistryURL: server.URL,
+			}, nil
+		},
+	})
+
+	result, err := ShowPending(context.Background(), client, "did:aw:monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != "s1" {
+		t.Fatalf("session_id=%s", result.SessionID)
+	}
+	if result.TargetAgent != "did:aw:monitor" {
+		t.Fatalf("target=%s", result.TargetAgent)
+	}
+}
+
+func TestShowPendingCarriesLastFromAddress(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:       "s1",
+						Participants:    []string{"alice", "monitor"},
+						LastMessage:     "help!",
+						LastFrom:        "monitor",
+						LastFromAddress: "otherco/monitor",
+						SenderWaiting:   true,
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := ShowPending(context.Background(), mustClient(t, server.URL), "monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("events=%d", len(result.Events))
+	}
+	if result.Events[0].FromAddress != "otherco/monitor" {
+		t.Fatalf("from_address=%q", result.Events[0].FromAddress)
+	}
+}
+
+func TestShowPendingDerivesFromAddressFromParticipantAddress(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:            "s1",
+						Participants:         []string{""},
+						ParticipantAddresses: []string{"otherco/monitor"},
+						LastMessage:          "help!",
+						LastFrom:             "",
+						LastFromAddress:      "",
+						SenderWaiting:        true,
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := ShowPending(context.Background(), mustClient(t, server.URL), "monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("events=%d", len(result.Events))
+	}
+	if result.Events[0].FromAddress != "otherco/monitor" {
+		t.Fatalf("from_address=%q", result.Events[0].FromAddress)
+	}
+}
+
+func TestShowPendingMapsLastFromAliasToParticipantAddress(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:            "s1",
+						Participants:         []string{"alice", "monitor"},
+						ParticipantAddresses: []string{"acme/alice", "otherco/monitor"},
+						LastMessage:          "help!",
+						LastFrom:             "monitor",
+						LastFromAddress:      "",
+						SenderWaiting:        true,
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := ShowPending(context.Background(), mustClient(t, server.URL), "monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("events=%d", len(result.Events))
+	}
+	if result.Events[0].FromAddress != "otherco/monitor" {
+		t.Fatalf("from_address=%q", result.Events[0].FromAddress)
+	}
+}
+
+func TestShowPendingMapsLastFromAliasToParticipantStableID(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:       "s1",
+						Participants:    []string{"alice", "monitor"},
+						ParticipantDIDs: []string{"did:aw:alice", "did:aw:monitor"},
+						LastMessage:     "help!",
+						LastFrom:        "monitor",
+						LastFromDID:     "",
+						SenderWaiting:   true,
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := ShowPending(context.Background(), mustClient(t, server.URL), "monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("events=%d", len(result.Events))
+	}
+	if result.Events[0].FromStableID != "did:aw:monitor" {
+		t.Fatalf("from_stable_id=%q", result.Events[0].FromStableID)
+	}
+}
+
+func TestShowPendingCarriesLastFromStableID(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:       "s1",
+						Participants:    []string{""},
+						ParticipantDIDs: []string{"did:aw:monitor"},
+						LastMessage:     "help!",
+						LastFrom:        "",
+						LastFromDID:     "did:aw:monitor",
+						SenderWaiting:   true,
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := ShowPending(context.Background(), mustClient(t, server.URL), "did:aw:monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("events=%d", len(result.Events))
+	}
+	if result.Events[0].FromStableID != "did:aw:monitor" {
+		t.Fatalf("from_stable_id=%q", result.Events[0].FromStableID)
+	}
+}
+
+func TestShowPendingSeparatesLastFromCurrentDIDFromParticipantStableID(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:       "s1",
+						Participants:    []string{""},
+						ParticipantDIDs: []string{"did:aw:monitor"},
+						LastMessage:     "help!",
+						LastFrom:        "",
+						LastFromDID:     "did:key:z6MkMonitorCurrent",
+						SenderWaiting:   true,
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := ShowPending(context.Background(), mustClient(t, server.URL), "did:aw:monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("events=%d", len(result.Events))
+	}
+	if result.Events[0].FromStableID != "did:aw:monitor" {
+		t.Fatalf("from_stable_id=%q", result.Events[0].FromStableID)
+	}
+	if result.Events[0].FromDID != "did:key:z6MkMonitorCurrent" {
+		t.Fatalf("from_did=%q", result.Events[0].FromDID)
+	}
+}
+
+func TestShowPendingDoesNotGuessStableIDWhenParticipantStableIDsAreAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:       "s1",
+						Participants:    []string{"", ""},
+						ParticipantDIDs: []string{"did:aw:dave", "did:aw:monitor"},
+						LastMessage:     "help!",
+						LastFrom:        "",
+						LastFromDID:     "did:key:z6MkMonitorCurrent",
+						SenderWaiting:   true,
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := ShowPending(context.Background(), mustClient(t, server.URL), "did:aw:monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("events=%d", len(result.Events))
+	}
+	if result.Events[0].FromStableID != "" {
+		t.Fatalf("from_stable_id=%q, want empty on ambiguous participant stable ids", result.Events[0].FromStableID)
+	}
+	if result.Events[0].FromDID != "did:key:z6MkMonitorCurrent" {
+		t.Fatalf("from_did=%q", result.Events[0].FromDID)
+	}
+}
+
+func TestShowPendingSupportsAliasTargetViaParticipantStableDID(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:       "s1",
+						Participants:    []string{""},
+						ParticipantDIDs: []string{"did:aw:monitor"},
+						LastMessage:     "help!",
+						LastFrom:        "",
+						LastFromDID:     "did:aw:monitor",
+						SenderWaiting:   true,
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := ShowPending(context.Background(), mustClient(t, server.URL), "monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != "s1" {
+		t.Fatalf("session_id=%q", result.SessionID)
+	}
+}
+
+func TestShowPendingSupportsAliasTargetViaParticipantAddress(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:            "s1",
+						Participants:         []string{""},
+						ParticipantAddresses: []string{"otherco/monitor"},
+						LastMessage:          "help!",
+						LastFrom:             "",
+						LastFromAddress:      "otherco/monitor",
+						SenderWaiting:        true,
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := ShowPending(context.Background(), mustClient(t, server.URL), "monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != "s1" {
+		t.Fatalf("session_id=%q", result.SessionID)
+	}
+}
+
+func TestHistorySupportsStableDIDTargetViaParticipantDIDs(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:       "s1",
+						Participants:    []string{""},
+						ParticipantDIDs: []string{"did:aw:monitor"},
+						CreatedAt:       "2026-03-20T00:00:00Z",
+					},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/messages": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatHistoryResponse{
+				Messages: []awid.ChatMessage{
+					{
+						MessageID: "m1",
+						FromDID:   "did:aw:monitor",
+						Body:      "hello",
+						Timestamp: "2026-03-20T00:00:01Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := History(context.Background(), mustClient(t, server.URL), "did:aw:monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != "s1" {
+		t.Fatalf("session_id=%q", result.SessionID)
+	}
+}
+
 func TestSendWithLeaving(t *testing.T) {
 	t.Parallel()
 
@@ -463,6 +1088,36 @@ func TestSendNoWait(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"bob"}, "fire and forget", SendOptions{Wait: 0}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "sent" {
+		t.Fatalf("status=%s", result.Status)
+	}
+}
+
+func TestSendUsesAddressTargetsForIdentityRecipients(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, r *http.Request) {
+			var req awid.ChatCreateSessionRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if len(req.ToAddresses) != 1 || req.ToAddresses[0] != "otherco/monitor" {
+				t.Fatalf("to_addresses=%v", req.ToAddresses)
+			}
+			if len(req.ToAliases) != 0 {
+				t.Fatalf("to_aliases=%v, want empty", req.ToAliases)
+			}
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1", MessageID: "m1",
+				SSEURL: "/v1/chat/sessions/s1/stream",
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"otherco/monitor"}, "hello", SendOptions{Wait: 0}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,15 +1213,6 @@ func TestSendWithReplySuppressesEphemeralContactTag(t *testing.T) {
 				SSEURL:    "/v1/chat/sessions/s1/stream",
 			})
 		},
-		"GET /v1/agents/resolve/architect": func(w http.ResponseWriter, _ *http.Request) {
-			jsonResponse(w, map[string]any{
-				"did":         "did:key:z6MkSender",
-				"identity_id": "identity-uuid-1",
-				"address":     "myteam/architect",
-				"lifetime":    "ephemeral",
-				"custody":     "self",
-			})
-		},
 		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			flusher, _ := w.(http.Flusher)
@@ -597,7 +1243,31 @@ func TestSendWithReplySuppressesEphemeralContactTag(t *testing.T) {
 
 	client := mustClient(t, server.URL)
 	client.SetAddress("myteam/implementer")
-	client.SetResolver(&awid.ServerResolver{Client: client})
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			switch identifier {
+			case "myteam/architect":
+				return &awid.ResolvedIdentity{
+					DID:         "did:key:z6MkSender",
+					Address:     identifier,
+					Lifetime:    awid.LifetimeEphemeral,
+					Custody:     awid.CustodySelf,
+					ResolvedVia: "registry",
+				}, nil
+			case "myteam/implementer":
+				return &awid.ResolvedIdentity{
+					DID:         "did:key:z6MkSelf",
+					Address:     identifier,
+					Lifetime:    awid.LifetimePersistent,
+					Custody:     awid.CustodySelf,
+					ResolvedVia: "registry",
+				}, nil
+			default:
+				t.Fatalf("identifier=%q", identifier)
+				return nil, errors.New("unexpected identifier")
+			}
+		},
+	})
 
 	result, err := Send(context.Background(), client, "implementer", []string{"architect"}, "hello", SendOptions{Wait: 5}, nil)
 	if err != nil {
@@ -747,6 +1417,227 @@ func TestSendWithExtendWaitReceived(t *testing.T) {
 	}
 }
 
+func TestSendWithExtendWaitPrefersStableIDOverParticipantDIDInCallbacks(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	senderDID := "did:key:z6MkBobCurrent"
+	stableID := "did:aw:bob"
+	var callbackCalls []string
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+				Participants: []awid.ChatParticipant{
+					{Alias: "alice", DID: "did:key:z6MkAliceCurrent"},
+					{DID: senderDID},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			hangOnData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-hangon", "from_did": senderDID, "from_stable_id": stableID,
+				"body": "thinking...", "hang_on": true, "extends_wait_seconds": 300,
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", hangOnData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	callback := func(kind, msg string) {
+		callbackCalls = append(callbackCalls, kind+": "+msg)
+	}
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{stableID}, "hello", SendOptions{Wait: 1}, callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "timeout" {
+		t.Fatalf("status=%s, want timeout", result.Status)
+	}
+
+	foundStable := false
+	for _, c := range callbackCalls {
+		if c == "extend_wait: did:aw:bob: thinking..." {
+			foundStable = true
+		}
+		if strings.Contains(c, senderDID) {
+			t.Fatalf("callback should not use participant did:key label: %v", callbackCalls)
+		}
+	}
+	if !foundStable {
+		t.Fatalf("missing stable-id callback, got %v", callbackCalls)
+	}
+}
+
+func TestSendWithExtendWaitUsesFromAddressInCallbacks(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	var callbackCalls []string
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			hangOnData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-hangon", "from_agent": "bob", "from_address": "otherco/bob",
+				"body": "thinking...", "hang_on": true, "extends_wait_seconds": 300,
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", hangOnData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply", "from_agent": "bob", "from_address": "otherco/bob", "body": "here's my answer",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	callback := func(kind, msg string) {
+		callbackCalls = append(callbackCalls, kind+": "+msg)
+	}
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"otherco/bob"}, "hello", SendOptions{Wait: 5}, callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+
+	foundExtendWait := false
+	foundExtended := false
+	for _, c := range callbackCalls {
+		if c == "extend_wait: otherco/bob: thinking..." {
+			foundExtendWait = true
+		}
+		if c == "wait_extended: wait extended by 5 min (otherco/bob requested more time)" {
+			foundExtended = true
+		}
+	}
+	if !foundExtendWait || !foundExtended {
+		t.Fatalf("callbackCalls=%v", callbackCalls)
+	}
+}
+
+func TestSendWithExtendWaitUsesParticipantAddressForStableIDCallbacks(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	targetDID := "did:aw:bob"
+	var callbackCalls []string
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+				Participants: []awid.ChatParticipant{
+					{Alias: "alice", DID: "did:aw:alice", Address: "acme.com/alice"},
+					{Alias: "bob", DID: targetDID, Address: "otherco/bob"},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			hangOnData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-hangon", "from_stable_id": targetDID,
+				"body": "thinking...", "hang_on": true, "extends_wait_seconds": 300,
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", hangOnData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply", "from_stable_id": targetDID, "body": "here's my answer",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	callback := func(kind, msg string) {
+		callbackCalls = append(callbackCalls, kind+": "+msg)
+	}
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"otherco/bob"}, "hello", SendOptions{Wait: 5}, callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+
+	foundExtendWait := false
+	foundExtended := false
+	for _, c := range callbackCalls {
+		if c == "extend_wait: otherco/bob: thinking..." {
+			foundExtendWait = true
+		}
+		if c == "wait_extended: wait extended by 5 min (otherco/bob requested more time)" {
+			foundExtended = true
+		}
+	}
+	if !foundExtendWait || !foundExtended {
+		t.Fatalf("callbackCalls=%v", callbackCalls)
+	}
+}
+
 func TestSendWithReadReceipt(t *testing.T) {
 	t.Parallel()
 
@@ -889,6 +1780,280 @@ func TestSendStreamDeadlineExceedsWait(t *testing.T) {
 	}
 }
 
+func TestSendReadReceiptFallsBackToStableTargetLabelWhenReaderAliasMissing(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	targetStableID := "did:aw:bob"
+	targetCurrentDID := "did:key:z6MkBobCurrent"
+	var callbackCalls []string
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+				Participants: []awid.ChatParticipant{
+					{Alias: "alice", DID: "did:key:z6MkAliceCurrent"},
+					{DID: targetCurrentDID},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			rrData, _ := json.Marshal(map[string]any{
+				"type": "read_receipt", "reader_alias": "", "extends_wait_seconds": 300,
+			})
+			fmt.Fprintf(w, "event: read_receipt\ndata: %s\n\n", rrData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply", "from_did": targetCurrentDID, "from_stable_id": targetStableID, "body": "got it",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			switch identifier {
+			case targetStableID, targetCurrentDID:
+				return &awid.ResolvedIdentity{DID: targetCurrentDID, StableID: targetStableID}, nil
+			default:
+				return nil, errors.New("unexpected identifier")
+			}
+		},
+	})
+
+	callback := func(kind, msg string) {
+		callbackCalls = append(callbackCalls, kind+": "+msg)
+	}
+
+	result, err := Send(context.Background(), client, "alice", []string{targetStableID}, "hello", SendOptions{Wait: 5}, callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+
+	foundReceipt := false
+	foundExtended := false
+	for _, c := range callbackCalls {
+		if c == "read_receipt: did:aw:bob opened the conversation" {
+			foundReceipt = true
+		}
+		if c == "wait_extended: wait extended by 5 min (did:aw:bob opened the conversation)" {
+			foundExtended = true
+		}
+	}
+	if !foundReceipt || !foundExtended {
+		t.Fatalf("callbacks=%v", callbackCalls)
+	}
+}
+
+func TestInferReadReceiptLabelDoesNotTreatDifferentAddressHandleAsSelf(t *testing.T) {
+	t.Parallel()
+
+	client, err := awid.New("http://example.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.SetAddress("acme.com/rose")
+
+	label := inferReadReceiptLabel(
+		context.Background(),
+		client,
+		"rose",
+		"",
+		[]awid.ChatParticipant{
+			{Alias: "rose", Address: "acme.com/rose", DID: "did:aw:self-rose"},
+			{Alias: "rose", Address: "otherco/rose", DID: "did:aw:other-rose"},
+		},
+	)
+
+	if label != "otherco/rose" {
+		t.Fatalf("label=%q, want otherco/rose", label)
+	}
+}
+
+func TestChatEventTrustAddressPrefersStableIdentityOverAliasCollision(t *testing.T) {
+	t.Parallel()
+
+	trust := chatEventTrustAddress(
+		Event{
+			FromAgent:    "rose",
+			FromDID:      "did:aw:other-rose",
+			FromStableID: "did:aw:other-rose",
+		},
+		[]awid.ChatParticipant{
+			{Alias: "rose", Address: "acme.com/rose", DID: "did:aw:self-rose"},
+			{Alias: "rose", Address: "otherco/rose", DID: "did:aw:other-rose"},
+		},
+	)
+
+	if trust != "otherco/rose" {
+		t.Fatalf("trust=%q, want otherco/rose", trust)
+	}
+}
+
+func TestChatEventSenderLabelPrefersStableIdentityOverAliasCollision(t *testing.T) {
+	t.Parallel()
+
+	label := chatEventSenderLabel(
+		Event{
+			FromAgent:    "rose",
+			FromDID:      "did:aw:other-rose",
+			FromStableID: "did:aw:other-rose",
+		},
+		[]awid.ChatParticipant{
+			{Alias: "rose", Address: "acme.com/rose", DID: "did:aw:self-rose"},
+			{Alias: "rose", Address: "otherco/rose", DID: "did:aw:other-rose"},
+		},
+	)
+
+	if label != "otherco/rose" {
+		t.Fatalf("label=%q, want otherco/rose", label)
+	}
+}
+
+func TestChatEventSenderLabelPrefersStableIDOverHandleAliasCollision(t *testing.T) {
+	t.Parallel()
+
+	label := chatEventSenderLabel(
+		Event{
+			FromAgent:    "monitor",
+			FromStableID: "did:aw:monitor",
+		},
+		[]awid.ChatParticipant{
+			{Alias: "monitor", Address: "otherco.com/monitor", DID: "did:aw:other-monitor"},
+			{Alias: "monitor", Address: "acme.com/monitor", DID: "did:aw:monitor"},
+		},
+	)
+
+	if label != "acme.com/monitor" {
+		t.Fatalf("label=%q, want acme.com/monitor", label)
+	}
+}
+
+func TestChatEventSenderLabelPrefersStableIDOverAliasWhenAddressMissing(t *testing.T) {
+	t.Parallel()
+
+	label := chatEventSenderLabel(
+		Event{
+			FromAgent:    "monitor",
+			FromStableID: "did:aw:monitor",
+		},
+		[]awid.ChatParticipant{
+			{Alias: "monitor", DID: "did:aw:monitor"},
+		},
+	)
+
+	if label != "did:aw:monitor" {
+		t.Fatalf("label=%q, want did:aw:monitor", label)
+	}
+}
+
+func TestChatEventTrustAddressPrefersStableIDOverHandleAliasCollision(t *testing.T) {
+	t.Parallel()
+
+	trust := chatEventTrustAddress(
+		Event{
+			FromAgent:    "monitor",
+			FromStableID: "did:aw:monitor",
+		},
+		[]awid.ChatParticipant{
+			{Alias: "monitor", Address: "otherco.com/monitor", DID: "did:aw:other-monitor"},
+			{Alias: "monitor", Address: "acme.com/monitor", DID: "did:aw:monitor"},
+		},
+	)
+
+	if trust != "acme.com/monitor" {
+		t.Fatalf("trust=%q, want acme.com/monitor", trust)
+	}
+}
+
+func TestNormalizedChatEventNamesDoesNotUnionAliasCollisionParticipants(t *testing.T) {
+	t.Parallel()
+
+	names := normalizedChatEventNames(
+		Event{
+			FromAgent:    "rose",
+			FromDID:      "did:aw:self-rose",
+			FromStableID: "did:aw:self-rose",
+		},
+		[]awid.ChatParticipant{
+			{Alias: "rose", Address: "acme.com/rose", DID: "did:aw:self-rose"},
+			{Alias: "rose", Address: "otherco/rose", DID: "did:aw:other-rose"},
+		},
+	)
+
+	for _, name := range names {
+		if name == "otherco/rose" || name == "did:aw:other-rose" {
+			t.Fatalf("names=%v should not include alias-collision participant", names)
+		}
+	}
+}
+
+func TestNormalizedChatEventNamesDoesNotUnionAliasCollisionFromStableIDHandleMatch(t *testing.T) {
+	t.Parallel()
+
+	names := normalizedChatEventNames(
+		Event{
+			FromAgent:    "monitor",
+			FromStableID: "did:aw:monitor",
+		},
+		[]awid.ChatParticipant{
+			{Alias: "monitor", Address: "acme.com/monitor", DID: "did:aw:monitor"},
+			{Alias: "monitor", Address: "otherco.com/monitor", DID: "did:aw:other-monitor"},
+		},
+	)
+
+	for _, name := range names {
+		if name == "otherco.com/monitor" || name == "did:aw:other-monitor" {
+			t.Fatalf("names=%v should not include alias-collision participant", names)
+		}
+	}
+}
+
+func TestNormalizedChatEventNamesDoesNotFallbackToAliasWhenStrongIdentityConflicts(t *testing.T) {
+	t.Parallel()
+
+	names := normalizedChatEventNames(
+		Event{
+			FromAgent:    "bob",
+			FromStableID: "did:aw:mallory",
+		},
+		[]awid.ChatParticipant{
+			{Alias: "bob", Address: "otherco.com/bob", DID: "did:aw:bob"},
+		},
+	)
+
+	for _, name := range names {
+		if name == "bob" {
+			t.Fatalf("names=%v should not include alias fallback for conflicting strong identity", names)
+		}
+	}
+}
+
 func TestDefaultWaitIs120(t *testing.T) {
 	t.Parallel()
 
@@ -931,6 +2096,879 @@ func TestFindSessionFallback(t *testing.T) {
 	}
 	if senderWaiting {
 		t.Fatal("sender_waiting=true (expected false from fallback)")
+	}
+}
+
+func TestFindSessionFallbackUsesParticipantAddress(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:            "s-fallback",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"otherco/monitor"},
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	sessionID, senderWaiting, err := findSession(context.Background(), mustClient(t, server.URL), "otherco/monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-fallback" {
+		t.Fatalf("session_id=%s", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true (expected false from fallback)")
+	}
+}
+
+func TestFindSessionStableDIDHandleOnlyErrorsOnAmbiguousAliasMatches(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{SessionID: "s-1", Participants: []string{"monitor"}},
+					{SessionID: "s-2", Participants: []string{"monitor"}},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			if identifier != "did:aw:monitor" {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &awid.ResolvedIdentity{
+				DID:         "did:key:z6MkMonitor",
+				StableID:    "did:aw:monitor",
+				Handle:      "monitor",
+				ResolvedVia: "registry",
+			}, nil
+		},
+	})
+
+	_, _, err := findSession(context.Background(), client, "did:aw:monitor")
+	if err == nil {
+		t.Fatal("expected ambiguity error")
+	}
+	if !strings.Contains(err.Error(), "multiple conversations match monitor") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestFindSessionStableDIDHandleOnlyAllowsSparseAndRichRowsForSameIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:            "s-rich",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"acme.com/monitor"},
+						CreatedAt:            "2025-01-01T00:00:01Z",
+					},
+					{
+						SessionID:    "s-sparse",
+						Participants: []string{"monitor"},
+						CreatedAt:    "2025-01-01T00:00:00Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			if identifier != "did:aw:monitor" {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &awid.ResolvedIdentity{
+				DID:         "did:key:z6MkMonitor",
+				StableID:    "did:aw:monitor",
+				Handle:      "monitor",
+				ResolvedVia: "registry",
+			}, nil
+		},
+	})
+
+	sessionID, senderWaiting, err := findSession(context.Background(), client, "did:aw:monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-rich" {
+		t.Fatalf("session_id=%s", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true (expected false from fallback)")
+	}
+}
+
+func TestFindSessionStableDIDHandleOnlyPendingAllowsSparseAndRichRowsForSameIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:            "s-rich",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"acme.com/monitor"},
+						LastActivity:         "2025-01-01T00:00:01Z",
+					},
+					{
+						SessionID:    "s-sparse",
+						Participants: []string{"monitor"},
+						LastActivity: "2025-01-01T00:00:00Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			if identifier != "did:aw:monitor" {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &awid.ResolvedIdentity{
+				DID:         "did:key:z6MkMonitor",
+				StableID:    "did:aw:monitor",
+				Handle:      "monitor",
+				ResolvedVia: "registry",
+			}, nil
+		},
+	})
+
+	sessionID, senderWaiting, err := findSession(context.Background(), client, "did:aw:monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-rich" {
+		t.Fatalf("session_id=%s", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true (expected false from pending)")
+	}
+}
+
+func TestFindSessionAliasAllowsAddressAndStableDIDRowsForSameIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:            "s-rich",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"acme.com/monitor"},
+						ParticipantDIDs:      []string{"did:aw:monitor"},
+						CreatedAt:            "2025-01-01T00:00:01Z",
+					},
+					{
+						SessionID:       "s-did-only",
+						Participants:    []string{"monitor"},
+						ParticipantDIDs: []string{"did:aw:monitor"},
+						CreatedAt:       "2025-01-01T00:00:00Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	sessionID, senderWaiting, err := findSession(context.Background(), mustClient(t, server.URL), "monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-rich" {
+		t.Fatalf("session_id=%s", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true (expected false from fallback)")
+	}
+}
+
+func TestFindSessionStableDIDHandleOnlyAllowsAddressAndStableDIDRowsForSameIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:            "s-rich",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"acme.com/monitor"},
+						ParticipantDIDs:      []string{"did:aw:monitor"},
+						CreatedAt:            "2025-01-01T00:00:01Z",
+					},
+					{
+						SessionID:       "s-did-only",
+						Participants:    []string{"monitor"},
+						ParticipantDIDs: []string{"did:aw:monitor"},
+						CreatedAt:       "2025-01-01T00:00:00Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			if identifier != "did:aw:monitor" {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &awid.ResolvedIdentity{
+				DID:         "did:key:z6MkMonitor",
+				StableID:    "did:aw:monitor",
+				Handle:      "monitor",
+				ResolvedVia: "registry",
+			}, nil
+		},
+	})
+
+	sessionID, senderWaiting, err := findSession(context.Background(), client, "did:aw:monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-rich" {
+		t.Fatalf("session_id=%s", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true (expected false from fallback)")
+	}
+}
+
+func TestFindSessionAliasAllowsAddressAndCurrentDIDRowsForSameIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:            "s-rich",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"acme.com/monitor"},
+						ParticipantDIDs:      []string{"did:key:z6MkMonitor"},
+						CreatedAt:            "2025-01-01T00:00:01Z",
+					},
+					{
+						SessionID:       "s-did-only",
+						Participants:    []string{"monitor"},
+						ParticipantDIDs: []string{"did:key:z6MkMonitor"},
+						CreatedAt:       "2025-01-01T00:00:00Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	sessionID, senderWaiting, err := findSession(context.Background(), mustClient(t, server.URL), "monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-rich" {
+		t.Fatalf("session_id=%s", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true (expected false from fallback)")
+	}
+}
+
+func TestFindSessionStableDIDHandleOnlyAllowsAddressAndCurrentDIDRowsForSameIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:            "s-rich",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"acme.com/monitor"},
+						ParticipantDIDs:      []string{"did:key:z6MkMonitor"},
+						CreatedAt:            "2025-01-01T00:00:01Z",
+					},
+					{
+						SessionID:       "s-did-only",
+						Participants:    []string{"monitor"},
+						ParticipantDIDs: []string{"did:key:z6MkMonitor"},
+						CreatedAt:       "2025-01-01T00:00:00Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			if identifier != "did:aw:monitor" {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &awid.ResolvedIdentity{
+				DID:         "did:key:z6MkMonitor",
+				StableID:    "did:aw:monitor",
+				Handle:      "monitor",
+				ResolvedVia: "registry",
+			}, nil
+		},
+	})
+
+	sessionID, senderWaiting, err := findSession(context.Background(), client, "did:aw:monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-rich" {
+		t.Fatalf("session_id=%s", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true (expected false from fallback)")
+	}
+}
+
+func TestFindSessionStableDIDHandleOnlyAllowsStableAndCurrentDIDRowsForSameIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:       "s-stable",
+						Participants:    []string{"monitor"},
+						ParticipantDIDs: []string{"did:aw:monitor"},
+						CreatedAt:       "2025-01-01T00:00:01Z",
+					},
+					{
+						SessionID:       "s-current",
+						Participants:    []string{"monitor"},
+						ParticipantDIDs: []string{"did:key:z6MkMonitor"},
+						CreatedAt:       "2025-01-01T00:00:00Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			switch identifier {
+			case "did:aw:monitor":
+				return &awid.ResolvedIdentity{
+					DID:         "did:key:z6MkMonitor",
+					StableID:    "did:aw:monitor",
+					Handle:      "monitor",
+					ResolvedVia: "registry",
+				}, nil
+			case "did:key:z6MkMonitor":
+				return &awid.ResolvedIdentity{
+					DID:         "did:key:z6MkMonitor",
+					StableID:    "did:aw:monitor",
+					Handle:      "monitor",
+					ResolvedVia: "registry",
+				}, nil
+			default:
+				t.Fatalf("identifier=%q", identifier)
+				return nil, nil
+			}
+		},
+	})
+
+	sessionID, senderWaiting, err := findSession(context.Background(), client, "did:aw:monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-stable" {
+		t.Fatalf("session_id=%s", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true (expected false from fallback)")
+	}
+}
+
+func TestFindSessionAliasAllowsStableAndCurrentDIDRowsForSameIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:       "s-stable",
+						Participants:    []string{"monitor"},
+						ParticipantDIDs: []string{"did:aw:monitor"},
+						CreatedAt:       "2025-01-01T00:00:01Z",
+					},
+					{
+						SessionID:       "s-current",
+						Participants:    []string{"monitor"},
+						ParticipantDIDs: []string{"did:key:z6MkMonitor"},
+						CreatedAt:       "2025-01-01T00:00:00Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			switch identifier {
+			case "did:aw:monitor":
+				return &awid.ResolvedIdentity{
+					DID:         "did:key:z6MkMonitor",
+					StableID:    "did:aw:monitor",
+					Handle:      "monitor",
+					ResolvedVia: "registry",
+				}, nil
+			case "did:key:z6MkMonitor":
+				return &awid.ResolvedIdentity{
+					DID:         "did:key:z6MkMonitor",
+					StableID:    "did:aw:monitor",
+					Handle:      "monitor",
+					ResolvedVia: "registry",
+				}, nil
+			default:
+				t.Fatalf("identifier=%q", identifier)
+				return nil, nil
+			}
+		},
+	})
+
+	sessionID, senderWaiting, err := findSession(context.Background(), client, "monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-stable" {
+		t.Fatalf("session_id=%s", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true (expected false from fallback)")
+	}
+}
+
+func TestFindSessionAliasAllowsAddressOnlyAndStableDIDRowsForSameIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:            "s-address",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"acme.com/monitor"},
+						CreatedAt:            "2025-01-01T00:00:01Z",
+					},
+					{
+						SessionID:       "s-stable",
+						Participants:    []string{"monitor"},
+						ParticipantDIDs: []string{"did:aw:monitor"},
+						CreatedAt:       "2025-01-01T00:00:00Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			switch identifier {
+			case "did:aw:monitor", "acme.com/monitor":
+				return &awid.ResolvedIdentity{
+					DID:         "did:key:z6MkMonitor",
+					StableID:    "did:aw:monitor",
+					Handle:      "monitor",
+					Address:     "acme.com/monitor",
+					ResolvedVia: "registry",
+				}, nil
+			default:
+				t.Fatalf("identifier=%q", identifier)
+				return nil, nil
+			}
+		},
+	})
+
+	sessionID, senderWaiting, err := findSession(context.Background(), client, "monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-address" {
+		t.Fatalf("session_id=%s", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true (expected false from fallback)")
+	}
+}
+
+func TestFindSessionStableDIDHandleOnlyAllowsAddressOnlyAndStableDIDRowsForSameIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:            "s-address",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"acme.com/monitor"},
+						CreatedAt:            "2025-01-01T00:00:01Z",
+					},
+					{
+						SessionID:       "s-stable",
+						Participants:    []string{"monitor"},
+						ParticipantDIDs: []string{"did:aw:monitor"},
+						CreatedAt:       "2025-01-01T00:00:00Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			switch identifier {
+			case "did:aw:monitor", "acme.com/monitor":
+				return &awid.ResolvedIdentity{
+					DID:         "did:key:z6MkMonitor",
+					StableID:    "did:aw:monitor",
+					Handle:      "monitor",
+					Address:     "acme.com/monitor",
+					ResolvedVia: "registry",
+				}, nil
+			default:
+				t.Fatalf("identifier=%q", identifier)
+				return nil, nil
+			}
+		},
+	})
+
+	sessionID, senderWaiting, err := findSession(context.Background(), client, "did:aw:monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-address" {
+		t.Fatalf("session_id=%s", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true (expected false from fallback)")
+	}
+}
+
+func TestFindSessionAddressTargetPrefersAddressBackedRowOverDIDOnlyDuplicate(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:            "s-address",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"acme.com/monitor"},
+						ParticipantDIDs:      []string{"did:aw:monitor"},
+						CreatedAt:            "2025-01-01T00:00:00Z",
+					},
+					{
+						SessionID:       "s-did-only",
+						Participants:    []string{"monitor"},
+						ParticipantDIDs: []string{"did:aw:monitor"},
+						CreatedAt:       "2025-01-01T00:00:01Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	sessionID, senderWaiting, err := findSession(context.Background(), mustClient(t, server.URL), "acme.com/monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-address" {
+		t.Fatalf("session_id=%s", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true (expected false from fallback)")
+	}
+}
+
+func TestFindSessionAliasAllowsAddressOnlyAndCurrentDIDRowsForSameIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:            "s-address",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"acme.com/monitor"},
+						CreatedAt:            "2025-01-01T00:00:01Z",
+					},
+					{
+						SessionID:       "s-current",
+						Participants:    []string{"monitor"},
+						ParticipantDIDs: []string{"did:key:z6MkMonitor"},
+						CreatedAt:       "2025-01-01T00:00:00Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			switch identifier {
+			case "did:key:z6MkMonitor", "acme.com/monitor":
+				return &awid.ResolvedIdentity{
+					DID:         "did:key:z6MkMonitor",
+					StableID:    "did:aw:monitor",
+					Handle:      "monitor",
+					Address:     "acme.com/monitor",
+					ResolvedVia: "registry",
+				}, nil
+			default:
+				t.Fatalf("identifier=%q", identifier)
+				return nil, nil
+			}
+		},
+	})
+
+	sessionID, senderWaiting, err := findSession(context.Background(), client, "monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-address" {
+		t.Fatalf("session_id=%s", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true (expected false from fallback)")
+	}
+}
+
+func TestFindSessionAliasErrorsOnAmbiguousAliasMatches(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:            "s-1",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"acme.com/monitor"},
+					},
+					{
+						SessionID:            "s-2",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"otherco.com/monitor"},
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	_, _, err := findSession(context.Background(), mustClient(t, server.URL), "monitor")
+	if err == nil {
+		t.Fatal("expected ambiguity error")
+	}
+	if !strings.Contains(err.Error(), "multiple conversations match monitor") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestFindSessionAliasAllowsSparseAndRichRowsForSameIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:            "s-rich",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"acme.com/monitor"},
+						CreatedAt:            "2025-01-01T00:00:01Z",
+					},
+					{
+						SessionID:    "s-sparse",
+						Participants: []string{"monitor"},
+						CreatedAt:    "2025-01-01T00:00:00Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	sessionID, senderWaiting, err := findSession(context.Background(), mustClient(t, server.URL), "monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-rich" {
+		t.Fatalf("session_id=%s", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true (expected false from fallback)")
+	}
+}
+
+func TestFindSessionPendingDoesNotPreferSparseGroupOverDirect(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{
+				Pending: []awid.ChatPendingItem{
+					{
+						SessionID:            "s-direct",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"otherco/monitor"},
+						LastActivity:         "2026-04-11T10:00:00Z",
+					},
+					{
+						SessionID:            "s-group-sparse",
+						Participants:         nil,
+						ParticipantAddresses: []string{"otherco/monitor", "acme/alice"},
+						LastActivity:         "2026-04-11T09:00:00Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	sessionID, senderWaiting, err := findSession(context.Background(), mustClient(t, server.URL), "otherco/monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-direct" {
+		t.Fatalf("session_id=%q, want s-direct", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true, want false")
+	}
+}
+
+func TestFindSessionFallbackDoesNotPreferSparseGroupOverDirect(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		},
+		"GET /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatListSessionsResponse{
+				Sessions: []awid.ChatSessionItem{
+					{
+						SessionID:            "s-direct",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"otherco/monitor"},
+						CreatedAt:            "2026-04-11T10:00:00Z",
+					},
+					{
+						SessionID:            "s-group-sparse",
+						Participants:         nil,
+						ParticipantAddresses: []string{"otherco/monitor", "acme/alice"},
+						CreatedAt:            "2026-04-11T09:00:00Z",
+					},
+				},
+			})
+		},
+	})
+	t.Cleanup(server.Close)
+
+	sessionID, senderWaiting, err := findSession(context.Background(), mustClient(t, server.URL), "otherco/monitor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "s-direct" {
+		t.Fatalf("session_id=%q, want s-direct", sessionID)
+	}
+	if senderWaiting {
+		t.Fatal("sender_waiting=true, want false")
 	}
 }
 
@@ -1339,6 +3377,450 @@ func TestListenTimeout(t *testing.T) {
 	}
 }
 
+func TestSendSuppressesContactTagForEphemeralStableDIDSSESender(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+				Participants: []awid.ChatParticipant{
+					{Alias: "implementer", DID: "did:aw:implementer", Address: "myteam/implementer"},
+					{Alias: "architect", DID: "did:aw:architect", Address: "myteam/architect"},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "implementer", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type":           "message",
+				"message_id":     "msg-reply-1",
+				"from_stable_id": "did:aw:architect",
+				"body":           "hi back!",
+				"from_did":       "did:key:z6MkSender",
+				"is_contact":     false,
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetAddress("myteam/implementer")
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			switch identifier {
+			case "myteam/architect":
+				return &awid.ResolvedIdentity{
+					DID:         "did:key:z6MkSender",
+					StableID:    "did:aw:architect",
+					Address:     identifier,
+					Lifetime:    awid.LifetimeEphemeral,
+					Custody:     awid.CustodySelf,
+					ResolvedVia: "registry",
+				}, nil
+			case "myteam/implementer":
+				return &awid.ResolvedIdentity{
+					DID:         "did:key:z6MkSelf",
+					Address:     identifier,
+					Lifetime:    awid.LifetimePersistent,
+					Custody:     awid.CustodySelf,
+					ResolvedVia: "registry",
+				}, nil
+			default:
+				t.Fatalf("identifier=%q", identifier)
+				return nil, errors.New("unexpected identifier")
+			}
+		},
+	})
+
+	result, err := Send(context.Background(), client, "implementer", []string{"architect"}, "hello", SendOptions{Wait: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("events=%d, want 1", len(result.Events))
+	}
+	if result.Events[0].IsContact != nil {
+		t.Fatalf("ephemeral stable-DID SSE sender should suppress contact tag, got %v", *result.Events[0].IsContact)
+	}
+}
+
+func TestSendUsesSignedPayloadStableIDForSSEIdentityMismatch(t *testing.T) {
+	t.Parallel()
+
+	senderPub, senderPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderDID := awid.ComputeDIDKey(senderPub)
+	stableID := "did:aw:architect"
+	sentMsgID := "msg-sent-1"
+	replyMsgID := "msg-reply-1"
+	replyTimestamp := "2026-04-10T00:00:00Z"
+
+	replyEnv := &awid.MessageEnvelope{
+		From:         "myteam/architect",
+		FromDID:      senderDID,
+		Type:         "chat",
+		Body:         "hi back!",
+		Timestamp:    replyTimestamp,
+		FromStableID: stableID,
+		MessageID:    replyMsgID,
+	}
+	replySig, err := awid.SignMessage(senderPriv, replyEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replySignedPayload := awid.CanonicalJSON(replyEnv)
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{})
+		},
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, r *http.Request) {
+			var req awid.ChatCreateSessionRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+				Participants: []awid.ChatParticipant{
+					{Alias: "implementer", DID: "did:aw:implementer", Address: "myteam/implementer"},
+					{Alias: "architect", DID: stableID, Address: "myteam/architect"},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "implementer", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type":           "message",
+				"message_id":     replyMsgID,
+				"from_agent":     "architect",
+				"from_address":   "myteam/architect",
+				"body":           "hi back!",
+				"from_did":       senderDID,
+				"signature":      replySig,
+				"signing_key_id": senderDID,
+				"signed_payload": replySignedPayload,
+				"timestamp":      replyTimestamp,
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetAddress("myteam/implementer")
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			switch identifier {
+			case "myteam/architect":
+				return &awid.ResolvedIdentity{
+					DID:         senderDID,
+					StableID:    stableID,
+					Address:     identifier,
+					Lifetime:    awid.LifetimePersistent,
+					Custody:     awid.CustodySelf,
+					ResolvedVia: "registry",
+				}, nil
+			case "myteam/implementer":
+				return &awid.ResolvedIdentity{
+					DID:         "did:key:z6MkSelf",
+					Address:     identifier,
+					Lifetime:    awid.LifetimePersistent,
+					Custody:     awid.CustodySelf,
+					ResolvedVia: "registry",
+				}, nil
+			default:
+				t.Fatalf("identifier=%q", identifier)
+				return nil, errors.New("unexpected identifier")
+			}
+		},
+		verify: func(_ context.Context, address, gotStableID string) *awid.StableIdentityVerification {
+			if address != "myteam/architect" {
+				t.Fatalf("address=%q", address)
+			}
+			if gotStableID != stableID {
+				t.Fatalf("stable_id=%q, want %q", gotStableID, stableID)
+			}
+			return &awid.StableIdentityVerification{
+				Outcome:       awid.StableIdentityVerified,
+				CurrentDIDKey: "did:key:z6MkDifferentCurrent",
+			}
+		},
+	})
+
+	result, err := Send(context.Background(), client, "implementer", []string{"architect"}, "hello", SendOptions{Wait: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("events=%d, want 1", len(result.Events))
+	}
+	if result.Events[0].FromStableID != stableID {
+		t.Fatalf("from_stable_id=%q, want %q", result.Events[0].FromStableID, stableID)
+	}
+	if result.Events[0].VerificationStatus != awid.IdentityMismatch {
+		t.Fatalf("verification_status=%s, want identity_mismatch", result.Events[0].VerificationStatus)
+	}
+}
+
+func TestSendUsesSignedPayloadRecipientBindingForSSEIdentityMismatch(t *testing.T) {
+	t.Parallel()
+
+	senderPub, senderPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderDID := awid.ComputeDIDKey(senderPub)
+
+	wrongRecipientPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongRecipientDID := awid.ComputeDIDKey(wrongRecipientPub)
+
+	sentMsgID := "msg-sent-1"
+	replyMsgID := "msg-reply-1"
+	replyTimestamp := "2026-04-10T00:00:00Z"
+
+	replyEnv := &awid.MessageEnvelope{
+		From:      "myteam/architect",
+		FromDID:   senderDID,
+		To:        "myteam/implementer",
+		ToDID:     wrongRecipientDID,
+		Type:      "chat",
+		Body:      "hi back!",
+		Timestamp: replyTimestamp,
+		MessageID: replyMsgID,
+	}
+	replySig, err := awid.SignMessage(senderPriv, replyEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replySignedPayload := awid.CanonicalJSON(replyEnv)
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{})
+		},
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, r *http.Request) {
+			var req awid.ChatCreateSessionRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+				Participants: []awid.ChatParticipant{
+					{Alias: "implementer", DID: "did:aw:implementer", Address: "myteam/implementer"},
+					{Alias: "architect", DID: "did:aw:architect", Address: "myteam/architect"},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "implementer", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type":           "message",
+				"message_id":     replyMsgID,
+				"from_agent":     "architect",
+				"from_address":   "myteam/architect",
+				"body":           "hi back!",
+				"from_did":       senderDID,
+				"signature":      replySig,
+				"signing_key_id": senderDID,
+				"signed_payload": replySignedPayload,
+				"timestamp":      replyTimestamp,
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustIdentityClient(t, server.URL)
+	client.SetAddress("myteam/implementer")
+
+	result, err := Send(context.Background(), client, "implementer", []string{"architect"}, "hello", SendOptions{Wait: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("events=%d, want 1", len(result.Events))
+	}
+	if result.Events[0].ToDID != wrongRecipientDID {
+		t.Fatalf("to_did=%q, want %q", result.Events[0].ToDID, wrongRecipientDID)
+	}
+	if result.Events[0].VerificationStatus != awid.IdentityMismatch {
+		t.Fatalf("verification_status=%s, want identity_mismatch", result.Events[0].VerificationStatus)
+	}
+}
+
+func TestSendUsesStableRecipientBindingForSSEAfterLocalKeyRotation(t *testing.T) {
+	t.Parallel()
+
+	senderPub, senderPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderDID := awid.ComputeDIDKey(senderPub)
+
+	receiverOldPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiverOldDID := awid.ComputeDIDKey(receiverOldPub)
+	receiverStableID := awid.ComputeStableID(receiverOldPub)
+
+	receiverNewPub, receiverNewPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiverNewDID := awid.ComputeDIDKey(receiverNewPub)
+
+	sentMsgID := "msg-sent-rotation"
+	replyMsgID := "msg-reply-rotation"
+	replyTimestamp := "2026-04-10T00:00:00Z"
+
+	replyEnv := &awid.MessageEnvelope{
+		From:       "myteam/architect",
+		FromDID:    senderDID,
+		To:         receiverStableID,
+		ToDID:      receiverOldDID,
+		ToStableID: receiverStableID,
+		Type:       "chat",
+		Body:       "hi after rotation!",
+		Timestamp:  replyTimestamp,
+		MessageID:  replyMsgID,
+	}
+	replySig, err := awid.SignMessage(senderPriv, replyEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replySignedPayload := awid.CanonicalJSON(replyEnv)
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"GET /v1/chat/pending": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatPendingResponse{})
+		},
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, r *http.Request) {
+			var req awid.ChatCreateSessionRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+				Participants: []awid.ChatParticipant{
+					{Alias: "implementer", DID: receiverStableID, Address: "myteam/implementer"},
+					{Alias: "architect", DID: "did:aw:architect", Address: "myteam/architect"},
+				},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "implementer", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type":           "message",
+				"message_id":     replyMsgID,
+				"from_agent":     "architect",
+				"from_address":   "myteam/architect",
+				"body":           "hi after rotation!",
+				"from_did":       senderDID,
+				"signature":      replySig,
+				"signing_key_id": senderDID,
+				"signed_payload": replySignedPayload,
+				"timestamp":      replyTimestamp,
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client, err := awid.NewWithIdentity(server.URL, receiverNewPriv, receiverNewDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.SetAddress("myteam/implementer")
+	client.SetStableID(receiverStableID)
+
+	result, err := Send(context.Background(), client, "implementer", []string{"architect"}, "hello", SendOptions{Wait: 5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s", result.Status)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("events=%d, want 1", len(result.Events))
+	}
+	if result.Events[0].VerificationStatus != awid.Verified {
+		t.Fatalf("verification_status=%s, want verified", result.Events[0].VerificationStatus)
+	}
+}
+
 func TestWaitForMessageTreatsInitialEOFAsTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -1352,6 +3834,8 @@ func TestWaitForMessageTreatsInitialEOFAsTimeout(t *testing.T) {
 			return nil, io.EOF
 		},
 		"s1",
+		nil,
+		"",
 		1,
 		nil,
 		nil,
@@ -1382,6 +3866,8 @@ func TestWaitForMessageTreatsWrappedEOFAsTimeout(t *testing.T) {
 			return nil, &url.Error{Op: "Get", URL: server.URL + "/v1/chat/sessions/s1/stream", Err: io.EOF}
 		},
 		"s1",
+		nil,
+		"",
 		1,
 		nil,
 		nil,
@@ -1411,6 +3897,8 @@ func TestWaitForMessagePropagatesContextCancellationOnOpen(t *testing.T) {
 			return nil, context.Canceled
 		},
 		"s1",
+		nil,
+		"",
 		1,
 		nil,
 		nil,
@@ -1434,6 +3922,8 @@ func TestWaitForMessageDoesNotTreatUnexpectedEOFAsTimeout(t *testing.T) {
 			return nil, &url.Error{Op: "Get", URL: server.URL + "/v1/chat/sessions/s1/stream", Err: io.ErrUnexpectedEOF}
 		},
 		"s1",
+		nil,
+		"",
 		1,
 		nil,
 		nil,
@@ -2077,6 +4567,652 @@ func TestSendAfterParameterUsesSecondPrecision(t *testing.T) {
 	// Must parse as valid RFC3339.
 	if _, err := time.Parse(time.RFC3339, afterParam); err != nil {
 		t.Errorf("after param %q is not valid RFC3339: %v", afterParam, err)
+	}
+}
+
+func TestSendAcceptsReplyFromAddressTarget(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply-1", "from_agent": "bob", "from_address": "otherco/bob", "body": "hi back!",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"otherco/bob"}, "hello", SendOptions{Wait: 2}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s, want replied", result.Status)
+	}
+	if result.Reply != "hi back!" {
+		t.Fatalf("reply=%q, want %q", result.Reply, "hi back!")
+	}
+}
+
+func TestSendDoesNotMarkAddressTargetDisconnectedWhenAliasConnected(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	targetDID := "did:aw:bob"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				Participants: []awid.ChatParticipant{
+					{Alias: "alice", DID: "did:aw:alice", Address: "acme.com/alice"},
+					{Alias: "bob", DID: targetDID, Address: "otherco.com/bob"},
+				},
+				TargetsConnected: []string{"bob"},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply-1", "from_agent": "bob", "from_address": "otherco/bob", "body": "hi back!",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"otherco/bob"}, "hello", SendOptions{Wait: 2}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TargetNotConnected {
+		t.Fatalf("target_not_connected=%v, want false", result.TargetNotConnected)
+	}
+}
+
+func TestSendMarksAddressTargetDisconnectedWhenOnlyAliasCollisionParticipantIsConnected(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+				Participants: []awid.ChatParticipant{
+					{Alias: "alice", DID: "did:aw:alice", Address: "acme.com/alice"},
+					{Alias: "rose", DID: "did:aw:acme-rose", Address: "acme.com/rose"},
+					{Alias: "rose", DID: "did:aw:otherco-rose", Address: "otherco.com/rose"},
+				},
+				TargetsConnected: []string{"acme.com/rose"},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			<-time.After(10 * time.Second)
+		},
+	})
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := Send(ctx, mustClient(t, server.URL), "alice", []string{"otherco.com/rose"}, "hello", SendOptions{Wait: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.TargetNotConnected {
+		t.Fatalf("target_not_connected=%v, want true", result.TargetNotConnected)
+	}
+}
+
+func TestSendMarksAliasTargetDisconnectedWhenOnlyAliasCollisionParticipantIsConnected(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+				Participants: []awid.ChatParticipant{
+					{Alias: "alice", DID: "did:aw:alice", Address: "acme.com/alice"},
+					{Alias: "rose", DID: "did:aw:acme-rose", Address: "acme.com/rose"},
+					{Alias: "rose", DID: "did:aw:otherco-rose", Address: "otherco.com/rose"},
+				},
+				TargetsConnected: []string{"acme.com/rose"},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			<-time.After(10 * time.Second)
+		},
+	})
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := Send(ctx, mustClient(t, server.URL), "alice", []string{"rose"}, "hello", SendOptions{Wait: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.TargetNotConnected {
+		t.Fatalf("target_not_connected=%v, want true", result.TargetNotConnected)
+	}
+}
+
+func TestSendDoesNotAcceptReplyFromAmbiguousAliasTarget(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+				Participants: []awid.ChatParticipant{
+					{Alias: "alice", DID: "did:aw:alice", Address: "acme.com/alice"},
+					{Alias: "rose", DID: "did:aw:acme-rose", Address: "acme.com/rose"},
+					{Alias: "rose", DID: "did:aw:otherco-rose", Address: "otherco.com/rose"},
+				},
+				TargetsConnected: []string{"acme.com/rose"},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type":         "message",
+				"message_id":   "msg-reply-1",
+				"from_agent":   "rose",
+				"from_address": "acme.com/rose",
+				"from_did":     "did:aw:acme-rose",
+				"body":         "hi back!",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			<-time.After(10 * time.Second)
+		},
+	})
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := Send(ctx, mustClient(t, server.URL), "alice", []string{"rose"}, "hello", SendOptions{Wait: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "timeout" {
+		t.Fatalf("status=%s, want timeout", result.Status)
+	}
+	if !result.TargetNotConnected {
+		t.Fatalf("target_not_connected=%v, want true", result.TargetNotConnected)
+	}
+}
+
+func TestSendAcceptsAddressTargetReplyByStableDID(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	targetDID := "did:aw:bob"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				Participants: []awid.ChatParticipant{
+					{Alias: "alice", DID: "did:aw:alice", Address: "acme.com/alice"},
+					{Alias: "bob", DID: targetDID, Address: "otherco.com/bob"},
+				},
+				TargetsConnected: []string{"bob"},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply-1", "from_did": targetDID, "body": "hi back!",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"otherco.com/bob"}, "hello", SendOptions{Wait: 2}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s, want replied", result.Status)
+	}
+	if result.Reply != "hi back!" {
+		t.Fatalf("reply=%q, want %q", result.Reply, "hi back!")
+	}
+}
+
+func TestSendAcceptsCurrentDIDTargetReplyByStableDID(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	targetStableID := "did:aw:bob"
+	targetCurrentDID := "did:key:z6MkBobCurrent"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				Participants: []awid.ChatParticipant{
+					{Alias: "alice", DID: "did:key:z6MkAliceCurrent"},
+					{DID: targetStableID},
+				},
+				TargetsConnected: []string{targetStableID},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply-1", "from_stable_id": targetStableID, "body": "hi back!",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			switch identifier {
+			case targetStableID, targetCurrentDID:
+				return &awid.ResolvedIdentity{DID: targetCurrentDID, StableID: targetStableID}, nil
+			default:
+				return nil, errors.New("unexpected identifier")
+			}
+		},
+	})
+
+	result, err := Send(context.Background(), client, "alice", []string{targetCurrentDID}, "hello", SendOptions{Wait: 2}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "replied" {
+		t.Fatalf("status=%s, want replied", result.Status)
+	}
+	if result.Reply != "hi back!" {
+		t.Fatalf("reply=%q, want %q", result.Reply, "hi back!")
+	}
+}
+
+func TestSendDoesNotMarkStableTargetDisconnectedWhenCurrentDIDIsConnected(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	targetStableID := "did:aw:bob"
+	targetCurrentDID := "did:key:z6MkBobCurrent"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+				Participants: []awid.ChatParticipant{
+					{Alias: "alice", DID: "did:key:z6MkAliceCurrent"},
+					{DID: targetCurrentDID},
+				},
+				TargetsConnected: []string{targetCurrentDID},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			switch identifier {
+			case targetStableID, targetCurrentDID:
+				return &awid.ResolvedIdentity{DID: targetCurrentDID, StableID: targetStableID}, nil
+			default:
+				return nil, errors.New("unexpected identifier")
+			}
+		},
+	})
+
+	result, err := Send(context.Background(), client, "alice", []string{targetStableID}, "hello", SendOptions{Wait: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TargetNotConnected {
+		t.Fatalf("target_not_connected=%v, want false", result.TargetNotConnected)
+	}
+}
+
+func TestSendTreatsAddressTargetAsLeftWhenAliasLeft(t *testing.T) {
+	t.Parallel()
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID:   "s1",
+				MessageID:   "msg-sent-1",
+				TargetsLeft: []string{"bob"},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{"otherco/bob"}, "hello", SendOptions{Wait: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "targets_left" {
+		t.Fatalf("status=%s, want targets_left", result.Status)
+	}
+}
+
+func TestSendDoesNotMarkStableDIDTargetDisconnectedWhenAliasConnected(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	targetDID := "did:aw:bob"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				Participants: []awid.ChatParticipant{
+					{Alias: "alice", DID: "did:aw:alice", Address: "acme.com/alice"},
+					{Alias: "bob", DID: targetDID, Address: "otherco.com/bob"},
+				},
+				TargetsConnected: []string{"bob"},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": "msg-reply-1", "from_agent": "bob", "from_did": targetDID, "body": "hi back!",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		},
+	})
+	t.Cleanup(server.Close)
+
+	result, err := Send(context.Background(), mustClient(t, server.URL), "alice", []string{targetDID}, "hello", SendOptions{Wait: 2}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TargetNotConnected {
+		t.Fatalf("target_not_connected=%v, want false", result.TargetNotConnected)
+	}
+}
+
+func TestSendDoesNotAcceptReplyWhenStrongEventIdentityConflictsWithTarget(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	targetStableID := "did:aw:bob"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+				Participants: []awid.ChatParticipant{
+					{Alias: "alice", DID: "did:aw:alice", Address: "acme.com/alice"},
+					{Alias: "bob", DID: targetStableID, Address: "otherco.com/bob"},
+				},
+				TargetsConnected: []string{targetStableID},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			replyData, _ := json.Marshal(map[string]any{
+				"type":           "message",
+				"message_id":     "msg-reply-1",
+				"from_agent":     "bob",
+				"from_stable_id": "did:aw:mallory",
+				"body":           "spoofed",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", replyData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			<-time.After(10 * time.Second)
+		},
+	})
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := Send(ctx, mustClient(t, server.URL), "alice", []string{targetStableID}, "hello", SendOptions{Wait: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "timeout" {
+		t.Fatalf("status=%s, want timeout", result.Status)
+	}
+}
+
+func TestSendMarksStableDIDTargetDisconnectedWhenOnlyResolverHandleCollisionParticipantIsConnected(t *testing.T) {
+	t.Parallel()
+
+	sentMsgID := "msg-sent-1"
+	targetStableID := "did:aw:monitor"
+	targetCurrentDID := "did:key:z6MkMonitor"
+	otherStableID := "did:aw:other-monitor"
+	otherCurrentDID := "did:key:z6MkOtherMonitor"
+
+	server := newMockServer(map[string]http.HandlerFunc{
+		"POST /v1/chat/sessions": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, awid.ChatCreateSessionResponse{
+				SessionID: "s1",
+				MessageID: sentMsgID,
+				SSEURL:    "/v1/chat/sessions/s1/stream",
+				Participants: []awid.ChatParticipant{
+					{Alias: "alice", DID: "did:key:z6MkAliceCurrent", Address: "acme.com/alice"},
+					{Alias: "monitor", DID: targetCurrentDID, Address: "acme.com/monitor"},
+					{Alias: "monitor", DID: otherCurrentDID, Address: "otherco.com/monitor"},
+				},
+				TargetsConnected: []string{"otherco.com/monitor"},
+			})
+		},
+		"GET /v1/chat/sessions/s1/stream": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+
+			sentData, _ := json.Marshal(map[string]any{
+				"type": "message", "message_id": sentMsgID, "from_agent": "alice", "body": "hello",
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", sentData)
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			<-time.After(10 * time.Second)
+		},
+	})
+	t.Cleanup(server.Close)
+
+	client := mustClient(t, server.URL)
+	client.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*awid.ResolvedIdentity, error) {
+			switch identifier {
+			case targetStableID, targetCurrentDID, "acme.com/monitor":
+				return &awid.ResolvedIdentity{
+					DID:         targetCurrentDID,
+					StableID:    targetStableID,
+					Handle:      "monitor",
+					Address:     "acme.com/monitor",
+					ResolvedVia: "registry",
+				}, nil
+			case otherStableID, otherCurrentDID, "otherco.com/monitor":
+				return &awid.ResolvedIdentity{
+					DID:         otherCurrentDID,
+					StableID:    otherStableID,
+					Handle:      "monitor",
+					Address:     "otherco.com/monitor",
+					ResolvedVia: "registry",
+				}, nil
+			default:
+				return nil, errors.New("unexpected identifier")
+			}
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := Send(ctx, client, "alice", []string{targetStableID}, "hello", SendOptions{Wait: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.TargetNotConnected {
+		t.Fatalf("target_not_connected=%v, want true", result.TargetNotConnected)
 	}
 }
 

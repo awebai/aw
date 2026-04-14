@@ -2,7 +2,10 @@ package awid
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sort"
@@ -18,27 +21,19 @@ func (c *Client) namespaceSlug() string {
 	return ""
 }
 
-func (c *Client) alias() string {
-	parts := strings.SplitN(c.address, "/", 2)
-	if len(parts) == 2 && parts[1] != "" {
-		return parts[1]
-	}
-	return ""
-}
-
-func (c *Client) defaultProjectSlug() string {
-	return strings.TrimSpace(c.projectSlug)
-}
-
 func (c *Client) toAddressForAliases(aliases []string) string {
-	if len(aliases) == 0 {
+	return deterministicTargetList(aliases)
+}
+
+func deterministicTargetList(values []string) string {
+	if len(values) == 0 {
 		return ""
 	}
-	clean := make([]string, 0, len(aliases))
-	for _, a := range aliases {
-		a = strings.TrimSpace(a)
-		if a != "" {
-			clean = append(clean, a)
+	clean := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			clean = append(clean, value)
 		}
 	}
 	if len(clean) == 0 {
@@ -46,21 +41,45 @@ func (c *Client) toAddressForAliases(aliases []string) string {
 	}
 	sort.Strings(clean)
 	var b strings.Builder
-	for i, a := range clean {
+	for i, value := range clean {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		b.WriteString(a)
+		b.WriteString(value)
 	}
 	return b.String()
 }
 
+func removeOneSelfIdentifier(values []string, selfIDs ...string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	filtered := make([]string, 0, len(values))
+	removedSelf := false
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if !removedSelf {
+			for _, selfID := range selfIDs {
+				selfID = strings.TrimSpace(selfID)
+				if selfID != "" && strings.EqualFold(value, selfID) {
+					removedSelf = true
+					value = ""
+					break
+				}
+			}
+		}
+		if value != "" {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
 func (c *Client) toAddressForSession(ctx context.Context, sessionID string) (string, error) {
 	if sessionID == "" {
-		return "", nil
-	}
-	selfAlias := c.alias()
-	if selfAlias == "" {
 		return "", nil
 	}
 	resp, err := c.ChatListSessions(ctx)
@@ -71,11 +90,28 @@ func (c *Client) toAddressForSession(ctx context.Context, sessionID string) (str
 		if s.SessionID != sessionID {
 			continue
 		}
+		if toAddr := c.toAddressForAliases(removeOneSelfIdentifier(s.ParticipantAddresses, c.address)); toAddr != "" {
+			return toAddr, nil
+		}
+		if toDIDs := deterministicTargetList(removeOneSelfIdentifier(s.ParticipantDIDs, c.stableID, c.did)); toDIDs != "" {
+			return toDIDs, nil
+		}
+		selfAlias := c.addressAlias()
+		if selfAlias == "" {
+			return "", nil
+		}
 		others := make([]string, 0, len(s.Participants))
+		removedSelf := false
 		for _, a := range s.Participants {
-			if a != "" && a != selfAlias {
-				others = append(others, a)
+			a = strings.TrimSpace(a)
+			if a == "" {
+				continue
 			}
+			if a == selfAlias && !removedSelf {
+				removedSelf = true
+				continue
+			}
+			others = append(others, a)
 		}
 		sort.Strings(others)
 		return c.toAddressForAliases(others), nil
@@ -85,14 +121,14 @@ func (c *Client) toAddressForSession(ctx context.Context, sessionID string) (str
 
 type ChatCreateSessionRequest struct {
 	ToAliases     []string `json:"to_aliases"`
+	ToDIDs        []string `json:"to_dids,omitempty"`
+	ToAddresses   []string `json:"to_addresses,omitempty"`
 	Message       string   `json:"message"`
 	Leaving       bool     `json:"leaving,omitempty"`
 	WaitSeconds   *int     `json:"wait_seconds,omitempty"`
+	ReplyTo       string   `json:"reply_to,omitempty"`
 	FromDID       string   `json:"from_did,omitempty"`
-	ToDID         string   `json:"to_did,omitempty"`
-	FromStableID  string   `json:"from_stable_id,omitempty"`
 	Signature     string   `json:"signature,omitempty"`
-	SigningKeyID  string   `json:"signing_key_id,omitempty"`
 	Timestamp     string   `json:"timestamp,omitempty"`
 	MessageID     string   `json:"message_id,omitempty"`
 	SignedPayload string   `json:"signed_payload,omitempty"`
@@ -110,6 +146,8 @@ type ChatCreateSessionResponse struct {
 type ChatParticipant struct {
 	AgentID string `json:"agent_id"`
 	Alias   string `json:"alias"`
+	DID     string `json:"did,omitempty"`
+	Address string `json:"address,omitempty"`
 }
 
 func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRequest) (*ChatCreateSessionResponse, error) {
@@ -119,43 +157,50 @@ func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRe
 	payload := *req
 
 	to := strings.Join(payload.ToAliases, ",")
+	directIdentityTargets := len(payload.ToDIDs) > 0 || len(payload.ToAddresses) > 0
+	if len(payload.ToDIDs) > 0 {
+		targets := append([]string(nil), payload.ToDIDs...)
+		sort.Strings(targets)
+		to = strings.Join(targets, ",")
+	} else if len(payload.ToAddresses) > 0 {
+		targets := append([]string(nil), payload.ToAddresses...)
+		sort.Strings(targets)
+		to = strings.Join(targets, ",")
+	}
 	from := c.address
 	if c.signingKey != nil {
-		if toAddr := c.toAddressForAliases(payload.ToAliases); toAddr != "" {
+		if len(payload.ToAddresses) > 0 {
+			targets := append([]string(nil), payload.ToAddresses...)
+			sort.Strings(targets)
+			to = strings.Join(targets, ",")
+		} else if toAddr := c.toAddressForAliases(payload.ToAliases); toAddr != "" {
 			to = toAddr
 		}
-		crossProject := false
-		for _, alias := range payload.ToAliases {
-			if strings.Contains(alias, "~") {
-				crossProject = true
-				break
-			}
-		}
-		if crossProject {
-			if project := c.defaultProjectSlug(); project != "" {
-				from = project + "~" + c.alias()
-			}
-		} else {
-			from = c.alias()
-		}
+		from = c.signedPayloadFrom(false, !directIdentityTargets)
 	}
-	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
-		From: from,
-		To:   to,
-		Type: "chat",
-		Body: payload.Message,
-	})
+	env := &MessageEnvelope{
+		From:          from,
+		To:            to,
+		Type:          "chat",
+		Body:          payload.Message,
+		WaitSeconds:   payload.WaitSeconds,
+		ReplyTo:       payload.ReplyTo,
+		SenderLeaving: payload.Leaving,
+	}
+	if len(payload.ToDIDs) == 1 {
+		env.ToDID = strings.TrimSpace(payload.ToDIDs[0])
+	}
+	sf, err := c.signEnvelope(ctx, env)
 	if err != nil {
 		return nil, err
 	}
-	payload.FromDID = sf.FromDID
-	payload.ToDID = sf.ToDID
-	payload.FromStableID = sf.FromStableID
-	payload.Signature = sf.Signature
-	payload.SigningKeyID = sf.SigningKeyID
-	payload.Timestamp = sf.Timestamp
-	payload.MessageID = sf.MessageID
-	payload.SignedPayload = sf.SignedPayload
+	if c.signingKey != nil {
+		payload.FromDID = sf.FromDID
+		payload.Signature = sf.Signature
+		payload.Timestamp = sf.Timestamp
+		payload.MessageID = sf.MessageID
+		payload.SignedPayload = sf.SignedPayload
+	}
 
 	var out ChatCreateSessionResponse
 	if err := c.Post(ctx, "/v1/chat/sessions", &payload, &out); err != nil {
@@ -172,8 +217,13 @@ type ChatPendingResponse struct {
 type ChatPendingItem struct {
 	SessionID            string   `json:"session_id"`
 	Participants         []string `json:"participants"`
+	ParticipantDIDs      []string `json:"participant_dids,omitempty"`
+	ParticipantAddresses []string `json:"participant_addresses,omitempty"`
 	LastMessage          string   `json:"last_message"`
 	LastFrom             string   `json:"last_from"`
+	LastFromStableID     string   `json:"last_from_stable_id,omitempty"`
+	LastFromDID          string   `json:"last_from_did,omitempty"`
+	LastFromAddress      string   `json:"last_from_address,omitempty"`
 	UnreadCount          int      `json:"unread_count"`
 	LastActivity         string   `json:"last_activity"`
 	SenderWaiting        bool     `json:"sender_waiting"`
@@ -237,6 +287,26 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 	}
 	for i := range out.Messages {
 		m := &out.Messages[i]
+		if meta, ok := parseSignedEnvelopeMetadata(m.SignedPayload); ok {
+			if meta.FromDID != "" {
+				m.FromDID = meta.FromDID
+			}
+			if meta.ToDID != "" {
+				m.ToDID = meta.ToDID
+			}
+			if m.FromStableID == "" {
+				m.FromStableID = meta.FromStableID
+			}
+			if m.ToStableID == "" {
+				m.ToStableID = meta.ToStableID
+			}
+			if m.FromAddress == "" && meta.From != "" {
+				m.FromAddress = meta.From
+			}
+			if m.ToAddress == "" && meta.To != "" {
+				m.ToAddress = meta.To
+			}
+		}
 		from := m.FromAgent
 		if m.FromAddress != "" {
 			from = m.FromAddress
@@ -311,13 +381,31 @@ func (c *Client) ChatStream(ctx context.Context, sessionID string, deadline time
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.teamCertHeader != "" && c.signingKey != nil {
+		// Certificate auth: same DIDKey + cert headers as regular requests.
+		timestamp := time.Now().UTC().Format(time.RFC3339)
+		signPayload := certAuthSignPayload(c.teamID, timestamp, nil)
+		sig := ed25519.Sign(c.signingKey, signPayload)
+		req.Header.Set("Authorization", fmt.Sprintf("DIDKey %s %s", c.did, base64.RawStdEncoding.EncodeToString(sig)))
+		req.Header.Set("X-AWEB-Timestamp", timestamp)
+		req.Header.Set("X-AWID-Team-Certificate", c.teamCertHeader)
+	} else if c.signingKey != nil {
+		timestamp := time.Now().UTC().Format(time.RFC3339)
+		signPayload := identityAuthSignPayload(c.stableID, timestamp, nil)
+		sig := ed25519.Sign(c.signingKey, signPayload)
+		req.Header.Set("Authorization", fmt.Sprintf("DIDKey %s %s", c.did, base64.RawStdEncoding.EncodeToString(sig)))
+		req.Header.Set("X-AWEB-Timestamp", timestamp)
+		if c.stableID != "" {
+			req.Header.Set("X-AWEB-DID-AW", c.stableID)
+		}
 	}
 
 	resp, err := c.sseClient.Do(req)
 	if err != nil {
 		return nil, err
+	}
+	if v := resp.Header.Get("X-Latest-Client-Version"); v != "" {
+		c.latestClientVersion.Store(v)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
@@ -329,14 +417,11 @@ func (c *Client) ChatStream(ctx context.Context, sessionID string, deadline time
 
 // ChatSendMessage sends a message in an existing chat session.
 type ChatSendMessageRequest struct {
-	Body             string `json:"body"`
-	ExtendWait       bool   `json:"hang_on,omitempty"`
-	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
-	FromDID          string `json:"from_did,omitempty"`
-	ToDID         string `json:"to_did,omitempty"`
-	FromStableID  string `json:"from_stable_id,omitempty"`
+	Body          string `json:"body"`
+	ExtendWait    bool   `json:"hang_on,omitempty"`
+	ReplyTo       string `json:"reply_to,omitempty"`
+	FromDID       string `json:"from_did,omitempty"`
 	Signature     string `json:"signature,omitempty"`
-	SigningKeyID  string `json:"signing_key_id,omitempty"`
 	Timestamp     string `json:"timestamp,omitempty"`
 	MessageID     string `json:"message_id,omitempty"`
 	SignedPayload string `json:"signed_payload,omitempty"`
@@ -362,31 +447,26 @@ func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *Cha
 		if toAddr, err := c.toAddressForSession(ctx, sessionID); err == nil {
 			to = toAddr
 		}
-		if strings.Contains(to, "~") {
-			if project := c.defaultProjectSlug(); project != "" {
-				from = project + "~" + c.alias()
-			}
-		} else {
-			from = c.alias()
-		}
+		from = c.signedPayloadFrom(false, true)
 	}
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
-		From: from,
-		To:   to,
-		Type: "chat",
-		Body: payload.Body,
+		From:    from,
+		To:      to,
+		Type:    "chat",
+		Body:    payload.Body,
+		ReplyTo: payload.ReplyTo,
+		HangOn:  payload.ExtendWait,
 	})
 	if err != nil {
 		return nil, err
 	}
-	payload.FromDID = sf.FromDID
-	payload.ToDID = sf.ToDID
-	payload.FromStableID = sf.FromStableID
-	payload.Signature = sf.Signature
-	payload.SigningKeyID = sf.SigningKeyID
-	payload.Timestamp = sf.Timestamp
-	payload.MessageID = sf.MessageID
-	payload.SignedPayload = sf.SignedPayload
+	if c.signingKey != nil {
+		payload.FromDID = sf.FromDID
+		payload.Signature = sf.Signature
+		payload.Timestamp = sf.Timestamp
+		payload.MessageID = sf.MessageID
+		payload.SignedPayload = sf.SignedPayload
+	}
 
 	var out ChatSendMessageResponse
 	if err := c.Post(ctx, "/v1/chat/sessions/"+urlPathEscape(sessionID)+"/messages", &payload, &out); err != nil {
@@ -397,10 +477,12 @@ func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *Cha
 
 // ChatListSessions lists chat sessions the authenticated agent participates in.
 type ChatSessionItem struct {
-	SessionID     string   `json:"session_id"`
-	Participants  []string `json:"participants"`
-	CreatedAt     string   `json:"created_at"`
-	SenderWaiting bool     `json:"sender_waiting,omitempty"`
+	SessionID            string   `json:"session_id"`
+	Participants         []string `json:"participants"`
+	ParticipantDIDs      []string `json:"participant_dids,omitempty"`
+	ParticipantAddresses []string `json:"participant_addresses,omitempty"`
+	CreatedAt            string   `json:"created_at"`
+	SenderWaiting        bool     `json:"sender_waiting,omitempty"`
 }
 
 type ChatListSessionsResponse struct {

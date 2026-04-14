@@ -24,7 +24,7 @@ var workReadyCmd = &cobra.Command{
 
 var workActiveCmd = &cobra.Command{
 	Use:   "active",
-	Short: "List active in-progress work across the project",
+	Short: "List active in-progress work across the team",
 	RunE:  runWorkActive,
 }
 
@@ -73,7 +73,7 @@ func runWorkReady(cmd *cobra.Command, args []string) error {
 	}
 	claimedByOthers := map[string]bool{}
 	for _, claim := range claimsResp.Claims {
-		if claim.WorkspaceID != sel.IdentityID {
+		if claim.WorkspaceID != sel.WorkspaceID {
 			claimedByOthers[claim.BeadID] = true
 		}
 	}
@@ -262,13 +262,15 @@ func valueOrEmpty(v *string) string {
 }
 
 func currentWorkspaceID(workingDir string, sel *awconfig.Selection) string {
-	if state, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir); err == nil && strings.TrimSpace(state.WorkspaceID) != "" {
-		return strings.TrimSpace(state.WorkspaceID)
+	if state, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir); err == nil {
+		if membership, err := workspaceMembershipForSelection(state, sel); err == nil && membership != nil && strings.TrimSpace(membership.WorkspaceID) != "" {
+			return strings.TrimSpace(membership.WorkspaceID)
+		}
 	}
 	if sel == nil {
 		return ""
 	}
-	return strings.TrimSpace(sel.IdentityID)
+	return strings.TrimSpace(sel.WorkspaceID)
 }
 
 func isClaimStale(claimedAt string) bool {

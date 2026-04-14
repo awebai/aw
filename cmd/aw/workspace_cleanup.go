@@ -13,8 +13,6 @@ import (
 type goneWorkspace struct {
 	WorkspaceID      string
 	Alias            string
-	ProjectSlug      string
-	NamespaceSlug    string
 	WorkspacePath    string
 	IdentityDeleted  bool
 	WorkspaceDeleted bool
@@ -22,8 +20,8 @@ type goneWorkspace struct {
 }
 
 // detectGoneWorkspaces checks for workspaces on this hostname whose paths
-// no longer exist. Ephemeral identities are deleted; permanent identities
-// keep their identity but lose the gone workspace record.
+// no longer exist. The server owns cleanup policy and deletes the bound
+// ephemeral identity when the stale workspace is removed.
 func detectGoneWorkspaces(client *aweb.Client, selfWorkspaceID string) []goneWorkspace {
 	hostname, err := os.Hostname()
 	if err != nil || hostname == "" {
@@ -59,27 +57,18 @@ func detectGoneWorkspaces(client *aweb.Client, selfWorkspaceID string) []goneWor
 		g := goneWorkspace{
 			WorkspaceID:   ws.WorkspaceID,
 			Alias:         ws.Alias,
-			ProjectSlug:   derefString(ws.ProjectSlug),
-			NamespaceSlug: derefString(ws.NamespaceSlug),
 			WorkspacePath: path,
 		}
 
-		deleteIdentityCtx, deleteIdentityCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		identityDeleted, deleteIdentityErr := deleteEphemeralIdentityByWorkspace(deleteIdentityCtx, client, ws)
-		deleteIdentityCancel()
-		if deleteIdentityErr != nil {
-			g.CleanupBlocked = deleteIdentityErr.Error()
-			gone = append(gone, g)
-			continue
-		}
-		g.IdentityDeleted = identityDeleted
-
 		deleteWorkspaceCtx, deleteWorkspaceCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		deleteWorkspaceErr := client.WorkspaceDelete(deleteWorkspaceCtx, ws.WorkspaceID)
+		deleteResp, deleteWorkspaceErr := client.WorkspaceDelete(deleteWorkspaceCtx, ws.WorkspaceID)
 		deleteWorkspaceCancel()
 		if deleteWorkspaceErr != nil {
 			g.CleanupBlocked = deleteWorkspaceErr.Error()
 		} else {
+			if deleteResp != nil {
+				g.IdentityDeleted = deleteResp.IdentityDeleted
+			}
 			g.WorkspaceDeleted = true
 		}
 

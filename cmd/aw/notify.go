@@ -53,7 +53,7 @@ func runNotify(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		configPath = ""
 	}
-	stampPath := notifyStampPath(sel.IdentityHandle, configPath)
+	stampPath := notifyStampPath(sel.Alias, configPath)
 	if notifyCooldownActive(stampPath, notifyCooldown) {
 		return nil
 	}
@@ -67,7 +67,7 @@ func runNotify(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	output := formatNotifyOutput(result, sel.IdentityHandle)
+	output := formatNotifyOutput(result, sel.Alias, sel.StableID, sel.DID)
 	if output == "" {
 		return nil
 	}
@@ -102,7 +102,7 @@ func touchNotifyStamp(stampPath string) {
 	f.Close()
 }
 
-func formatNotifyOutput(result *chat.PendingResult, selfAlias string) string {
+func formatNotifyOutput(result *chat.PendingResult, selfAlias string, selfDIDs ...string) string {
 	if result == nil || len(result.Pending) == 0 {
 		return ""
 	}
@@ -110,16 +110,43 @@ func formatNotifyOutput(result *chat.PendingResult, selfAlias string) string {
 	var urgent []string
 	var regular []string
 	for _, pending := range result.Pending {
-		from := strings.TrimSpace(pending.LastFrom)
+		from := preferredPendingSenderLabel(pending, selfAlias, selfDIDs...)
 		if from == "" {
-			for _, participant := range pending.Participants {
-				participant = strings.TrimSpace(participant)
-				if participant == "" || participant == selfAlias {
+			for idx, participant := range pending.Participants {
+				participant = preferredIdentityDisplayLabel(
+					strings.TrimSpace(participant),
+					func() string {
+						if idx < len(pending.ParticipantAddresses) {
+							return strings.TrimSpace(pending.ParticipantAddresses[idx])
+						}
+						return ""
+					}(),
+					func() string {
+						if idx < len(pending.ParticipantDIDs) {
+							did := strings.TrimSpace(pending.ParticipantDIDs[idx])
+							if strings.HasPrefix(did, "did:aw:") {
+								return did
+							}
+						}
+						return ""
+					}(),
+					func() string {
+						if idx < len(pending.ParticipantDIDs) {
+							return strings.TrimSpace(pending.ParticipantDIDs[idx])
+						}
+						return ""
+					}(),
+					"",
+				)
+				if participant == "" || notifyIdentityMatchesSelf(participant, selfAlias, selfDIDs...) {
 					continue
 				}
 				from = participant
 				break
 			}
+		}
+		if notifyIdentityMatchesSelf(from, selfAlias, selfDIDs...) {
+			continue
 		}
 		if from == "" {
 			continue
@@ -151,6 +178,10 @@ func formatNotifyOutput(result *chat.PendingResult, selfAlias string) string {
 	sb.WriteString("╚══════════════════════════════════════════════════════════════╝\n")
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+func notifyIdentityMatchesSelf(value string, selfAlias string, selfDIDs ...string) bool {
+	return identityValueMatchesSelf(value, selfAlias, selfDIDs...)
 }
 
 func padNotifyLine(line string) string {

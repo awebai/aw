@@ -1,10 +1,13 @@
 package awid
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -61,17 +64,22 @@ type ReplacementAnnouncement struct {
 // Transport-only fields (Signature, SigningKeyID) are not part of the
 // signed payload but are carried here for convenience.
 type MessageEnvelope struct {
-	From         string `json:"from"`
-	FromDID      string `json:"from_did"`
-	To           string `json:"to"`
-	ToDID        string `json:"to_did"`
-	Type         string `json:"type"`
-	Subject      string `json:"subject"`
-	Body         string `json:"body"`
-	Timestamp    string `json:"timestamp"`
-	FromStableID string `json:"from_stable_id,omitempty"`
-	ToStableID   string `json:"to_stable_id,omitempty"`
-	MessageID    string `json:"message_id,omitempty"`
+	From          string `json:"from"`
+	FromDID       string `json:"from_did"`
+	To            string `json:"to"`
+	ToDID         string `json:"to_did"`
+	Type          string `json:"type"`
+	Priority      string `json:"priority,omitempty"`
+	WaitSeconds   *int   `json:"wait_seconds,omitempty"`
+	Subject       string `json:"subject"`
+	Body          string `json:"body"`
+	Timestamp     string `json:"timestamp"`
+	FromStableID  string `json:"from_stable_id,omitempty"`
+	ToStableID    string `json:"to_stable_id,omitempty"`
+	MessageID     string `json:"message_id,omitempty"`
+	ReplyTo       string `json:"reply_to,omitempty"`
+	SenderLeaving bool   `json:"sender_leaving,omitempty"`
+	HangOn        bool   `json:"hang_on,omitempty"`
 
 	Signature    string `json:"signature,omitempty"`
 	SigningKeyID string `json:"signing_key_id,omitempty"`
@@ -83,6 +91,70 @@ func SignMessage(key ed25519.PrivateKey, env *MessageEnvelope) (string, error) {
 	payload := CanonicalJSON(env)
 	sig := ed25519.Sign(key, []byte(payload))
 	return base64.RawStdEncoding.EncodeToString(sig), nil
+}
+
+// CanonicalJSONValue builds canonical JSON for an arbitrary JSON-compatible
+// value. It is used for generic DIDKey-authenticated payload signing on
+// the aw id sign / aw id request code path.
+//
+// HTML escaping is explicitly disabled via json.Encoder.SetEscapeHTML(false)
+// so the output bytes match Python's canonical_json_bytes on the awid /
+// verifier sides, which call json.dumps(..., ensure_ascii=False,
+// separators=(",", ":")). Go's default json.Marshal would escape <, >, and
+// & to \u003c, \u003e, \u0026; any signed payload containing those chars
+// (common in free-form user notes and URLs) would silently fail signature
+// verification across languages. Go's encoder does NOT escape non-ASCII
+// by default, so it already matches Python's ensure_ascii=False for
+// unicode — tested by TestCanonicalJSONValuePreservesUnicode.
+//
+// This matches the shared onboardingDIDKeySignPayload helper used by the
+// onboarding signing family (cli-signup, claim-human, bootstrap-redeem).
+func CanonicalJSONValue(v any) (string, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return "", err
+	}
+	// json.Encoder.Encode always appends a trailing newline; strip it so
+	// the returned string is a single canonical JSON value.
+	out := buf.Bytes()
+	if n := len(out); n > 0 && out[n-1] == '\n' {
+		out = out[:n-1]
+	}
+	return string(out), nil
+}
+
+// SignArbitraryPayload signs a JSON object after injecting the required
+// timestamp field into the signed payload.
+func SignArbitraryPayload(key ed25519.PrivateKey, payload map[string]any, timestamp string) (didKey string, signature string, canonical string, err error) {
+	if key == nil {
+		return "", "", "", fmt.Errorf("signing key is required")
+	}
+	timestamp = strings.TrimSpace(timestamp)
+	if timestamp == "" {
+		return "", "", "", fmt.Errorf("timestamp is required")
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	if _, exists := payload["timestamp"]; exists {
+		return "", "", "", fmt.Errorf("payload must not contain timestamp")
+	}
+
+	signedPayload := make(map[string]any, len(payload)+1)
+	for key, value := range payload {
+		signedPayload[key] = value
+	}
+	signedPayload["timestamp"] = timestamp
+
+	canonical, err = CanonicalJSONValue(signedPayload)
+	if err != nil {
+		return "", "", "", err
+	}
+	didKey = ComputeDIDKey(key.Public().(ed25519.PublicKey))
+	sig := ed25519.Sign(key, []byte(canonical))
+	return didKey, base64.RawStdEncoding.EncodeToString(sig), canonical, nil
 }
 
 // VerifyMessage checks the signature on a message envelope.
@@ -204,31 +276,46 @@ func VerifyReplacementSignature(controllerPub ed25519.PublicKey, address, contro
 // See also LogEntry.CanonicalJSON which always includes all fields with null for absent values.
 func CanonicalJSON(env *MessageEnvelope) string {
 	type field struct {
-		key   string
-		value string
+		key string
+		raw string
 	}
 
 	// Always-present signed fields.
 	fields := []field{
-		{"body", env.Body},
-		{"from", env.From},
-		{"from_did", env.FromDID},
-		{"subject", env.Subject},
-		{"timestamp", env.Timestamp},
-		{"to", env.To},
-		{"to_did", env.ToDID},
-		{"type", env.Type},
+		{"body", jsonStringValue(env.Body)},
+		{"from", jsonStringValue(env.From)},
+		{"from_did", jsonStringValue(env.FromDID)},
+		{"subject", jsonStringValue(env.Subject)},
+		{"timestamp", jsonStringValue(env.Timestamp)},
+		{"to", jsonStringValue(env.To)},
+		{"to_did", jsonStringValue(env.ToDID)},
+		{"type", jsonStringValue(env.Type)},
 	}
 
 	// Optional fields included when present.
 	if env.FromStableID != "" {
-		fields = append(fields, field{"from_stable_id", env.FromStableID})
+		fields = append(fields, field{"from_stable_id", jsonStringValue(env.FromStableID)})
+	}
+	if env.HangOn {
+		fields = append(fields, field{"hang_on", strconv.FormatBool(env.HangOn)})
 	}
 	if env.MessageID != "" {
-		fields = append(fields, field{"message_id", env.MessageID})
+		fields = append(fields, field{"message_id", jsonStringValue(env.MessageID)})
+	}
+	if env.Priority != "" {
+		fields = append(fields, field{"priority", jsonStringValue(env.Priority)})
+	}
+	if env.ReplyTo != "" {
+		fields = append(fields, field{"reply_to", jsonStringValue(env.ReplyTo)})
+	}
+	if env.SenderLeaving {
+		fields = append(fields, field{"sender_leaving", strconv.FormatBool(env.SenderLeaving)})
 	}
 	if env.ToStableID != "" {
-		fields = append(fields, field{"to_stable_id", env.ToStableID})
+		fields = append(fields, field{"to_stable_id", jsonStringValue(env.ToStableID)})
+	}
+	if env.WaitSeconds != nil {
+		fields = append(fields, field{"wait_seconds", strconv.Itoa(*env.WaitSeconds)})
 	}
 
 	sort.Slice(fields, func(i, j int) bool { return fields[i].key < fields[j].key })
@@ -241,11 +328,18 @@ func CanonicalJSON(env *MessageEnvelope) string {
 		}
 		b.WriteByte('"')
 		b.WriteString(f.key)
-		b.WriteString(`":"`)
-		writeEscapedString(&b, f.value)
-		b.WriteByte('"')
+		b.WriteString(`":`)
+		b.WriteString(f.raw)
 	}
 	b.WriteByte('}')
+	return b.String()
+}
+
+func jsonStringValue(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	writeEscapedString(&b, s)
+	b.WriteByte('"')
 	return b.String()
 }
 

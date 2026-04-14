@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -24,13 +23,6 @@ var workspaceCmd = &cobra.Command{
 	Short: "Manage repo-local coordination workspaces",
 }
 
-var workspaceInitCmd = &cobra.Command{
-	Use:    "init",
-	Short:  "Register the current git worktree for coordination",
-	Hidden: true,
-	RunE:   runWorkspaceInit,
-}
-
 var workspaceStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show coordination status for the current workspace/identity and team",
@@ -44,28 +36,21 @@ var workspaceAddWorktreeCmd = &cobra.Command{
 	RunE:  runWorkspaceAddWorktree,
 }
 
-var (
-	workspaceInitRole       string
-	workspaceInitRepoOrigin string
-	workspaceStatusLimit    int
-	workspaceAddAlias       string
-)
-
-type workspaceInitOutput struct {
-	WorkspaceID     string `json:"workspace_id"`
-	ProjectID       string `json:"project_id"`
-	ProjectSlug     string `json:"project_slug"`
-	RepoID          string `json:"repo_id"`
-	CanonicalOrigin string `json:"canonical_origin"`
-	Alias           string `json:"alias"`
-	HumanName       string `json:"human_name"`
-	Role            string `json:"role,omitempty"`
-	Hostname        string `json:"hostname,omitempty"`
-	WorkspacePath   string `json:"workspace_path,omitempty"`
-	Created         bool   `json:"created"`
+var workspaceMigrateMultiTeamCmd = &cobra.Command{
+	Use:   "migrate-multi-team",
+	Short: "Rewrite a legacy single-team workspace into the canonical multi-team shape",
+	RunE:  runWorkspaceMigrateMultiTeam,
 }
 
+var (
+	workspaceStatusLimit int
+	workspaceStatusAll   bool
+	workspaceAddAlias    string
+)
+
 type workspaceStatusOutput struct {
+	SelectedTeam       string                            `json:"selected_team"`
+	Memberships        []workspaceTeamMembershipItem     `json:"memberships,omitempty"`
 	Workspace          aweb.WorkspaceInfo                `json:"workspace"`
 	ContextKind        string                            `json:"context_kind"`
 	Locks              []aweb.ReservationView            `json:"locks,omitempty"`
@@ -82,41 +67,33 @@ type workspaceAddWorktreeOutput struct {
 	WorktreePath string `json:"worktree_path"`
 }
 
-func init() {
-	workspaceInitCmd.Flags().StringVar(&workspaceInitRole, "role", "", "Coordination role for this workspace")
-	workspaceInitCmd.Flags().StringVar(&workspaceInitRepoOrigin, "repo-origin", "", "Override git remote origin URL")
-
-	workspaceStatusCmd.Flags().IntVar(&workspaceStatusLimit, "limit", 15, "Maximum team workspaces to show")
-	workspaceAddWorktreeCmd.Flags().StringVar(&workspaceAddAlias, "alias", "", "Override the default alias")
-
-	workspaceCmd.AddCommand(workspaceInitCmd)
-	workspaceCmd.AddCommand(workspaceStatusCmd)
-	workspaceCmd.AddCommand(workspaceAddWorktreeCmd)
-	rootCmd.AddCommand(workspaceCmd)
+type workspaceTeamMembershipItem struct {
+	TeamID      string `json:"team_id"`
+	Alias       string `json:"alias"`
+	RoleName    string `json:"role_name,omitempty"`
+	WorkspaceID string `json:"workspace_id,omitempty"`
+	Active      bool   `json:"active"`
 }
 
-func runWorkspaceInit(cmd *cobra.Command, args []string) error {
-	loadDotenvBestEffort()
+type workspaceMigrateMultiTeamOutput struct {
+	Status      string `json:"status"`
+	ActiveTeam  string `json:"active_team"`
+	CertPath    string `json:"cert_path,omitempty"`
+	Workspace   string `json:"workspace_path"`
+	LegacyMoved bool   `json:"legacy_cert_moved"`
+}
 
-	root, err := currentGitWorktreeRoot()
-	if err != nil {
-		return usageError("workspace init requires a git worktree")
-	}
+var saveWorktreeWorkspaceTo = awconfig.SaveWorktreeWorkspaceTo
 
-	client, sel, err := resolveClientSelectionForDir(root)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(sel.IdentityID) == "" || strings.TrimSpace(sel.IdentityHandle) == "" {
-		return usageError("selected account has no identity; run 'aw init' first")
-	}
+func init() {
+	workspaceStatusCmd.Flags().IntVar(&workspaceStatusLimit, "limit", 15, "Maximum team workspaces to show")
+	workspaceStatusCmd.Flags().BoolVar(&workspaceStatusAll, "all", false, "Show all local team memberships in addition to the selected team status")
+	workspaceAddWorktreeCmd.Flags().StringVar(&workspaceAddAlias, "alias", "", "Override the default alias")
 
-	out, err := registerWorkspaceForRoot(root, client, strings.TrimSpace(workspaceInitRole), strings.TrimSpace(workspaceInitRepoOrigin))
-	if err != nil {
-		return err
-	}
-	printOutput(*out, formatWorkspaceInit)
-	return nil
+	workspaceCmd.AddCommand(workspaceStatusCmd)
+	workspaceCmd.AddCommand(workspaceAddWorktreeCmd)
+	workspaceCmd.AddCommand(workspaceMigrateMultiTeamCmd)
+	rootCmd.AddCommand(workspaceCmd)
 }
 
 func runWorkspaceStatus(cmd *cobra.Command, args []string) error {
@@ -127,7 +104,11 @@ func runWorkspaceStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(sel.IdentityID) == "" {
+	// Team-bound workspaces need a local alias/workspace identity to function.
+	hasIdentity := strings.TrimSpace(sel.WorkspaceID) != "" ||
+		strings.TrimSpace(sel.DID) != "" ||
+		strings.TrimSpace(sel.Alias) != ""
+	if !hasIdentity {
 		return usageError("selected account has no identity; run 'aw init' first")
 	}
 
@@ -136,9 +117,11 @@ func runWorkspaceStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load workspace state: %w", err)
 	}
 
-	workspaceID := strings.TrimSpace(sel.IdentityID)
-	if state != nil && strings.TrimSpace(state.WorkspaceID) != "" {
-		workspaceID = strings.TrimSpace(state.WorkspaceID)
+	workspaceID := strings.TrimSpace(sel.WorkspaceID)
+	if state != nil {
+		if membership, err := workspaceMembershipForSelection(state, sel); err == nil && membership != nil && strings.TrimSpace(membership.WorkspaceID) != "" {
+			workspaceID = strings.TrimSpace(membership.WorkspaceID)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -201,6 +184,8 @@ func runWorkspaceStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	printOutput(workspaceStatusOutput{
+		SelectedTeam:       strings.TrimSpace(sel.TeamID),
+		Memberships:        membershipItemsForWorkspaceState(state, strings.TrimSpace(sel.TeamID), workspaceStatusAll),
 		Workspace:          self,
 		ContextKind:        inferWorkspaceContextKind(self, state),
 		Locks:              locksByWorkspace[workspaceID],
@@ -221,14 +206,14 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 	loadDotenvBestEffort()
 
 	workingDir, _ := os.Getwd()
+	client, _, err := resolveClientSelectionForDir(workingDir)
+	if err != nil {
+		return err
+	}
+
 	root, err := currentGitWorktreeRootFromDir(workingDir)
 	if err != nil {
 		return usageError("workspace add-worktree requires a git worktree")
-	}
-
-	client, sel, err := resolveClientSelectionForDir(workingDir)
-	if err != nil {
-		return err
 	}
 
 	requested := ""
@@ -240,8 +225,29 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	role = normalizeWorkspaceRole(role)
-	if !isValidWorkspaceRole(role) {
+	if role != "" && !isValidWorkspaceRole(role) {
 		return usageError("invalid role: use 1-2 words (letters/numbers) with hyphens/underscores allowed; max 50 chars")
+	}
+
+	state, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir)
+	if err != nil {
+		return fmt.Errorf("load workspace binding: %w", err)
+	}
+	if !state.HasTeamBinding() {
+		return usageError("current worktree is missing team binding; run `aw init` first")
+	}
+
+	activeMembership := state.ActiveMembership()
+	if activeMembership == nil {
+		return usageError("current worktree is missing active_team membership; run `aw init` first")
+	}
+	teamID := strings.TrimSpace(activeMembership.TeamID)
+	if teamID == "" {
+		return usageError("current worktree is missing team_id; run `aw init` first")
+	}
+	sourceServerURL := strings.TrimSpace(state.AwebURL)
+	if sourceServerURL == "" {
+		return usageError("current worktree is missing aweb_url; run `aw init` first")
 	}
 
 	alias := strings.TrimSpace(workspaceAddAlias)
@@ -250,142 +256,207 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 		return usageError("invalid alias %q: must start with an alphanumeric and contain only alphanumerics, dashes, or underscores (max 64 chars)", alias)
 	}
 
-	namespaceSlug := strings.TrimSpace(sel.NamespaceSlug)
-	if namespaceSlug == "" {
-		namespaceSlug = strings.TrimSpace(sel.DefaultProject)
-	}
-	var state *awconfig.WorktreeWorkspace
-	if loaded, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir); err == nil {
-		state = loaded
-		if namespaceSlug == "" {
-			namespaceSlug = strings.TrimSpace(loaded.ProjectSlug)
-		}
-	}
-	if namespaceSlug == "" {
-		return usageError("selected account has no namespace/project context; run 'aw init' first")
-	}
-
-	sourceAPIKey := strings.TrimSpace(sel.APIKey)
-	if sourceAPIKey == "" {
-		return usageError("selected account has no API key; run 'aw init' first")
-	}
-	sourceBaseURL := strings.TrimSpace(sel.BaseURL)
-	if sourceBaseURL == "" {
-		return fmt.Errorf("selected account missing server URL")
-	}
-	sourceServerName := strings.TrimSpace(sel.ServerName)
-	if sourceServerName == "" {
-		derived, derr := awconfig.DeriveServerNameFromURL(sourceBaseURL)
-		if derr != nil {
-			return fmt.Errorf("derive server name: %w", derr)
-		}
-		sourceServerName = derived
-	}
-
-	humanName := ""
-	if state != nil {
-		humanName = strings.TrimSpace(state.HumanName)
-	}
-
-	wantJSON := jsonFlag
-
-	const maxAttempts = 25
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if !aliasExplicit {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			suggestion, err := client.SuggestAliasPrefix(ctx, namespaceSlug)
-			cancel()
-			if err != nil {
-				return fmt.Errorf("failed to suggest alias prefix: %w", err)
-			}
-			if !isValidSuggestedAliasPrefix(strings.TrimSpace(suggestion.NamePrefix)) {
-				return fmt.Errorf("invalid alias prefix from server: %q", suggestion.NamePrefix)
-			}
-			alias = strings.TrimSpace(suggestion.NamePrefix)
-		}
-
-		branchName := alias
-		worktreePath, err := deriveWorkspaceAddWorktreePath(root, branchName)
+	if aliasExplicit {
+		teamAliases, err := fetchWorkspaceTeamAliases(client, strings.TrimSpace(activeMembership.WorkspaceID))
 		if err != nil {
-			return fmt.Errorf("security error: %w", err)
+			return err
 		}
-		if _, err := os.Stat(worktreePath); err == nil {
-			return fmt.Errorf("directory %s already exists", worktreePath)
+		if teamAliases[strings.ToLower(alias)] {
+			return usageError("alias %q is already in use by this team", alias)
 		}
-
-		if !wantJSON {
-			fmt.Fprintf(os.Stderr, "Creating worktree for branch %q...\n", branchName)
-			fmt.Fprintf(os.Stderr, "  Main repo: %s\n", root)
-			fmt.Fprintf(os.Stderr, "  Worktree:  %s\n", worktreePath)
-			fmt.Fprintf(os.Stderr, "  Role:      %s\n", role)
-			fmt.Fprintf(os.Stderr, "  Alias:     %s\n\n", alias)
-			fmt.Fprintln(os.Stderr, "Creating git worktree...")
-		}
-
-		branchCreated, err := createWorkspaceGitWorktree(root, worktreePath, branchName, wantJSON)
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		suggestion, err := client.SuggestAliasPrefix(ctx)
+		cancel()
 		if err != nil {
-			return fmt.Errorf("failed to create worktree: %w", err)
+			return fmt.Errorf("suggest next alias from server: %w", err)
 		}
+		alias = strings.TrimSpace(suggestion.NamePrefix)
+		if !isValidSuggestedAliasPrefix(alias) {
+			return fmt.Errorf("server returned invalid alias suggestion %q", alias)
+		}
+	}
 
-		if !wantJSON {
-			fmt.Fprintln(os.Stderr, "Initializing aw...")
-		}
+	branchName := alias
+	worktreePath, err := deriveWorkspaceAddWorktreePath(root, branchName)
+	if err != nil {
+		return fmt.Errorf("security error: %w", err)
+	}
+	if _, err := os.Stat(worktreePath); err == nil {
+		return fmt.Errorf("directory %s already exists", worktreePath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat %s: %w", worktreePath, err)
+	}
 
-		// Create a short-lived invite from the current workspace,
-		// then accept it in the new worktree. This is the supported
-		// hosted path for one workspace spawning another in the same project.
-		inviteToken, initErr := createWorktreeInvite(client, alias)
-		if initErr == nil {
-			initOpts := initOptions{
-				Flow:          flowInvite,
-				WorkingDir:    worktreePath,
-				BaseURL:       sourceBaseURL,
-				ServerName:    sourceServerName,
-				IdentityAlias: alias,
-				HumanName:     humanName,
-				AgentType:     "agent",
-				WriteContext:  true,
-				InviteToken:   inviteToken,
-				WorkspaceRole: role,
-				Lifetime:      awid.LifetimeEphemeral,
-			}
-			_, initErr = executeInit(initOpts)
-		}
-		if initErr != nil {
-			if !wantJSON {
-				fmt.Fprintln(os.Stderr)
-				fmt.Fprintln(os.Stderr, "Error: Failed to initialize aw. Cleaning up worktree...")
-			}
-			cleanupWorkspaceWorktree(root, worktreePath, branchName, branchCreated)
+	if !jsonFlag {
+		fmt.Fprintf(os.Stderr, "Creating worktree for branch %q...\n", branchName)
+		fmt.Fprintf(os.Stderr, "  Main repo: %s\n", root)
+		fmt.Fprintf(os.Stderr, "  Worktree:  %s\n", worktreePath)
+		fmt.Fprintf(os.Stderr, "  Role:      %s\n", role)
+		fmt.Fprintf(os.Stderr, "  Alias:     %s\n\n", alias)
+		fmt.Fprintln(os.Stderr, "Creating git worktree...")
+	}
 
-			if !aliasExplicit && isWorkspaceAliasTakenError(initErr) {
-				if !wantJSON {
-					fmt.Fprintf(os.Stderr, "Alias %q was taken; retrying with a new name...\n", alias)
-				}
-				if attempt < maxAttempts {
-					time.Sleep(time.Duration(attempt) * 50 * time.Millisecond)
-				}
-				continue
-			}
+	branchCreated, err := createWorkspaceGitWorktree(root, worktreePath, branchName, jsonFlag)
+	if err != nil {
+		return fmt.Errorf("failed to create worktree: %w", err)
+	}
 
-			return fmt.Errorf("aw init failed: %w", initErr)
-		}
+	if !jsonFlag {
+		fmt.Fprintln(os.Stderr, "Bootstrapping team certificate...")
+	}
 
-		output := workspaceAddWorktreeOutput{
-			Alias:        alias,
-			Role:         role,
-			Branch:       branchName,
-			WorktreePath: worktreePath,
+	teamDomain, teamName, err := awid.ParseTeamID(teamID)
+	if err != nil {
+		cleanupWorkspaceWorktree(root, worktreePath, branchName, branchCreated)
+		return fmt.Errorf("invalid team_id in workspace.yaml: %w", err)
+	}
+
+	registryURL, err := resolveWorkspaceTeamRegistryURL(workingDir, sourceServerURL, teamDomain)
+	if err != nil {
+		cleanupWorkspaceWorktree(root, worktreePath, branchName, branchCreated)
+		return err
+	}
+
+	_, inviteToken, err := createTeamInviteToken(teamDomain, teamName, registryURL, true)
+	if err != nil {
+		cleanupWorkspaceWorktree(root, worktreePath, branchName, branchCreated)
+		return fmt.Errorf("create ephemeral team invite for %s: %w", teamID, err)
+	}
+	acceptedInvite, err := acceptTeamInviteWithDetails(worktreePath, inviteToken, alias)
+	if err != nil {
+		cleanupWorkspaceWorktree(root, worktreePath, branchName, branchCreated)
+		return fmt.Errorf("accept team invite in new worktree: %w", err)
+	}
+	rollbackAcceptedInvite := func(step string, cause error) error {
+		rollbackErr := revokeAcceptedTeamCertificate(acceptedInvite)
+		cleanupWorkspaceWorktree(root, worktreePath, branchName, branchCreated)
+		if rollbackErr != nil {
+			return fmt.Errorf("%s: %w (rollback revoke failed: %v)", step, cause, rollbackErr)
 		}
-		if wantJSON {
-			printJSON(output)
-		} else {
-			fmt.Print(formatWorkspaceAddWorktree(output))
+		return fmt.Errorf("%s: %w", step, cause)
+	}
+
+	if !jsonFlag {
+		fmt.Fprintln(os.Stderr, "Connecting new workspace...")
+	}
+
+	connectResult, err := initCertificateConnectWithOptions(worktreePath, sourceServerURL, certificateConnectOptions{
+		Role:      role,
+		HumanName: strings.TrimSpace(state.HumanName),
+		AgentType: strings.TrimSpace(state.AgentType),
+	})
+	if err != nil {
+		return rollbackAcceptedInvite("connect new worktree", err)
+	}
+	if strings.TrimSpace(connectResult.Alias) != "" && !strings.EqualFold(strings.TrimSpace(connectResult.Alias), alias) {
+		return rollbackAcceptedInvite(
+			"validate new worktree alias",
+			fmt.Errorf("new workspace connected as alias %q, expected %q", strings.TrimSpace(connectResult.Alias), alias),
+		)
+	}
+
+	output := workspaceAddWorktreeOutput{
+		Alias:        alias,
+		Role:         role,
+		Branch:       branchName,
+		WorktreePath: worktreePath,
+	}
+	if jsonFlag {
+		printJSON(output)
+	} else {
+		fmt.Print(formatWorkspaceAddWorktree(output))
+	}
+	return nil
+}
+
+func runWorkspaceMigrateMultiTeam(cmd *cobra.Command, args []string) error {
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	workspacePath, err := awconfig.FindWorktreeWorkspacePath(workingDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return usageError("current worktree is missing .aw/workspace.yaml")
 		}
+		return err
+	}
+
+	if workspace, err := awconfig.LoadWorktreeWorkspaceFrom(workspacePath); err == nil && workspace != nil {
+		output := workspaceMigrateMultiTeamOutput{
+			Status:      "already_multi_team",
+			ActiveTeam:  strings.TrimSpace(workspace.ActiveTeam),
+			Workspace:   workspacePath,
+			LegacyMoved: false,
+		}
+		if activeMembership := workspace.ActiveMembership(); activeMembership != nil {
+			output.CertPath = strings.TrimSpace(activeMembership.CertPath)
+		}
+		printOutput(output, formatWorkspaceMigrateMultiTeam)
 		return nil
+	} else if err != nil && !strings.Contains(err.Error(), awconfig.LegacyWorkspaceSingleTeamError()) {
+		return err
 	}
 
-	return fmt.Errorf("exhausted %d attempts to create a worktree (try specifying --alias)", maxAttempts)
+	output, err := migrateLegacyWorkspaceToMultiTeam(workingDir, workspacePath)
+	if err != nil {
+		return err
+	}
+	printOutput(output, formatWorkspaceMigrateMultiTeam)
+	return nil
+}
+
+func migrateLegacyWorkspaceToMultiTeam(workingDir, workspacePath string) (workspaceMigrateMultiTeamOutput, error) {
+	legacy, err := awconfig.LoadLegacySingleTeamWorkspaceFrom(workspacePath)
+	if err != nil {
+		return workspaceMigrateMultiTeamOutput{}, err
+	}
+	legacyCertPath := filepath.Join(workingDir, ".aw", "team-cert.pem")
+	cert, err := awid.LoadTeamCertificate(legacyCertPath)
+	if err != nil {
+		return workspaceMigrateMultiTeamOutput{}, fmt.Errorf("load legacy team certificate %s: %w", legacyCertPath, err)
+	}
+	if strings.TrimSpace(cert.Team) != strings.TrimSpace(legacy.TeamID) {
+		return workspaceMigrateMultiTeamOutput{}, fmt.Errorf("legacy team certificate team_id %q does not match workspace.yaml team_id %q", cert.Team, legacy.TeamID)
+	}
+	certPath, err := awconfig.SaveTeamCertificateForTeam(workingDir, legacy.TeamID, cert)
+	if err != nil {
+		return workspaceMigrateMultiTeamOutput{}, err
+	}
+	state := awconfig.WorktreeWorkspace{
+		AwebURL:    legacy.AwebURL,
+		ActiveTeam: legacy.TeamID,
+		Memberships: []awconfig.WorktreeMembership{{
+			TeamID:      legacy.TeamID,
+			Alias:       legacy.Alias,
+			RoleName:    legacy.RoleName,
+			WorkspaceID: legacy.WorkspaceID,
+			CertPath:    certPath,
+			JoinedAt:    firstNonEmpty(strings.TrimSpace(cert.IssuedAt), strings.TrimSpace(legacy.UpdatedAt)),
+		}},
+		HumanName:       legacy.HumanName,
+		AgentType:       legacy.AgentType,
+		RepoID:          legacy.RepoID,
+		CanonicalOrigin: legacy.CanonicalOrigin,
+		Hostname:        legacy.Hostname,
+		WorkspacePath:   legacy.WorkspacePath,
+		UpdatedAt:       firstNonEmpty(strings.TrimSpace(legacy.UpdatedAt), time.Now().UTC().Format(time.RFC3339)),
+	}
+	if err := saveWorktreeWorkspaceTo(workspacePath, &state); err != nil {
+		return workspaceMigrateMultiTeamOutput{}, err
+	}
+	if err := os.Remove(legacyCertPath); err != nil && !os.IsNotExist(err) {
+		return workspaceMigrateMultiTeamOutput{}, err
+	}
+
+	return workspaceMigrateMultiTeamOutput{
+		Status:      "migrated",
+		ActiveTeam:  legacy.TeamID,
+		CertPath:    certPath,
+		Workspace:   workspacePath,
+		LegacyMoved: true,
+	}, nil
 }
 
 func currentGitWorktreeRoot() (string, error) {
@@ -409,191 +480,6 @@ func currentGitWorktreeRootFromDir(workingDir string) (string, error) {
 	return root, nil
 }
 
-type contextAttachResult struct {
-	Workspace   *workspaceInitOutput
-	ContextKind string
-}
-
-func autoAttachContext(workingDir string, client *aweb.Client, roleOverride string) (*contextAttachResult, error) {
-	root, err := currentGitWorktreeRootFromDir(workingDir)
-	if err != nil {
-		return registerLocalAttachmentForDir(workingDir, client)
-	}
-
-	origin, err := resolveWorkspaceRepoOrigin(root, "")
-	if err != nil {
-		return registerLocalAttachmentForDir(workingDir, client)
-	}
-
-	out, err := registerWorkspaceForRoot(root, client, strings.TrimSpace(roleOverride), origin)
-	if err != nil {
-		return nil, err
-	}
-	return &contextAttachResult{
-		Workspace:   out,
-		ContextKind: "repo_worktree",
-	}, nil
-}
-
-func registerWorkspaceForRoot(root string, client *aweb.Client, roleOverride string, repoOrigin string) (*workspaceInitOutput, error) {
-	origin, err := resolveWorkspaceRepoOrigin(root, repoOrigin)
-	if err != nil {
-		return nil, err
-	}
-	hostname, _ := os.Hostname()
-
-	statePath := filepath.Join(root, awconfig.DefaultWorktreeWorkspaceRelativePath())
-	existingState, err := awconfig.LoadWorktreeWorkspaceFrom(statePath)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("read %s: %w", statePath, err)
-	}
-
-	role := strings.TrimSpace(roleOverride)
-	if role == "" && existingState != nil {
-		role = strings.TrimSpace(existingState.Role)
-	}
-	// Only resolve from project roles if we don't already have a role.
-	// Callers that pre-validate the role (init, project create,
-	// add-worktree, role-name set) pass it here already validated.
-	if role == "" {
-		role, err = resolveRole(client, "", isTTY(), os.Stdin, os.Stderr)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	resp, err := client.WorkspaceRegister(ctx, &aweb.WorkspaceRegisterRequest{
-		RepoOrigin:    origin,
-		Role:          role,
-		Hostname:      hostname,
-		WorkspacePath: root,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	state := &awconfig.WorktreeWorkspace{
-		WorkspaceID:     resp.WorkspaceID,
-		ProjectID:       resp.ProjectID,
-		ProjectSlug:     resp.ProjectSlug,
-		RepoID:          resp.RepoID,
-		CanonicalOrigin: resp.CanonicalOrigin,
-		Alias:           resp.Alias,
-		HumanName:       resp.HumanName,
-		Role:            role,
-		Hostname:        hostname,
-		WorkspacePath:   root,
-		UpdatedAt:       time.Now().UTC().Format(time.RFC3339),
-	}
-	if existingState != nil {
-		state = existingState
-		state.WorkspaceID = resp.WorkspaceID
-		state.ProjectID = resp.ProjectID
-		state.ProjectSlug = resp.ProjectSlug
-		state.RepoID = resp.RepoID
-		state.CanonicalOrigin = resp.CanonicalOrigin
-		state.Alias = resp.Alias
-		if strings.TrimSpace(resp.HumanName) != "" {
-			state.HumanName = resp.HumanName
-		}
-		state.RoleName = role
-		state.Role = role
-		state.Hostname = hostname
-		state.WorkspacePath = root
-		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	}
-	if err := awconfig.SaveWorktreeWorkspaceTo(statePath, state); err != nil {
-		return nil, fmt.Errorf("write %s: %w", statePath, err)
-	}
-
-	return &workspaceInitOutput{
-		WorkspaceID:     resp.WorkspaceID,
-		ProjectID:       resp.ProjectID,
-		ProjectSlug:     resp.ProjectSlug,
-		RepoID:          resp.RepoID,
-		CanonicalOrigin: resp.CanonicalOrigin,
-		Alias:           resp.Alias,
-		HumanName:       resp.HumanName,
-		Role:            role,
-		Hostname:        hostname,
-		WorkspacePath:   root,
-		Created:         resp.Created,
-	}, nil
-}
-
-func registerLocalAttachmentForDir(workingDir string, client *aweb.Client) (*contextAttachResult, error) {
-	hostname, _ := os.Hostname()
-	workspacePath := filepath.Clean(workingDir)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	resp, err := client.WorkspaceAttach(ctx, &aweb.WorkspaceAttachRequest{
-		AttachmentType: "local_dir",
-		Hostname:       hostname,
-		WorkspacePath:  workspacePath,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	statePath := filepath.Join(workingDir, awconfig.DefaultWorktreeWorkspaceRelativePath())
-	state, stateErr := awconfig.LoadWorktreeWorkspaceFrom(statePath)
-	switch {
-	case stateErr == nil:
-		state.WorkspaceID = strings.TrimSpace(resp.WorkspaceID)
-		if v := strings.TrimSpace(resp.ProjectID); v != "" {
-			state.ProjectID = v
-		}
-		if v := strings.TrimSpace(resp.ProjectSlug); v != "" {
-			state.ProjectSlug = v
-			if strings.TrimSpace(state.NamespaceSlug) == "" {
-				state.NamespaceSlug = v
-			}
-		}
-		if v := strings.TrimSpace(resp.Alias); v != "" {
-			state.Alias = v
-			if strings.TrimSpace(state.IdentityHandle) == "" {
-				state.IdentityHandle = v
-			}
-		}
-		if v := strings.TrimSpace(resp.HumanName); v != "" {
-			state.HumanName = v
-		}
-		state.RepoID = ""
-		state.CanonicalOrigin = ""
-		state.Hostname = hostname
-		state.WorkspacePath = workspacePath
-		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		if err := awconfig.SaveWorktreeWorkspaceTo(statePath, state); err != nil {
-			return nil, fmt.Errorf("write %s: %w", statePath, err)
-		}
-	case os.IsNotExist(stateErr):
-		// Commands that own identity/project binding persistence will write
-		// workspace.yaml after attach. Do not create a coordination-only file
-		// here for plain local directories.
-	case stateErr != nil:
-		return nil, fmt.Errorf("read %s: %w", statePath, stateErr)
-	}
-
-	return &contextAttachResult{
-		ContextKind: "local_dir",
-		Workspace: &workspaceInitOutput{
-			WorkspaceID:   resp.WorkspaceID,
-			ProjectID:     resp.ProjectID,
-			ProjectSlug:   resp.ProjectSlug,
-			Alias:         resp.Alias,
-			HumanName:     resp.HumanName,
-			Hostname:      hostname,
-			WorkspacePath: workspacePath,
-			Created:       resp.Created,
-		},
-	}, nil
-}
-
 func resolveWorkspaceRepoOrigin(root, explicit string) (string, error) {
 	if strings.TrimSpace(explicit) != "" {
 		return strings.TrimSpace(explicit), nil
@@ -612,30 +498,26 @@ func resolveWorkspaceRepoOrigin(root, explicit string) (string, error) {
 
 func fallbackWorkspaceInfo(sel *awconfig.Selection, state *awconfig.WorktreeWorkspace) aweb.WorkspaceInfo {
 	info := aweb.WorkspaceInfo{
-		WorkspaceID: sel.IdentityID,
-		Alias:       sel.IdentityHandle,
+		WorkspaceID: sel.WorkspaceID,
+		Alias:       sel.Alias,
 		Status:      "offline",
 	}
 	if state == nil {
 		return info
 	}
-	if strings.TrimSpace(state.WorkspaceID) != "" {
-		info.WorkspaceID = strings.TrimSpace(state.WorkspaceID)
-	}
-	if strings.TrimSpace(state.Alias) != "" {
-		info.Alias = strings.TrimSpace(state.Alias)
+	if membership, err := workspaceMembershipForSelection(state, sel); err == nil && membership != nil {
+		if strings.TrimSpace(membership.WorkspaceID) != "" {
+			info.WorkspaceID = strings.TrimSpace(membership.WorkspaceID)
+		}
+		if strings.TrimSpace(membership.Alias) != "" {
+			info.Alias = strings.TrimSpace(membership.Alias)
+		}
+		if strings.TrimSpace(membership.RoleName) != "" {
+			info.Role = stringPtr(strings.TrimSpace(membership.RoleName))
+		}
 	}
 	if strings.TrimSpace(state.HumanName) != "" {
 		info.HumanName = stringPtr(strings.TrimSpace(state.HumanName))
-	}
-	if strings.TrimSpace(state.ProjectID) != "" {
-		info.ProjectID = stringPtr(strings.TrimSpace(state.ProjectID))
-	}
-	if strings.TrimSpace(state.ProjectSlug) != "" {
-		info.ProjectSlug = stringPtr(strings.TrimSpace(state.ProjectSlug))
-	}
-	if strings.TrimSpace(state.Role) != "" {
-		info.Role = stringPtr(strings.TrimSpace(state.Role))
 	}
 	if strings.TrimSpace(state.Hostname) != "" {
 		info.Hostname = stringPtr(strings.TrimSpace(state.Hostname))
@@ -671,26 +553,6 @@ func stringPtr(v string) *string {
 	return &v
 }
 
-func formatWorkspaceInit(v any) string {
-	out := v.(workspaceInitOutput)
-	var sb strings.Builder
-	action := "Updated"
-	if out.Created {
-		action = "Registered"
-	}
-	sb.WriteString(fmt.Sprintf("%s workspace %s\n", action, out.Alias))
-	sb.WriteString(fmt.Sprintf("Workspace ID: %s\n", out.WorkspaceID))
-	sb.WriteString(fmt.Sprintf("Project:      %s\n", out.ProjectSlug))
-	sb.WriteString(fmt.Sprintf("Repo:         %s\n", out.CanonicalOrigin))
-	if out.Role != "" {
-		sb.WriteString(fmt.Sprintf("Role:         %s\n", out.Role))
-	}
-	if out.WorkspacePath != "" {
-		sb.WriteString(fmt.Sprintf("Path:         %s\n", abbreviateUserHome(out.WorkspacePath)))
-	}
-	return sb.String()
-}
-
 func formatWorkspaceAddWorktree(v any) string {
 	out := v.(workspaceAddWorktreeOutput)
 	var sb strings.Builder
@@ -704,6 +566,23 @@ func formatWorkspaceAddWorktree(v any) string {
 	sb.WriteString(fmt.Sprintf("  cd %s\n", abbreviateUserHome(out.WorktreePath)))
 	sb.WriteString("  aw run codex\n")
 	sb.WriteString("  aw run claude\n")
+	return sb.String()
+}
+
+func formatWorkspaceMigrateMultiTeam(v any) string {
+	out := v.(workspaceMigrateMultiTeamOutput)
+	var sb strings.Builder
+	switch out.Status {
+	case "already_multi_team":
+		sb.WriteString("Workspace already uses the canonical multi-team shape.\n")
+	default:
+		sb.WriteString("Workspace migrated to the canonical multi-team shape.\n")
+	}
+	sb.WriteString(fmt.Sprintf("Active team: %s\n", out.ActiveTeam))
+	if strings.TrimSpace(out.CertPath) != "" {
+		sb.WriteString(fmt.Sprintf("Certificate: %s\n", out.CertPath))
+	}
+	sb.WriteString(fmt.Sprintf("Workspace:   %s\n", abbreviateUserHome(out.Workspace)))
 	return sb.String()
 }
 
@@ -745,15 +624,15 @@ func isValidWorkspaceRole(role string) bool {
 	return true
 }
 
-// fetchAvailableRoles returns the available roles from the project roles bundle.
+// fetchAvailableRoles returns the available roles from the team roles bundle.
 // This is the single source of truth for role lists.
 func fetchAvailableRoles(client *aweb.Client) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	resp, err := client.ActiveProjectRoles(ctx, aweb.ActiveProjectRolesParams{OnlySelected: false})
+	resp, err := client.ActiveTeamRoles(ctx, aweb.ActiveTeamRolesParams{OnlySelected: false})
 	if err != nil {
-		return nil, fmt.Errorf("fetching project roles: %w", err)
+		return nil, fmt.Errorf("fetching team roles: %w", err)
 	}
 
 	roles := make([]string, 0, len(resp.Roles))
@@ -764,7 +643,7 @@ func fetchAvailableRoles(client *aweb.Client) ([]string, error) {
 	return roles, nil
 }
 
-// resolveRole fetches available roles from the project roles bundle, validates
+// resolveRole fetches available roles from the team roles bundle, validates
 // the requested role against them, and optionally prompts the user to
 // choose. This is the single entry point for role resolution.
 func resolveRole(client *aweb.Client, requested string, allowPrompt bool, in io.Reader, out io.Writer) (string, error) {
@@ -781,7 +660,7 @@ func resolveRole(client *aweb.Client, requested string, allowPrompt bool, in io.
 
 func selectRoleFromAvailableRoles(requested string, roles []string, allowPrompt bool, in io.Reader, out io.Writer) (string, error) {
 	if len(roles) == 0 {
-		return "", usageError("no roles defined in the active project roles")
+		return "", usageError("no roles defined in the active team roles")
 	}
 
 	normalizedRoles := make(map[string]string, len(roles))
@@ -815,6 +694,56 @@ func selectRoleFromAvailableRoles(requested string, roles []string, allowPrompt 
 	return "", usageError("invalid role %q; available roles: %s", role, strings.Join(roles, ", "))
 }
 
+func fetchWorkspaceTeamAliases(client *aweb.Client, workspaceID string) (map[string]bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := client.WorkspaceTeam(ctx, aweb.WorkspaceTeamParams{
+		IncludeClaims:            false,
+		IncludePresence:          false,
+		AlwaysIncludeWorkspaceID: strings.TrimSpace(workspaceID),
+		Limit:                    1000,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list team aliases: %w", err)
+	}
+	if resp.HasMore {
+		return nil, usageError("team has more than 1000 workspaces; specify --alias explicitly")
+	}
+
+	aliases := make(map[string]bool, len(resp.Workspaces))
+	for _, workspace := range resp.Workspaces {
+		alias := strings.ToLower(strings.TrimSpace(workspace.Alias))
+		if alias != "" {
+			aliases[alias] = true
+		}
+	}
+	return aliases, nil
+}
+
+func resolveWorkspaceTeamRegistryURL(workingDir, awebURL, teamDomain string) (string, error) {
+	meta, err := awconfig.LoadControllerMeta(teamDomain)
+	if err == nil && meta != nil {
+		if registryURL := strings.TrimSpace(meta.RegistryURL); registryURL != "" {
+			return registryURL, nil
+		}
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("load controller metadata for %s: %w", teamDomain, err)
+	}
+	if identity, _, err := awconfig.LoadWorktreeIdentityFromDir(workingDir); err == nil && identity != nil {
+		if registryURL := strings.TrimSpace(identity.RegistryURL); registryURL != "" {
+			return registryURL, nil
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("load worktree identity: %w", err)
+	}
+	if strings.TrimSpace(awebURL) != "" {
+		return "", usageError("current worktree is missing identity registry_url; run `aw init` again or restore .aw/identity.yaml")
+	}
+	return "", usageError("current worktree is missing registry configuration for %s", teamDomain)
+}
+
 func deriveWorkspaceAddWorktreePath(mainRepo, branchName string) (string, error) {
 	repoName := filepath.Base(mainRepo)
 	parentDir := filepath.Dir(mainRepo)
@@ -828,7 +757,6 @@ func deriveWorkspaceAddWorktreePath(mainRepo, branchName string) (string, error)
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("invalid worktree path: path traversal detected")
 	}
-
 	return cleanPath, nil
 }
 
@@ -887,33 +815,6 @@ func cleanupWorkspaceWorktree(repoPath, worktreePath, branchName string, deleteB
 	}
 }
 
-// createWorktreeInvite creates a single-use, short-lived CLI invite for
-// bootstrapping another workspace identity in a sibling worktree. The current
-// workspace's authenticated client creates the invite; the new worktree then
-// accepts it via flowInvite.
-func createWorktreeInvite(client *aweb.Client, aliasHint string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	resp, err := client.SpawnCreateInvite(ctx, &awid.SpawnInviteCreateRequest{
-		AliasHint:        aliasHint,
-		MaxUses:          1,
-		ExpiresInSeconds: 300, // 5 minutes
-	})
-	if err != nil {
-		return "", fmt.Errorf("creating worktree invite: %w", err)
-	}
-	return resp.Token, nil
-}
-
-func isWorkspaceAliasTakenError(err error) bool {
-	if err == nil {
-		return false
-	}
-	code, ok := apiStructuredErrorCode(err)
-	return ok && code == "ALIAS_TAKEN"
-}
-
 func workspaceBranchInUse(repoPath, branchName string) (bool, error) {
 	cmd := exec.Command("git", "-C", repoPath, "worktree", "list", "--porcelain")
 	out, err := cmd.Output()
@@ -932,28 +833,15 @@ func workspaceBranchInUse(repoPath, branchName string) (bool, error) {
 	return false, nil
 }
 
-func apiStructuredErrorCode(err error) (string, bool) {
-	body, ok := awid.HTTPErrorBody(err)
-	if !ok {
-		return "", false
-	}
-	var envelope struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	if json.Unmarshal([]byte(body), &envelope) != nil || strings.TrimSpace(envelope.Error.Code) == "" {
-		return "", false
-	}
-	return strings.TrimSpace(envelope.Error.Code), true
-}
-
 func formatWorkspaceStatus(v any) string {
 	out := v.(workspaceStatusOutput)
 	var sb strings.Builder
 	now := time.Now()
 
 	sb.WriteString("## Self\n")
+	if strings.TrimSpace(out.SelectedTeam) != "" {
+		sb.WriteString(fmt.Sprintf("- Team: %s\n", out.SelectedTeam))
+	}
 	sb.WriteString(fmt.Sprintf("- Alias: %s\n", out.Workspace.Alias))
 	sb.WriteString(fmt.Sprintf("- Context: %s\n", out.ContextKind))
 	if out.Workspace.Role != nil && strings.TrimSpace(*out.Workspace.Role) != "" {
@@ -978,6 +866,9 @@ func formatWorkspaceStatus(v any) string {
 	}
 	sb.WriteString(fmt.Sprintf("- Claims: %s\n", formatWorkspaceClaimsSummary(out.Workspace.Claims)))
 	sb.WriteString(fmt.Sprintf("- Locks: %s\n", formatWorkspaceLocksSummary(out.Locks, now, 0)))
+	if len(out.Memberships) > 0 {
+		sb.WriteString(fmt.Sprintf("- Memberships: %s\n", formatWorkspaceMembershipSummary(out.Memberships)))
+	}
 
 	sb.WriteString("\n## Team\n")
 	if len(out.Team) == 0 {
@@ -1013,6 +904,60 @@ func formatWorkspaceStatus(v any) string {
 		sb.WriteString(fmt.Sprintf("Claim conflicts: %d\n", out.ConflictCount))
 	}
 	return sb.String()
+}
+
+func membershipItemsForWorkspaceState(state *awconfig.WorktreeWorkspace, selectedTeam string, includeAll bool) []workspaceTeamMembershipItem {
+	if state == nil {
+		return nil
+	}
+	if !includeAll {
+		if membership := state.Membership(selectedTeam); membership != nil {
+			return []workspaceTeamMembershipItem{{
+				TeamID:      strings.TrimSpace(membership.TeamID),
+				Alias:       strings.TrimSpace(membership.Alias),
+				RoleName:    strings.TrimSpace(membership.RoleName),
+				WorkspaceID: strings.TrimSpace(membership.WorkspaceID),
+				Active:      strings.EqualFold(strings.TrimSpace(membership.TeamID), strings.TrimSpace(state.ActiveTeam)),
+			}}
+		}
+		return nil
+	}
+
+	items := make([]workspaceTeamMembershipItem, 0, len(state.Memberships))
+	for _, membership := range state.Memberships {
+		items = append(items, workspaceTeamMembershipItem{
+			TeamID:      strings.TrimSpace(membership.TeamID),
+			Alias:       strings.TrimSpace(membership.Alias),
+			RoleName:    strings.TrimSpace(membership.RoleName),
+			WorkspaceID: strings.TrimSpace(membership.WorkspaceID),
+			Active:      strings.EqualFold(strings.TrimSpace(membership.TeamID), strings.TrimSpace(state.ActiveTeam)),
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Active != items[j].Active {
+			return items[i].Active
+		}
+		return items[i].TeamID < items[j].TeamID
+	})
+	return items
+}
+
+func formatWorkspaceMembershipSummary(items []workspaceTeamMembershipItem) string {
+	if len(items) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		label := item.TeamID
+		if strings.TrimSpace(item.RoleName) != "" {
+			label += " (" + strings.TrimSpace(item.RoleName) + ")"
+		}
+		if item.Active {
+			label += " [active]"
+		}
+		parts = append(parts, label)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func formatWorkspaceHostPath(workspace aweb.WorkspaceInfo) string {

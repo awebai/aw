@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"net"
@@ -12,173 +13,18 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 )
 
 func writeNetworkWorkspace(t *testing.T, workingDir, serverURL, handle, namespace string) string {
 	t.Helper()
-	return writeWorkspaceBindingForTest(t, workingDir, awconfig.WorktreeWorkspace{
-		ServerURL:      serverURL,
-		APIKey:         "aw_sk_test",
-		IdentityHandle: handle,
-		NamespaceSlug:  namespace,
-		ProjectSlug:    namespace,
-		WorkspaceID:    "workspace-1",
-	})
-}
-
-func TestWhoAmIUsesConfiguredBaseURLWithoutExtraNetworkCalls(t *testing.T) {
-	t.Parallel()
-
-	var requestCount int32
-	var gotPath string
-
-	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requestCount, 1)
-		switch r.URL.Path {
-		case "/api/v1/auth/introspect":
-			gotPath = r.URL.Path
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_id":     "proj_123",
-				"agent_id":       "ag_123",
-				"alias":          "eve",
-				"namespace_slug": "acme",
-				"address":        "acme/eve",
-			})
-		default:
-			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
-		}
-	}))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "aw")
-
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
-	wd, _ := os.Getwd()
-	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
+	if strings.TrimSpace(namespace) == "" {
+		namespace = "demo"
 	}
-
-	writeNetworkWorkspace(t, tmp, server.URL+"/api", "eve", "acme")
-
-	run := exec.CommandContext(ctx, bin, "whoami", "--json")
-	run.Env = testCommandEnv(tmp)
-	run.Dir = tmp
-	out, err := run.CombinedOutput()
-	if err != nil {
-		t.Fatalf("run: %v\n%s", err, out)
-	}
-
-	if gotPath != "/api/v1/auth/introspect" {
-		t.Fatalf("path=%s", gotPath)
-	}
-	if atomic.LoadInt32(&requestCount) != 1 {
-		t.Fatalf("requestCount=%d", atomic.LoadInt32(&requestCount))
-	}
-}
-
-func TestWhoAmIFallsBackAndPersistsRecoveredBaseURL(t *testing.T) {
-	t.Parallel()
-
-	var pathsMu sync.Mutex
-	var paths []string
-
-	l, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	server := &httptest.Server{
-		Listener: l,
-		Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			pathsMu.Lock()
-			paths = append(paths, r.URL.Path)
-			pathsMu.Unlock()
-
-			switch r.URL.Path {
-			case "/v1/auth/introspect":
-				http.NotFound(w, r)
-			case "/v1/agents/heartbeat":
-				http.NotFound(w, r)
-			case "/api/v1/agents/heartbeat":
-				w.WriteHeader(http.StatusOK)
-			case "/api/v1/auth/introspect":
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"project_id":     "proj_123",
-					"agent_id":       "ag_123",
-					"alias":          "eve",
-					"namespace_slug": "acme",
-					"address":        "acme/eve",
-				})
-			default:
-				t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
-			}
-		})},
-	}
-	server.Start()
-	t.Cleanup(server.Close)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "aw")
-
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
-	wd, _ := os.Getwd()
-	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
-
-	workspacePath := writeNetworkWorkspace(t, tmp, server.URL, "eve", "acme")
-
-	run := exec.CommandContext(ctx, bin, "whoami", "--json")
-	run.Env = testCommandEnv(tmp)
-	run.Dir = tmp
-	out, err := run.CombinedOutput()
-	if err != nil {
-		pathsMu.Lock()
-		gotPaths := append([]string(nil), paths...)
-		pathsMu.Unlock()
-		t.Fatalf("run: %v\npaths=%v\n%s", err, gotPaths, out)
-	}
-
-	cfgData, err := os.ReadFile(workspacePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(cfgData), "server_url: "+server.URL+"/api") {
-		t.Fatalf("expected workspace binding to persist recovered /api URL, got:\n%s", string(cfgData))
-	}
-
-	pathsMu.Lock()
-	gotPaths := append([]string(nil), paths...)
-	pathsMu.Unlock()
-
-	want := []string{
-		"/v1/auth/introspect",
-		"/v1/agents/heartbeat",
-		"/api/v1/agents/heartbeat",
-		"/api/v1/auth/introspect",
-	}
-	if len(gotPaths) != len(want) {
-		t.Fatalf("paths=%v", gotPaths)
-	}
-	for i := range want {
-		if gotPaths[i] != want[i] {
-			t.Fatalf("paths=%v", gotPaths)
-		}
-	}
+	return writeWorkspaceBindingForTest(t, workingDir, workspaceBinding(serverURL, "backend:"+namespace, handle, "workspace-1"))
 }
 
 func TestResolveClientSelectionEventStreamFallsBackFromStaleBaseURL(t *testing.T) {
@@ -205,7 +51,7 @@ func TestResolveClientSelectionEventStreamFallsBackFromStaleBaseURL(t *testing.T
 				w.WriteHeader(http.StatusOK)
 			case "/api/v1/events/stream":
 				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = w.Write([]byte("event: connected\ndata: {\"agent_id\":\"ag_123\",\"project_id\":\"proj_123\"}\n\n"))
+				_, _ = w.Write([]byte("event: connected\ndata: {\"agent_id\":\"ag_123\",\"team_id\":\"backend:demo\"}\n\n"))
 			default:
 				t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 			}
@@ -220,7 +66,6 @@ func TestResolveClientSelectionEventStreamFallsBackFromStaleBaseURL(t *testing.T
 	t.Setenv("HOME", tmp)
 	t.Setenv("AW_CONFIG_PATH", "")
 	t.Setenv("AWEB_URL", "")
-	t.Setenv("AWEB_API_KEY", "")
 
 	client, _, err := resolveClientSelectionForDir(tmp)
 	if err != nil {
@@ -247,8 +92,8 @@ func TestResolveClientSelectionEventStreamFallsBackFromStaleBaseURL(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(cfgData), "server_url: "+server.URL+"/api") {
-		t.Fatalf("expected workspace binding to persist recovered /api URL, got:\n%s", string(cfgData))
+	if !strings.Contains(string(cfgData), "aweb_url: "+server.URL+"/api") {
+		t.Fatalf("expected workspace binding to persist recovered /api URL under aweb_url, got:\n%s", string(cfgData))
 	}
 
 	pathsMu.Lock()
@@ -291,8 +136,14 @@ func TestResolveWorkingBaseURLContextHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestMailSendNetworkAddressUsesUnifiedEndpoint(t *testing.T) {
+func TestMailSendToAddressUsesUnifiedEndpoint(t *testing.T) {
 	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := awid.ComputeDIDKey(pub)
 
 	var gotPath string
 	var gotBody map[string]any
@@ -329,9 +180,20 @@ func TestMailSendNetworkAddressUsesUnifiedEndpoint(t *testing.T) {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 
-	writeDefaultWorkspaceBindingForTest(t, tmp, server.URL+"/api")
+	writeSelectionFixtureForTest(t, tmp, testSelectionFixture{
+		AwebURL:     server.URL + "/api",
+		TeamID:      "backend:demo",
+		Alias:       "eve",
+		WorkspaceID: "workspace-1",
+		DID:         did,
+		StableID:    awid.ComputeStableID(pub),
+		Address:     "demo/eve",
+		Custody:     awid.CustodySelf,
+		Lifetime:    awid.LifetimePersistent,
+		SigningKey:  priv,
+	})
 
-	run := exec.CommandContext(ctx, bin, "mail", "send", "--to", "acme/researcher", "--body", "hello network", "--json")
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--to-address", "acme/researcher", "--body", "hello network", "--json")
 	run.Env = testCommandEnv(tmp)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -342,8 +204,8 @@ func TestMailSendNetworkAddressUsesUnifiedEndpoint(t *testing.T) {
 	if gotPath != "/api/v1/messages" {
 		t.Fatalf("path=%s", gotPath)
 	}
-	if gotBody["to_alias"] != "acme/researcher" {
-		t.Fatalf("to_alias=%v", gotBody["to_alias"])
+	if gotBody["to_address"] != "acme/researcher" {
+		t.Fatalf("to_address=%v", gotBody["to_address"])
 	}
 	if gotBody["body"] != "hello network" {
 		t.Fatalf("body=%v", gotBody["body"])
@@ -468,9 +330,12 @@ func TestChatSendNetworkAddressUsesUnifiedEndpoint(t *testing.T) {
 	if gotPath != "/api/v1/chat/sessions" {
 		t.Fatalf("path=%s", gotPath)
 	}
-	addrs, ok := gotBody["to_aliases"].([]any)
+	addrs, ok := gotBody["to_addresses"].([]any)
 	if !ok || len(addrs) != 1 || addrs[0] != "acme/bot" {
-		t.Fatalf("to_aliases=%v", gotBody["to_aliases"])
+		t.Fatalf("to_addresses=%v", gotBody["to_addresses"])
+	}
+	if aliases, ok := gotBody["to_aliases"].([]any); ok && len(aliases) != 0 {
+		t.Fatalf("to_aliases=%v, want empty", gotBody["to_aliases"])
 	}
 	if gotBody["message"] != "hello network" {
 		t.Fatalf("message=%v", gotBody["message"])

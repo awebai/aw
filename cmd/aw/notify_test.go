@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/awebai/aw/awconfig"
 	"github.com/awebai/aw/chat"
 )
 
@@ -82,7 +81,7 @@ func TestFormatNotifyOutputUrgentAndFallback(t *testing.T) {
 		},
 	}
 
-	out := formatNotifyOutput(result, "wendy")
+	out := formatNotifyOutput(result, "wendy", "did:aw:wendy", "did:key:self-wendy")
 	for _, want := range []string{
 		"URGENT",
 		"rose",
@@ -92,6 +91,216 @@ func TestFormatNotifyOutputUrgentAndFallback(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestFormatNotifyOutputFallbackSkipsSelfAddress(t *testing.T) {
+	t.Parallel()
+
+	result := &chat.PendingResult{
+		Pending: []chat.PendingConversation{
+			{
+				SessionID:            "s1",
+				Participants:         []string{"wendy", "rose"},
+				ParticipantAddresses: []string{"acme.com/wendy", "otherco/rose"},
+				LastFrom:             "",
+				UnreadCount:          1,
+				SenderWaiting:        false,
+			},
+		},
+	}
+
+	out := formatNotifyOutput(result, "wendy", "did:aw:wendy", "did:key:self-wendy")
+	if !strings.Contains(out, "Unread message from otherco/rose") {
+		t.Fatalf("notify output should fall back to the non-self participant address:\n%s", out)
+	}
+	if strings.Contains(out, "Unread message from acme.com/wendy") {
+		t.Fatalf("notify output should not surface self address as sender:\n%s", out)
+	}
+}
+
+func TestFormatNotifyOutputSkipsDirectSelfAddressSender(t *testing.T) {
+	t.Parallel()
+
+	result := &chat.PendingResult{
+		Pending: []chat.PendingConversation{
+			{
+				SessionID:            "s1",
+				Participants:         []string{"wendy", "rose"},
+				ParticipantAddresses: []string{"acme.com/wendy", "otherco/rose"},
+				LastFrom:             "wendy",
+				LastFromAddress:      "acme.com/wendy",
+				LastMessage:          "note to self",
+				UnreadCount:          1,
+				SenderWaiting:        false,
+			},
+		},
+	}
+
+	out := formatNotifyOutput(result, "wendy")
+	if out != "" {
+		t.Fatalf("notify output should skip direct self-authored sender labels:\n%s", out)
+	}
+}
+
+func TestFormatNotifyOutputFallsBackToStableID(t *testing.T) {
+	t.Parallel()
+
+	result := &chat.PendingResult{
+		Pending: []chat.PendingConversation{
+			{
+				SessionID:            "s1",
+				Participants:         []string{"", ""},
+				ParticipantDIDs:      []string{"did:aw:wendy", "did:aw:rose"},
+				ParticipantAddresses: []string{"", ""},
+				LastFrom:             "",
+				LastFromDID:          "did:aw:rose",
+				LastFromAddress:      "",
+				UnreadCount:          1,
+				SenderWaiting:        false,
+			},
+		},
+	}
+
+	out := formatNotifyOutput(result, "wendy")
+	if !strings.Contains(out, "Unread message from did:aw:rose") {
+		t.Fatalf("notify output should preserve stable identity fallback:\n%s", out)
+	}
+}
+
+func TestFormatNotifyOutputFallbackParticipantPrefersStableIDOverAlias(t *testing.T) {
+	t.Parallel()
+
+	result := &chat.PendingResult{
+		Pending: []chat.PendingConversation{
+			{
+				SessionID:            "s1",
+				Participants:         []string{"wendy", "rose"},
+				ParticipantDIDs:      []string{"did:aw:wendy", "did:aw:rose"},
+				ParticipantAddresses: []string{"", ""},
+				LastFrom:             "",
+				LastFromDID:          "",
+				LastFromAddress:      "",
+				UnreadCount:          1,
+				SenderWaiting:        false,
+			},
+		},
+	}
+
+	out := formatNotifyOutput(result, "wendy")
+	if !strings.Contains(out, "Unread message from did:aw:rose") {
+		t.Fatalf("notify output should prefer participant stable id over alias fallback:\n%s", out)
+	}
+	if strings.Contains(out, "Unread message from rose") {
+		t.Fatalf("notify output should not collapse to alias fallback when stable id is present:\n%s", out)
+	}
+}
+
+func TestFormatNotifyOutputPrefersParticipantAddressWhenLastFromIsAliasOnly(t *testing.T) {
+	t.Parallel()
+
+	result := &chat.PendingResult{
+		Pending: []chat.PendingConversation{
+			{
+				SessionID:            "s1",
+				Participants:         []string{"wendy", "rose"},
+				ParticipantAddresses: []string{"acme.com/wendy", "otherco/rose"},
+				LastFrom:             "rose",
+				LastFromAddress:      "",
+				UnreadCount:          1,
+				SenderWaiting:        false,
+			},
+		},
+	}
+
+	out := formatNotifyOutput(result, "wendy")
+	if !strings.Contains(out, "Unread message from otherco/rose") {
+		t.Fatalf("notify output should prefer participant address over alias-only last_from:\n%s", out)
+	}
+	if strings.Contains(out, "Unread message from rose") {
+		t.Fatalf("notify output should not collapse to alias-only sender label:\n%s", out)
+	}
+}
+
+func TestFormatNotifyOutputSkipsSelfStableIDParticipant(t *testing.T) {
+	t.Parallel()
+
+	result := &chat.PendingResult{
+		Pending: []chat.PendingConversation{
+			{
+				SessionID:            "s1",
+				Participants:         []string{"", ""},
+				ParticipantDIDs:      []string{"did:aw:wendy", "did:aw:rose"},
+				ParticipantAddresses: []string{"", ""},
+				LastFrom:             "",
+				LastFromAddress:      "",
+				UnreadCount:          1,
+				SenderWaiting:        false,
+			},
+		},
+	}
+
+	out := formatNotifyOutput(result, "wendy")
+	if strings.Contains(out, "Unread message from did:aw:wendy") {
+		t.Fatalf("notify output should not surface self stable identity as sender:\n%s", out)
+	}
+	if !strings.Contains(out, "Unread message from did:aw:rose") {
+		t.Fatalf("notify output should skip self stable identity and fall through to the other participant:\n%s", out)
+	}
+}
+
+func TestFormatNotifyOutputSkipsSelfCurrentDIDParticipant(t *testing.T) {
+	t.Parallel()
+
+	result := &chat.PendingResult{
+		Pending: []chat.PendingConversation{
+			{
+				SessionID:            "s1",
+				Participants:         []string{"", ""},
+				ParticipantDIDs:      []string{"did:key:self-wendy", "did:aw:rose"},
+				ParticipantAddresses: []string{"", ""},
+				LastFrom:             "",
+				LastFromAddress:      "",
+				UnreadCount:          1,
+				SenderWaiting:        false,
+			},
+		},
+	}
+
+	out := formatNotifyOutput(result, "wendy", "did:aw:wendy", "did:key:self-wendy")
+	if strings.Contains(out, "Unread message from did:key:self-wendy") {
+		t.Fatalf("notify output should not surface self current did as sender:\n%s", out)
+	}
+	if !strings.Contains(out, "Unread message from did:aw:rose") {
+		t.Fatalf("notify output should skip self current did and fall through to the other participant:\n%s", out)
+	}
+}
+
+func TestFormatNotifyOutputPrefersParticipantStableIDOverLastFromCurrentDID(t *testing.T) {
+	t.Parallel()
+
+	result := &chat.PendingResult{
+		Pending: []chat.PendingConversation{
+			{
+				SessionID:            "s1",
+				Participants:         []string{"", ""},
+				ParticipantDIDs:      []string{"did:aw:wendy", "did:aw:rose"},
+				ParticipantAddresses: []string{"", ""},
+				LastFrom:             "",
+				LastFromDID:          "did:key:z6MkRoseCurrent",
+				LastFromAddress:      "",
+				UnreadCount:          1,
+				SenderWaiting:        false,
+			},
+		},
+	}
+
+	out := formatNotifyOutput(result, "wendy", "did:aw:wendy", "did:key:self-wendy")
+	if !strings.Contains(out, "Unread message from did:aw:rose") {
+		t.Fatalf("notify output should prefer participant stable identity over last-from current did:\n%s", out)
+	}
+	if strings.Contains(out, "did:key:z6MkRoseCurrent") {
+		t.Fatalf("notify output should not surface current did when participant stable identity is known:\n%s", out)
 	}
 }
 
@@ -160,15 +369,7 @@ func TestAwNotifySilentOnAPIError(t *testing.T) {
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "aw")
 	buildAwBinary(t, ctx, bin)
-	writeWorkspaceBindingForTest(t, tmp, awconfig.WorktreeWorkspace{
-		ServerURL:      server.URL,
-		APIKey:         "aw_sk_test",
-		IdentityID:     "agent-1",
-		IdentityHandle: "notify-api-error",
-		NamespaceSlug:  "demo",
-		ProjectSlug:    "demo",
-		WorkspaceID:    "workspace-1",
-	})
+	writeWorkspaceBindingForTest(t, tmp, workspaceBinding(server.URL, "backend:demo", "notify-api-error", "workspace-1"))
 
 	run := exec.CommandContext(ctx, bin, "notify")
 	run.Env = testCommandEnv(tmp)
@@ -193,8 +394,10 @@ func TestAwNotifyOutputsHookJSONWhenPendingChatsExist(t *testing.T) {
 					{
 						"session_id":             "s1",
 						"participants":           []string{"wendy", "rose"},
+						"participant_addresses":  []string{"acme.com/wendy", "otherco/rose"},
 						"last_message":           "reply?",
 						"last_from":              "rose",
+						"last_from_address":      "otherco/rose",
 						"unread_count":           1,
 						"last_activity":          "2026-03-21T12:00:00Z",
 						"sender_waiting":         true,
@@ -216,15 +419,7 @@ func TestAwNotifyOutputsHookJSONWhenPendingChatsExist(t *testing.T) {
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "aw")
 	buildAwBinary(t, ctx, bin)
-	writeWorkspaceBindingForTest(t, tmp, awconfig.WorktreeWorkspace{
-		ServerURL:      server.URL,
-		APIKey:         "aw_sk_test",
-		IdentityID:     "agent-1",
-		IdentityHandle: "notify-pending",
-		NamespaceSlug:  "demo",
-		ProjectSlug:    "demo",
-		WorkspaceID:    "workspace-1",
-	})
+	writeWorkspaceBindingForTest(t, tmp, workspaceBinding(server.URL, "backend:demo", "notify-pending", "workspace-1"))
 
 	run := exec.CommandContext(ctx, bin, "notify")
 	run.Env = testCommandEnv(tmp)
@@ -240,7 +435,7 @@ func TestAwNotifyOutputsHookJSONWhenPendingChatsExist(t *testing.T) {
 	}
 	hook := parsed["hookSpecificOutput"].(map[string]any)
 	contextText := hook["additionalContext"].(string)
-	for _, want := range []string{"URGENT", "rose", "aw chat pending"} {
+	for _, want := range []string{"URGENT", "otherco/rose", "aw chat pending"} {
 		if !strings.Contains(contextText, want) {
 			t.Fatalf("missing %q in context:\n%s", want, contextText)
 		}

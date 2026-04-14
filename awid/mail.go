@@ -18,17 +18,16 @@ const (
 type SendMessageRequest struct {
 	ToAgentID     string          `json:"to_agent_id,omitempty"`
 	ToAlias       string          `json:"to_alias,omitempty"`
+	ToDID         string          `json:"to_did,omitempty"`
+	ToStableID    string          `json:"to_stable_id,omitempty"`
+	ToAddress     string          `json:"to_address,omitempty"`
 	Subject       string          `json:"subject,omitempty"`
 	Body          string          `json:"body"`
 	Priority      MessagePriority `json:"priority,omitempty"`
-	ThreadID      *string         `json:"thread_id,omitempty"`
-	FromDID       string          `json:"from_did,omitempty"`
-	ToDID         string          `json:"to_did,omitempty"`
-	FromStableID  string          `json:"from_stable_id,omitempty"`
-	Signature     string          `json:"signature,omitempty"`
-	SigningKeyID  string          `json:"signing_key_id,omitempty"`
-	Timestamp     string          `json:"timestamp,omitempty"`
 	MessageID     string          `json:"message_id,omitempty"`
+	Timestamp     string          `json:"timestamp,omitempty"`
+	FromDID       string          `json:"from_did,omitempty"`
+	Signature     string          `json:"signature,omitempty"`
 	SignedPayload string          `json:"signed_payload,omitempty"`
 }
 
@@ -39,6 +38,14 @@ type SendMessageResponse struct {
 }
 
 func (c *Client) SendMessage(ctx context.Context, req *SendMessageRequest) (*SendMessageResponse, error) {
+	return c.sendMessage(ctx, req, false)
+}
+
+func (c *Client) SendMessageByIdentity(ctx context.Context, req *SendMessageRequest) (*SendMessageResponse, error) {
+	return c.sendMessage(ctx, req, true)
+}
+
+func (c *Client) sendMessage(ctx context.Context, req *SendMessageRequest, identityTarget bool) (*SendMessageResponse, error) {
 	if req == nil {
 		return nil, errors.New("aweb: request is required")
 	}
@@ -48,37 +55,42 @@ func (c *Client) SendMessage(ctx context.Context, req *SendMessageRequest) (*Sen
 	if to == "" {
 		to = payload.ToAgentID
 	}
+	toStableID := strings.TrimSpace(payload.ToStableID)
+	toDID := strings.TrimSpace(payload.ToDID)
+	if toStableID != "" {
+		to = toStableID
+	} else if toDID != "" {
+		to = toDID
+	}
+	if strings.TrimSpace(payload.ToAddress) != "" {
+		to = strings.TrimSpace(payload.ToAddress)
+	}
 	from := c.address
-	// Local delivery keeps project-layer addressing in the signed envelope:
-	// plain alias within the same project, project~alias across projects under
-	// the same owner, and namespace/name only on the network path.
-	if c.signingKey != nil && payload.ToAlias != "" && !strings.Contains(payload.ToAlias, "/") {
-		if strings.Contains(payload.ToAlias, "~") {
-			if project := c.defaultProjectSlug(); project != "" {
-				from = project + "~" + c.alias()
-			}
-		} else {
-			from = c.alias()
-		}
+	if c.signingKey != nil {
+		from = c.signedPayloadFrom(identityTarget, payload.ToAlias != "" && !strings.Contains(payload.ToAlias, "/"))
 	}
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
-		From:    from,
-		To:      to,
-		Type:    "mail",
-		Subject: payload.Subject,
-		Body:    payload.Body,
+		From:       from,
+		To:         to,
+		ToDID:      toDID,
+		ToStableID: toStableID,
+		Type:       "mail",
+		Priority:   signedMailPriority(payload.Priority),
+		Subject:    payload.Subject,
+		Body:       payload.Body,
 	})
 	if err != nil {
 		return nil, err
 	}
-	payload.FromDID = sf.FromDID
-	payload.ToDID = sf.ToDID
-	payload.FromStableID = sf.FromStableID
-	payload.Signature = sf.Signature
-	payload.SigningKeyID = sf.SigningKeyID
-	payload.Timestamp = sf.Timestamp
-	payload.MessageID = sf.MessageID
-	payload.SignedPayload = sf.SignedPayload
+	if c.signingKey != nil {
+		payload.FromDID = sf.FromDID
+		payload.ToDID = sf.ToDID
+		payload.ToStableID = sf.ToStableID
+		payload.Signature = sf.Signature
+		payload.MessageID = sf.MessageID
+		payload.Timestamp = sf.Timestamp
+		payload.SignedPayload = sf.SignedPayload
+	}
 
 	var out SendMessageResponse
 	if err := c.Post(ctx, "/v1/messages", &payload, &out); err != nil {
@@ -139,6 +151,26 @@ func (c *Client) Inbox(ctx context.Context, p InboxParams) (*InboxResponse, erro
 	}
 	for i := range out.Messages {
 		m := &out.Messages[i]
+		if meta, ok := parseSignedEnvelopeMetadata(m.SignedPayload); ok {
+			if meta.FromDID != "" {
+				m.FromDID = meta.FromDID
+			}
+			if meta.ToDID != "" {
+				m.ToDID = meta.ToDID
+			}
+			if m.FromStableID == "" {
+				m.FromStableID = meta.FromStableID
+			}
+			if m.ToStableID == "" {
+				m.ToStableID = meta.ToStableID
+			}
+			if m.FromAddress == "" && meta.From != "" {
+				m.FromAddress = meta.From
+			}
+			if m.ToAddress == "" && meta.To != "" {
+				m.ToAddress = meta.To
+			}
+		}
 		from := m.FromAlias
 		if m.FromAddress != "" {
 			from = m.FromAddress
@@ -156,6 +188,7 @@ func (c *Client) Inbox(ctx context.Context, p InboxParams) (*InboxResponse, erro
 				To:           to,
 				ToDID:        m.ToDID,
 				Type:         "mail",
+				Priority:     signedMailPriority(m.Priority),
 				Subject:      m.Subject,
 				Body:         m.Body,
 				Timestamp:    m.CreatedAt,
@@ -167,10 +200,22 @@ func (c *Client) Inbox(ctx context.Context, p InboxParams) (*InboxResponse, erro
 			}
 			m.VerificationStatus, _ = VerifyMessage(env)
 		}
-		m.VerificationStatus = c.checkRecipientBinding(m.VerificationStatus, m.ToDID)
+		m.VerificationStatus = c.checkRecipientBinding(m.VerificationStatus, m.ToDID, m.ToStableID)
 		m.VerificationStatus, m.IsContact = c.NormalizeSenderTrust(ctx, m.VerificationStatus, from, m.FromDID, m.FromStableID, m.RotationAnnouncement, m.ReplacementAnnouncement, m.IsContact)
 	}
 	return &out, nil
+}
+
+// signedMailPriority normalizes "" and "normal" to the same empty signed value.
+// Any verifier that reconstructs a mail envelope from display fields must apply
+// the exact same normalization or signature verification will drift.
+func signedMailPriority(priority MessagePriority) string {
+	switch priority {
+	case "", PriorityNormal:
+		return ""
+	default:
+		return string(priority)
+	}
 }
 
 type AckResponse struct {

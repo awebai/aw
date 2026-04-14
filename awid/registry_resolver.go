@@ -24,13 +24,25 @@ type cachedValue[T any] struct {
 }
 
 type registryAddressResponse struct {
-	AddressID     string `json:"address_id"`
-	Domain        string `json:"domain"`
-	Name          string `json:"name"`
-	DIDAW         string `json:"did_aw"`
-	CurrentDIDKey string `json:"current_did_key"`
-	Reachability  string `json:"reachability"`
-	CreatedAt     string `json:"created_at"`
+	AddressID       string  `json:"address_id"`
+	Domain          string  `json:"domain"`
+	Name            string  `json:"name"`
+	DIDAW           string  `json:"did_aw"`
+	CurrentDIDKey   string  `json:"current_did_key"`
+	Reachability    string  `json:"reachability"`
+	VisibleToTeamID *string `json:"visible_to_team_id,omitempty"`
+	CreatedAt       string  `json:"created_at"`
+}
+
+type registryTeamMemberResponse struct {
+	TeamID        string `json:"team_id"`
+	CertificateID string `json:"certificate_id"`
+	MemberDIDKey  string `json:"member_did_key"`
+	MemberDIDAW   string `json:"member_did_aw"`
+	MemberAddress string `json:"member_address"`
+	Alias         string `json:"alias"`
+	Lifetime      string `json:"lifetime"`
+	IssuedAt      string `json:"issued_at"`
 }
 
 type didKeyEvidenceWire struct {
@@ -57,15 +69,21 @@ type registryAddressCacheValue struct {
 	response  *registryAddressResponse
 }
 
+type registryTeamMemberCacheValue struct {
+	authority DomainAuthority
+	response  *registryTeamMemberResponse
+}
+
 type RegistryResolver struct {
-	HTTPClient  *http.Client
-	DNSResolver TXTResolver
-	Now         func() time.Time
+	HTTPClient          *http.Client
+	DNSResolver         TXTResolver
+	Now                 func() time.Time
 	fallbackRegistryURL string
 
 	mu            sync.Mutex
 	registryCache map[string]cachedValue[DomainAuthority]
 	addressCache  map[string]cachedValue[*registryAddressCacheValue]
+	memberCache   map[string]cachedValue[*registryTeamMemberCacheValue]
 	keyCache      map[string]cachedValue[*DidKeyResolution]
 	headCache     map[string]*VerifiedLogHead
 }
@@ -83,6 +101,7 @@ func NewRegistryResolver(httpClient *http.Client, dnsResolver TXTResolver) *Regi
 		Now:           time.Now,
 		registryCache: make(map[string]cachedValue[DomainAuthority]),
 		addressCache:  make(map[string]cachedValue[*registryAddressCacheValue]),
+		memberCache:   make(map[string]cachedValue[*registryTeamMemberCacheValue]),
 		keyCache:      make(map[string]cachedValue[*DidKeyResolution]),
 		headCache:     make(map[string]*VerifiedLogHead),
 	}
@@ -103,9 +122,60 @@ func (r *RegistryResolver) SetFallbackRegistryURL(raw string) error {
 }
 
 func (r *RegistryResolver) Resolve(ctx context.Context, identifier string) (*ResolvedIdentity, error) {
+	if teamID, alias, ok := splitTeamMemberReference(identifier); ok {
+		member, err := r.resolveTeamMember(ctx, teamID, alias)
+		if err != nil {
+			return nil, err
+		}
+		address := strings.TrimSpace(member.response.MemberAddress)
+		if address == "" {
+			address = strings.TrimSpace(identifier)
+		}
+		if stableID := strings.TrimSpace(member.response.MemberDIDAW); stableID != "" {
+			keyRes, err := r.resolveKey(ctx, member.authority.RegistryURL, stableID)
+			if err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(keyRes.DIDAW) != stableID {
+				return nil, fmt.Errorf("RegistryResolver: key did:aw mismatch for %s", identifier)
+			}
+			pub, err := ExtractPublicKey(keyRes.CurrentDIDKey)
+			if err != nil {
+				return nil, fmt.Errorf("RegistryResolver: invalid current did:key: %w", err)
+			}
+			return &ResolvedIdentity{
+				DID:         keyRes.CurrentDIDKey,
+				StableID:    stableID,
+				Address:     address,
+				Handle:      member.response.Alias,
+				PublicKey:   ed25519.PublicKey(pub),
+				RegistryURL: member.authority.RegistryURL,
+				Custody:     CustodySelf,
+				Lifetime:    member.response.Lifetime,
+				ResolvedAt:  r.now().UTC(),
+				ResolvedVia: "registry",
+			}, nil
+		}
+		pub, err := ExtractPublicKey(member.response.MemberDIDKey)
+		if err != nil {
+			return nil, fmt.Errorf("RegistryResolver: invalid member did:key: %w", err)
+		}
+		return &ResolvedIdentity{
+			DID:         member.response.MemberDIDKey,
+			Address:     address,
+			Handle:      member.response.Alias,
+			PublicKey:   ed25519.PublicKey(pub),
+			RegistryURL: member.authority.RegistryURL,
+			Custody:     CustodySelf,
+			Lifetime:    member.response.Lifetime,
+			ResolvedAt:  r.now().UTC(),
+			ResolvedVia: "registry",
+		}, nil
+	}
+
 	domain, name, ok := splitRegistryAddress(identifier)
 	if !ok {
-		return nil, fmt.Errorf("RegistryResolver: invalid address %q", identifier)
+		return nil, fmt.Errorf("RegistryResolver: invalid identifier %q", identifier)
 	}
 	address, err := r.resolveAddress(ctx, domain, name)
 	if err != nil {
@@ -144,7 +214,7 @@ func (r *RegistryResolver) Resolve(ctx context.Context, identifier string) (*Res
 		Handle:        name,
 		ControllerDID: address.authority.ControllerDID,
 		PublicKey:     ed25519.PublicKey(pub),
-		ServerURL:     address.authority.RegistryURL,
+		RegistryURL:   address.authority.RegistryURL,
 		Custody:       CustodySelf,
 		Lifetime:      LifetimePersistent,
 		ResolvedAt:    r.now().UTC(),
@@ -188,11 +258,18 @@ func (r *RegistryResolver) VerifyStableIdentity(ctx context.Context, address, st
 	cachedHead := r.headCache[stableID]
 	r.mu.Unlock()
 
+	if cachedHead == nil {
+		return r.verifyStableIdentityViaFullLog(ctx, addr.authority.RegistryURL, stableID, keyRes.CurrentDIDKey)
+	}
+
 	outcome, nextHead, verifyErr := VerifyDidKeyResolution(keyRes, cachedHead, r.now())
 	if outcome == StableIdentityVerified && nextHead != nil {
 		r.mu.Lock()
 		r.headCache[stableID] = nextHead
 		r.mu.Unlock()
+	}
+	if outcome == StableIdentityDegraded && verifyErr == nil {
+		return r.verifyStableIdentityViaFullLog(ctx, addr.authority.RegistryURL, stableID, keyRes.CurrentDIDKey)
 	}
 	if verifyErr != nil {
 		return &StableIdentityVerification{
@@ -204,6 +281,46 @@ func (r *RegistryResolver) VerifyStableIdentity(ctx context.Context, address, st
 	return &StableIdentityVerification{
 		Outcome:       outcome,
 		CurrentDIDKey: keyRes.CurrentDIDKey,
+	}
+}
+
+func (r *RegistryResolver) verifyStableIdentityViaFullLog(ctx context.Context, registryURL, stableID, currentDIDKey string) *StableIdentityVerification {
+	entries, err := r.fetchDIDLog(ctx, registryURL, stableID)
+	if err != nil {
+		return &StableIdentityVerification{
+			Outcome:       StableIdentityDegraded,
+			CurrentDIDKey: currentDIDKey,
+			Error:         err.Error(),
+		}
+	}
+	head, err := VerifyDidLogEntries(stableID, entries, r.now())
+	if err != nil {
+		return &StableIdentityVerification{
+			Outcome:       StableIdentityHardError,
+			CurrentDIDKey: currentDIDKey,
+			Error:         err.Error(),
+		}
+	}
+	if head == nil {
+		return &StableIdentityVerification{
+			Outcome:       StableIdentityDegraded,
+			CurrentDIDKey: currentDIDKey,
+			Error:         "missing verified audit log head",
+		}
+	}
+	if strings.TrimSpace(head.CurrentDIDKey) != strings.TrimSpace(currentDIDKey) {
+		return &StableIdentityVerification{
+			Outcome:       StableIdentityHardError,
+			CurrentDIDKey: currentDIDKey,
+			Error:         "audit log current did:key mismatch",
+		}
+	}
+	r.mu.Lock()
+	r.headCache[stableID] = head
+	r.mu.Unlock()
+	return &StableIdentityVerification{
+		Outcome:       StableIdentityVerified,
+		CurrentDIDKey: currentDIDKey,
 	}
 }
 
@@ -225,6 +342,36 @@ func (r *RegistryResolver) resolveAddress(ctx context.Context, domain, name stri
 		response:  &resp,
 	}
 	r.storeAddressCache(cacheKey, value, registryAddressTTL)
+	return value, nil
+}
+
+func (r *RegistryResolver) resolveTeamMember(ctx context.Context, teamID, alias string) (*registryTeamMemberCacheValue, error) {
+	cacheKey := teamID + "/" + alias
+	if cached, ok := r.loadMemberCache(cacheKey); ok {
+		return cached, nil
+	}
+	domain, name, err := ParseTeamID(teamID)
+	if err != nil {
+		return nil, fmt.Errorf("RegistryResolver: invalid team member reference %q: %w", cacheKey, err)
+	}
+	authority, err := r.discoverAuthority(ctx, domain)
+	if err != nil {
+		return nil, err
+	}
+	var resp registryTeamMemberResponse
+	if err := r.getJSON(
+		ctx,
+		authority.RegistryURL,
+		"/v1/namespaces/"+urlPathEscape(domain)+"/teams/"+urlPathEscape(name)+"/members/"+urlPathEscape(alias),
+		&resp,
+	); err != nil {
+		return nil, err
+	}
+	value := &registryTeamMemberCacheValue{
+		authority: authority,
+		response:  &resp,
+	}
+	r.storeMemberCache(cacheKey, value, registryAddressTTL)
 	return value, nil
 }
 
@@ -256,6 +403,14 @@ func (r *RegistryResolver) resolveKey(ctx context.Context, registryURL, didAW st
 	}
 	r.storeKeyCache(didAW, res, registryKeyTTL)
 	return res, nil
+}
+
+func (r *RegistryResolver) fetchDIDLog(ctx context.Context, registryURL, didAW string) ([]DidKeyEvidence, error) {
+	var out []DidKeyEvidence
+	if err := r.getJSON(ctx, registryURL, "/v1/did/"+urlPathEscape(strings.TrimSpace(didAW))+"/log", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (r *RegistryResolver) discoverRegistry(ctx context.Context, domain string) (string, error) {
@@ -344,6 +499,22 @@ func splitRegistryAddress(identifier string) (string, string, bool) {
 	return domain, name, true
 }
 
+func splitTeamMemberReference(identifier string) (teamID, alias string, ok bool) {
+	identifier = strings.TrimSpace(identifier)
+	teamID, alias, ok = strings.Cut(identifier, "/")
+	if !ok {
+		return "", "", false
+	}
+	if _, _, err := ParseTeamID(teamID); err != nil {
+		return "", "", false
+	}
+	alias = strings.TrimSpace(alias)
+	if alias == "" || strings.Contains(alias, "/") {
+		return "", "", false
+	}
+	return strings.TrimSpace(teamID), alias, true
+}
+
 func (r *RegistryResolver) loadRegistryCache(domain string) (DomainAuthority, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -376,6 +547,23 @@ func (r *RegistryResolver) storeAddressCache(key string, value *registryAddressC
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.addressCache[key] = cachedValue[*registryAddressCacheValue]{value: value, expiresAt: r.now().Add(ttl)}
+}
+
+func (r *RegistryResolver) loadMemberCache(key string) (*registryTeamMemberCacheValue, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.memberCache[key]
+	if !ok || r.now().After(entry.expiresAt) {
+		delete(r.memberCache, key)
+		return nil, false
+	}
+	return entry.value, true
+}
+
+func (r *RegistryResolver) storeMemberCache(key string, value *registryTeamMemberCacheValue, ttl time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.memberCache[key] = cachedValue[*registryTeamMemberCacheValue]{value: value, expiresAt: r.now().Add(ttl)}
 }
 
 func (r *RegistryResolver) loadKeyCache(didAW string) (*DidKeyResolution, bool) {

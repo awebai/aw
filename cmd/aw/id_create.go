@@ -39,28 +39,29 @@ var (
 	idCreateSkipDNSVerify bool
 	idCreateCmd           = &cobra.Command{
 		Use:   "create",
-		Short: "Create a standalone permanent identity with a DNS-backed address in .aw/",
+		Short: "Create a standalone persistent identity with a DNS-backed address in .aw/",
 		RunE:  runIDCreate,
 	}
 )
 
 func init() {
-	idCreateCmd.Flags().StringVar(&idCreateName, "name", "", "Permanent identity name")
-	idCreateCmd.Flags().StringVar(&idCreateDomain, "domain", "", "Permanent identity domain")
+	idCreateCmd.Flags().StringVar(&idCreateName, "name", "", "Persistent identity name")
+	idCreateCmd.Flags().StringVar(&idCreateDomain, "domain", "", "Persistent identity domain")
 	idCreateCmd.Flags().StringVar(&idCreateRegistryURL, "registry", "", "Registry origin override (default: api.awid.ai)")
 	idCreateCmd.Flags().BoolVar(&idCreateSkipDNSVerify, "skip-dns-verify", false, "Skip the DNS TXT verification prompt and lookup")
 	identityCmd.AddCommand(idCreateCmd)
 }
 
 type idCreateOptions struct {
-	Name          string
-	Domain        string
-	RegistryURL   string
-	SkipDNSVerify bool
-	PromptIn      io.Reader
-	PromptOut     io.Writer
-	TXTResolver   awid.TXTResolver
-	Now           func() time.Time
+	Name                     string
+	Domain                   string
+	RegistryURL              string
+	AllowReservedLocalDomain bool
+	SkipDNSVerify            bool
+	PromptIn                 io.Reader
+	PromptOut                io.Writer
+	TXTResolver              awid.TXTResolver
+	Now                      func() time.Time
 }
 
 type idCreatePlan struct {
@@ -97,10 +98,8 @@ func runIDCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
-	out, err := executeIDCreate(ctx, workingDir, idCreateOptions{
+	out, err := executeIDCreate(workingDir, idCreateOptions{
 		Name:          idCreateName,
 		Domain:        idCreateDomain,
 		RegistryURL:   idCreateRegistryURL,
@@ -116,7 +115,7 @@ func runIDCreate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func executeIDCreate(ctx context.Context, workingDir string, opts idCreateOptions) (idCreateOutput, error) {
+func executeIDCreate(workingDir string, opts idCreateOptions) (idCreateOutput, error) {
 	prepared, err := prepareIDCreatePlan(workingDir, opts)
 	if err != nil {
 		return idCreateOutput{}, err
@@ -126,9 +125,13 @@ func executeIDCreate(ctx context.Context, workingDir string, opts idCreateOption
 	if err := printIDCreateDNSInstructions(plan, opts.PromptOut); err != nil {
 		return idCreateOutput{}, err
 	}
-	if err := confirmAndVerifyIDCreateDNS(ctx, plan, opts); err != nil {
+
+	if err := confirmAndVerifyIDCreateDNS(plan, opts); err != nil {
 		return idCreateOutput{}, err
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	registry, err := newConfiguredRegistryClient(nil, "")
 	if err != nil {
@@ -188,7 +191,7 @@ func prepareIDCreatePlan(workingDir string, opts idCreateOptions) (*preparedIDCr
 	if err != nil {
 		return nil, err
 	}
-	domain, err := normalizeIDCreateDomain(opts.Domain)
+	domain, err := normalizeIDCreateDomain(opts.Domain, opts.AllowReservedLocalDomain)
 	if err != nil {
 		return nil, err
 	}
@@ -209,13 +212,23 @@ func prepareIDCreatePlan(workingDir string, opts idCreateOptions) (*preparedIDCr
 			return nil, fmt.Errorf("invalid --registry: %w", err)
 		}
 	}
+	registryURL := strings.TrimSpace(registry.DefaultRegistryURL)
+	if strings.TrimSpace(opts.RegistryURL) == "" {
+		discoveredRegistryURL, err := discoverIDCreateRegistryURL(domain, opts.TXTResolver)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(discoveredRegistryURL) != "" {
+			registryURL = strings.TrimSpace(discoveredRegistryURL)
+		}
+	}
 
 	now := time.Now
 	if opts.Now != nil {
 		now = opts.Now
 	}
 
-	controllerKey, controllerDID, createdController, err := resolveOrCreateControllerKey(domain, strings.TrimSpace(registry.DefaultRegistryURL), now().UTC().Format(time.RFC3339))
+	controllerKey, controllerDID, createdController, err := resolveOrCreateControllerKey(domain, registryURL, now().UTC().Format(time.RFC3339))
 	if err != nil {
 		return nil, err
 	}
@@ -232,9 +245,9 @@ func prepareIDCreatePlan(workingDir string, opts idCreateOptions) (*preparedIDCr
 		DIDAW:          awid.ComputeStableID(pub),
 		DIDKey:         didKey,
 		ControllerDID:  controllerDID,
-		RegistryURL:    strings.TrimSpace(registry.DefaultRegistryURL),
+		RegistryURL:    registryURL,
 		DNSRecordName:  awid.AWIDTXTName(domain),
-		DNSRecordValue: idCreateDNSRecordValue(controllerDID, strings.TrimSpace(registry.DefaultRegistryURL)),
+		DNSRecordValue: idCreateDNSRecordValue(controllerDID, registryURL),
 		IdentityPath:   identityPath,
 		SigningKeyPath: signingKeyPath,
 		CreatedAt:      now().UTC().Format(time.RFC3339),
@@ -247,7 +260,37 @@ func prepareIDCreatePlan(workingDir string, opts idCreateOptions) (*preparedIDCr
 	}, nil
 }
 
-func confirmAndVerifyIDCreateDNS(ctx context.Context, plan *idCreatePlan, opts idCreateOptions) error {
+func discoverIDCreateRegistryURL(domain string, resolver awid.TXTResolver) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authority, err := awid.VerifyExactDomainAuthority(ctx, resolver, domain)
+	if err != nil {
+		if isIDCreateTXTLookupMiss(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	registryURL := strings.TrimSpace(authority.RegistryURL)
+	if registryURL == "" {
+		return awid.DefaultAWIDRegistryURL, nil
+	}
+	return registryURL, nil
+}
+
+func isIDCreateTXTLookupMiss(err error) bool {
+	if err == nil {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.IsNotFound
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no awid txt record found") || strings.Contains(msg, "no txt records found")
+}
+
+func confirmAndVerifyIDCreateDNS(plan *idCreatePlan, opts idCreateOptions) error {
 	if !plan.NeedsDNSSetup {
 		return nil
 	}
@@ -262,14 +305,22 @@ func confirmAndVerifyIDCreateDNS(ctx context.Context, plan *idCreatePlan, opts i
 	if promptOut == nil {
 		promptOut = os.Stderr
 	}
-	proceed, err := promptYesNoWithIO("Verify this DNS TXT record now?", true, promptIn, promptOut)
-	if err != nil {
-		return err
+	for {
+		proceed, err := promptYesNoWithIO("Verify this DNS TXT record now?", true, promptIn, promptOut)
+		if err != nil {
+			return err
+		}
+		if !proceed {
+			return usageError("DNS verification cancelled; rerun after publishing the TXT record or pass --skip-dns-verify")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		err = verifyIDCreateDomainAuthority(ctx, opts.TXTResolver, plan.Domain, plan.ControllerDID, plan.RegistryURL)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		fmt.Fprintf(promptOut, "%v\n", err)
 	}
-	if !proceed {
-		return usageError("DNS verification cancelled; rerun after publishing the TXT record or pass --skip-dns-verify")
-	}
-	return verifyIDCreateDomainAuthority(ctx, opts.TXTResolver, plan.Domain, plan.ControllerDID, plan.RegistryURL)
 }
 
 func verifyIDCreateDomainAuthority(ctx context.Context, resolver awid.TXTResolver, domain, expectedControllerDID, expectedRegistryURL string) error {
@@ -364,7 +415,21 @@ func ensureStandaloneAddress(
 	plan *idCreatePlan,
 	controllerKey ed25519.PrivateKey,
 ) error {
-	address, _, err := registry.GetNamespaceAddressAt(ctx, plan.RegistryURL, plan.Domain, plan.Name)
+	signingDir := awconfig.WorktreeRootFromIdentityPath(plan.IdentityPath)
+	if strings.TrimSpace(signingDir) == "" {
+		signingDir = filepath.Dir(filepath.Dir(plan.SigningKeyPath))
+	}
+	signingKey, loadErr := loadOptionalWorktreeSigningKey(signingDir)
+	if loadErr != nil {
+		return loadErr
+	}
+	var address *awid.RegistryAddress
+	var err error
+	if signingKey != nil {
+		address, _, err = registry.GetNamespaceAddressAtSigned(ctx, plan.RegistryURL, plan.Domain, plan.Name, signingKey)
+	} else {
+		address, _, err = registry.GetNamespaceAddressAt(ctx, plan.RegistryURL, plan.Domain, plan.Name)
+	}
 	if err == nil {
 		if strings.TrimSpace(address.DIDAW) != plan.DIDAW {
 			return fmt.Errorf("address %s is already assigned to %s", plan.Address, address.DIDAW)
@@ -377,10 +442,14 @@ func ensureStandaloneAddress(
 	if code, ok := registryStatusCode(err); !ok || code != http.StatusNotFound {
 		return err
 	}
-	address, err = registry.RegisterAddressAt(ctx, plan.RegistryURL, plan.Domain, plan.Name, plan.DIDAW, plan.DIDKey, "public", controllerKey)
+	address, err = registry.RegisterAddressAt(ctx, plan.RegistryURL, plan.Domain, plan.Name, plan.DIDAW, plan.DIDKey, "public", controllerKey, "")
 	if err != nil {
 		if code, ok := registryStatusCode(err); ok && code == http.StatusConflict {
-			address, _, err = registry.GetNamespaceAddressAt(ctx, plan.RegistryURL, plan.Domain, plan.Name)
+			if signingKey != nil {
+				address, _, err = registry.GetNamespaceAddressAtSigned(ctx, plan.RegistryURL, plan.Domain, plan.Name, signingKey)
+			} else {
+				address, _, err = registry.GetNamespaceAddressAt(ctx, plan.RegistryURL, plan.Domain, plan.Name)
+			}
 			if err != nil {
 				return err
 			}
@@ -515,13 +584,15 @@ func normalizeIDCreateName(value string) (string, error) {
 	return value, nil
 }
 
-func normalizeIDCreateDomain(value string) (string, error) {
+func normalizeIDCreateDomain(value string, allowReservedLocal bool) (string, error) {
 	value = awconfig.NormalizeDomain(value)
 	switch {
 	case value == "":
 		return "", usageError("--domain is required")
 	case strings.Contains(value, "/"):
 		return "", usageError("--domain must not contain '/'")
+	case value == implicitLocalDomain && allowReservedLocal:
+		return value, nil
 	case !strings.Contains(value, "."):
 		return "", usageError("--domain must be a fully qualified domain name")
 	}

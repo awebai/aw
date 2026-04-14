@@ -9,6 +9,7 @@ import (
 )
 
 var serverFlag string
+var teamFlag string
 var debugFlag bool
 var jsonFlag bool
 
@@ -60,15 +61,11 @@ func init() {
 		&cobra.Group{ID: groupUtility, Title: "Utility"},
 	)
 	initCmd.GroupID = groupWorkspace
-	projectCmd.GroupID = groupWorkspace
-	spawnCmd.GroupID = groupWorkspace
 	resetCmd.GroupID = groupWorkspace
 	workspaceCmd.GroupID = groupWorkspace
 
 	introspectCmd.GroupID = groupIdentity
 	identityCmd.GroupID = groupIdentity
-	identitiesCmd.GroupID = groupIdentity
-	claimHumanCmd.GroupID = groupIdentity
 	mcpConfigCmd.GroupID = groupIdentity
 
 	chatCmd.GroupID = groupNetwork
@@ -96,8 +93,33 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&serverFlag, "server-name", "", "Override the server host or name for this command")
 	rootCmd.PersistentFlags().BoolVar(&debugFlag, "debug", false, "Log background errors to stderr")
 	rootCmd.PersistentFlags().BoolVar(&jsonFlag, "json", false, "Output as JSON")
+	bindTeamSelector(mailCmd)
+	bindTeamSelector(chatCmd)
+	bindTeamSelector(workCmd)
+	bindTeamSelector(taskCmd)
+	bindTeamSelector(workspaceCmd)
+	bindTeamSelector(runCmd)
+	bindTeamSelector(lockCmd)
+	bindTeamSelector(notifyCmd)
+	bindTeamSelector(instructionsCmd)
+	bindTeamSelector(rolesCmd)
+	bindTeamSelector(roleNameCmd)
+	bindTeamSelector(heartbeatCmd)
+	bindTeamSelector(eventsCmd)
+	bindTeamSelector(controlCmd)
+	bindTeamSelector(logCmd)
+	bindTeamSelector(contactsCmd)
+	bindTeamSelector(directoryCmd)
+	bindTeamSelector(introspectCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(upgradeCmd)
+}
+
+func bindTeamSelector(cmd *cobra.Command) {
+	if cmd == nil {
+		return
+	}
+	cmd.PersistentFlags().StringVar(&teamFlag, "team", "", "Override the selected team_id for this command")
 }
 
 func Execute() {

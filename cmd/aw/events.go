@@ -98,11 +98,11 @@ var eventsStreamCmd = &cobra.Command{
 func printEventText(ev *awid.AgentEvent) {
 	switch ev.Type {
 	case awid.AgentEventConnected:
-		fmt.Printf("[connected] agent_id=%s project_id=%s\n", ev.AgentID, ev.ProjectID)
+		fmt.Printf("[connected] agent_id=%s team_id=%s\n", ev.AgentID, ev.TeamID)
 	case awid.AgentEventActionableMail:
 		fmt.Printf(
 			"[actionable_mail] from=%s wake_mode=%s unread=%d message_id=%s subject=%q\n",
-			ev.FromAlias,
+			preferredIdentityDisplayLabel(ev.FromAlias, ev.FromAddress, ev.FromStableID, ev.FromDID, ""),
 			eventTextValue(ev.WakeMode),
 			ev.UnreadCount,
 			ev.MessageID,
@@ -111,7 +111,7 @@ func printEventText(ev *awid.AgentEvent) {
 	case awid.AgentEventActionableChat:
 		fmt.Printf(
 			"[actionable_chat] from=%s wake_mode=%s unread=%d sender_waiting=%t session_id=%s message_id=%s\n",
-			ev.FromAlias,
+			preferredIdentityDisplayLabel(ev.FromAlias, ev.FromAddress, ev.FromStableID, ev.FromDID, ""),
 			eventTextValue(ev.WakeMode),
 			ev.UnreadCount,
 			ev.SenderWaiting,

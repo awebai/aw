@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/awebai/aw/awconfig"
 )
 
 func TestAwLockMutationUnsupportedMessage(t *testing.T) {
@@ -76,7 +74,6 @@ func TestAwLockListMineFiltersByCurrentAlias(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"reservations": []map[string]any{
 					{
-						"project_id":      "proj-1",
 						"resource_key":    "src/mine.go",
 						"holder_agent_id": "11111111-1111-1111-1111-111111111111",
 						"holder_alias":    "alice",
@@ -85,7 +82,6 @@ func TestAwLockListMineFiltersByCurrentAlias(t *testing.T) {
 						"metadata":        map[string]any{},
 					},
 					{
-						"project_id":      "proj-1",
 						"resource_key":    "src/theirs.go",
 						"holder_agent_id": "22222222-2222-2222-2222-222222222222",
 						"holder_alias":    "bob",
@@ -108,15 +104,7 @@ func TestAwLockListMineFiltersByCurrentAlias(t *testing.T) {
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "aw")
 	buildAwBinary(t, ctx, bin)
-	writeWorkspaceBindingForTest(t, tmp, awconfig.WorktreeWorkspace{
-		ServerURL:      server.URL,
-		APIKey:         "aw_sk_test",
-		IdentityID:     "agent-1",
-		IdentityHandle: "alice",
-		NamespaceSlug:  "demo",
-		ProjectSlug:    "demo",
-		WorkspaceID:    "workspace-1",
-	})
+	writeWorkspaceBindingForTest(t, tmp, workspaceBinding(server.URL, "backend:demo", "alice", "workspace-1"))
 
 	run := exec.CommandContext(ctx, bin, "lock", "list", "--mine")
 	run.Env = testCommandEnv(tmp)

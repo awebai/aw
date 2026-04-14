@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -11,320 +16,305 @@ import (
 	"testing"
 	"time"
 
-	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/awid"
 )
 
-func TestAwClaimHuman(t *testing.T) {
+func TestClaimHumanCommandSendsSignedOnboardingRequest(t *testing.T) {
 	t.Parallel()
 
+	pub, priv, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	didKey := awid.ComputeDIDKey(pub)
+	stableID := awid.ComputeStableID(pub)
+
+	var gotBodyBytes []byte
 	var gotBody map[string]any
 	var gotAuth string
-
+	var gotTimestamp string
+	var onboardingURL string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/claim-human":
-			if r.Method != http.MethodPost {
-				t.Fatalf("method=%s", r.Method)
-			}
-			gotAuth = r.Header.Get("Authorization")
-			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/discovery":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":       "verification_sent",
-				"message":      "Check your inbox",
-				"email":        "alice@example.com",
-				"org_id":       "org-1",
-				"org_slug":     "myteam",
-				"project_id":   "proj-1",
-				"project_slug": "default",
+				"onboarding_url": onboardingURL,
+				"aweb_url":       onboardingURL,
+				"registry_url":   "https://api.awid.ai",
+				"version":        "1.7.0",
 			})
-		case "/v1/agents/heartbeat":
-			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/claim-human":
+			gotAuth = strings.TrimSpace(r.Header.Get("Authorization"))
+			gotTimestamp = strings.TrimSpace(r.Header.Get("X-AWEB-Timestamp"))
+			var err error
+			gotBodyBytes, err = io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(gotBodyBytes, &gotBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "verification_sent",
+				"email":  "alice@example.com",
+			})
 		default:
-			t.Fatalf("unexpected path=%s", r.URL.Path)
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 	}))
+	onboardingURL = server.URL
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+	writeStandaloneSelfCustodyIdentity(t, tmp, "alice.aweb.ai/alice-laptop", didKey, stableID, "https://api.awid.ai", priv)
 
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, string(out))
-	}
-
-	writeDefaultWorkspaceBindingForTest(t, tmp, server.URL)
-
-	// JSON output.
-	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com", "--json")
-	run.Env = testCommandEnv(tmp)
+	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com", "--mock-url", server.URL)
+	run.Env = idCreateCommandEnv(tmp)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
 	if err != nil {
-		t.Fatalf("run failed: %v\n%s", err, string(out))
+		t.Fatalf("claim-human failed: %v\n%s", err, string(out))
 	}
 
-	if gotAuth != "Bearer aw_sk_test" {
-		t.Fatalf("auth=%q", gotAuth)
+	if gotBody["username"] != "alice" {
+		t.Fatalf("username=%v", gotBody["username"])
 	}
 	if gotBody["email"] != "alice@example.com" {
 		t.Fatalf("email=%v", gotBody["email"])
 	}
+	if gotBody["did_key"] != didKey {
+		t.Fatalf("did_key=%v want %v", gotBody["did_key"], didKey)
+	}
 
-	var resp map[string]any
-	if err := json.Unmarshal(extractJSON(t, out), &resp); err != nil {
-		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	parts := strings.Fields(gotAuth)
+	if len(parts) != 3 || parts[0] != "DIDKey" {
+		t.Fatalf("Authorization=%q", gotAuth)
 	}
-	if resp["status"] != "verification_sent" {
-		t.Fatalf("status=%v", resp["status"])
+	if parts[1] != didKey {
+		t.Fatalf("auth did=%q want %q", parts[1], didKey)
 	}
-	if resp["org_slug"] != "myteam" {
-		t.Fatalf("org_slug=%v", resp["org_slug"])
+
+	if !verifyCloudDIDPayload(t, pub, http.MethodPost, "/api/v1/claim-human", gotTimestamp, gotBodyBytes, parts[2]) {
+		t.Fatal("signed claim-human payload did not verify")
 	}
-	if resp["email"] != "alice@example.com" {
-		t.Fatalf("email=%v", resp["email"])
+
+	output := string(out)
+	if !strings.Contains(output, "Verification email sent to alice@example.com. Click the link in the email to activate your dashboard login.") {
+		t.Fatalf("output=%q", output)
 	}
 }
 
-func TestAwClaimHumanNormalizesAPIServerURL(t *testing.T) {
+func TestClaimHumanCommandFallsBackWithoutIdentityFile(t *testing.T) {
 	t.Parallel()
 
-	var seenClaim bool
+	pub, priv, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	didKey := awid.ComputeDIDKey(pub)
 
+	var gotBodyBytes []byte
+	var gotBody map[string]any
+	var gotAuth string
+	var gotTimestamp string
+	var onboardingURL string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/claim-human":
-			seenClaim = true
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/discovery":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":   "verification_sent",
-				"message":  "Check your inbox",
-				"email":    "alice@example.com",
-				"org_id":   "org-1",
-				"org_slug": "myteam",
+				"onboarding_url": onboardingURL,
+				"aweb_url":       onboardingURL,
+				"registry_url":   "https://api.awid.ai",
+				"version":        "1.7.0",
 			})
-		case "/api/v1/namespaces":
-			// resolveCloudClient should not probe or list namespaces here; fail loudly if it does.
-			t.Fatalf("unexpected namespace request: %s", r.URL.Path)
-		case "/api/v1/claim-human/":
-			t.Fatalf("unexpected claim-human path with trailing slash: %s", r.URL.Path)
-		case "/api/api/v1/claim-human":
-			t.Fatalf("claim-human doubled /api prefix: %s", r.URL.Path)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/claim-human":
+			gotAuth = strings.TrimSpace(r.Header.Get("Authorization"))
+			gotTimestamp = strings.TrimSpace(r.Header.Get("X-AWEB-Timestamp"))
+			var err error
+			gotBodyBytes, err = io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(gotBodyBytes, &gotBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "verification_sent",
+				"email":  "alice@example.com",
+			})
 		default:
-			t.Fatalf("unexpected path=%s", r.URL.Path)
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 	}))
+	onboardingURL = server.URL
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "aw")
-
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
+	buildAwBinary(t, ctx, bin)
+	if err := awid.SaveSigningKey(filepath.Join(tmp, ".aw", "signing.key"), priv); err != nil {
+		t.Fatalf("save signing key: %v", err)
 	}
-	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, string(out))
+	writeWorkspaceBindingForTest(t, tmp, workspaceBinding(server.URL, "default:alice.aweb.ai", "alice-laptop", "workspace-1"))
+	if _, err := os.Stat(filepath.Join(tmp, ".aw", "identity.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("identity.yaml should be absent, err=%v", err)
 	}
 
-	writeWorkspaceBindingForTest(t, tmp, awconfig.WorktreeWorkspace{
-		ServerURL: server.URL + "/api",
-		APIKey:    "aw_sk_test",
-	})
-
-	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com", "--json")
-	run.Env = testCommandEnv(tmp)
+	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com", "--mock-url", server.URL)
+	run.Env = idCreateCommandEnv(tmp)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
 	if err != nil {
-		t.Fatalf("run failed: %v\n%s", err, string(out))
+		t.Fatalf("claim-human failed: %v\n%s", err, string(out))
 	}
 
-	if !seenClaim {
-		t.Fatalf("expected claim-human request to hit cloud root path")
+	if gotBody["username"] != "alice" {
+		t.Fatalf("username=%v", gotBody["username"])
+	}
+	if gotBody["email"] != "alice@example.com" {
+		t.Fatalf("email=%v", gotBody["email"])
+	}
+	if gotBody["did_key"] != didKey {
+		t.Fatalf("did_key=%v want %v", gotBody["did_key"], didKey)
 	}
 
-	var resp map[string]any
-	if err := json.Unmarshal(extractJSON(t, out), &resp); err != nil {
-		t.Fatalf("invalid json: %v\n%s", err, string(out))
+	parts := strings.Fields(gotAuth)
+	if len(parts) != 3 || parts[0] != "DIDKey" {
+		t.Fatalf("Authorization=%q", gotAuth)
 	}
-	if resp["status"] != "verification_sent" {
-		t.Fatalf("status=%v", resp["status"])
+	if parts[1] != didKey {
+		t.Fatalf("auth did=%q want %q", parts[1], didKey)
+	}
+
+	if !verifyCloudDIDPayload(t, pub, http.MethodPost, "/api/v1/claim-human", gotTimestamp, gotBodyBytes, parts[2]) {
+		t.Fatal("signed claim-human payload did not verify")
+	}
+
+	output := string(out)
+	if !strings.Contains(output, "Verification email sent to alice@example.com. Click the link in the email to activate your dashboard login.") {
+		t.Fatalf("output=%q", output)
 	}
 }
 
-func TestAwClaimHumanTextOutput(t *testing.T) {
+func TestClaimHumanCommandUsesFullDomainForBYODIdentity(t *testing.T) {
 	t.Parallel()
 
+	pub, priv, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	didKey := awid.ComputeDIDKey(pub)
+	stableID := awid.ComputeStableID(pub)
+
+	var gotBody map[string]any
+	var onboardingURL string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/claim-human":
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/discovery":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":   "verification_sent",
-				"message":  "Check your inbox",
-				"email":    "alice@example.com",
-				"org_id":   "org-1",
-				"org_slug": "myteam",
+				"onboarding_url": onboardingURL,
+				"aweb_url":       onboardingURL,
+				"registry_url":   "https://api.awid.ai",
+				"version":        "1.7.0",
 			})
-		case "/v1/agents/heartbeat":
-			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/claim-human":
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "verification_sent",
+				"email":  "alice@example.com",
+			})
 		default:
-			t.Fatalf("unexpected path=%s", r.URL.Path)
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 	}))
+	onboardingURL = server.URL
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+	writeStandaloneSelfCustodyIdentity(t, tmp, "acme.com/alice-laptop", didKey, stableID, "https://api.awid.ai", priv)
 
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, string(out))
-	}
-
-	writeDefaultWorkspaceBindingForTest(t, tmp, server.URL)
-
-	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com")
-	run.Env = testCommandEnv(tmp)
+	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com", "--mock-url", server.URL)
+	run.Env = idCreateCommandEnv(tmp)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
 	if err != nil {
-		t.Fatalf("run failed: %v\n%s", err, string(out))
+		t.Fatalf("claim-human failed: %v\n%s", err, string(out))
 	}
 
-	output := strings.TrimSpace(string(out))
-	want := "Verification email sent to alice@example.com. Check your inbox to complete the claim."
-	if output != want {
-		t.Fatalf("output=%q, want %q", output, want)
+	if gotBody["username"] != "acme.com" {
+		t.Fatalf("username=%v", gotBody["username"])
 	}
 }
 
-func TestAwClaimHumanAttachedStatus(t *testing.T) {
+func TestClaimHumanCommandAllowsUsernameOverride(t *testing.T) {
 	t.Parallel()
 
+	pub, priv, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	didKey := awid.ComputeDIDKey(pub)
+	stableID := awid.ComputeStableID(pub)
+
+	var gotBody map[string]any
+	var onboardingURL string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/claim-human":
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/discovery":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":   "attached",
-				"message":  "Human attached",
-				"email":    "alice@example.com",
-				"org_slug": "myteam",
+				"onboarding_url": onboardingURL,
+				"aweb_url":       onboardingURL,
+				"registry_url":   "https://api.awid.ai",
+				"version":        "1.7.0",
 			})
-		case "/v1/agents/heartbeat":
-			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/claim-human":
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "verification_sent",
+				"email":  "alice@example.com",
+			})
 		default:
-			t.Fatalf("unexpected path=%s", r.URL.Path)
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 	}))
+	onboardingURL = server.URL
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+	writeStandaloneSelfCustodyIdentity(t, tmp, "acme.com/alice-laptop", didKey, stableID, "https://api.awid.ai", priv)
 
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, string(out))
-	}
-
-	writeDefaultWorkspaceBindingForTest(t, tmp, server.URL)
-
-	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com")
-	run.Env = testCommandEnv(tmp)
+	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com", "--username", "alice", "--mock-url", server.URL)
+	run.Env = idCreateCommandEnv(tmp)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
 	if err != nil {
-		t.Fatalf("run failed: %v\n%s", err, string(out))
+		t.Fatalf("claim-human failed: %v\n%s", err, string(out))
 	}
 
-	output := strings.TrimSpace(string(out))
-	want := "Human account attached to myteam. Dashboard access is now available."
-	if output != want {
-		t.Fatalf("output=%q, want %q", output, want)
+	if gotBody["username"] != "alice" {
+		t.Fatalf("username=%v", gotBody["username"])
 	}
 }
 
-func TestAwClaimHumanAlreadyAttachedStatus(t *testing.T) {
-	t.Parallel()
-
-	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/claim-human":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":   "already_attached",
-				"message":  "Already attached",
-				"org_slug": "myteam",
-			})
-		case "/v1/agents/heartbeat":
-			w.WriteHeader(http.StatusOK)
-		default:
-			t.Fatalf("unexpected path=%s", r.URL.Path)
-		}
-	}))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "aw")
-
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, string(out))
-	}
-
-	writeDefaultWorkspaceBindingForTest(t, tmp, server.URL)
-
-	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com")
-	run.Env = testCommandEnv(tmp)
-	run.Dir = tmp
-	out, err := run.CombinedOutput()
-	if err != nil {
-		t.Fatalf("run failed: %v\n%s", err, string(out))
-	}
-
-	output := strings.TrimSpace(string(out))
-	want := "Human account is already attached to myteam."
-	if output != want {
-		t.Fatalf("output=%q, want %q", output, want)
-	}
-}
-
-func TestAwClaimHumanMissingEmail(t *testing.T) {
+func TestClaimHumanCommandRequiresIdentity(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -332,25 +322,176 @@ func TestAwClaimHumanMissingEmail(t *testing.T) {
 
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
 
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/aw")
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	build.Dir = filepath.Clean(filepath.Join(wd, "..", ".."))
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, string(out))
-	}
-	run := exec.CommandContext(ctx, bin, "claim-human")
-	run.Env = testCommandEnv(tmp)
+	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com", "--mock-url", "http://127.0.0.1:1")
+	run.Env = idCreateCommandEnv(tmp)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
 	if err == nil {
-		t.Fatalf("expected error, got success:\n%s", string(out))
+		t.Fatalf("expected claim-human to fail without identity:\n%s", string(out))
 	}
-	if !strings.Contains(string(out), "--email") {
-		t.Fatalf("expected '--email' in error output:\n%s", string(out))
+	if !strings.Contains(string(out), "No identity found. Run aw init first to create an agent, then claim-human to attach an email.") {
+		t.Fatalf("output=%q", string(out))
 	}
+}
+
+func TestClaimHumanCommandRequiresEmailFlag(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+
+	run := exec.CommandContext(ctx, bin, "claim-human", "--mock-url", "http://127.0.0.1:1")
+	run.Env = idCreateCommandEnv(tmp)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected claim-human to fail without --email:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "missing required flag: --email") {
+		t.Fatalf("output=%q", string(out))
+	}
+}
+
+func TestClaimHumanCommandMapsNotFound(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	didKey := awid.ComputeDIDKey(pub)
+	stableID := awid.ComputeStableID(pub)
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"detail":"username not found"}`)
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+	writeStandaloneSelfCustodyIdentity(t, tmp, "alice.aweb.ai/alice-laptop", didKey, stableID, "https://api.awid.ai", priv)
+
+	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com", "--mock-url", server.URL)
+	run.Env = idCreateCommandEnv(tmp)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected claim-human to fail on 404:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "Username not registered. Run aw init first.") {
+		t.Fatalf("output=%q", string(out))
+	}
+}
+
+func TestClaimHumanCommandMapsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	didKey := awid.ComputeDIDKey(pub)
+	stableID := awid.ComputeStableID(pub)
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"detail":"did:key mismatch"}`)
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+	writeStandaloneSelfCustodyIdentity(t, tmp, "alice.aweb.ai/alice-laptop", didKey, stableID, "https://api.awid.ai", priv)
+
+	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com", "--mock-url", server.URL)
+	run.Env = idCreateCommandEnv(tmp)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected claim-human to fail on 401:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "Your signing key does not match the registered agent. Check .aw/signing.key is intact.") {
+		t.Fatalf("output=%q", string(out))
+	}
+}
+
+func TestClaimHumanCommandMapsConflictVerbatim(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	didKey := awid.ComputeDIDKey(pub)
+	stableID := awid.ComputeStableID(pub)
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"detail":"The email alice@example.com is already associated with another account."}`)
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+	writeStandaloneSelfCustodyIdentity(t, tmp, "alice.aweb.ai/alice-laptop", didKey, stableID, "https://api.awid.ai", priv)
+
+	run := exec.CommandContext(ctx, bin, "claim-human", "--email", "alice@example.com", "--mock-url", server.URL)
+	run.Env = idCreateCommandEnv(tmp)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected claim-human to fail on conflict:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "The email alice@example.com is already associated with another account.") {
+		t.Fatalf("output=%q", string(out))
+	}
+}
+
+func TestUsernameFromMemberAddressUsesFullDomainForBYOD(t *testing.T) {
+	t.Parallel()
+
+	username, err := usernameFromMemberAddress("acme.com/alice")
+	if err != nil {
+		t.Fatalf("usernameFromMemberAddress: %v", err)
+	}
+	if username != "acme.com" {
+		t.Fatalf("username=%q", username)
+	}
+}
+
+func verifyCloudDIDPayload(t *testing.T, pubKey ed25519.PublicKey, method, path, timestamp string, body []byte, signature string) bool {
+	t.Helper()
+
+	sum := sha256.Sum256(body)
+	payload, err := json.Marshal(map[string]string{
+		"body_sha256": hex.EncodeToString(sum[:]),
+		"method":      strings.ToUpper(strings.TrimSpace(method)),
+		"path":        path,
+		"timestamp":   timestamp,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sig, err := base64.RawStdEncoding.DecodeString(signature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ed25519.Verify(pubKey, payload, sig)
 }

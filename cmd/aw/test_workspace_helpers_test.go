@@ -2,8 +2,10 @@ package main
 
 import (
 	"crypto/ed25519"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/awebai/aw/awconfig"
@@ -18,24 +20,49 @@ func testCommandEnv(home string) []string {
 	)
 }
 
-func testCommandEnvWithAuth(home, baseURL, apiKey string) []string {
-	env := testCommandEnv(home)
-	if baseURL != "" {
-		env = append(env, "AWEB_URL="+baseURL)
-	}
-	if apiKey != "" {
-		env = append(env, "AWEB_API_KEY="+apiKey)
-	}
-	return env
-}
-
 func writeWorkspaceBindingForTest(t *testing.T, workingDir string, state awconfig.WorktreeWorkspace) string {
 	t.Helper()
+	activeMembership := state.ActiveMembership()
+	if strings.TrimSpace(state.AwebURL) != "" && activeMembership != nil {
+		certPath := awconfig.TeamCertificatePath(workingDir, activeMembership.TeamID)
+		signingKeyPath := awconfig.WorktreeSigningKeyPath(workingDir)
+		if _, err := os.Stat(certPath); os.IsNotExist(err) {
+			fixture := testSelectionFixture{
+				TeamID:      activeMembership.TeamID,
+				Alias:       activeMembership.Alias,
+				WorkspaceID: activeMembership.WorkspaceID,
+				CreatedAt:   "2026-04-04T00:00:00Z",
+			}
+			if signingKey, err := awid.LoadSigningKey(signingKeyPath); err == nil {
+				fixture.SigningKey = signingKey
+			}
+			writeTeamCertificateWorkspaceForTest(t, workingDir, state, &fixture)
+		} else if _, err := os.Stat(signingKeyPath); os.IsNotExist(err) {
+			writeTeamCertificateWorkspaceForTest(t, workingDir, state, nil)
+		}
+	}
 	path := filepath.Join(workingDir, awconfig.DefaultWorktreeWorkspaceRelativePath())
 	if err := awconfig.SaveWorktreeWorkspaceTo(path, &state); err != nil {
 		t.Fatalf("write workspace binding: %v", err)
 	}
 	return path
+}
+
+func writeTeamStateForTest(t *testing.T, workingDir string, state awconfig.TeamState) string {
+	t.Helper()
+	if err := awconfig.SaveTeamState(workingDir, &state); err != nil {
+		t.Fatalf("write team state: %v", err)
+	}
+	return awconfig.TeamStatePath(workingDir)
+}
+
+func defaultTeamState() awconfig.TeamState {
+	return teamStateBinding("backend:demo", "alice")
+}
+
+func writeDefaultTeamStateForTest(t *testing.T, workingDir string) string {
+	t.Helper()
+	return writeTeamStateForTest(t, workingDir, defaultTeamState())
 }
 
 func writeContextForTest(t *testing.T, workingDir string, ctx awconfig.WorktreeContext) string {
@@ -57,15 +84,7 @@ func writeIdentityForTest(t *testing.T, workingDir string, state awconfig.Worktr
 }
 
 func defaultWorkspaceBinding(serverURL string) awconfig.WorktreeWorkspace {
-	return awconfig.WorktreeWorkspace{
-		ServerURL:      serverURL,
-		APIKey:         "aw_sk_test",
-		IdentityID:     "agent-1",
-		IdentityHandle: "alice",
-		NamespaceSlug:  "demo",
-		WorkspaceID:    "workspace-1",
-		ProjectSlug:    "demo",
-	}
+	return workspaceBinding(serverURL, "backend:demo", "alice", "workspace-1")
 }
 
 func writeDefaultWorkspaceBindingForTest(t *testing.T, workingDir, serverURL string) string {
@@ -73,39 +92,78 @@ func writeDefaultWorkspaceBindingForTest(t *testing.T, workingDir, serverURL str
 	return writeWorkspaceBindingForTest(t, workingDir, defaultWorkspaceBinding(serverURL))
 }
 
+func workspaceBinding(serverURL, teamID, alias, workspaceID string) awconfig.WorktreeWorkspace {
+	teamID = resolvedTeamIDForTest(teamID)
+	return awconfig.WorktreeWorkspace{
+		AwebURL:    strings.TrimSpace(serverURL),
+		ActiveTeam: teamID,
+		Memberships: []awconfig.WorktreeMembership{{
+			TeamID:      teamID,
+			Alias:       strings.TrimSpace(alias),
+			WorkspaceID: strings.TrimSpace(workspaceID),
+			CertPath:    awconfig.TeamCertificateRelativePath(teamID),
+			JoinedAt:    "2026-04-04T00:00:00Z",
+		}},
+	}
+}
+
+func teamStateBinding(teamID, alias string) awconfig.TeamState {
+	teamID = resolvedTeamIDForTest(teamID)
+	return awconfig.TeamState{
+		ActiveTeam: teamID,
+		Memberships: []awconfig.TeamMembership{{
+			TeamID:   teamID,
+			Alias:    strings.TrimSpace(alias),
+			CertPath: awconfig.TeamCertificateRelativePath(teamID),
+			JoinedAt: "2026-04-04T00:00:00Z",
+		}},
+	}
+}
+
+func activeMembershipForTest(t *testing.T, state *awconfig.WorktreeWorkspace) *awconfig.WorktreeMembership {
+	t.Helper()
+	if state == nil {
+		t.Fatal("workspace state is nil")
+	}
+	activeMembership := state.ActiveMembership()
+	if activeMembership == nil {
+		t.Fatal("workspace missing active membership")
+	}
+	return activeMembership
+}
+
 type testSelectionFixture struct {
-	ServerURL      string
-	APIKey         string
-	IdentityID     string
-	IdentityHandle string
-	NamespaceSlug  string
-	ProjectSlug    string
-	WorkspaceID    string
-	DID            string
-	StableID       string
-	Address        string
-	Custody        string
-	Lifetime       string
-	SigningKey     ed25519.PrivateKey
-	CreatedAt      string
+	AwebURL     string
+	TeamID      string
+	Alias       string
+	WorkspaceID string
+	DID         string
+	StableID    string
+	Address     string
+	Custody     string
+	Lifetime    string
+	SigningKey  ed25519.PrivateKey
+	CreatedAt   string
 }
 
 func writeSelectionFixtureForTest(t *testing.T, workingDir string, fixture testSelectionFixture) {
 	t.Helper()
 	workspace := awconfig.WorktreeWorkspace{
-		ServerURL:      fixture.ServerURL,
-		APIKey:         fixture.APIKey,
-		IdentityID:     fixture.IdentityID,
-		IdentityHandle: fixture.IdentityHandle,
-		NamespaceSlug:  fixture.NamespaceSlug,
-		ProjectSlug:    fixture.ProjectSlug,
-		WorkspaceID:    fixture.WorkspaceID,
+		AwebURL:    fixture.AwebURL,
+		ActiveTeam: resolvedTeamIDForTest(fixture.TeamID),
+		Memberships: []awconfig.WorktreeMembership{{
+			TeamID:      resolvedTeamIDForTest(fixture.TeamID),
+			Alias:       fixture.Alias,
+			WorkspaceID: fixture.WorkspaceID,
+			CertPath:    awconfig.TeamCertificateRelativePath(resolvedTeamIDForTest(fixture.TeamID)),
+			JoinedAt:    fixture.CreatedAt,
+		}},
 	}
-	if workspace.WorkspaceID == "" {
-		workspace.WorkspaceID = fixture.IdentityID
-	}
-	if workspace.ProjectSlug == "" {
-		workspace.ProjectSlug = fixture.NamespaceSlug
+	writeTeamCertificateWorkspaceForTest(t, workingDir, workspace, &fixture)
+	if fixture.SigningKey != nil {
+		if err := awid.SaveSigningKey(awconfig.WorktreeSigningKeyPath(workingDir), fixture.SigningKey); err != nil {
+			t.Fatalf("write signing key: %v", err)
+		}
 	}
 	writeWorkspaceBindingForTest(t, workingDir, workspace)
 
@@ -126,10 +184,112 @@ func writeSelectionFixtureForTest(t *testing.T, workingDir string, fixture testS
 		CreatedAt: createdAt,
 	})
 
-	if fixture.SigningKey != nil {
-		if err := awid.SaveSigningKey(awconfig.WorktreeSigningKeyPath(workingDir), fixture.SigningKey); err != nil {
+}
+
+func writeTeamCertificateWorkspaceForTest(t *testing.T, workingDir string, workspace awconfig.WorktreeWorkspace, fixture *testSelectionFixture) {
+	t.Helper()
+
+	activeMembership := workspace.ActiveMembership()
+	if activeMembership == nil {
+		t.Fatal("workspace missing active membership")
+	}
+
+	alias := strings.TrimSpace(activeMembership.Alias)
+	if alias == "" {
+		alias = "alice"
+	}
+	teamID := resolvedTeamIDForTest(strings.TrimSpace(activeMembership.TeamID))
+	teamDomain, _, err := awid.ParseTeamID(teamID)
+	if err != nil {
+		t.Fatalf("parse team_id %q: %v", teamID, err)
+	}
+	memberAddress := deriveIdentityAddress(teamDomain, alias)
+	if fixture != nil && strings.TrimSpace(fixture.Address) != "" {
+		memberAddress = strings.TrimSpace(fixture.Address)
+	}
+	lifetime := awid.LifetimePersistent
+	if fixture != nil && strings.TrimSpace(fixture.Lifetime) != "" {
+		lifetime = strings.TrimSpace(fixture.Lifetime)
+	}
+
+	_, teamKey, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("generate team keypair: %v", err)
+	}
+
+	var memberKey ed25519.PrivateKey
+	memberDID := ""
+	memberStableID := ""
+	if fixture != nil && fixture.SigningKey != nil {
+		memberKey = fixture.SigningKey
+		memberDID = strings.TrimSpace(fixture.DID)
+		if memberDID == "" {
+			memberDID = awid.ComputeDIDKey(memberKey.Public().(ed25519.PublicKey))
+		}
+		memberStableID = strings.TrimSpace(fixture.StableID)
+		if memberStableID == "" && lifetime == awid.LifetimePersistent {
+			memberStableID = awid.ComputeStableID(memberKey.Public().(ed25519.PublicKey))
+		}
+	} else {
+		memberPub, generatedKey, err := awid.GenerateKeypair()
+		if err != nil {
+			t.Fatalf("generate member keypair: %v", err)
+		}
+		memberKey = generatedKey
+		memberDID = awid.ComputeDIDKey(memberPub)
+		if lifetime == awid.LifetimePersistent {
+			memberStableID = awid.ComputeStableID(memberPub)
+		}
+	}
+
+	cert, err := awid.SignTeamCertificate(teamKey, awid.TeamCertificateFields{
+		Team:          teamID,
+		MemberDIDKey:  memberDID,
+		MemberDIDAW:   memberStableID,
+		MemberAddress: memberAddress,
+		Alias:         alias,
+		Lifetime:      lifetime,
+	})
+	if err != nil {
+		t.Fatalf("sign team certificate: %v", err)
+	}
+	if _, err := awconfig.SaveTeamCertificateForTeam(workingDir, teamID, cert); err != nil {
+		t.Fatalf("write team certificate: %v", err)
+	}
+	if fixture == nil || fixture.SigningKey == nil {
+		if err := awid.SaveSigningKey(awconfig.WorktreeSigningKeyPath(workingDir), memberKey); err != nil {
 			t.Fatalf("write signing key: %v", err)
 		}
+	}
+
+	if fixture == nil {
+		if err := awconfig.SaveWorktreeIdentityTo(filepath.Join(workingDir, awconfig.DefaultWorktreeIdentityRelativePath()), &awconfig.WorktreeIdentity{
+			DID:       memberDID,
+			StableID:  memberStableID,
+			Address:   memberAddress,
+			Custody:   awid.CustodySelf,
+			Lifetime:  lifetime,
+			CreatedAt: "2026-04-04T00:00:00Z",
+		}); err != nil {
+			t.Fatalf("write worktree identity: %v", err)
+		}
+	}
+}
+
+func resolvedTeamIDForTest(teamID string) string {
+	if strings.TrimSpace(teamID) != "" {
+		return strings.TrimSpace(teamID)
+	}
+	return "backend:demo"
+}
+
+func requireCertificateAuthForTest(t *testing.T, r *http.Request) {
+	t.Helper()
+	if !strings.HasPrefix(strings.TrimSpace(r.Header.Get("Authorization")), "DIDKey ") {
+		t.Fatalf("auth=%q", r.Header.Get("Authorization"))
+	}
+	if strings.TrimSpace(r.Header.Get("X-AWID-Team-Certificate")) == "" {
+		t.Fatal("missing X-AWID-Team-Certificate header")
 	}
 }
 

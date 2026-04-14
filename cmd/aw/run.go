@@ -64,9 +64,9 @@ var runCmd = &cobra.Command{
 	Long: `Start the requested AI coding agent in this directory.
 
 In a TTY, if this directory is not initialized yet, aw run can guide you
-through new-project creation or existing-project init before starting the
-provider. The explicit bootstrap commands remain available for scripts and
-expert use: aw project create, aw init, and aw spawn accept-invite.
+through supported onboarding before starting the provider. The explicit
+bootstrap path is aw init, backed by guided onboarding, hosted signup,
+or a team certificate already present in .aw/.
 
 Current implementation includes:
   - repeated provider invocations (currently Claude and Codex)
@@ -155,9 +155,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	repoSlug := runDetectRepoSlug(workingDir)
-	statusIdentity := awrun.StatusIdentity(providerName, sel.NamespaceSlug, repoSlug, sel.IdentityHandle)
+	statusIdentity := awrun.StatusIdentity(providerName, sel.Domain, repoSlug, sel.Alias)
 	claimedTaskRef := ""
-	if taskRef, taskErr := runResolveClaimedTaskRef(cmd.Context(), client, sel.IdentityID); taskErr == nil {
+	if taskRef, taskErr := runResolveClaimedTaskRef(cmd.Context(), client, sel.WorkspaceID); taskErr == nil {
 		claimedTaskRef = taskRef
 	}
 
@@ -169,7 +169,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	var lastBuildOptions awrun.BuildOptions
 	loop.EventBus = runNewEventBus(client)
 	loop.Control = screen
-	loop.Dispatch = newRunDispatcher(settings, newRunWakeValidator(client, sel.IdentityHandle))
+	loop.Dispatch = newRunDispatcher(settings, newRunWakeValidator(client, sel.Alias))
 	loop.StatusIdentity = statusIdentity
 	loop.OnSessionID = func(sessionID string) {
 		lastSessionID = strings.TrimSpace(sessionID)
@@ -446,7 +446,7 @@ func resolveRunClientForDir(cmd *cobra.Command, workingDir string, interactive b
 	}
 	if state == runWorkspaceStateMissing {
 		if !interactive {
-			return nil, nil, nil, usageError("current directory is not initialized for aw; run `aw project create`, `aw init`, or `aw spawn accept-invite`, or rerun in a TTY for guided onboarding")
+			return nil, nil, nil, usageError("current directory is not initialized for aw; run `aw init`, `aw id team accept-invite`, or rerun in a TTY for guided onboarding")
 		}
 		proceed, promptErr := promptYesNoWithIO(
 			"This directory is not initialized as an aweb workspace. Initialize now?",
@@ -458,7 +458,7 @@ func resolveRunClientForDir(cmd *cobra.Command, workingDir string, interactive b
 			return nil, nil, nil, promptErr
 		}
 		if !proceed {
-			return nil, nil, nil, usageError("current directory is not initialized for aw; run `aw project create`, `aw init`, or `aw spawn accept-invite`")
+			return nil, nil, nil, usageError("current directory is not initialized for aw; run `aw init` or `aw id team accept-invite`")
 		}
 
 		onboarding, onboardingErr := guidedOnboardingWizard(guidedOnboardingRequest{
@@ -468,8 +468,6 @@ func resolveRunClientForDir(cmd *cobra.Command, workingDir string, interactive b
 			ServerName:         serverFlag,
 			HumanName:          resolveHumanName(),
 			AgentType:          resolveAgentType(),
-			ProjectSlug:        sanitizeSlug(filepath.Base(workingDir)),
-			AuthToken:          strings.TrimSpace(os.Getenv("AWEB_API_KEY")),
 			AskPostCreateSetup: true,
 		})
 		if onboardingErr != nil {

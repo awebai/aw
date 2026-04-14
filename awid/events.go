@@ -3,6 +3,8 @@ package awid
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,11 +34,14 @@ type AgentEvent struct {
 	Type          AgentEventType  `json:"type"`
 	Raw           json.RawMessage `json:"raw,omitempty"`
 	AgentID       string          `json:"agent_id,omitempty"`
-	ProjectID     string          `json:"project_id,omitempty"`
+	TeamID        string          `json:"team_id,omitempty"`
 	WakeMode      string          `json:"wake_mode,omitempty"`
 	Channel       string          `json:"channel,omitempty"`
 	MessageID     string          `json:"message_id,omitempty"`
 	FromAlias     string          `json:"from_alias,omitempty"`
+	FromStableID  string          `json:"from_stable_id,omitempty"`
+	FromDID       string          `json:"from_did,omitempty"`
+	FromAddress   string          `json:"from_address,omitempty"`
 	SessionID     string          `json:"session_id,omitempty"`
 	Subject       string          `json:"subject,omitempty"`
 	UnreadCount   int             `json:"unread_count,omitempty"`
@@ -101,7 +106,7 @@ func (s *AgentEventStream) Next(_ context.Context) (*AgentEvent, error) {
 	}
 }
 
-// EventStream opens GET /v1/events/stream using Bearer auth when configured.
+// EventStream opens GET /v1/events/stream using the active client auth.
 // deadline is sent as an ISO8601/RFC3339 timestamp because the server expects an absolute time.
 func (c *Client) EventStream(ctx context.Context, deadline time.Time) (*AgentEventStream, error) {
 	path := "/v1/events/stream?deadline=" + urlQueryEscape(deadline.UTC().Format(time.RFC3339))
@@ -112,8 +117,22 @@ func (c *Client) EventStream(ctx context.Context, deadline time.Time) (*AgentEve
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.teamCertHeader != "" && c.signingKey != nil {
+		timestamp := time.Now().UTC().Format(time.RFC3339)
+		sigPayload := certAuthSignPayload(c.teamID, timestamp, nil)
+		sig := ed25519.Sign(c.signingKey, sigPayload)
+		req.Header.Set("Authorization", fmt.Sprintf("DIDKey %s %s", c.did, base64.RawStdEncoding.EncodeToString(sig)))
+		req.Header.Set("X-AWEB-Timestamp", timestamp)
+		req.Header.Set("X-AWID-Team-Certificate", c.teamCertHeader)
+	} else if c.signingKey != nil {
+		timestamp := time.Now().UTC().Format(time.RFC3339)
+		signPayload := identityAuthSignPayload(c.stableID, timestamp, nil)
+		sig := ed25519.Sign(c.signingKey, signPayload)
+		req.Header.Set("Authorization", fmt.Sprintf("DIDKey %s %s", c.did, base64.RawStdEncoding.EncodeToString(sig)))
+		req.Header.Set("X-AWEB-Timestamp", timestamp)
+		if c.stableID != "" {
+			req.Header.Set("X-AWEB-DID-AW", c.stableID)
+		}
 	}
 
 	resp, err := c.sseClient.Do(req)
@@ -143,46 +162,55 @@ func parseAgentEvent(eventName, data string) (AgentEvent, bool, error) {
 	switch AgentEventType(eventName) {
 	case AgentEventConnected:
 		var payload struct {
-			AgentID   string `json:"agent_id"`
-			ProjectID string `json:"project_id"`
+			AgentID string `json:"agent_id"`
+			TeamID  string `json:"team_id"`
 		}
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			return AgentEvent{}, false, fmt.Errorf("parse connected event: %w", err)
 		}
 		return AgentEvent{
-			Type:      AgentEventConnected,
-			Raw:       raw,
-			AgentID:   payload.AgentID,
-			ProjectID: payload.ProjectID,
+			Type:    AgentEventConnected,
+			Raw:     raw,
+			AgentID: payload.AgentID,
+			TeamID:  payload.TeamID,
 		}, true, nil
 
 	case AgentEventActionableMail:
 		var payload struct {
-			MessageID   string `json:"message_id"`
-			FromAlias   string `json:"from_alias"`
-			Subject     string `json:"subject"`
-			WakeMode    string `json:"wake_mode"`
-			Channel     string `json:"channel"`
-			UnreadCount int    `json:"unread_count"`
+			MessageID    string `json:"message_id"`
+			FromAlias    string `json:"from_alias"`
+			FromStableID string `json:"from_stable_id"`
+			FromDID      string `json:"from_did"`
+			FromAddress  string `json:"from_address"`
+			Subject      string `json:"subject"`
+			WakeMode     string `json:"wake_mode"`
+			Channel      string `json:"channel"`
+			UnreadCount  int    `json:"unread_count"`
 		}
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			return AgentEvent{}, false, fmt.Errorf("parse actionable_mail event: %w", err)
 		}
 		return AgentEvent{
-			Type:        AgentEventActionableMail,
-			Raw:         raw,
-			WakeMode:    payload.WakeMode,
-			Channel:     coalesceChannel(payload.Channel, AgentEventActionableMail),
-			MessageID:   payload.MessageID,
-			FromAlias:   payload.FromAlias,
-			Subject:     payload.Subject,
-			UnreadCount: payload.UnreadCount,
+			Type:         AgentEventActionableMail,
+			Raw:          raw,
+			WakeMode:     payload.WakeMode,
+			Channel:      coalesceChannel(payload.Channel, AgentEventActionableMail),
+			MessageID:    payload.MessageID,
+			FromAlias:    payload.FromAlias,
+			FromStableID: payload.FromStableID,
+			FromDID:      payload.FromDID,
+			FromAddress:  payload.FromAddress,
+			Subject:      payload.Subject,
+			UnreadCount:  payload.UnreadCount,
 		}, true, nil
 
 	case AgentEventActionableChat:
 		var payload struct {
 			MessageID     string `json:"message_id"`
 			FromAlias     string `json:"from_alias"`
+			FromStableID  string `json:"from_stable_id"`
+			FromDID       string `json:"from_did"`
+			FromAddress   string `json:"from_address"`
 			SessionID     string `json:"session_id"`
 			WakeMode      string `json:"wake_mode"`
 			Channel       string `json:"channel"`
@@ -199,6 +227,9 @@ func parseAgentEvent(eventName, data string) (AgentEvent, bool, error) {
 			Channel:       coalesceChannel(payload.Channel, AgentEventActionableChat),
 			MessageID:     payload.MessageID,
 			FromAlias:     payload.FromAlias,
+			FromStableID:  payload.FromStableID,
+			FromDID:       payload.FromDID,
+			FromAddress:   payload.FromAddress,
 			SessionID:     payload.SessionID,
 			UnreadCount:   payload.UnreadCount,
 			SenderWaiting: payload.SenderWaiting,

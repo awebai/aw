@@ -82,7 +82,7 @@ func newRunWakeValidator(client *aweb.Client, selfAlias string) runWakeResolver 
 		case awid.AgentEventActionableChat:
 			return resolveChatWakeForAlias(ctx, client, selfAlias, evt)
 		case awid.AgentEventActionableMail:
-			return resolveMailWake(ctx, client, evt)
+			return resolveMailWakeForAlias(ctx, client, selfAlias, evt)
 		case awid.AgentEventWorkAvailable, awid.AgentEventClaimUpdate, awid.AgentEventClaimRemoved:
 			return runWakeResolution{CycleContext: formatWorkWakePrompt(evt)}, nil
 		default:
@@ -92,7 +92,19 @@ func newRunWakeValidator(client *aweb.Client, selfAlias string) runWakeResolver 
 }
 
 func resolveChatWake(ctx context.Context, client *aweb.Client, evt awid.AgentEvent) (runWakeResolution, error) {
-	return resolveChatWakeForAlias(ctx, client, "", evt)
+	selfAlias := ""
+	if client != nil && client.Client != nil {
+		selfAlias = handleFromAddress(client.Address())
+	}
+	return resolveChatWakeForAlias(ctx, client, selfAlias, evt)
+}
+
+func resolveMailWake(ctx context.Context, client *aweb.Client, evt awid.AgentEvent) (runWakeResolution, error) {
+	selfAlias := ""
+	if client != nil && client.Client != nil {
+		selfAlias = handleFromAddress(client.Address())
+	}
+	return resolveMailWakeForAlias(ctx, client, selfAlias, evt)
 }
 
 func resolveChatWakeForAlias(ctx context.Context, client *aweb.Client, selfAlias string, evt awid.AgentEvent) (runWakeResolution, error) {
@@ -123,15 +135,26 @@ func resolveChatWakeForAlias(ctx context.Context, client *aweb.Client, selfAlias
 				if strings.TrimSpace(msg.MessageID) != messageID {
 					continue
 				}
-				if chatMessageFromSelf(msg, selfAlias) {
+				if chatMessageFromSelf(msg, selfAlias, selfIdentityDIDs(client)...) {
 					return runWakeResolution{Skip: true}, nil
 				}
-				alias := strings.TrimSpace(evt.FromAlias)
-				if alias == "" {
-					alias = strings.TrimSpace(msg.FromAgent)
-				}
 				return runWakeResolution{
-					CycleContext: formatIncomingChatContext(alias, msg.Body),
+					CycleContext: formatIncomingChatContext(
+						preferredIdentityDisplayLabel(
+							strings.TrimSpace(msg.FromAgent),
+							strings.TrimSpace(msg.FromAddress),
+							strings.TrimSpace(msg.FromStableID),
+							strings.TrimSpace(msg.FromDID),
+							preferredIdentityDisplayLabel(
+								strings.TrimSpace(evt.FromAlias),
+								strings.TrimSpace(evt.FromAddress),
+								strings.TrimSpace(evt.FromStableID),
+								strings.TrimSpace(evt.FromDID),
+								"",
+							),
+						),
+						msg.Body,
+					),
 				}, nil
 			}
 			if len(history.Messages) > 0 && len(filtered) == 0 {
@@ -163,40 +186,139 @@ func resolveChatWakeForAlias(ctx context.Context, client *aweb.Client, selfAlias
 				_ = chat.SaveDeliveredIDs(ids)
 			}
 			markChatHistoryRead(ctx, client, sessionID, histResp.Messages)
-			if latest := latestIncomingChatMessage(filtered, selfAlias); latest != nil {
-				alias := strings.TrimSpace(latest.FromAgent)
-				if alias == "" {
-					alias = strings.TrimSpace(evt.FromAlias)
-				}
+			if latest := latestIncomingChatMessage(filtered, selfAlias, selfIdentityDIDs(client)...); latest != nil {
 				return runWakeResolution{
-					CycleContext: formatIncomingChatContext(alias, latest.Body),
+					CycleContext: formatIncomingChatContext(
+						preferredIdentityDisplayLabel(
+							strings.TrimSpace(latest.FromAgent),
+							strings.TrimSpace(latest.FromAddress),
+							strings.TrimSpace(latest.FromStableID),
+							strings.TrimSpace(latest.FromDID),
+							preferredIdentityDisplayLabel(
+								strings.TrimSpace(evt.FromAlias),
+								strings.TrimSpace(evt.FromAddress),
+								strings.TrimSpace(evt.FromStableID),
+								strings.TrimSpace(evt.FromDID),
+								"",
+							),
+						),
+						latest.Body,
+					),
 				}, nil
 			}
 			if len(histResp.Messages) > 0 {
 				return runWakeResolution{Skip: true}, nil
 			}
 		}
-		if selfAlias != "" && strings.EqualFold(strings.TrimSpace(pending.LastFrom), selfAlias) {
+		displayFromAddress := strings.TrimSpace(pending.LastFromAddress)
+		if displayFromAddress == "" {
+			displayFromAddress = strings.TrimSpace(evt.FromAddress)
+		}
+		displayFromStableID := strings.TrimSpace(pending.LastFromStableID)
+		if displayFromStableID == "" {
+			displayFromStableID = strings.TrimSpace(evt.FromStableID)
+		}
+		displayFromDID := strings.TrimSpace(pending.LastFromDID)
+		if displayFromDID == "" {
+			displayFromDID = strings.TrimSpace(evt.FromDID)
+		}
+		derivedPending := pending
+		derivedPending.LastFrom = alias
+		derivedPending.LastFromStableID = displayFromStableID
+		derivedPending.LastFromDID = displayFromDID
+		derivedPending.LastFromAddress = displayFromAddress
+		if pendingChatSenderFromSelf(derivedPending, selfAlias, client.Address(), selfIdentityDIDs(client)...) {
 			return runWakeResolution{Skip: true}, nil
 		}
+		displayFrom := preferredPendingSenderLabel(chat.PendingConversation{
+			Participants:         pending.Participants,
+			ParticipantDIDs:      pending.ParticipantDIDs,
+			ParticipantAddresses: pending.ParticipantAddresses,
+			LastFrom:             alias,
+			LastFromStableID:     displayFromStableID,
+			LastFromDID:          displayFromDID,
+			LastFromAddress:      displayFromAddress,
+		}, selfAlias, selfIdentityDIDs(client)...)
 		return runWakeResolution{
-			CycleContext: formatIncomingChatContext(alias, pending.LastMessage),
+			CycleContext: formatIncomingChatContext(
+				displayFrom,
+				pending.LastMessage,
+			),
 		}, nil
 	}
 	return runWakeResolution{Skip: true}, nil
 }
 
-func chatMessageFromSelf(msg awid.ChatMessage, selfAlias string) bool {
-	selfAlias = strings.TrimSpace(selfAlias)
-	if selfAlias == "" {
-		return false
+func selfIdentityDIDs(client *aweb.Client) []string {
+	if client == nil || client.Client == nil {
+		return nil
 	}
-	return strings.EqualFold(strings.TrimSpace(msg.FromAgent), selfAlias)
+	return uniqueIdentityDIDs(client.StableID(), client.DID())
 }
 
-func latestIncomingChatMessage(messages []awid.ChatMessage, selfAlias string) *awid.ChatMessage {
+func pendingIdentityCount(pending awid.ChatPendingItem) int {
+	return len(pendingIdentityRows(pending.Participants, pending.ParticipantAddresses, pending.ParticipantDIDs))
+}
+
+func pendingIdentityByAlias(pending awid.ChatPendingItem, alias string) (address, stableID, did string) {
+	if row, ok := pendingIdentityByAliasSlices(pending.Participants, pending.ParticipantAddresses, pending.ParticipantDIDs, alias); ok {
+		return row.Address, row.StableID, row.DID
+	}
+	return "", "", ""
+}
+
+func chatMessageFromSelf(msg awid.ChatMessage, selfAlias string, selfDIDs ...string) bool {
+	return identityMatchesSelf(
+		strings.TrimSpace(msg.FromAgent),
+		strings.TrimSpace(msg.FromAddress),
+		strings.TrimSpace(msg.FromStableID),
+		strings.TrimSpace(msg.FromDID),
+		selfAlias,
+		"",
+		selfDIDs...,
+	)
+}
+
+func pendingChatSenderFromSelf(pending awid.ChatPendingItem, selfAlias string, selfAddress string, selfDIDs ...string) bool {
+	mappedAddress, mappedStableID, mappedDID := pendingIdentityByAlias(pending, pending.LastFrom)
+	lastFromStableID := strings.TrimSpace(pending.LastFromStableID)
+	if lastFromStableID == "" {
+		lastFromStableID = mappedStableID
+	}
+	lastFromDID := strings.TrimSpace(pending.LastFromDID)
+	if lastFromDID == "" && lastFromStableID == "" {
+		lastFromDID = mappedDID
+	}
+	lastFromAddress := strings.TrimSpace(pending.LastFromAddress)
+	if lastFromAddress == "" {
+		lastFromAddress = mappedAddress
+	}
+	if lastFromStableID != "" {
+		return identityValueMatchesSelf(lastFromStableID, "", selfDIDs...)
+	}
+	if lastFromDID != "" {
+		return identityValueMatchesSelf(lastFromDID, "", selfDIDs...)
+	}
+	if lastFromAddress != "" {
+		selfAddress = strings.TrimSpace(selfAddress)
+		if selfAddress != "" {
+			return strings.EqualFold(lastFromAddress, selfAddress)
+		}
+		selfAlias = strings.TrimSpace(selfAlias)
+		if selfAlias != "" && len(selfDIDs) == 0 {
+			return identityValueMatchesSelf(lastFromAddress, selfAlias)
+		}
+		return false
+	}
+	if len(selfDIDs) > 0 {
+		return false
+	}
+	return strings.TrimSpace(selfAlias) != "" && strings.EqualFold(strings.TrimSpace(pending.LastFrom), strings.TrimSpace(selfAlias))
+}
+
+func latestIncomingChatMessage(messages []awid.ChatMessage, selfAlias string, selfDIDs ...string) *awid.ChatMessage {
 	for i := len(messages) - 1; i >= 0; i-- {
-		if chatMessageFromSelf(messages[i], selfAlias) {
+		if chatMessageFromSelf(messages[i], selfAlias, selfDIDs...) {
 			continue
 		}
 		return &messages[i]
@@ -204,7 +326,7 @@ func latestIncomingChatMessage(messages []awid.ChatMessage, selfAlias string) *a
 	return nil
 }
 
-func resolveMailWake(ctx context.Context, client *aweb.Client, evt awid.AgentEvent) (runWakeResolution, error) {
+func resolveMailWakeForAlias(ctx context.Context, client *aweb.Client, selfAlias string, evt awid.AgentEvent) (runWakeResolution, error) {
 	messageID := strings.TrimSpace(evt.MessageID)
 	resp, err := client.Inbox(ctx, awid.InboxParams{UnreadOnly: true})
 	if err != nil {
@@ -214,22 +336,70 @@ func resolveMailWake(ctx context.Context, client *aweb.Client, evt awid.AgentEve
 		if messageID != "" && strings.TrimSpace(msg.MessageID) != messageID {
 			continue
 		}
-		alias := strings.TrimSpace(msg.FromAlias)
-		if alias == "" {
-			alias = strings.TrimSpace(evt.FromAlias)
+		if mailMessageFromSelf(msg, selfAlias, selfIdentityDIDs(client)...) {
+			if msg.MessageID != "" {
+				_, _ = client.AckMessage(ctx, msg.MessageID)
+			}
+			return runWakeResolution{Skip: true}, nil
+		}
+		if strings.TrimSpace(msg.FromAlias) == "" &&
+			strings.TrimSpace(msg.FromAddress) == "" &&
+			strings.TrimSpace(msg.FromStableID) == "" &&
+			strings.TrimSpace(msg.FromDID) == "" &&
+			identityMatchesSelf(
+				strings.TrimSpace(evt.FromAlias),
+				strings.TrimSpace(evt.FromAddress),
+				strings.TrimSpace(evt.FromStableID),
+				strings.TrimSpace(evt.FromDID),
+				selfAlias,
+				"",
+				selfIdentityDIDs(client)...,
+			) {
+			if msg.MessageID != "" {
+				_, _ = client.AckMessage(ctx, msg.MessageID)
+			}
+			return runWakeResolution{Skip: true}, nil
 		}
 		// Mark as read — seeing the full content means it's read.
 		if msg.MessageID != "" {
 			_, _ = client.AckMessage(ctx, msg.MessageID)
 		}
 		return runWakeResolution{
-			CycleContext: formatIncomingMailContext(alias, msg.Subject, msg.Body),
+			CycleContext: formatIncomingMailContext(
+				preferredIdentityDisplayLabel(
+					strings.TrimSpace(msg.FromAlias),
+					strings.TrimSpace(msg.FromAddress),
+					strings.TrimSpace(msg.FromStableID),
+					strings.TrimSpace(msg.FromDID),
+					preferredIdentityDisplayLabel(
+						strings.TrimSpace(evt.FromAlias),
+						strings.TrimSpace(evt.FromAddress),
+						strings.TrimSpace(evt.FromStableID),
+						strings.TrimSpace(evt.FromDID),
+						"",
+					),
+				),
+				msg.Subject,
+				msg.Body,
+			),
 		}, nil
 	}
 	if messageID == "" {
 		return runWakeResolution{CycleContext: formatFallbackCommsContext(evt)}, nil
 	}
 	return runWakeResolution{Skip: true}, nil
+}
+
+func mailMessageFromSelf(msg awid.InboxMessage, selfAlias string, selfDIDs ...string) bool {
+	return identityMatchesSelf(
+		strings.TrimSpace(msg.FromAlias),
+		strings.TrimSpace(msg.FromAddress),
+		strings.TrimSpace(msg.FromStableID),
+		strings.TrimSpace(msg.FromDID),
+		selfAlias,
+		"",
+		selfDIDs...,
+	)
 }
 
 func joinPromptSections(parts ...string) string {
@@ -246,9 +416,9 @@ func joinPromptSections(parts ...string) string {
 func formatFallbackCommsContext(evt awid.AgentEvent) string {
 	switch evt.Type {
 	case awid.AgentEventActionableChat:
-		return formatIncomingChatContext(evt.FromAlias, "")
+		return formatIncomingChatContext(preferredIdentityDisplayLabel(evt.FromAlias, evt.FromAddress, evt.FromStableID, evt.FromDID, ""), "")
 	case awid.AgentEventActionableMail:
-		return formatIncomingMailContext(evt.FromAlias, evt.Subject, "")
+		return formatIncomingMailContext(preferredIdentityDisplayLabel(evt.FromAlias, evt.FromAddress, evt.FromStableID, evt.FromDID, ""), evt.Subject, "")
 	default:
 		return ""
 	}

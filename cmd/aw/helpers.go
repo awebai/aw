@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,12 +21,13 @@ import (
 	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/awconfig"
 	"github.com/awebai/aw/awid"
+	"github.com/awebai/aw/internal/identityutil"
 	"github.com/joho/godotenv"
 )
 
-// DefaultServerURL is the public aweb instance used when no server URL is
+// DefaultAwebURL is the public aweb instance used when no aweb URL is
 // configured via flags, environment, or local config.
-const DefaultServerURL = "https://app.aweb.ai"
+const DefaultAwebURL = "https://app.aweb.ai"
 
 func loadDotenvBestEffort() {
 	// Best effort: load from current working directory.
@@ -68,8 +70,9 @@ func resolveClientSelection() (*aweb.Client, *awconfig.Selection, error) {
 }
 
 func resolveSelectionForDir(workingDir string) (*awconfig.Selection, error) {
-	sel, err := awconfig.Resolve(awconfig.ResolveOptions{
+	sel, err := awconfig.ResolveWorkspace(awconfig.ResolveOptions{
 		ServerName:        serverFlag,
+		TeamIDOverride:    strings.TrimSpace(teamFlag),
 		WorkingDir:        workingDir,
 		AllowEnvOverrides: true,
 	})
@@ -77,6 +80,114 @@ func resolveSelectionForDir(workingDir string) (*awconfig.Selection, error) {
 		return nil, err
 	}
 	return sel, nil
+}
+
+func resolveIdentity() (*awconfig.ResolvedIdentity, error) {
+	wd, _ := os.Getwd()
+	identity, err := awconfig.ResolveIdentity(wd)
+	if err == nil {
+		if err := validateResolvedIdentity(identity); err != nil {
+			return nil, err
+		}
+		return identity, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return resolveEphemeralIdentityWithoutState(wd)
+}
+
+func resolveEphemeralIdentityWithoutState(workingDir string) (*awconfig.ResolvedIdentity, error) {
+	workspace, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("invalid worktree workspace: %w", err)
+	}
+	activeMembership := workspace.ActiveMembership()
+	if activeMembership == nil {
+		return nil, usageError("current worktree is missing active_team membership; run `aw init` first")
+	}
+	cert, err := awconfig.LoadTeamCertificateForTeam(workingDir, activeMembership.TeamID)
+	if err != nil {
+		return nil, fmt.Errorf("load active team certificate for %s: %w", activeMembership.TeamID, err)
+	}
+	if strings.TrimSpace(cert.Lifetime) != awid.LifetimeEphemeral {
+		return nil, usageError("current persistent identity is missing .aw/identity.yaml; restore it or run `aw init` again")
+	}
+
+	signingKeyPath := awconfig.WorktreeSigningKeyPath(workingDir)
+	signingKey, err := awid.LoadSigningKey(signingKeyPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, usageError("current identity has no local signing key")
+		}
+		return nil, fmt.Errorf("failed to load signing key: %w", err)
+	}
+	didKey := awid.ComputeDIDKey(signingKey.Public().(ed25519.PublicKey))
+	certDID := strings.TrimSpace(cert.MemberDIDKey)
+	if certDID == "" {
+		return nil, fmt.Errorf("active team certificate is missing member_did_key")
+	}
+	if certDID != didKey {
+		return nil, fmt.Errorf("current signing key did:key %q does not match active team certificate member_did_key %q", didKey, certDID)
+	}
+
+	return &awconfig.ResolvedIdentity{
+		WorkingDir:     strings.TrimSpace(workingDir),
+		IdentityPath:   "",
+		SigningKeyPath: signingKeyPath,
+		DID:            didKey,
+		StableID:       "",
+		Address:        "",
+		Handle:         "",
+		Domain:         "",
+		Custody:        awid.CustodySelf,
+		Lifetime:       awid.LifetimeEphemeral,
+		RegistryURL:    "",
+		RegistryStatus: "",
+		CreatedAt:      "",
+	}, nil
+}
+
+func validateResolvedIdentity(identity *awconfig.ResolvedIdentity) error {
+	if identity == nil {
+		return fmt.Errorf("missing identity context")
+	}
+	if strings.TrimSpace(identity.DID) == "" {
+		return usageError("current identity is invalid: .aw/identity.yaml is missing did")
+	}
+	lifetime := strings.TrimSpace(identity.Lifetime)
+	if lifetime == "" {
+		return usageError("current identity is invalid: .aw/identity.yaml is missing lifetime")
+	}
+	custody := strings.TrimSpace(identity.Custody)
+	if custody == "" {
+		return usageError("current identity is invalid: .aw/identity.yaml is missing custody")
+	}
+	if lifetime == awid.LifetimePersistent && strings.TrimSpace(identity.StableID) == "" {
+		return usageError("current identity is invalid: persistent .aw/identity.yaml is missing stable_id")
+	}
+	if custody != awid.CustodySelf {
+		return nil
+	}
+	signingKeyPath := strings.TrimSpace(identity.SigningKeyPath)
+	if signingKeyPath == "" {
+		return usageError("current identity has no local signing key")
+	}
+	signingKey, err := awid.LoadSigningKey(signingKeyPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return usageError("current identity has no local signing key")
+		}
+		return fmt.Errorf("failed to load signing key: %w", err)
+	}
+	computedDID := awid.ComputeDIDKey(signingKey.Public().(ed25519.PublicKey))
+	if computedDID != strings.TrimSpace(identity.DID) {
+		return usageError("current identity is invalid: .aw/identity.yaml did %q does not match .aw/signing.key %q", strings.TrimSpace(identity.DID), computedDID)
+	}
+	return nil
 }
 
 func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Selection, error) {
@@ -95,72 +206,33 @@ func resolveClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Se
 	}
 	sel.BaseURL = baseURL
 
-	var c *aweb.Client
-	if sel.SigningKey != "" && sel.DID != "" {
-		priv, err := awid.LoadSigningKey(sel.SigningKey)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to load signing key: %w", err)
-		}
-		c, err = aweb.NewWithIdentity(baseURL, sel.APIKey, priv, sel.DID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid identity configuration: %w", err)
-		}
-		c.SetAddress(selectionAddress(sel))
-		c.SetProjectSlug(sel.DefaultProject)
-		if sel.StableID != "" {
-			c.SetStableID(sel.StableID)
-		}
-
-		// Load TOFU pin store for sender identity verification.
-		pinPath, err := awconfig.DefaultKnownAgentsPath()
-		if err != nil {
-			return nil, nil, err
-		}
-		ps, err := awid.LoadPinStore(pinPath)
-		if err != nil {
-			debugLog("load pin store: %v", err)
-			ps = awid.NewPinStore()
-		}
-		c.SetPinStore(ps, pinPath)
-		registry, err := newConfiguredRegistryResolver(c.Client.HTTPClient(), baseURL)
-		if err != nil {
-			return nil, nil, err
-		}
-		c.SetResolver(&awid.ChainResolver{
-			DIDKey:   &awid.DIDKeyResolver{},
-			Registry: registry,
-			Server:   &awid.ServerResolver{Client: c.Client},
-			Pin:      &awid.PinResolver{Store: ps},
-		})
-	} else {
-		var err error
-		c, err = aweb.NewWithAPIKey(baseURL, sel.APIKey)
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid base URL: %w", err)
-		}
+	c, err := resolveCertificateClient(workingDir, baseURL, strings.TrimSpace(sel.TeamID))
+	if err != nil {
+		return nil, nil, err
+	}
+	if c == nil {
+		return nil, nil, errors.New("current workspace is not certificate-authenticated; accept a team invite and run `aw init` here")
+	}
+	if err := configureResolvedClient(c, sel, baseURL); err != nil {
+		return nil, nil, err
 	}
 
-	configureBaseURLFallback(c, sel, baseURL)
 	lastClient = c
 	return c, sel, nil
 }
 
-func resolveClient() (*aweb.Client, error) {
-	c, _, err := resolveClientSelection()
-	return c, err
-}
-
-// resolveAPIKeyOnly resolves config and creates a client using only
-// the API key (no signing key). Used by commands like reset that need
-// to work even when the local signing key is missing or invalid.
-func resolveAPIKeyOnly() (*aweb.Client, *awconfig.Selection, error) {
+func resolveIdentityMessagingClientSelection() (*aweb.Client, *awconfig.Selection, error) {
 	wd, _ := os.Getwd()
-	return resolveAPIKeyOnlyForDir(wd)
+	return resolveIdentityMessagingClientSelectionForDir(wd)
 }
 
-func resolveAPIKeyOnlyForDir(workingDir string) (*aweb.Client, *awconfig.Selection, error) {
+func resolveIdentityMessagingClientSelectionForDir(workingDir string) (*aweb.Client, *awconfig.Selection, error) {
 	sel, err := resolveSelectionForDir(workingDir)
 	if err != nil {
+		return nil, nil, err
+	}
+
+	if err := checkIdentityMismatch(workingDir, sel); err != nil {
 		return nil, nil, err
 	}
 
@@ -170,13 +242,123 @@ func resolveAPIKeyOnlyForDir(workingDir string) (*aweb.Client, *awconfig.Selecti
 	}
 	sel.BaseURL = baseURL
 
-	c, err := aweb.NewWithAPIKey(baseURL, sel.APIKey)
-	if err != nil {
-		return nil, nil, fmt.Errorf("invalid base URL: %w", err)
+	identity, err := awconfig.ResolveIdentity(workingDir)
+	identityMissing := errors.Is(err, os.ErrNotExist)
+	if err != nil && !identityMissing {
+		return nil, nil, err
 	}
-	configureBaseURLFallback(c, sel, baseURL)
+
+	signingKeyPath := awconfig.WorktreeSigningKeyPath(workingDir)
+	didKey := ""
+	if !identityMissing {
+		signingKeyPath = identity.SigningKeyPath
+		didKey = strings.TrimSpace(identity.DID)
+	}
+
+	signingKey, err := awid.LoadSigningKey(signingKeyPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, errors.New("current workspace has no local signing key; run `aw init` here first")
+		}
+		return nil, nil, fmt.Errorf("load signing key: %w", err)
+	}
+	if didKey == "" {
+		didKey = awid.ComputeDIDKey(signingKey.Public().(ed25519.PublicKey))
+	}
+
+	rawClient, err := awid.NewWithIdentity(baseURL, signingKey, didKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	c := &aweb.Client{Client: rawClient}
+	if !identityMissing && strings.TrimSpace(sel.StableID) == "" {
+		sel.StableID = strings.TrimSpace(identity.StableID)
+	}
+	if !identityMissing && strings.TrimSpace(sel.Address) == "" {
+		sel.Address = strings.TrimSpace(identity.Address)
+	}
+	configuredSel := *sel
+	if identityMissing {
+		// Ephemeral identity-auth requests must not synthesize a public address
+		// from team membership metadata. Without identity.yaml, only the local
+		// signing key is authoritative for messaging auth.
+		configuredSel.Address = ""
+		configuredSel.StableID = ""
+		configuredSel.Domain = ""
+		configuredSel.Alias = ""
+	}
+	if err := configureResolvedClient(c, &configuredSel, baseURL); err != nil {
+		return nil, nil, err
+	}
+
 	lastClient = c
 	return c, sel, nil
+}
+
+// resolveCertificateClient attempts to create a certificate-authenticated client.
+// Returns (nil, nil) if no team certificate exists. Returns an error only if the
+// certificate exists but is invalid.
+func resolveCertificateClient(workingDir, baseURL, teamID string) (*aweb.Client, error) {
+	workspace, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir)
+	if err != nil {
+		return nil, nil
+	}
+	selectedMembership := workspace.Membership(teamID)
+	if selectedMembership == nil {
+		if strings.TrimSpace(teamID) != "" {
+			return nil, fmt.Errorf("team %q is not present in workspace memberships; available: %s", teamID, strings.Join(workspace.AvailableTeamIDs(), ", "))
+		}
+		return nil, fmt.Errorf("workspace is missing active_team membership")
+	}
+	certPath := filepath.Join(workingDir, ".aw", filepath.FromSlash(strings.TrimSpace(selectedMembership.CertPath)))
+	cert, err := awid.LoadTeamCertificate(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("load team certificate for %s: %w", selectedMembership.TeamID, err)
+	}
+	signingKeyPath := awconfig.WorktreeSigningKeyPath(workingDir)
+	signingKey, err := awid.LoadSigningKey(signingKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("team certificate found but signing key missing: %w", err)
+	}
+	return aweb.NewWithCertificate(baseURL, signingKey, cert)
+}
+
+func configureResolvedClient(c *aweb.Client, sel *awconfig.Selection, baseURL string) error {
+	if c == nil || sel == nil {
+		return nil
+	}
+	c.SetAddress(selectionAddress(sel))
+	if sel.StableID != "" {
+		c.SetStableID(sel.StableID)
+	}
+
+	pinPath, err := awconfig.DefaultKnownAgentsPath()
+	if err != nil {
+		return err
+	}
+	ps, err := awid.LoadPinStore(pinPath)
+	if err != nil {
+		debugLog("load pin store: %v", err)
+		ps = awid.NewPinStore()
+	}
+	c.SetPinStore(ps, pinPath)
+	registry, err := newConfiguredRegistryResolver(c.Client.HTTPClient(), baseURL)
+	if err != nil {
+		return err
+	}
+	c.SetResolver(&awid.ChainResolver{
+		DIDKey:   &awid.DIDKeyResolver{},
+		Registry: registry,
+		Pin:      &awid.PinResolver{Store: ps},
+	})
+
+	configureBaseURLFallback(c, sel, baseURL)
+	return nil
+}
+
+func resolveClient() (*aweb.Client, error) {
+	c, _, err := resolveClientSelection()
+	return c, err
 }
 
 func cleanBaseURL(raw string) (string, error) {
@@ -287,8 +469,8 @@ func resolveWorkingBaseURLContext(ctx context.Context, raw string) (string, erro
 }
 
 func resolveAuthenticatedBaseURL(raw string) (string, error) {
-	if strings.TrimSpace(os.Getenv("AWEB_URL")) != "" {
-		return resolveWorkingBaseURL(raw)
+	if envBaseURL := strings.TrimSpace(os.Getenv("AWEB_URL")); envBaseURL != "" {
+		return resolveWorkingBaseURL(envBaseURL)
 	}
 	return cleanBaseURL(raw)
 }
@@ -304,7 +486,7 @@ func configureBaseURLFallback(c *aweb.Client, sel *awconfig.Selection, baseURL s
 		configuredBaseURL: strings.TrimSuffix(baseURL, "/"),
 		currentBaseURL:    strings.TrimSuffix(baseURL, "/"),
 		persist: func(resolved string) {
-			if err := persistResolvedServerURL(sel.WorkspacePath, resolved); err != nil {
+			if err := persistResolvedAwebURL(sel.WorkspacePath, resolved); err != nil {
 				debugLog("persist resolved base URL for %s: %v", sel.WorkspacePath, err)
 			}
 		},
@@ -340,6 +522,26 @@ func newConfiguredRegistryClient(httpClient *http.Client, baseURL string) (*awid
 	return client, nil
 }
 
+func loadOptionalWorktreeSigningKey(workingDir string) (ed25519.PrivateKey, error) {
+	workingDir = strings.TrimSpace(workingDir)
+	if workingDir == "" {
+		var err error
+		workingDir, err = os.Getwd()
+		if err != nil {
+			return nil, err
+		}
+	}
+	signingKeyPath := awconfig.WorktreeSigningKeyPath(workingDir)
+	signingKey, err := awid.LoadSigningKey(signingKeyPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return signingKey, nil
+}
+
 func configureEmbeddedRegistryBaseURL(baseURL string, setFallback func(string) error) error {
 	registryValue := strings.TrimSpace(os.Getenv("AWID_REGISTRY_URL"))
 	if registryValue == "" {
@@ -351,13 +553,10 @@ func configureEmbeddedRegistryBaseURL(baseURL string, setFallback func(string) e
 		}
 		return nil
 	}
-	if err := setFallback(baseURL); err != nil {
-		return fmt.Errorf("invalid embedded registry base URL: %w", err)
-	}
-	return nil
+	return fmt.Errorf("AWID_REGISTRY_URL=local is not supported; use an explicit registry URL")
 }
 
-func persistResolvedServerURL(workspacePath, baseURL string) error {
+func persistResolvedAwebURL(workspacePath, baseURL string) error {
 	workspacePath = strings.TrimSpace(workspacePath)
 	baseURL = strings.TrimSpace(baseURL)
 	if workspacePath == "" || baseURL == "" {
@@ -370,10 +569,10 @@ func persistResolvedServerURL(workspacePath, baseURL string) error {
 		}
 		return err
 	}
-	if strings.TrimSpace(workspace.ServerURL) == baseURL {
+	if strings.TrimSpace(workspace.AwebURL) == baseURL {
 		return nil
 	}
-	workspace.ServerURL = baseURL
+	workspace.AwebURL = baseURL
 	return awconfig.SaveWorktreeWorkspaceTo(workspacePath, workspace)
 }
 
@@ -544,7 +743,7 @@ func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName
 		}
 	}
 	if baseURL == "" {
-		baseURL = DefaultServerURL
+		baseURL = DefaultAwebURL
 	}
 	if serverName == "" {
 		derived, derr := awconfig.DeriveServerNameFromURL(baseURL)
@@ -718,13 +917,10 @@ func sanitizeKeyComponent(s string) string {
 }
 
 // deriveIdentityAddress builds the canonical external identity address from
-// namespace/project context plus the local routing handle or permanent name.
-func deriveIdentityAddress(namespaceSlug, projectSlug, handle string) string {
-	if namespaceSlug != "" {
-		return namespaceSlug + "/" + handle
-	}
-	if projectSlug != "" {
-		return projectSlug + "/" + handle
+// the identity domain plus the local routing handle or persistent name.
+func deriveIdentityAddress(domain, handle string) string {
+	if domain != "" {
+		return domain + "/" + handle
 	}
 	return handle
 }
@@ -736,21 +932,11 @@ func selectionAddress(sel *awconfig.Selection) string {
 	if address := strings.TrimSpace(sel.Address); address != "" {
 		return address
 	}
-	return deriveIdentityAddress(strings.TrimSpace(sel.NamespaceSlug), strings.TrimSpace(sel.DefaultProject), strings.TrimSpace(sel.IdentityHandle))
+	return deriveIdentityAddress(strings.TrimSpace(sel.Domain), strings.TrimSpace(sel.Alias))
 }
 
 func handleFromAddress(address string) string {
-	address = strings.TrimSpace(address)
-	if address == "" {
-		return ""
-	}
-	if idx := strings.LastIndexByte(address, '/'); idx >= 0 && idx+1 < len(address) {
-		return strings.TrimSpace(address[idx+1:])
-	}
-	if idx := strings.LastIndexByte(address, '~'); idx >= 0 && idx+1 < len(address) {
-		return strings.TrimSpace(address[idx+1:])
-	}
-	return address
+	return identityutil.HandleFromAddress(address)
 }
 
 func ensureWorktreeContextAt(workingDir string) error {
@@ -878,7 +1064,7 @@ func checkVerificationRequired(err error) string {
 	if envelope.Error.Details.MaskedEmail != "" {
 		hint += " (" + envelope.Error.Details.MaskedEmail + ")"
 	}
-	hint += ". Verify this account in the dashboard, then re-run `aw init` with a fresh project key."
+	hint += ". Verify this account in the dashboard, then re-run `aw init`."
 	return hint
 }
 
@@ -899,18 +1085,22 @@ func networkError(err error, target string) error {
 // wrong agent when .aw/context resolves to a different account than
 // .aw/workspace.yaml expects.
 func checkIdentityMismatch(workingDir string, sel *awconfig.Selection) error {
-	if sel == nil || strings.TrimSpace(sel.IdentityHandle) == "" {
+	if sel == nil || strings.TrimSpace(sel.Alias) == "" {
 		return nil
 	}
 	ws, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir)
 	if err != nil || ws == nil {
 		return nil
 	}
-	wsAlias := strings.TrimSpace(ws.IdentityHandle)
-	if wsAlias == "" {
-		wsAlias = strings.TrimSpace(ws.Alias)
+	selectedMembership, err := workspaceMembershipForSelection(ws, sel)
+	if err != nil || selectedMembership == nil {
+		if err != nil {
+			return err
+		}
+		return nil
 	}
-	selAlias := strings.TrimSpace(sel.IdentityHandle)
+	wsAlias := strings.TrimSpace(selectedMembership.Alias)
+	selAlias := strings.TrimSpace(sel.Alias)
 	if wsAlias == "" || selAlias == "" {
 		return nil
 	}
@@ -937,4 +1127,24 @@ func debugLog(format string, args ...any) {
 	if debugFlag {
 		fmt.Fprintf(os.Stderr, "[debug] "+format+"\n", args...)
 	}
+}
+
+func workspaceMembershipForSelection(ws *awconfig.WorktreeWorkspace, sel *awconfig.Selection) (*awconfig.WorktreeMembership, error) {
+	if ws == nil {
+		return nil, nil
+	}
+	teamID := ""
+	if sel != nil {
+		teamID = strings.TrimSpace(sel.TeamID)
+	}
+	if teamID == "" {
+		teamID = strings.TrimSpace(teamFlag)
+	}
+	if teamID != "" {
+		if membership := ws.Membership(teamID); membership != nil {
+			return membership, nil
+		}
+		return nil, fmt.Errorf("team %q is not present in workspace memberships; available: %s", teamID, strings.Join(ws.AvailableTeamIDs(), ", "))
+	}
+	return ws.ActiveMembership(), nil
 }

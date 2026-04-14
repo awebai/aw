@@ -15,17 +15,15 @@ func TestAwInstructionsShowDisplaysActiveInstructions(t *testing.T) {
 	t.Parallel()
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
-			t.Fatalf("auth=%q", r.Header.Get("Authorization"))
-		}
+		requireCertificateAuthForTest(t, r)
 		switch r.URL.Path {
 		case "/v1/instructions/active":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_instructions_id":        "instructions-1",
-				"active_project_instructions_id": "instructions-1",
-				"project_id":                     "proj-1",
-				"version":                        4,
-				"updated_at":                     "2026-03-10T10:00:00Z",
+				"team_instructions_id":        "instructions-1",
+				"active_team_instructions_id": "instructions-1",
+				"team_id":                     "backend:proj-1",
+				"version":                     4,
+				"updated_at":                  "2026-03-10T10:00:00Z",
 				"document": map[string]any{
 					"body_md": "## Shared Rules\n\nUse `aw`.\n",
 					"format":  "markdown",
@@ -56,7 +54,7 @@ func TestAwInstructionsShowDisplaysActiveInstructions(t *testing.T) {
 	}
 	text := string(out)
 	for _, want := range []string{
-		"Project Instructions v4 (active)",
+		"Team Instructions v4 (active)",
 		"ID: instructions-1",
 		"## Shared Rules",
 		"Use `aw`.",
@@ -71,17 +69,15 @@ func TestAwInstructionsShowByIDMarksActiveVersion(t *testing.T) {
 	t.Parallel()
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
-			t.Fatalf("auth=%q", r.Header.Get("Authorization"))
-		}
+		requireCertificateAuthForTest(t, r)
 		switch r.URL.Path {
 		case "/v1/instructions/active":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_instructions_id":        "instructions-2",
-				"active_project_instructions_id": "instructions-2",
-				"project_id":                     "proj-1",
-				"version":                        2,
-				"updated_at":                     "2026-03-11T10:00:00Z",
+				"team_instructions_id":        "instructions-2",
+				"active_team_instructions_id": "instructions-2",
+				"team_id":                     "backend:proj-1",
+				"version":                     2,
+				"updated_at":                  "2026-03-11T10:00:00Z",
 				"document": map[string]any{
 					"body_md": "## Active Body\n",
 					"format":  "markdown",
@@ -89,10 +85,10 @@ func TestAwInstructionsShowByIDMarksActiveVersion(t *testing.T) {
 			})
 		case "/v1/instructions/instructions-2":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_instructions_id": "instructions-2",
-				"project_id":              "proj-1",
-				"version":                 2,
-				"updated_at":              "2026-03-11T10:00:00Z",
+				"team_instructions_id": "instructions-2",
+				"team_id":              "backend:proj-1",
+				"version":              2,
+				"updated_at":           "2026-03-11T10:00:00Z",
 				"document": map[string]any{
 					"body_md": "## Active Body\n",
 					"format":  "markdown",
@@ -123,7 +119,7 @@ func TestAwInstructionsShowByIDMarksActiveVersion(t *testing.T) {
 	}
 	text := string(out)
 	for _, want := range []string{
-		"Project Instructions v2 (active)",
+		"Team Instructions v2 (active)",
 		"ID: instructions-2",
 		"## Active Body",
 	} {
@@ -140,17 +136,15 @@ func TestAwInstructionsSetCreatesAndActivatesNewVersion(t *testing.T) {
 	var activatedPath string
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
-			t.Fatalf("auth=%q", r.Header.Get("Authorization"))
-		}
+		requireCertificateAuthForTest(t, r)
 		switch r.URL.Path {
 		case "/v1/instructions/active":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_instructions_id":        "instructions-1",
-				"active_project_instructions_id": "instructions-1",
-				"project_id":                     "proj-1",
-				"version":                        1,
-				"updated_at":                     "2026-03-10T10:00:00Z",
+				"team_instructions_id":        "instructions-1",
+				"active_team_instructions_id": "instructions-1",
+				"team_id":                     "backend:proj-1",
+				"version":                     1,
+				"updated_at":                  "2026-03-10T10:00:00Z",
 				"document": map[string]any{
 					"body_md": "Old body",
 					"format":  "markdown",
@@ -164,16 +158,16 @@ func TestAwInstructionsSetCreatesAndActivatesNewVersion(t *testing.T) {
 				t.Fatalf("decode create body: %v", err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_instructions_id": "instructions-2",
-				"project_id":              "proj-1",
-				"version":                 2,
-				"created":                 true,
+				"team_instructions_id": "instructions-2",
+				"team_id":              "backend:proj-1",
+				"version":              2,
+				"created":              true,
 			})
 		case "/v1/instructions/instructions-2/activate":
 			activatedPath = r.URL.Path
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"activated":                      true,
-				"active_project_instructions_id": "instructions-2",
+				"activated":                   true,
+				"active_team_instructions_id": "instructions-2",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -207,8 +201,8 @@ func TestAwInstructionsSetCreatesAndActivatesNewVersion(t *testing.T) {
 	if !ok {
 		t.Fatalf("document=%#v", createBody["document"])
 	}
-	if createBody["base_project_instructions_id"] != "instructions-1" {
-		t.Fatalf("base_project_instructions_id=%v", createBody["base_project_instructions_id"])
+	if createBody["base_team_instructions_id"] != "instructions-1" {
+		t.Fatalf("base_team_instructions_id=%v", createBody["base_team_instructions_id"])
 	}
 	if document["body_md"] != "## Shared Rules\n\nUse `aw`." {
 		t.Fatalf("body_md=%q", document["body_md"])
@@ -218,7 +212,7 @@ func TestAwInstructionsSetCreatesAndActivatesNewVersion(t *testing.T) {
 	}
 
 	text := string(out)
-	if !strings.Contains(text, "Activated project instructions v2 (instructions-2)") {
+	if !strings.Contains(text, "Activated team instructions v2 (instructions-2)") {
 		t.Fatalf("unexpected output:\n%s", text)
 	}
 }
@@ -227,29 +221,27 @@ func TestAwInstructionsHistoryListsVersions(t *testing.T) {
 	t.Parallel()
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
-			t.Fatalf("auth=%q", r.Header.Get("Authorization"))
-		}
+		requireCertificateAuthForTest(t, r)
 		switch r.URL.Path {
 		case "/v1/instructions/history":
 			if got := r.URL.Query().Get("limit"); got != "5" {
 				t.Fatalf("limit=%q", got)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"project_instructions_versions": []map[string]any{
+				"team_instructions_versions": []map[string]any{
 					{
-						"project_instructions_id": "instructions-2",
-						"version":                 2,
-						"created_at":              "2026-03-11T10:00:00Z",
-						"created_by_workspace_id": "ivy",
-						"is_active":               true,
+						"team_instructions_id": "instructions-2",
+						"version":              2,
+						"created_at":           "2026-03-11T10:00:00Z",
+						"created_by_alias":     "ivy",
+						"is_active":            true,
 					},
 					{
-						"project_instructions_id": "instructions-1",
-						"version":                 1,
-						"created_at":              "2026-03-10T10:00:00Z",
-						"created_by_workspace_id": "ivy",
-						"is_active":               false,
+						"team_instructions_id": "instructions-1",
+						"version":              1,
+						"created_at":           "2026-03-10T10:00:00Z",
+						"created_by_alias":     "ivy",
+						"is_active":            false,
 					},
 				},
 			})

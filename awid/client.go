@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +24,7 @@ import (
 type signedFields struct {
 	FromDID       string
 	ToDID         string
+	ToStableID    string
 	FromStableID  string
 	Signature     string
 	SigningKeyID  string
@@ -43,16 +47,35 @@ func (c *Client) signEnvelope(ctx context.Context, env *MessageEnvelope) (signed
 	env.FromDID = c.did
 	env.FromStableID = c.stableID
 	env.Timestamp = time.Now().UTC().Format(time.RFC3339)
-	msgID, err := generateUUID4()
+	msgID, err := GenerateUUID4()
 	if err != nil {
 		return signedFields{}, err
 	}
 	env.MessageID = msgID
 
-	// Resolve recipient DID for to_did binding (mail only).
-	if env.Type == "mail" && c.resolver != nil && env.To != "" && env.ToDID == "" {
-		if identity, err := c.resolver.Resolve(ctx, env.To); err == nil && identity.DID != "" {
-			env.ToDID = identity.DID
+	// Stable did:aw targets belong in to_stable_id; to_did is reserved for the
+	// recipient's current did:key binding.
+	if strings.HasPrefix(strings.TrimSpace(env.ToDID), "did:aw:") {
+		env.ToStableID = strings.TrimSpace(env.ToDID)
+		env.ToDID = ""
+	}
+	if strings.TrimSpace(env.ToStableID) == "" && strings.HasPrefix(strings.TrimSpace(env.To), "did:aw:") {
+		env.ToStableID = strings.TrimSpace(env.To)
+	}
+
+	// Resolve recipient DID for recipient binding when we have a stable
+	// identity target, or for mail when we only have a routable address.
+	if c.resolver != nil && env.ToDID == "" {
+		target := strings.TrimSpace(env.ToStableID)
+		if target == "" && env.Type == "mail" {
+			target = c.canonicalTrustAddress(env.To)
+		} else if target == "" && env.Type == "chat" && !strings.Contains(env.To, ",") {
+			target = c.canonicalTrustAddress(env.To)
+		}
+		if target != "" {
+			if identity, err := c.resolver.Resolve(ctx, target); err == nil && identity.DID != "" {
+				env.ToDID = identity.DID
+			}
 		}
 	}
 
@@ -63,6 +86,7 @@ func (c *Client) signEnvelope(ctx context.Context, env *MessageEnvelope) (signed
 	return signedFields{
 		FromDID:       c.did,
 		ToDID:         env.ToDID,
+		ToStableID:    env.ToStableID,
 		FromStableID:  c.stableID,
 		Signature:     sig,
 		SigningKeyID:  c.did,
@@ -94,12 +118,13 @@ type agentMeta struct {
 type Client struct {
 	baseURL             string
 	httpClient          *http.Client
-	sseClient           *http.Client // No response timeout; SSE connections are long-lived.
-	apiKey              string
+	sseClient           *http.Client       // No response timeout; SSE connections are long-lived.
 	signingKey          ed25519.PrivateKey // nil for legacy/custodial
 	did                 string             // empty for legacy/custodial
+	teamCertHeader      string             // base64-encoded team certificate for X-AWID-Team-Certificate
+	teamID              string             // team identifier from certificate, used in auth signature
+	certAlias           string             // certificate alias, used for signed payloads in cert-auth mode
 	address             string             // namespace/alias, used in signed envelopes
-	projectSlug         string             // current local project slug, used for project~alias addressing
 	stableID            string             // did:aw:..., set on outgoing signed envelopes as from_stable_id
 	resolver            IdentityResolver   // optional; resolves recipient DID for to_did binding
 	pinStore            *PinStore          // optional; TOFU pin store for sender identity verification
@@ -122,19 +147,8 @@ func New(baseURL string) (*Client, error) {
 	}, nil
 }
 
-// NewWithAPIKey creates a new client authenticated with a project API key.
-// The client operates in legacy/custodial mode (no signing).
-func NewWithAPIKey(baseURL, apiKey string) (*Client, error) {
-	c, err := New(baseURL)
-	if err != nil {
-		return nil, err
-	}
-	c.apiKey = apiKey
-	return c, nil
-}
-
 // NewWithIdentity creates an authenticated client with signing capability.
-func NewWithIdentity(baseURL, apiKey string, signingKey ed25519.PrivateKey, did string) (*Client, error) {
+func NewWithIdentity(baseURL string, signingKey ed25519.PrivateKey, did string) (*Client, error) {
 	if signingKey == nil {
 		return nil, fmt.Errorf("signingKey must not be nil")
 	}
@@ -145,12 +159,41 @@ func NewWithIdentity(baseURL, apiKey string, signingKey ed25519.PrivateKey, did 
 	if did != expected {
 		return nil, fmt.Errorf("did does not match signingKey")
 	}
-	c, err := NewWithAPIKey(baseURL, apiKey)
+	c, err := New(baseURL)
 	if err != nil {
 		return nil, err
 	}
 	c.signingKey = signingKey
 	c.did = did
+	return c, nil
+}
+
+// NewWithCertificate creates an authenticated client that uses DIDKey signatures
+// and a team certificate instead of API key authentication.
+func NewWithCertificate(baseURL string, signingKey ed25519.PrivateKey, cert *TeamCertificate) (*Client, error) {
+	if signingKey == nil {
+		return nil, fmt.Errorf("signingKey must not be nil")
+	}
+	if cert == nil {
+		return nil, fmt.Errorf("certificate must not be nil")
+	}
+	did := ComputeDIDKey(signingKey.Public().(ed25519.PublicKey))
+	if did != cert.MemberDIDKey {
+		return nil, fmt.Errorf("signing key did:key %s does not match certificate member_did_key %s", did, cert.MemberDIDKey)
+	}
+	certHeader, err := EncodeTeamCertificateHeader(cert)
+	if err != nil {
+		return nil, fmt.Errorf("encode team certificate: %w", err)
+	}
+	c, err := New(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	c.signingKey = signingKey
+	c.did = did
+	c.teamCertHeader = certHeader
+	c.teamID = cert.Team
+	c.certAlias = strings.TrimSpace(cert.Alias)
 	return c, nil
 }
 
@@ -181,20 +224,65 @@ func (c *Client) SigningKey() ed25519.PrivateKey { return c.signingKey }
 // DID returns the client's DID, or empty for legacy/custodial clients.
 func (c *Client) DID() string { return c.did }
 
+// Address returns the client's address, if configured.
+func (c *Client) Address() string { return c.address }
+
 // SetAddress sets the client's agent address (namespace/alias) for use in
 // signed message envelopes.
 func (c *Client) SetAddress(address string) { c.address = address }
 
-// SetProjectSlug sets the current project slug for local project~alias addressing.
-func (c *Client) SetProjectSlug(projectSlug string) { c.projectSlug = strings.TrimSpace(projectSlug) }
+func (c *Client) addressAlias() string {
+	parts := strings.SplitN(c.address, "/", 2)
+	if len(parts) == 2 && parts[1] != "" {
+		return parts[1]
+	}
+	return ""
+}
+
+func (c *Client) signedPayloadFrom(identityTarget, preferAlias bool) string {
+	from := strings.TrimSpace(c.address)
+	if c.signingKey == nil {
+		return from
+	}
+	if c.teamCertHeader != "" {
+		if alias := c.certAlias; alias != "" {
+			return alias
+		}
+	}
+	if identityTarget {
+		if from == "" {
+			return strings.TrimSpace(c.did)
+		}
+		return from
+	}
+	if preferAlias {
+		if alias := c.addressAlias(); alias != "" {
+			return alias
+		}
+	}
+	if from == "" {
+		return strings.TrimSpace(c.did)
+	}
+	return from
+}
 
 // SetStableID sets the client's stable identifier (did:aw:...) for use
 // as from_stable_id in outgoing signed envelopes.
 func (c *Client) SetStableID(id string) { c.stableID = id }
 
+// StableID returns the client's stable identifier, if configured.
+func (c *Client) StableID() string { return c.stableID }
+
 // SetResolver sets the identity resolver used to resolve recipient DIDs
 // for to_did binding in signed envelopes.
 func (c *Client) SetResolver(r IdentityResolver) { c.resolver = r }
+
+func (c *Client) ResolveIdentity(ctx context.Context, identifier string) (*ResolvedIdentity, error) {
+	if c == nil || c.resolver == nil {
+		return nil, errors.New("aweb: no identity resolver configured")
+	}
+	return c.resolver.Resolve(ctx, identifier)
+}
 
 // SetPinStore sets the TOFU pin store for sender identity verification.
 // If path is non-empty, the store is persisted to disk after updates.
@@ -244,7 +332,7 @@ func (c *Client) resolveAgentMeta(ctx context.Context, address string) *agentMet
 		Resolved: true,
 	}
 	if c.resolver != nil {
-		if identity, err := c.resolver.Resolve(ctx, rawAddress); err == nil {
+		if identity, err := c.resolver.Resolve(ctx, trustAddress); err == nil {
 			meta := &agentMeta{
 				Lifetime: LifetimePersistent,
 				Custody:  CustodySelf,
@@ -260,7 +348,7 @@ func (c *Client) resolveAgentMeta(ctx context.Context, address string) *agentMet
 			return meta
 		}
 	}
-	// Bare local aliases are ambiguous across projects; fail closed unless the
+	// Bare local aliases are ambiguous across teams; fail closed unless the
 	// resolver resolved them under the current namespace. Fully qualified
 	// addresses keep the historical fallback behavior.
 	if rawAddress != trustAddress {
@@ -287,6 +375,12 @@ func (c *Client) NormalizeSenderTrust(ctx context.Context, status VerificationSt
 	status = c.checkStableIdentityRegistry(ctx, status, trustAddress, fromDID, fromStableID)
 	status = c.checkTOFUPinWithMeta(ctx, status, strings.TrimSpace(rawAddress), trustAddress, fromDID, fromStableID, ra, repl, meta)
 	return status, isContact
+}
+
+// NormalizeRecipientBinding applies the local recipient-binding check after
+// signature verification and any sender-side trust normalization.
+func (c *Client) NormalizeRecipientBinding(status VerificationStatus, toDID string, toStableID string) VerificationStatus {
+	return c.checkRecipientBinding(status, toDID, toStableID)
 }
 
 func (c *Client) checkStableIdentityRegistry(ctx context.Context, status VerificationStatus, trustAddress, fromDID, fromStableID string) VerificationStatus {
@@ -512,11 +606,20 @@ func (c *Client) savePinStore() {
 }
 
 // checkRecipientBinding downgrades a Verified status to IdentityMismatch
-// if the message's to_did doesn't match the client's own DID.
-// Returns the status unchanged if to_did is empty, the client has no DID,
-// or the DIDs match.
-func (c *Client) checkRecipientBinding(status VerificationStatus, toDID string) VerificationStatus {
-	if status != Verified || toDID == "" || c.did == "" {
+// if the message's recipient binding doesn't match the client's identity.
+// A matching stable binding is sufficient across local key rotation; otherwise
+// we fall back to the current did:key binding.
+func (c *Client) checkRecipientBinding(status VerificationStatus, toDID string, toStableID string) VerificationStatus {
+	if status != Verified {
+		return status
+	}
+	if stableID := strings.TrimSpace(c.stableID); stableID != "" && strings.TrimSpace(toStableID) != "" {
+		if strings.EqualFold(strings.TrimSpace(toStableID), stableID) {
+			return status
+		}
+		return IdentityMismatch
+	}
+	if toDID == "" || c.did == "" {
 		return status
 	}
 	if toDID != c.did {
@@ -609,11 +712,13 @@ func (c *Client) Do(ctx context.Context, method, path string, in any, out any) e
 // DoRaw performs an HTTP request and returns the raw response.
 func (c *Client) DoRaw(ctx context.Context, method, path, accept string, in any) (*http.Response, error) {
 	var body io.Reader
+	var bodyBytes []byte
 	if in != nil {
 		data, err := json.Marshal(in)
 		if err != nil {
 			return nil, err
 		}
+		bodyBytes = data
 		body = bytes.NewReader(data)
 	}
 
@@ -628,8 +733,25 @@ func (c *Client) DoRaw(ctx context.Context, method, path, accept string, in any)
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", accept)
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.teamCertHeader != "" && c.signingKey != nil {
+		// Certificate auth: DIDKey signature over {body_sha256, team_id, timestamp}.
+		// body_sha256 binds the request body to the signature without the
+		// server having to consume the body stream for signature verification.
+		timestamp := time.Now().UTC().Format(time.RFC3339)
+		signPayload := certAuthSignPayload(c.teamID, timestamp, bodyBytes)
+		sig := ed25519.Sign(c.signingKey, signPayload)
+		req.Header.Set("Authorization", fmt.Sprintf("DIDKey %s %s", c.did, base64.RawStdEncoding.EncodeToString(sig)))
+		req.Header.Set("X-AWEB-Timestamp", timestamp)
+		req.Header.Set("X-AWID-Team-Certificate", c.teamCertHeader)
+	} else if c.signingKey != nil {
+		timestamp := time.Now().UTC().Format(time.RFC3339)
+		signPayload := identityAuthSignPayload(c.stableID, timestamp, bodyBytes)
+		sig := ed25519.Sign(c.signingKey, signPayload)
+		req.Header.Set("Authorization", fmt.Sprintf("DIDKey %s %s", c.did, base64.RawStdEncoding.EncodeToString(sig)))
+		req.Header.Set("X-AWEB-Timestamp", timestamp)
+		if c.stableID != "" {
+			req.Header.Set("X-AWEB-DID-AW", c.stableID)
+		}
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -640,4 +762,36 @@ func (c *Client) DoRaw(ctx context.Context, method, path, accept string, in any)
 		c.latestClientVersion.Store(v)
 	}
 	return resp, nil
+}
+
+// certAuthSignPayload builds the canonical JSON bytes for certificate auth:
+// {"body_sha256":"<hex>","team_id":"<team_id>","timestamp":"<ts>"} —
+// sorted keys, no whitespace. body_sha256 is the hex SHA256 of the request
+// body bytes (empty body hashes the empty string).
+func certAuthSignPayload(teamID, timestamp string, body []byte) []byte {
+	h := sha256.Sum256(body)
+	bodyHash := hex.EncodeToString(h[:])
+	payload, err := CanonicalJSONValue(map[string]string{
+		"body_sha256": bodyHash,
+		"team_id":     teamID,
+		"timestamp":   timestamp,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("certAuthSignPayload: %v", err))
+	}
+	return []byte(payload)
+}
+
+func identityAuthSignPayload(didAW, timestamp string, body []byte) []byte {
+	h := sha256.Sum256(body)
+	bodyHash := hex.EncodeToString(h[:])
+	payload, err := CanonicalJSONValue(map[string]string{
+		"body_sha256": bodyHash,
+		"did_aw":      didAW,
+		"timestamp":   timestamp,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("identityAuthSignPayload: %v", err))
+	}
+	return []byte(payload)
 }

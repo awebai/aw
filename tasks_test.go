@@ -33,7 +33,7 @@ func TestTaskCreate(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestTaskList(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestTaskListReady(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestTaskListBlocked(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestTaskListActive(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestTaskGet(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestTaskUpdate(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +321,7 @@ func TestTaskUpdateCascadeClose(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,12 +348,12 @@ func TestTaskUpdate409ReturnsHeldError(t *testing.T) {
 		w.WriteHeader(http.StatusConflict)
 		_ = json.NewEncoder(w).Encode(TaskHeldError{
 			Detail:          "task already held",
-			AssigneeAgentID: "agent-other",
+			AssigneeAlias: "agent-other",
 		})
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,8 +370,8 @@ func TestTaskUpdate409ReturnsHeldError(t *testing.T) {
 	if !errors.As(err, &held) {
 		t.Fatalf("expected TaskHeldError, got %T: %v", err, err)
 	}
-	if held.AssigneeAgentID != "agent-other" {
-		t.Fatalf("assignee=%s", held.AssigneeAgentID)
+	if held.AssigneeAlias != "agent-other" {
+		t.Fatalf("assignee=%s", held.AssigneeAlias)
 	}
 }
 
@@ -386,7 +386,7 @@ func TestTaskDelete(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +418,7 @@ func TestTaskAddDep(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +443,7 @@ func TestTaskAddDepCycleReturns422(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +471,7 @@ func TestTaskRemoveDep(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +498,7 @@ func TestTaskListQueryParams(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +516,7 @@ func TestTaskListQueryParams(t *testing.T) {
 	priority := 1
 	_, err = c.TaskList(context.Background(), TaskListParams{
 		Status:          "open",
-		AssigneeAgentID: "agent-1",
+		AssigneeAlias: "agent-1",
 		TaskType:        "feature",
 		Priority:        &priority,
 		Labels:          []string{"urgent", "backend"},
@@ -524,7 +524,7 @@ func TestTaskListQueryParams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotQuery != "status=open&assignee_agent_id=agent-1&task_type=feature&priority=1&labels=urgent%2Cbackend" {
+	if gotQuery != "status=open&assignee_alias=agent-1&task_type=feature&priority=1&labels=urgent%2Cbackend" {
 		t.Fatalf("query=%s", gotQuery)
 	}
 }
@@ -548,7 +548,7 @@ func TestTaskCommentCreate(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -586,7 +586,7 @@ func TestTaskCommentList(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}

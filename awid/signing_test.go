@@ -390,6 +390,138 @@ func TestCanonicalReplacementJSONFieldOrder(t *testing.T) {
 	}
 }
 
+func TestCanonicalJSONValueSortsKeys(t *testing.T) {
+	t.Parallel()
+
+	got, err := CanonicalJSONValue(map[string]any{
+		"z": 1,
+		"a": map[string]any{
+			"b": true,
+			"a": "x",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"a":{"a":"x","b":true},"z":1}`
+	if got != want {
+		t.Fatalf("got:  %s\nwant: %s", got, want)
+	}
+}
+
+func TestCanonicalJSONValuePreservesUnicode(t *testing.T) {
+	t.Parallel()
+
+	got, err := CanonicalJSONValue(map[string]any{
+		"greeting": "olá",
+		"name":     "李雷",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"greeting":"olá","name":"李雷"}`
+	if got != want {
+		t.Fatalf("got:  %s\nwant: %s", got, want)
+	}
+}
+
+// aweb-aafx.10: CanonicalJSONValue must NOT HTML-escape <, >, &.
+//
+// Go's json.Marshal HTML-escapes these three characters by default
+// (\u003c, \u003e, \u0026) to be safe in script tags. Python's
+// canonical_json_bytes (json.dumps with ensure_ascii=False) does NOT.
+// For signatures to verify across the Go CLI and the Python awid/hosted
+// verifiers, we must disable HTML escaping in the Go encoder so both
+// sides produce byte-identical canonical JSON.
+//
+// This is the same latent bug that bit the hosted onboarding signing
+// family (cli-signup, claim-human, bootstrap-redeem); fixed there in
+// the shared onboardingDIDKeySignPayload helper. aweb-aafx.10 carries the
+// fix into this sibling code path (aw id sign / aw id request).
+func TestCanonicalJSONValueDoesNotHTMLEscape(t *testing.T) {
+	t.Parallel()
+
+	got, err := CanonicalJSONValue(map[string]any{
+		"note": "<foo&bar>",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"note":"<foo&bar>"}`
+	if got != want {
+		t.Fatalf("HTML escape leaked:\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// Catches both the HTML-escape divergence AND the ASCII-escape
+// divergence in one test vector, per dave's aafx.10 guidance. A payload
+// carrying both <, >, & and non-ASCII must round-trip verbatim through
+// CanonicalJSONValue. If Go ever picks up SetEscapeHTML(true) by
+// accident, the <>& part of this test fails; if someone adds an
+// ensure_ascii-style escaper, the café part fails.
+func TestCanonicalJSONValueDoesNotEscapeHTMLOrNonASCII(t *testing.T) {
+	t.Parallel()
+
+	got, err := CanonicalJSONValue(map[string]any{
+		"alias": "café-<dev>",
+		"note":  "Tom&Jerry 测试",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keys sorted: alias < note.
+	want := `{"alias":"café-<dev>","note":"Tom&Jerry 测试"}`
+	if got != want {
+		t.Fatalf("escape leaked:\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestSignArbitraryPayloadRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	timestamp := "2026-04-05T10:30:00Z"
+	didKey, signature, canonical, err := SignArbitraryPayload(priv, map[string]any{
+		"domain":    "acme.com",
+		"operation": "register",
+	}, timestamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if didKey != ComputeDIDKey(pub) {
+		t.Fatalf("didKey=%q", didKey)
+	}
+	wantCanonical := `{"domain":"acme.com","operation":"register","timestamp":"2026-04-05T10:30:00Z"}`
+	if canonical != wantCanonical {
+		t.Fatalf("canonical=%s want %s", canonical, wantCanonical)
+	}
+	sigBytes, err := base64.RawStdEncoding.DecodeString(signature)
+	if err != nil {
+		t.Fatalf("decode signature: %v", err)
+	}
+	if !ed25519.Verify(pub, []byte(canonical), sigBytes) {
+		t.Fatal("signature did not verify")
+	}
+}
+
+func TestSignArbitraryPayloadRejectsTimestampField(t *testing.T) {
+	t.Parallel()
+
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err = SignArbitraryPayload(priv, map[string]any{
+		"timestamp": "2026-04-05T10:30:00Z",
+	}, "2026-04-05T10:30:00Z")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestVerifyReplacementSignatureRoundtrip(t *testing.T) {
 	t.Parallel()
 

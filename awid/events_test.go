@@ -2,6 +2,7 @@ package awid
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,10 +24,10 @@ func TestParseAgentEvent(t *testing.T) {
 		{
 			name:      "connected",
 			eventName: "connected",
-			data:      `{"agent_id":"a1","project_id":"p1"}`,
+			data:      `{"agent_id":"a1","team_id":"backend:acme.com"}`,
 			check: func(t *testing.T, evt AgentEvent) {
 				t.Helper()
-				if evt.Type != AgentEventConnected || evt.AgentID != "a1" || evt.ProjectID != "p1" {
+				if evt.Type != AgentEventConnected || evt.AgentID != "a1" || evt.TeamID != "backend:acme.com" {
 					t.Fatalf("unexpected connected event: %#v", evt)
 				}
 			},
@@ -34,11 +35,17 @@ func TestParseAgentEvent(t *testing.T) {
 		{
 			name:      "actionable mail",
 			eventName: "actionable_mail",
-			data:      `{"type":"actionable_mail","message_id":"m2","from_alias":"alice","subject":"hello","wake_mode":"prompt","unread_count":3}`,
+			data:      `{"type":"actionable_mail","message_id":"m2","from_alias":"alice","from_did":"did:aw:alice","from_address":"acme.com/alice","subject":"hello","wake_mode":"prompt","unread_count":3}`,
 			check: func(t *testing.T, evt AgentEvent) {
 				t.Helper()
 				if evt.Type != AgentEventActionableMail || evt.MessageID != "m2" || evt.FromAlias != "alice" || evt.Subject != "hello" {
 					t.Fatalf("unexpected actionable mail event: %#v", evt)
+				}
+				if evt.FromDID != "did:aw:alice" {
+					t.Fatalf("unexpected actionable mail stable identity: %#v", evt)
+				}
+				if evt.FromAddress != "acme.com/alice" {
+					t.Fatalf("unexpected actionable mail sender: %#v", evt)
 				}
 				if evt.WakeMode != "prompt" || evt.Channel != "mail" || evt.UnreadCount != 3 {
 					t.Fatalf("unexpected actionable mail metadata: %#v", evt)
@@ -46,16 +53,56 @@ func TestParseAgentEvent(t *testing.T) {
 			},
 		},
 		{
+			name:      "actionable mail stable id",
+			eventName: "actionable_mail",
+			data:      `{"type":"actionable_mail","message_id":"m2","from_alias":"","from_did":"did:key:z6MkAliceCurrent","from_stable_id":"did:aw:alice","from_address":"","subject":"hello","wake_mode":"prompt","unread_count":3}`,
+			check: func(t *testing.T, evt AgentEvent) {
+				t.Helper()
+				if evt.Type != AgentEventActionableMail || evt.MessageID != "m2" || evt.Subject != "hello" {
+					t.Fatalf("unexpected actionable mail event: %#v", evt)
+				}
+				if evt.FromStableID != "did:aw:alice" {
+					t.Fatalf("unexpected actionable mail stable identity: %#v", evt)
+				}
+				if evt.FromDID != "did:key:z6MkAliceCurrent" {
+					t.Fatalf("unexpected actionable mail current did: %#v", evt)
+				}
+			},
+		},
+		{
 			name:      "actionable chat",
 			eventName: "actionable_chat",
-			data:      `{"type":"actionable_chat","message_id":"m3","from_alias":"mia","session_id":"s2","wake_mode":"interrupt","unread_count":1,"sender_waiting":true}`,
+			data:      `{"type":"actionable_chat","message_id":"m3","from_alias":"mia","from_did":"did:aw:mia","from_address":"otherco/mia","session_id":"s2","wake_mode":"interrupt","unread_count":1,"sender_waiting":true}`,
 			check: func(t *testing.T, evt AgentEvent) {
 				t.Helper()
 				if evt.Type != AgentEventActionableChat || evt.MessageID != "m3" || evt.FromAlias != "mia" || evt.SessionID != "s2" {
 					t.Fatalf("unexpected actionable chat event: %#v", evt)
 				}
+				if evt.FromDID != "did:aw:mia" {
+					t.Fatalf("unexpected actionable chat stable identity: %#v", evt)
+				}
+				if evt.FromAddress != "otherco/mia" {
+					t.Fatalf("unexpected actionable chat sender: %#v", evt)
+				}
 				if evt.WakeMode != "interrupt" || evt.Channel != "chat" || evt.UnreadCount != 1 || !evt.SenderWaiting {
 					t.Fatalf("unexpected actionable chat metadata: %#v", evt)
+				}
+			},
+		},
+		{
+			name:      "actionable chat stable id",
+			eventName: "actionable_chat",
+			data:      `{"type":"actionable_chat","message_id":"m3","from_alias":"","from_did":"did:key:z6MkMiaCurrent","from_stable_id":"did:aw:mia","from_address":"","session_id":"s2","wake_mode":"interrupt","unread_count":1,"sender_waiting":true}`,
+			check: func(t *testing.T, evt AgentEvent) {
+				t.Helper()
+				if evt.Type != AgentEventActionableChat || evt.MessageID != "m3" || evt.SessionID != "s2" {
+					t.Fatalf("unexpected actionable chat event: %#v", evt)
+				}
+				if evt.FromStableID != "did:aw:mia" {
+					t.Fatalf("unexpected actionable chat stable identity: %#v", evt)
+				}
+				if evt.FromDID != "did:key:z6MkMiaCurrent" {
+					t.Fatalf("unexpected actionable chat current did: %#v", evt)
 				}
 			},
 		},
@@ -145,11 +192,11 @@ func TestEventStreamRequestsEventStream(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, ": keepalive\n\n")
 		_, _ = io.WriteString(w, "event: connected\n")
-		_, _ = io.WriteString(w, "data: {\"agent_id\":\"a1\",\"project_id\":\"p1\"}\n\n")
+		_, _ = io.WriteString(w, "data: {\"agent_id\":\"a1\",\"team_id\":\"backend:acme.com\"}\n\n")
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +211,7 @@ func TestEventStreamRequestsEventStream(t *testing.T) {
 	if gotAccept != "text/event-stream" {
 		t.Fatalf("accept=%q", gotAccept)
 	}
-	if gotAuth != "Bearer aw_sk_test" {
+	if gotAuth != "" {
 		t.Fatalf("auth=%q", gotAuth)
 	}
 	if gotCache != "no-cache" {
@@ -187,8 +234,54 @@ func TestEventStreamRequestsEventStream(t *testing.T) {
 	if ev.Type != AgentEventConnected {
 		t.Fatalf("event=%q", ev.Type)
 	}
-	if ev.AgentID != "a1" || ev.ProjectID != "p1" {
+	if ev.AgentID != "a1" || ev.TeamID != "backend:acme.com" {
 		t.Fatalf("unexpected event payload: %#v", ev)
+	}
+}
+
+func TestEventStreamUsesIdentityAuthHeadersWithoutTeamCert(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	stableID := "did:aw:test-alice"
+
+	var gotAuth string
+	var gotTimestamp string
+	var gotStableID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = strings.TrimSpace(r.Header.Get("Authorization"))
+		gotTimestamp = strings.TrimSpace(r.Header.Get("X-AWEB-Timestamp"))
+		gotStableID = strings.TrimSpace(r.Header.Get("X-AWEB-DID-AW"))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: connected\n")
+		_, _ = io.WriteString(w, "data: {\"agent_id\":\"a1\",\"team_id\":\"backend:acme.com\"}\n\n")
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetStableID(stableID)
+
+	stream, err := c.EventStream(context.Background(), time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	if gotAuth == "" {
+		t.Fatal("missing Authorization header")
+	}
+	if gotTimestamp == "" {
+		t.Fatal("missing X-AWEB-Timestamp header")
+	}
+	if gotStableID != stableID {
+		t.Fatalf("X-AWEB-DID-AW=%q want %q", gotStableID, stableID)
 	}
 }
 
@@ -235,7 +328,7 @@ func TestEventStreamHTTPError(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +358,7 @@ func TestEventStreamReturnsEOFOnCleanClose(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w, "event: connected\n")
-		_, _ = fmt.Fprint(w, "data: {\"agent_id\":\"a1\",\"project_id\":\"p1\"}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"agent_id\":\"a1\",\"team_id\":\"backend:acme.com\"}\n\n")
 	}))
 	t.Cleanup(server.Close)
 

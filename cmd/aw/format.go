@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -42,6 +41,7 @@ func formatContactTag(isContact *bool) string {
 // formatChatEventLine formats a single chat event as "[HH:MM:SS] agent: body" with tags.
 func formatChatEventLine(m chat.Event) string {
 	tags := formatVerificationTag(m.VerificationStatus) + formatContactTag(m.IsContact)
+	from := preferredIdentityDisplayLabel(m.FromAgent, m.FromAddress, m.FromStableID, m.FromDID, "")
 	ts := ""
 	if m.Timestamp != "" {
 		if t, err := time.Parse(time.RFC3339, m.Timestamp); err == nil {
@@ -49,9 +49,29 @@ func formatChatEventLine(m chat.Event) string {
 		}
 	}
 	if ts != "" {
-		return fmt.Sprintf("[%s] %s%s: %s\n", ts, m.FromAgent, tags, m.Body)
+		return fmt.Sprintf("[%s] %s%s: %s\n", ts, from, tags, m.Body)
 	}
-	return fmt.Sprintf("%s%s: %s\n", m.FromAgent, tags, m.Body)
+	return fmt.Sprintf("%s%s: %s\n", from, tags, m.Body)
+}
+
+func preferredIdentityDisplayLabel(alias string, address string, stableID string, did string, fallback string) string {
+	address = strings.TrimSpace(address)
+	if address != "" {
+		return address
+	}
+	stableID = strings.TrimSpace(stableID)
+	if stableID != "" {
+		return stableID
+	}
+	did = strings.TrimSpace(did)
+	if did != "" {
+		return did
+	}
+	alias = strings.TrimSpace(alias)
+	if alias != "" {
+		return alias
+	}
+	return strings.TrimSpace(fallback)
 }
 
 // --- introspect/whoami ---
@@ -62,8 +82,8 @@ func formatIntrospect(v any) string {
 	if routing := awid.RoutingHandle(out.Alias, out.Address, out.Lifetime); routing != "" {
 		sb.WriteString(fmt.Sprintf("Routing:   %s\n", routing))
 	}
-	if out.NamespaceSlug != "" {
-		sb.WriteString(fmt.Sprintf("Project:   %s\n", out.NamespaceSlug))
+	if out.Domain != "" {
+		sb.WriteString(fmt.Sprintf("Domain:    %s\n", out.Domain))
 	}
 	if address := awid.PublicAddress(out.Address, out.Lifetime); address != "" {
 		sb.WriteString(fmt.Sprintf("Address:   %s\n", address))
@@ -107,7 +127,7 @@ func formatMailInbox(v any) string {
 			subj = " — " + subj
 		}
 		tags := formatVerificationTag(msg.VerificationStatus) + formatContactTag(msg.IsContact)
-		sb.WriteString(fmt.Sprintf("- %s%s%s: %s\n", msg.FromAlias, subj, tags, msg.Body))
+		sb.WriteString(fmt.Sprintf("- %s%s%s: %s\n", preferredIdentityDisplayLabel(msg.FromAlias, msg.FromAddress, msg.FromStableID, msg.FromDID, ""), subj, tags, msg.Body))
 	}
 	return sb.String()
 }
@@ -164,27 +184,60 @@ func formatChatSend(v any) string {
 		timestamp = tagEvent.Timestamp
 		tags = formatVerificationTag(tagEvent.VerificationStatus) + formatContactTag(tagEvent.IsContact)
 	}
+	replyFrom := preferredIdentityDisplayLabel(
+		func() string {
+			if tagEvent == nil {
+				return ""
+			}
+			return tagEvent.FromAgent
+		}(),
+		func() string {
+			if tagEvent == nil {
+				return ""
+			}
+			return tagEvent.FromAddress
+		}(),
+		func() string {
+			if tagEvent == nil {
+				return ""
+			}
+			return tagEvent.FromStableID
+		}(),
+		func() string {
+			if tagEvent == nil {
+				return ""
+			}
+			return tagEvent.FromDID
+		}(),
+		result.TargetAgent,
+	)
 
 	switch result.Status {
 	case "replied":
-		writeChatLine("Chat from", result.TargetAgent+tags, timestamp)
+		writeChatLine("Chat from", replyFrom+tags, timestamp)
 		sb.WriteString(fmt.Sprintf("Body: %s\n", result.Reply))
 		return sb.String()
 
 	case "sender_left":
-		writeChatLine("Chat from", result.TargetAgent+tags, timestamp)
+		writeChatLine("Chat from", replyFrom+tags, timestamp)
 		sb.WriteString(fmt.Sprintf("Body: %s\n", result.Reply))
 		sb.WriteString(fmt.Sprintf("Note: %s has left the exchange\n", result.TargetAgent))
 		return sb.String()
 
 	case "pending":
-		lastFrom := result.TargetAgent
-		if tagEvent != nil && tagEvent.FromAgent != "" {
-			lastFrom = tagEvent.FromAgent
+		incomingReply := true
+		if tagEvent != nil {
+			incomingReply = false
+			if strings.TrimSpace(result.TargetAgent) == "" {
+				incomingReply = true
+			}
+			if chatEventMatchesDisplayTarget(tagEvent, result.TargetAgent) {
+				incomingReply = true
+			}
 		}
 
-		if lastFrom == result.TargetAgent {
-			writeChatLine("Chat from", result.TargetAgent+tags, timestamp)
+		if incomingReply {
+			writeChatLine("Chat from", replyFrom+tags, timestamp)
 			if result.SenderWaiting {
 				sb.WriteString("Status: WAITING for your reply\n")
 			}
@@ -229,7 +282,7 @@ func formatChatSend(v any) string {
 			sb.WriteString("\n---\n\n")
 		}
 		tags := formatVerificationTag(event.VerificationStatus) + formatContactTag(event.IsContact)
-		writeChatLine("Chat from", event.FromAgent+tags, event.Timestamp)
+		writeChatLine("Chat from", preferredIdentityDisplayLabel(event.FromAgent, event.FromAddress, event.FromStableID, event.FromDID, "")+tags, event.Timestamp)
 		sb.WriteString(fmt.Sprintf("Body: %s\n", event.Body))
 		messageIndex++
 	}
@@ -239,6 +292,142 @@ func formatChatSend(v any) string {
 	}
 
 	return sb.String()
+}
+
+func formatChatTargetNames(value string) []string {
+	names := []string{}
+	appendUnique := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return
+		}
+		for _, existing := range names {
+			if strings.EqualFold(existing, candidate) {
+				return
+			}
+		}
+		names = append(names, candidate)
+	}
+
+	appendUnique(value)
+	value = strings.TrimSpace(value)
+	if value != "" && strings.HasPrefix(value, "did:aw:") {
+		appendUnique(strings.TrimPrefix(value, "did:aw:"))
+	}
+	if value != "" && !strings.HasPrefix(value, "did:") {
+		parts := strings.SplitN(value, "/", 2)
+		if len(parts) == 2 {
+			appendUnique(parts[1])
+		}
+	}
+	return names
+}
+
+func formatChatTargetListsOverlap(left []string, right []string) bool {
+	for _, leftValue := range left {
+		for _, rightValue := range right {
+			if strings.EqualFold(strings.TrimSpace(leftValue), strings.TrimSpace(rightValue)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func chatEventMatchesDisplayTarget(ev *chat.Event, target string) bool {
+	if ev == nil {
+		return false
+	}
+	targetNames := formatChatTargetNames(target)
+	if len(targetNames) == 0 {
+		return false
+	}
+	eventNames := []string{}
+	for _, value := range []string{
+		ev.FromAgent,
+		ev.FromAddress,
+		ev.FromDID,
+		ev.FromStableID,
+	} {
+		eventNames = append(eventNames, formatChatTargetNames(value)...)
+	}
+	return formatChatTargetListsOverlap(targetNames, eventNames)
+}
+
+func pendingParticipantLabel(p chat.PendingConversation, idx int) string {
+	rows := pendingIdentityRows(p.Participants, p.ParticipantAddresses, p.ParticipantDIDs)
+	if idx >= 0 && idx < len(rows) {
+		return rows[idx].label()
+	}
+	return ""
+}
+
+func pendingParticipantIdentityAt(p chat.PendingConversation, idx int) (alias, address, did string) {
+	rows := pendingIdentityRows(p.Participants, p.ParticipantAddresses, p.ParticipantDIDs)
+	if idx >= 0 && idx < len(rows) {
+		row := rows[idx]
+		return row.Alias, row.Address, row.DID
+	}
+	return "", "", ""
+}
+
+func pendingParticipantCount(p chat.PendingConversation) int {
+	return len(pendingIdentityRows(p.Participants, p.ParticipantAddresses, p.ParticipantDIDs))
+}
+
+func pendingIdentityStrength(address string, stableID string, did string, alias string) int {
+	return newPendingIdentityRow(alias, address, did).strength()
+}
+
+func pendingParticipantIdentityByLastFrom(p chat.PendingConversation) (label string, strength int) {
+	if row, ok := pendingIdentityByAliasSlices(p.Participants, p.ParticipantAddresses, p.ParticipantDIDs, p.LastFrom); ok {
+		return row.label(), row.strength()
+	}
+	return "", 0
+}
+
+func preferredPendingSenderLabel(p chat.PendingConversation, selfAlias string, selfDIDs ...string) string {
+	lastFrom := preferredIdentityDisplayLabel(
+		strings.TrimSpace(p.LastFrom),
+		strings.TrimSpace(p.LastFromAddress),
+		strings.TrimSpace(p.LastFromStableID),
+		strings.TrimSpace(p.LastFromDID),
+		"",
+	)
+	lastFromStrength := pendingIdentityStrength(
+		p.LastFromAddress,
+		p.LastFromStableID,
+		p.LastFromDID,
+		p.LastFrom,
+	)
+	if mappedLabel, mappedStrength := pendingParticipantIdentityByLastFrom(p); mappedStrength > lastFromStrength {
+		return mappedLabel
+	}
+
+	count := pendingParticipantCount(p)
+
+	candidate := ""
+	candidateStrength := 0
+	for idx := 0; idx < count; idx++ {
+		alias, address, did := pendingParticipantIdentityAt(p, idx)
+		participant := pendingParticipantLabel(p, idx)
+		if participant == "" || notifyIdentityMatchesSelf(participant, selfAlias, selfDIDs...) {
+			continue
+		}
+		if candidate != "" && !strings.EqualFold(candidate, participant) {
+			return lastFrom
+		}
+		candidate = participant
+		candidateStrength = pendingIdentityStrength(address, "", did, alias)
+	}
+	if candidate != "" && candidateStrength > lastFromStrength {
+		return candidate
+	}
+	return lastFrom
+}
+
+func pendingOpenTarget(p chat.PendingConversation) string {
+	return pendingDirectOpenTargetSlices(p.Participants, p.ParticipantAddresses, p.ParticipantDIDs)
 }
 
 func formatChatPending(v any) string {
@@ -252,8 +441,10 @@ func formatChatPending(v any) string {
 
 	for _, p := range result.Pending {
 		openHint := ""
-		if p.LastFrom != "" {
-			openHint = fmt.Sprintf(" — Run \"aw chat open %s\"", p.LastFrom)
+		displayFrom := preferredPendingSenderLabel(p, "")
+		openTarget := pendingOpenTarget(p)
+		if openTarget != "" {
+			openHint = fmt.Sprintf(" — Run \"aw chat open %s\"", openTarget)
 		}
 
 		if p.SenderWaiting {
@@ -261,9 +452,9 @@ func formatChatPending(v any) string {
 			if p.TimeRemainingSeconds != nil && *p.TimeRemainingSeconds < 60 && *p.TimeRemainingSeconds > 0 {
 				timeInfo = fmt.Sprintf(" (%ds left)", *p.TimeRemainingSeconds)
 			}
-			sb.WriteString(fmt.Sprintf("  CHAT WAITING: %s%s (unread: %d)%s\n", p.LastFrom, timeInfo, p.UnreadCount, openHint))
+			sb.WriteString(fmt.Sprintf("  CHAT WAITING: %s%s (unread: %d)%s\n", displayFrom, timeInfo, p.UnreadCount, openHint))
 		} else {
-			sb.WriteString(fmt.Sprintf("  CHAT: %s (unread: %d)%s\n", p.LastFrom, p.UnreadCount, openHint))
+			sb.WriteString(fmt.Sprintf("  CHAT: %s (unread: %d)%s\n", displayFrom, p.UnreadCount, openHint))
 		}
 	}
 
@@ -333,81 +524,6 @@ func formatChatExtendWait(v any) string {
 	return sb.String()
 }
 
-// --- agents ---
-
-func formatAgentsList(v any) string {
-	out := v.(agentsListOutput)
-	resp := out.ListIdentitiesResponse
-	var sb strings.Builder
-	if out.ProjectSlug != "" {
-		sb.WriteString(fmt.Sprintf("Project: %s\n\n", out.ProjectSlug))
-	}
-
-	var online, offline []awid.IdentityView
-	for _, agent := range resp.Identities {
-		if agent.Online {
-			online = append(online, agent)
-		} else {
-			offline = append(offline, agent)
-		}
-	}
-	sort.Slice(online, func(i, j int) bool { return online[i].Alias < online[j].Alias })
-	sort.Slice(offline, func(i, j int) bool { return offline[i].Alias < offline[j].Alias })
-
-	if len(online) > 0 {
-		sb.WriteString("ONLINE\n")
-		for _, agent := range online {
-			desc := strings.TrimSpace(agent.Status)
-			if desc == "" {
-				desc = "active"
-			}
-			sb.WriteString(fmt.Sprintf("  %s (%s) — %s\n", agent.Alias, agent.AgentType, desc))
-		}
-		sb.WriteString("\n")
-	}
-	if len(offline) > 0 {
-		sb.WriteString("OFFLINE\n")
-		for _, agent := range offline {
-			sb.WriteString(fmt.Sprintf("  %s (%s)\n", agent.Alias, agent.AgentType))
-		}
-	}
-	return sb.String()
-}
-
-func formatAgentAccessMode(v any) string {
-	m := v.(map[string]string)
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Identity:    %s\n", m["alias"]))
-	sb.WriteString(fmt.Sprintf("Access mode: %s\n", m["access_mode"]))
-	return sb.String()
-}
-
-func formatIdentityReachability(v any) string {
-	m := v.(map[string]string)
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Identity: %s\n", m["alias"]))
-	sb.WriteString(fmt.Sprintf("Reachability: %s\n", m["address_reachability"]))
-	return sb.String()
-}
-
-func formatAgentPatch(v any) string {
-	out := v.(identityPatchOutput)
-	var sb strings.Builder
-	currentID := out.CurrentIdentityID()
-	if out.Alias != "" {
-		sb.WriteString(fmt.Sprintf("Identity:    %s\n", out.Alias))
-	} else if currentID != "" {
-		sb.WriteString(fmt.Sprintf("Identity:    %s\n", currentID))
-	}
-	if out.AccessMode != "" {
-		sb.WriteString(fmt.Sprintf("Access mode: %s\n", out.AccessMode))
-	}
-	if out.AddressReachability != "" {
-		sb.WriteString(fmt.Sprintf("Reachability: %s\n", out.AddressReachability))
-	}
-	return sb.String()
-}
-
 // --- locks ---
 
 func formatLockAcquire(v any) string {
@@ -467,16 +583,6 @@ func formatContactAdd(v any) string {
 	return fmt.Sprintf("Added contact %s\n", resp.ContactAddress)
 }
 
-// --- namespace ---
-
-func formatProject(v any) string {
-	resp := v.(*aweb.ProjectResponse)
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Project: %s\n", resp.Name))
-	sb.WriteString(fmt.Sprintf("Slug:    %s\n", resp.Slug))
-	return sb.String()
-}
-
 // --- network ---
 
 func formatDirectoryGet(v any) string {
@@ -486,7 +592,7 @@ func formatDirectoryGet(v any) string {
 		handle = resp.Name
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Identity:     %s/%s\n", resp.OrgSlug, handle))
+	sb.WriteString(fmt.Sprintf("Identity:     %s/%s\n", resp.Domain, handle))
 	if resp.Description != "" {
 		sb.WriteString(fmt.Sprintf("Description:  %s\n", resp.Description))
 	}
@@ -511,7 +617,7 @@ func formatDirectorySearch(v any) string {
 		if a.Description != "" {
 			desc = " — " + a.Description
 		}
-		sb.WriteString(fmt.Sprintf("- %s/%s%s\n", a.OrgSlug, handle, desc))
+		sb.WriteString(fmt.Sprintf("- %s/%s%s\n", a.Domain, handle, desc))
 	}
 	return sb.String()
 }

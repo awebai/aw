@@ -6,26 +6,41 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/awebai/aw/awid"
 )
+
+func splitTeamID(teamID string) (string, string) {
+	teamID = strings.TrimSpace(teamID)
+	if teamID == "" {
+		return "", ""
+	}
+	domain, name, err := awid.ParseTeamID(teamID)
+	if err != nil {
+		return "", ""
+	}
+	return domain, name
+}
 
 type Selection struct {
 	WorkingDir    string
 	WorkspacePath string
 	ServerName    string
 	BaseURL       string
-	APIKey        string
+	AwebURL       string
 
-	DefaultProject string
-	IdentityID     string
-	IdentityHandle string
-	Address        string
-	Email          string
-	NamespaceSlug  string
-	DID            string
-	StableID       string
-	SigningKey     string
-	Custody        string
-	Lifetime       string
+	TeamID      string
+	WorkspaceID string
+	Alias       string
+	Address     string
+	Email       string
+	Domain      string
+	DID         string
+	StableID    string
+	SigningKey  string
+	Custody     string
+	Lifetime    string
+	RegistryURL string
 }
 
 type ResolveOptions struct {
@@ -34,12 +49,13 @@ type ResolveOptions struct {
 	WorkingDir string
 
 	BaseURLOverride string
-	APIKeyOverride  string
+
+	TeamIDOverride string
 
 	AllowEnvOverrides bool
 }
 
-func Resolve(opts ResolveOptions) (*Selection, error) {
+func ResolveWorkspace(opts ResolveOptions) (*Selection, error) {
 	workingDir := strings.TrimSpace(opts.WorkingDir)
 	if workingDir == "" {
 		wd, err := os.Getwd()
@@ -50,34 +66,20 @@ func Resolve(opts ResolveOptions) (*Selection, error) {
 	}
 
 	overrideBaseURL := strings.TrimSpace(opts.BaseURLOverride)
-	overrideAPIKey := strings.TrimSpace(opts.APIKeyOverride)
 	if opts.AllowEnvOverrides {
 		if v := strings.TrimSpace(os.Getenv("AWEB_URL")); v != "" {
 			overrideBaseURL = v
-		}
-		if v := strings.TrimSpace(os.Getenv("AWEB_API_KEY")); v != "" {
-			overrideAPIKey = v
 		}
 	}
 
 	workspace, workspacePath, err := LoadWorktreeWorkspaceFromDir(workingDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			if overrideBaseURL != "" && overrideAPIKey != "" {
-				if err := ValidateBaseURL(overrideBaseURL); err != nil {
-					return nil, fmt.Errorf("invalid base URL: %w", err)
-				}
-				serverName := strings.TrimSpace(opts.ServerName)
-				if serverName == "" {
-					derived, derr := DeriveServerNameFromURL(overrideBaseURL)
-					if derr != nil {
-						return nil, derr
-					}
-					serverName = derived
-				}
-				return finalizeWorkspaceSelection(workingDir, "", serverName, overrideBaseURL, overrideAPIKey, nil, nil), nil
+			// No workspace — check for a standalone identity (created by aw id create).
+			if identity, _, identityErr := LoadWorktreeIdentityFromDir(workingDir); identityErr == nil {
+				return finalizeStandaloneIdentitySelection(workingDir, identity), nil
 			}
-			return nil, errors.New("current directory is not initialized for aw; run `aw project create`, `aw init`, or `aw spawn accept-invite`")
+			return nil, errors.New("current directory is not initialized for aw; run `aw init` here or start with `aw run <provider>` in a TTY")
 		}
 		return nil, fmt.Errorf("invalid worktree workspace: %w", err)
 	}
@@ -89,16 +91,31 @@ func Resolve(opts ResolveOptions) (*Selection, error) {
 		return nil, fmt.Errorf("invalid worktree identity: %w", identityErr)
 	}
 
-	baseURL := strings.TrimSpace(workspace.ServerURL)
-	apiKey := strings.TrimSpace(workspace.APIKey)
+	baseURL := strings.TrimSpace(workspace.AwebURL)
 	if overrideBaseURL != "" {
 		baseURL = overrideBaseURL
 	}
-	if overrideAPIKey != "" {
-		apiKey = overrideAPIKey
+	selectedTeamID := strings.TrimSpace(opts.TeamIDOverride)
+	activeMembership := workspace.ActiveMembership()
+	selectedMembership := activeMembership
+	if selectedTeamID != "" {
+		selectedMembership = workspace.Membership(selectedTeamID)
+		if selectedMembership == nil {
+			return nil, fmt.Errorf("team %q is not present in workspace memberships; available: %s", selectedTeamID, strings.Join(workspace.AvailableTeamIDs(), ", "))
+		}
 	}
-	if baseURL == "" || apiKey == "" {
-		return nil, errors.New("worktree workspace binding is missing server_url or api_key")
+	teamID := ""
+	if selectedMembership != nil {
+		teamID = strings.TrimSpace(selectedMembership.TeamID)
+	}
+	if baseURL == "" {
+		return nil, errors.New("worktree workspace binding is missing aweb_url")
+	}
+	if teamID == "" {
+		if strings.TrimSpace(workspace.ActiveTeam) != "" {
+			return nil, fmt.Errorf("active team %q is not in memberships; run aw id team switch <valid-team>", workspace.ActiveTeam)
+		}
+		return nil, errors.New("worktree workspace binding is missing active_team membership")
 	}
 	if err := ValidateBaseURL(baseURL); err != nil {
 		return nil, fmt.Errorf("invalid base URL: %w", err)
@@ -112,36 +129,35 @@ func Resolve(opts ResolveOptions) (*Selection, error) {
 		}
 		serverName = derived
 	}
-	return finalizeWorkspaceSelection(workingDir, workspacePath, serverName, baseURL, apiKey, workspace, identity), nil
+	return finalizeWorkspaceSelection(workingDir, workspacePath, serverName, baseURL, workspace, identity, teamID), nil
 }
 
-func finalizeWorkspaceSelection(workingDir, workspacePath, serverName, baseURL, apiKey string, ws *WorktreeWorkspace, identity *WorktreeIdentity) *Selection {
-	namespaceSlug := ""
-	defaultProject := ""
-	identityHandle := ""
-	identityID := ""
+func finalizeWorkspaceSelection(workingDir, workspacePath, serverName, baseURL string, ws *WorktreeWorkspace, identity *WorktreeIdentity, selectedTeamID string) *Selection {
+	domain := ""
+	alias := ""
+	workspaceID := ""
+	teamID := ""
 	address := ""
 	did := ""
 	stableID := ""
 	signingKey := ""
 	custody := ""
 	lifetime := ""
+	registryURL := ""
+	awebURL := ""
 	if ws != nil {
-		namespaceSlug = strings.TrimSpace(ws.NamespaceSlug)
-		defaultProject = strings.TrimSpace(ws.ProjectSlug)
-		identityHandle = strings.TrimSpace(ws.IdentityHandle)
-		identityID = strings.TrimSpace(ws.IdentityID)
-		did = strings.TrimSpace(ws.DID)
-		stableID = strings.TrimSpace(ws.StableID)
-		signingKey = strings.TrimSpace(ws.SigningKey)
-		custody = strings.TrimSpace(ws.Custody)
-		lifetime = strings.TrimSpace(ws.Lifetime)
-		if namespaceSlug == "" {
-			namespaceSlug = defaultProject
+		selectedMembership := ws.Membership(selectedTeamID)
+		if selectedMembership == nil {
+			selectedMembership = ws.ActiveMembership()
 		}
-		if identityHandle == "" {
-			identityHandle = strings.TrimSpace(ws.Alias)
+		if selectedMembership != nil {
+			teamID = strings.TrimSpace(selectedMembership.TeamID)
+			teamDomain, _ := splitTeamID(teamID)
+			domain = teamDomain
+			alias = strings.TrimSpace(selectedMembership.Alias)
+			workspaceID = strings.TrimSpace(selectedMembership.WorkspaceID)
 		}
+		awebURL = strings.TrimSpace(ws.AwebURL)
 	}
 	if identity != nil {
 		if v := strings.TrimSpace(identity.Address); v != "" {
@@ -159,27 +175,79 @@ func finalizeWorkspaceSelection(workingDir, workspacePath, serverName, baseURL, 
 		if v := strings.TrimSpace(identity.Lifetime); v != "" {
 			lifetime = v
 		}
+		if v := strings.TrimSpace(identity.RegistryURL); v != "" {
+			registryURL = v
+		}
+		if alias == "" && strings.TrimSpace(identity.Address) != "" {
+			if _, handle, ok := CutIdentityAddress(identity.Address); ok {
+				alias = handle
+			}
+		}
+		if domain == "" && strings.TrimSpace(identity.Address) != "" {
+			if authority, _, ok := CutIdentityAddress(identity.Address); ok {
+				domain = authority
+			}
+		}
 		if strings.EqualFold(custody, "self") && strings.TrimSpace(workingDir) != "" {
 			signingKey = WorktreeSigningKeyPath(workingDir)
 		}
 	}
 	return &Selection{
-		WorkingDir:     strings.TrimSpace(workingDir),
-		WorkspacePath:  strings.TrimSpace(workspacePath),
-		ServerName:     serverName,
-		BaseURL:        baseURL,
-		APIKey:         apiKey,
-		DefaultProject: defaultProject,
-		IdentityID:     identityID,
-		IdentityHandle: identityHandle,
-		Address:        address,
-		NamespaceSlug:  namespaceSlug,
-		DID:            did,
-		StableID:       stableID,
-		SigningKey:     signingKey,
-		Custody:        custody,
-		Lifetime:       lifetime,
+		WorkingDir:    strings.TrimSpace(workingDir),
+		WorkspacePath: strings.TrimSpace(workspacePath),
+		ServerName:    serverName,
+		BaseURL:       baseURL,
+		AwebURL:       awebURL,
+		TeamID:        teamID,
+		WorkspaceID:   workspaceID,
+		Alias:         alias,
+		Address:       address,
+		Domain:        domain,
+		DID:           did,
+		StableID:      stableID,
+		SigningKey:    signingKey,
+		Custody:       custody,
+		Lifetime:      lifetime,
+		RegistryURL:   registryURL,
 	}
+}
+
+func finalizeStandaloneIdentitySelection(workingDir string, identity *WorktreeIdentity) *Selection {
+	did := strings.TrimSpace(identity.DID)
+	stableID := strings.TrimSpace(identity.StableID)
+	address := strings.TrimSpace(identity.Address)
+	custody := strings.TrimSpace(identity.Custody)
+	lifetime := strings.TrimSpace(identity.Lifetime)
+	signingKey := ""
+	if strings.EqualFold(custody, "self") {
+		signingKey = WorktreeSigningKeyPath(workingDir)
+	}
+	handle := ""
+	if address != "" {
+		if _, h, ok := CutIdentityAddress(address); ok {
+			handle = h
+		}
+	}
+	return &Selection{
+		WorkingDir:  workingDir,
+		DID:         did,
+		StableID:    stableID,
+		Address:     address,
+		Alias:       handle,
+		Domain:      domainFromAddress(address),
+		SigningKey:  signingKey,
+		Custody:     custody,
+		Lifetime:    lifetime,
+		RegistryURL: strings.TrimSpace(identity.RegistryURL),
+	}
+}
+
+func domainFromAddress(address string) string {
+	authority, _, ok := CutIdentityAddress(address)
+	if !ok {
+		return ""
+	}
+	return authority
 }
 
 func DeriveBaseURLFromServerName(name string) (string, error) {

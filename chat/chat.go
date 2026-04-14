@@ -13,7 +13,28 @@ import (
 	"time"
 
 	awid "github.com/awebai/aw/awid"
+	"github.com/awebai/aw/internal/identityutil"
 )
+
+type signedEnvelopeMetadata struct {
+	From         string `json:"from"`
+	To           string `json:"to"`
+	FromDID      string `json:"from_did"`
+	ToDID        string `json:"to_did"`
+	FromStableID string `json:"from_stable_id"`
+	ToStableID   string `json:"to_stable_id"`
+}
+
+func parseSignedEnvelopeMetadata(payload string) (signedEnvelopeMetadata, bool) {
+	if payload == "" {
+		return signedEnvelopeMetadata{}, false
+	}
+	var meta signedEnvelopeMetadata
+	if err := json.Unmarshal([]byte(payload), &meta); err != nil {
+		return signedEnvelopeMetadata{}, false
+	}
+	return meta, true
+}
 
 const DefaultWait = 120 // Default wait timeout in seconds for replies
 
@@ -25,6 +46,24 @@ const maxStreamDeadline = 15 * time.Minute
 // MaxSendTimeout is the maximum duration a Send() call can take,
 // accounting for all possible wait extensions.
 const MaxSendTimeout = 16 * time.Minute
+
+func classifyChatTargets(targets []string) (aliases []string, dids []string, addresses []string) {
+	for _, target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(target, "did:"):
+			dids = append(dids, target)
+		case strings.Contains(target, "/"):
+			addresses = append(addresses, target)
+		default:
+			aliases = append(aliases, target)
+		}
+	}
+	return aliases, dids, addresses
+}
 
 // sseResult wraps an SSE event or error for channel-based processing.
 type sseResult struct {
@@ -72,6 +111,7 @@ func parseSSEEvent(sseEvent *awid.SSEEvent) Event {
 	ev := Event{
 		Type: sseEvent.Event,
 	}
+	signedPayload := ""
 
 	var data map[string]any
 	if err := json.Unmarshal([]byte(sseEvent.Data), &data); err != nil {
@@ -146,6 +186,9 @@ func parseSSEEvent(sseEvent *awid.SSEEvent) Event {
 	if v, ok := data["signing_key_id"].(string); ok {
 		ev.SigningKeyID = v
 	}
+	if v, ok := data["signed_payload"].(string); ok {
+		signedPayload = v
+	}
 	if v, ok := data["is_contact"].(bool); ok {
 		ev.IsContact = &v
 	}
@@ -186,6 +229,27 @@ func parseSSEEvent(sseEvent *awid.SSEEvent) Event {
 		}
 	}
 
+	if meta, ok := parseSignedEnvelopeMetadata(signedPayload); ok {
+		if ev.FromDID == "" {
+			ev.FromDID = meta.FromDID
+		}
+		if ev.ToDID == "" {
+			ev.ToDID = meta.ToDID
+		}
+		if ev.FromStableID == "" {
+			ev.FromStableID = meta.FromStableID
+		}
+		if ev.ToStableID == "" {
+			ev.ToStableID = meta.ToStableID
+		}
+		if ev.FromAddress == "" {
+			ev.FromAddress = meta.From
+		}
+		if ev.ToAddress == "" {
+			ev.ToAddress = meta.To
+		}
+	}
+
 	// Verify message signature when identity fields are present.
 	from := ev.FromAgent
 	if ev.FromAddress != "" {
@@ -206,9 +270,371 @@ func parseSSEEvent(sseEvent *awid.SSEEvent) Event {
 		SigningKeyID: ev.SigningKeyID,
 	}
 	// Error is encoded in VerificationStatus; discard it.
-	ev.VerificationStatus, _ = awid.VerifyMessage(env)
+	if signedPayload != "" {
+		ev.VerificationStatus, _ = awid.VerifySignedPayload(signedPayload, ev.Signature, ev.FromDID, ev.SigningKeyID)
+	} else {
+		ev.VerificationStatus, _ = awid.VerifyMessage(env)
+	}
 
 	return ev
+}
+
+func addressHandle(value string) string {
+	return identityutil.HandleFromAddress(value)
+}
+
+func stableAlias(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "did:aw:") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(value, "did:aw:"))
+}
+
+type chatParticipantRow struct {
+	Alias    string
+	Address  string
+	DID      string
+	StableID string
+}
+
+func newChatParticipantRow(alias string, address string, did string) chatParticipantRow {
+	row := chatParticipantRow{
+		Alias:   strings.TrimSpace(alias),
+		Address: strings.TrimSpace(address),
+		DID:     strings.TrimSpace(did),
+	}
+	if strings.HasPrefix(row.DID, "did:aw:") {
+		row.StableID = row.DID
+	}
+	return row
+}
+
+func chatParticipantRows(participants []string, participantDIDs []string, participantAddresses []string) []chatParticipantRow {
+	maxLen := len(participants)
+	if len(participantDIDs) > maxLen {
+		maxLen = len(participantDIDs)
+	}
+	if len(participantAddresses) > maxLen {
+		maxLen = len(participantAddresses)
+	}
+	rows := make([]chatParticipantRow, 0, maxLen)
+	for i := 0; i < maxLen; i++ {
+		alias := ""
+		if i < len(participants) {
+			alias = participants[i]
+		}
+		address := ""
+		if i < len(participantAddresses) {
+			address = participantAddresses[i]
+		}
+		did := ""
+		if i < len(participantDIDs) {
+			did = participantDIDs[i]
+		}
+		rows = append(rows, newChatParticipantRow(alias, address, did))
+	}
+	return rows
+}
+
+func chatParticipantRowFromParticipant(participant awid.ChatParticipant) chatParticipantRow {
+	return newChatParticipantRow(participant.Alias, participant.Address, participant.DID)
+}
+
+func (row chatParticipantRow) identityValues() []string {
+	return []string{row.Alias, row.Address, row.DID}
+}
+
+func (row chatParticipantRow) matchesTarget(target string) bool {
+	for _, candidate := range row.identityValues() {
+		if chatIdentityMatchesTarget(candidate, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func (row chatParticipantRow) matchesSessionTarget(target string) bool {
+	for _, candidate := range row.identityValues() {
+		if chatSessionIdentityMatchesTarget(candidate, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func (row chatParticipantRow) matchesStrongIdentity(kind string, target string) bool {
+	switch kind {
+	case "address":
+		return chatIdentityMatchesTarget(row.Address, target)
+	case "did":
+		return chatIdentityMatchesTarget(row.DID, target)
+	default:
+		return false
+	}
+}
+
+func (row chatParticipantRow) concreteIdentityKey() string {
+	if row.StableID != "" {
+		return row.StableID
+	}
+	if row.DID != "" {
+		return row.DID
+	}
+	return row.Address
+}
+
+func (row chatParticipantRow) label() string {
+	if row.Address != "" {
+		return row.Address
+	}
+	if row.StableID != "" {
+		return row.StableID
+	}
+	if row.DID != "" {
+		return row.DID
+	}
+	return row.Alias
+}
+
+func preferredChatIdentityLabel(alias string, address string, stableID string, did string) string {
+	row := newChatParticipantRow(alias, address, did)
+	if stableID = strings.TrimSpace(stableID); stableID != "" {
+		row.StableID = stableID
+	}
+	return row.label()
+}
+
+func chatIdentityMatchesTarget(candidate string, target string) bool {
+	candidate = strings.TrimSpace(candidate)
+	target = strings.TrimSpace(target)
+	if candidate == "" || target == "" {
+		return false
+	}
+	if strings.EqualFold(candidate, target) {
+		return true
+	}
+	if alias := stableAlias(candidate); alias != "" && strings.EqualFold(alias, target) {
+		return true
+	}
+	if alias := stableAlias(target); alias != "" && strings.EqualFold(alias, candidate) {
+		return true
+	}
+	if handle := addressHandle(candidate); handle != "" && strings.EqualFold(handle, target) {
+		return true
+	}
+	if handle := addressHandle(target); handle != "" && strings.EqualFold(handle, candidate) {
+		return true
+	}
+	return false
+}
+
+func chatSessionIdentityMatchesTarget(candidate string, target string) bool {
+	candidate = strings.TrimSpace(candidate)
+	target = strings.TrimSpace(target)
+	if candidate == "" || target == "" {
+		return false
+	}
+	if strings.EqualFold(candidate, target) {
+		return true
+	}
+	if alias := stableAlias(candidate); alias != "" && strings.EqualFold(alias, target) {
+		return true
+	}
+	if alias := stableAlias(target); alias != "" && strings.EqualFold(alias, candidate) {
+		return true
+	}
+	if !strings.HasPrefix(target, "did:") && !strings.Contains(target, "/") {
+		if handle := addressHandle(candidate); handle != "" && strings.EqualFold(handle, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func exactParticipantMatch(participants []string, participantDIDs []string, participantAddresses []string, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, row := range chatParticipantRows(participants, participantDIDs, participantAddresses) {
+		if row.matchesSessionTarget(target) {
+			return true
+		}
+	}
+	return false
+}
+
+func participantIdentityCount(participants []string, participantDIDs []string, participantAddresses []string) int {
+	return len(chatParticipantRows(participants, participantDIDs, participantAddresses))
+}
+
+func pendingParticipantIdentityAt(participants []string, participantDIDs []string, participantAddresses []string, idx int) (alias, address, did string) {
+	rows := chatParticipantRows(participants, participantDIDs, participantAddresses)
+	if idx >= 0 && idx < len(rows) {
+		row := rows[idx]
+		return row.Alias, row.Address, row.DID
+	}
+	return "", "", ""
+}
+
+func pendingParticipantIdentityByLastFrom(participants []string, participantDIDs []string, participantAddresses []string, lastFrom string) (address, stableID, did string) {
+	lastFrom = strings.TrimSpace(lastFrom)
+	if lastFrom == "" {
+		return "", "", ""
+	}
+	matchAddress := ""
+	matchStableID := ""
+	matchDID := ""
+	matches := 0
+	for _, row := range chatParticipantRows(participants, participantDIDs, participantAddresses) {
+		if !row.matchesSessionTarget(lastFrom) {
+			continue
+		}
+		matches++
+		if matches > 1 {
+			return "", "", ""
+		}
+		matchAddress = row.Address
+		if row.StableID != "" {
+			matchStableID = row.StableID
+			matchDID = ""
+		} else {
+			matchStableID = ""
+			matchDID = row.DID
+		}
+	}
+	return matchAddress, matchStableID, matchDID
+}
+
+func unanimousChatRowValue(rows []chatParticipantRow, pick func(chatParticipantRow) string) string {
+	candidate := ""
+	for _, row := range rows {
+		value := strings.TrimSpace(pick(row))
+		if value == "" {
+			continue
+		}
+		if candidate != "" && !strings.EqualFold(candidate, value) {
+			return ""
+		}
+		candidate = value
+	}
+	return candidate
+}
+
+func unanimousPendingParticipantIdentity(participants []string, participantDIDs []string, participantAddresses []string) (address, stableID, did string) {
+	rows := chatParticipantRows(participants, participantDIDs, participantAddresses)
+	address = unanimousChatRowValue(rows, func(row chatParticipantRow) string { return row.Address })
+	stableID = unanimousChatRowValue(rows, func(row chatParticipantRow) string { return row.StableID })
+	if stableID == "" {
+		did = unanimousChatRowValue(rows, func(row chatParticipantRow) string {
+			if row.StableID != "" {
+				return ""
+			}
+			return row.DID
+		})
+	}
+	return address, stableID, did
+}
+
+func matchedParticipantIdentityKeys(participants []string, participantDIDs []string, participantAddresses []string, target string) []string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return nil
+	}
+	keys := []string{}
+	appendUnique := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		for _, existing := range keys {
+			if strings.EqualFold(existing, value) {
+				return
+			}
+		}
+		keys = append(keys, value)
+	}
+	for _, row := range chatParticipantRows(participants, participantDIDs, participantAddresses) {
+		if !row.matchesSessionTarget(target) {
+			continue
+		}
+		if key := row.concreteIdentityKey(); key != "" {
+			appendUnique(key)
+		}
+	}
+	return keys
+}
+
+func normalizeMatchedIdentityKeys(ctx context.Context, client *awid.Client, keys []string) []string {
+	if len(keys) == 0 || client == nil {
+		return keys
+	}
+	normalized := []string{}
+	appendUnique := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		for _, existing := range normalized {
+			if strings.EqualFold(existing, value) {
+				return
+			}
+		}
+		normalized = append(normalized, value)
+	}
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if identity, err := client.ResolveIdentity(ctx, key); err == nil && identity != nil {
+			if stableID := strings.TrimSpace(identity.StableID); stableID != "" {
+				appendUnique(stableID)
+				continue
+			}
+			if did := strings.TrimSpace(identity.DID); did != "" {
+				appendUnique(did)
+				continue
+			}
+		}
+		appendUnique(key)
+	}
+	return normalized
+}
+
+func uniqueHandleParticipantMatch(participants []string, _ []string, _ []string, target string) bool {
+	handle := addressHandle(target)
+	if handle == "" {
+		return false
+	}
+	for _, participant := range participants {
+		if strings.TrimSpace(participant) == handle {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeSessionTarget(ctx context.Context, client *awid.Client, target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" || !strings.HasPrefix(target, "did:") || client == nil {
+		return target
+	}
+	identity, err := client.ResolveIdentity(ctx, target)
+	if err != nil || identity == nil {
+		return target
+	}
+	if address := strings.TrimSpace(identity.Address); address != "" {
+		return address
+	}
+	if handle := strings.TrimSpace(identity.Handle); handle != "" {
+		return handle
+	}
+	if did := strings.TrimSpace(identity.DID); did != "" {
+		return did
+	}
+	return target
 }
 
 // findSession finds the session ID for a conversation with targetAlias.
@@ -223,41 +649,99 @@ func parseSSEEvent(sseEvent *awid.SSEEvent) Event {
 //  1. smallest participant count
 //  2. most recent CreatedAt (tiebreaker)
 func findSession(ctx context.Context, client *awid.Client, targetAlias string) (sessionID string, senderWaiting bool, err error) {
+	rawTarget := strings.TrimSpace(targetAlias)
+	targetAlias = normalizeSessionTarget(ctx, client, rawTarget)
+	requireUniqueExact := strings.HasPrefix(rawTarget, "did:") &&
+		targetAlias != "" &&
+		targetAlias != rawTarget &&
+		!strings.Contains(targetAlias, "/")
+	requireUniqueConcreteAlias := rawTarget != "" &&
+		!strings.HasPrefix(rawTarget, "did:") &&
+		!strings.Contains(rawTarget, "/")
 	pendingResp, err := client.ChatPending(ctx)
 	if err != nil {
 		return "", false, fmt.Errorf("getting pending chats: %w", err)
 	}
 
-	var bestPendingID string
-	var bestPendingWaiting bool
-	var bestPendingActivity string
-	bestPendingSize := 0
-	for _, p := range pendingResp.Pending {
-		for _, participant := range p.Participants {
-			if participant != targetAlias {
+	selectPending := func(match func([]string, []string, []string, string) bool, requireUnique bool, trackConcreteIdentity bool) (string, bool, error) {
+		var bestPendingID string
+		var bestPendingWaiting bool
+		var bestPendingActivity string
+		bestPendingSize := -1
+		matchCount := 0
+		identityKeys := []string{}
+		appendIdentityKey := func(value string) {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				return
+			}
+			for _, existing := range identityKeys {
+				if strings.EqualFold(existing, value) {
+					return
+				}
+			}
+			identityKeys = append(identityKeys, value)
+		}
+		for _, p := range pendingResp.Pending {
+			if !match(p.Participants, p.ParticipantDIDs, p.ParticipantAddresses, targetAlias) {
 				continue
 			}
-			better := bestPendingSize == 0
+			matchCount++
+			if trackConcreteIdentity {
+				for _, key := range matchedParticipantIdentityKeys(p.Participants, p.ParticipantDIDs, p.ParticipantAddresses, targetAlias) {
+					appendIdentityKey(key)
+				}
+			}
+			size := participantIdentityCount(p.Participants, p.ParticipantDIDs, p.ParticipantAddresses)
+			better := bestPendingSize < 0
 			if !better {
 				// Prefer sender_waiting over non-waiting.
 				if p.SenderWaiting && !bestPendingWaiting {
 					better = true
 				} else if !p.SenderWaiting && bestPendingWaiting {
 					better = false
-				} else if len(p.Participants) < bestPendingSize {
+				} else if size < bestPendingSize {
 					better = true
-				} else if len(p.Participants) == bestPendingSize && p.LastActivity > bestPendingActivity {
+				} else if size == bestPendingSize && p.LastActivity > bestPendingActivity {
 					better = true
 				}
 			}
 			if better {
 				bestPendingID = p.SessionID
 				bestPendingWaiting = p.SenderWaiting
-				bestPendingSize = len(p.Participants)
+				bestPendingSize = size
 				bestPendingActivity = p.LastActivity
 			}
-			break
 		}
+		if requireUnique && matchCount > 1 {
+			if trackConcreteIdentity && len(identityKeys) > 1 {
+				identityKeys = normalizeMatchedIdentityKeys(ctx, client, identityKeys)
+			}
+			if !(trackConcreteIdentity && len(identityKeys) == 1) {
+				return "", false, fmt.Errorf("multiple conversations match %s; run `aw chat pending` to choose one", targetAlias)
+			}
+		}
+		if requireUniqueConcreteAlias && trackConcreteIdentity && len(identityKeys) > 1 {
+			identityKeys = normalizeMatchedIdentityKeys(ctx, client, identityKeys)
+		}
+		if requireUniqueConcreteAlias && trackConcreteIdentity && len(identityKeys) > 1 {
+			return "", false, fmt.Errorf("multiple conversations match %s; run `aw chat pending` to choose one", targetAlias)
+		}
+		if bestPendingID != "" {
+			return bestPendingID, bestPendingWaiting, nil
+		}
+		return "", false, nil
+	}
+	bestPendingID, bestPendingWaiting, err := selectPending(exactParticipantMatch, requireUniqueExact, true)
+	if err != nil {
+		return "", false, err
+	}
+	if bestPendingID != "" {
+		return bestPendingID, bestPendingWaiting, nil
+	}
+	bestPendingID, bestPendingWaiting, err = selectPending(uniqueHandleParticipantMatch, true, false)
+	if err != nil {
+		return "", false, err
 	}
 	if bestPendingID != "" {
 		return bestPendingID, bestPendingWaiting, nil
@@ -268,29 +752,75 @@ func findSession(ctx context.Context, client *awid.Client, targetAlias string) (
 	if err != nil {
 		return "", false, fmt.Errorf("listing chat sessions: %w", err)
 	}
-	var bestSessionID string
-	var bestSessionCreated string
-	bestSessionSize := 0
-	for _, s := range sessionsResp.Sessions {
-		for _, participant := range s.Participants {
-			if participant != targetAlias {
+	selectSession := func(match func([]string, []string, []string, string) bool, requireUnique bool, trackConcreteIdentity bool) (string, error) {
+		var bestSessionID string
+		var bestSessionCreated string
+		bestSessionSize := -1
+		matchCount := 0
+		identityKeys := []string{}
+		appendIdentityKey := func(value string) {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				return
+			}
+			for _, existing := range identityKeys {
+				if strings.EqualFold(existing, value) {
+					return
+				}
+			}
+			identityKeys = append(identityKeys, value)
+		}
+		for _, s := range sessionsResp.Sessions {
+			if !match(s.Participants, s.ParticipantDIDs, s.ParticipantAddresses, targetAlias) {
 				continue
 			}
-			better := bestSessionSize == 0
+			matchCount++
+			if trackConcreteIdentity {
+				for _, key := range matchedParticipantIdentityKeys(s.Participants, s.ParticipantDIDs, s.ParticipantAddresses, targetAlias) {
+					appendIdentityKey(key)
+				}
+			}
+			size := participantIdentityCount(s.Participants, s.ParticipantDIDs, s.ParticipantAddresses)
+			better := bestSessionSize < 0
 			if !better {
-				if len(s.Participants) < bestSessionSize {
+				if size < bestSessionSize {
 					better = true
-				} else if len(s.Participants) == bestSessionSize && s.CreatedAt > bestSessionCreated {
+				} else if size == bestSessionSize && s.CreatedAt > bestSessionCreated {
 					better = true
 				}
 			}
 			if better {
 				bestSessionID = s.SessionID
-				bestSessionSize = len(s.Participants)
+				bestSessionSize = size
 				bestSessionCreated = s.CreatedAt
 			}
-			break
 		}
+		if requireUnique && matchCount > 1 {
+			if trackConcreteIdentity && len(identityKeys) > 1 {
+				identityKeys = normalizeMatchedIdentityKeys(ctx, client, identityKeys)
+			}
+			if !(trackConcreteIdentity && len(identityKeys) == 1) {
+				return "", fmt.Errorf("multiple conversations match %s; run `aw chat pending` to choose one", targetAlias)
+			}
+		}
+		if requireUniqueConcreteAlias && trackConcreteIdentity && len(identityKeys) > 1 {
+			identityKeys = normalizeMatchedIdentityKeys(ctx, client, identityKeys)
+		}
+		if requireUniqueConcreteAlias && trackConcreteIdentity && len(identityKeys) > 1 {
+			return "", fmt.Errorf("multiple conversations match %s; run `aw chat pending` to choose one", targetAlias)
+		}
+		return bestSessionID, nil
+	}
+	bestSessionID, err := selectSession(exactParticipantMatch, requireUniqueExact, true)
+	if err != nil {
+		return "", false, err
+	}
+	if bestSessionID != "" {
+		return bestSessionID, false, nil
+	}
+	bestSessionID, err = selectSession(uniqueHandleParticipantMatch, true, false)
+	if err != nil {
+		return "", false, err
 	}
 	if bestSessionID != "" {
 		return bestSessionID, false, nil
@@ -376,7 +906,7 @@ type messageAcceptor func(ev Event) (accept, skip bool)
 // waitForMessage opens an SSE stream and waits for a message matching the acceptor.
 // Handles read receipts, extend-wait messages, and wait extensions.
 // after controls SSE replay: non-nil replays messages after that timestamp; nil skips replay.
-func waitForMessage(ctx context.Context, client *awid.Client, openStream streamOpener, sessionID string, waitSeconds int, after *time.Time, callback StatusCallback, accept messageAcceptor) (*SendResult, error) {
+func waitForMessage(ctx context.Context, client *awid.Client, openStream streamOpener, sessionID string, participants []awid.ChatParticipant, selfAlias string, waitSeconds int, after *time.Time, callback StatusCallback, accept messageAcceptor) (*SendResult, error) {
 	result := &SendResult{
 		SessionID: sessionID,
 		Status:    "timeout",
@@ -460,13 +990,15 @@ func waitForMessage(ctx context.Context, client *awid.Client, openStream streamO
 			}
 
 			chatEvent := parseSSEEvent(sr.event)
-			tofuFrom := chatEvent.FromAgent
-			if chatEvent.FromAddress != "" {
-				tofuFrom = chatEvent.FromAddress
-			}
+			tofuFrom := chatEventTrustAddress(chatEvent, participants)
 			chatEvent.VerificationStatus, chatEvent.IsContact = client.NormalizeSenderTrust(ctx, chatEvent.VerificationStatus, tofuFrom, chatEvent.FromDID, chatEvent.FromStableID, chatEvent.RotationAnnouncement, chatEvent.ReplacementAnnouncement, chatEvent.IsContact)
+			chatEvent.VerificationStatus = client.NormalizeRecipientBinding(chatEvent.VerificationStatus, chatEvent.ToDID, chatEvent.ToStableID)
 
 			if chatEvent.Type == "read_receipt" {
+				readerLabel := inferReadReceiptLabel(ctx, client, selfAlias, chatEvent.ReaderAlias, participants)
+				if readerLabel != "" {
+					chatEvent.ReaderAlias = readerLabel
+				}
 				result.Events = append(result.Events, chatEvent)
 				if callback != nil {
 					callback("read_receipt", fmt.Sprintf("%s opened the conversation", chatEvent.ReaderAlias))
@@ -490,11 +1022,12 @@ func waitForMessage(ctx context.Context, client *awid.Client, openStream streamO
 				}
 
 				if chatEvent.ExtendWait {
+					from := chatEventSenderLabel(chatEvent, participants)
 					if callback != nil {
-						callback("extend_wait", fmt.Sprintf("%s: %s", chatEvent.FromAgent, chatEvent.Body))
+						callback("extend_wait", fmt.Sprintf("%s: %s", from, chatEvent.Body))
 					}
 					if chatEvent.ExtendsWaitSeconds > 0 {
-						extendWait(chatEvent.ExtendsWaitSeconds, fmt.Sprintf("%s requested more time", chatEvent.FromAgent))
+						extendWait(chatEvent.ExtendsWaitSeconds, fmt.Sprintf("%s requested more time", from))
 					}
 					continue
 				}
@@ -526,6 +1059,7 @@ func isCleanEOF(err error) bool {
 type sendResponse struct {
 	SessionID        string
 	MessageID        string
+	Participants     []awid.ChatParticipant
 	TargetsConnected []string
 	TargetsLeft      []string
 }
@@ -546,10 +1080,13 @@ func Send(ctx context.Context, client *awid.Client, myAlias string, targets []st
 		waitSeconds = 300
 	}
 
+	aliases, dids, addresses := classifyChatTargets(targets)
 	req := &awid.ChatCreateSessionRequest{
-		ToAliases: targets,
-		Message:   message,
-		Leaving:   opts.Leaving,
+		ToAliases:   aliases,
+		ToDIDs:      dids,
+		ToAddresses: addresses,
+		Message:     message,
+		Leaving:     opts.Leaving,
 	}
 	if waitSeconds > 0 {
 		req.WaitSeconds = &waitSeconds
@@ -562,6 +1099,7 @@ func Send(ctx context.Context, client *awid.Client, myAlias string, targets []st
 	return sendCommon(ctx, client, client.ChatStream, sendResponse{
 		SessionID:        createResp.SessionID,
 		MessageID:        createResp.MessageID,
+		Participants:     createResp.Participants,
 		TargetsConnected: createResp.TargetsConnected,
 		TargetsLeft:      createResp.TargetsLeft,
 	}, myAlias, targets, message, waitSeconds, opts, &sentAt, callback)
@@ -577,6 +1115,10 @@ func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpene
 		TargetAgent: strings.Join(targets, ", "),
 		Events:      []Event{},
 	}
+	targetStatusNames := make([][]string, 0, len(targets))
+	for _, target := range targets {
+		targetStatusNames = append(targetStatusNames, normalizedChatTargetNames(ctx, client, target, resp.Participants))
+	}
 
 	if opts.Leaving {
 		return result, nil
@@ -589,8 +1131,9 @@ func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpene
 	// Check if any target has left
 	targetHasLeft := false
 	for _, leftAlias := range resp.TargetsLeft {
-		for _, target := range targets {
-			if leftAlias == target {
+		leftNames := normalizedChatTargetNames(ctx, client, leftAlias, resp.Participants)
+		for _, targetNames := range targetStatusNames {
+			if chatTargetNameListsOverlap(targetNames, leftNames) {
 				targetHasLeft = true
 				break
 			}
@@ -607,10 +1150,11 @@ func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpene
 
 	// Check target connection status (informational)
 	allTargetsConnected := true
-	for _, target := range targets {
+	for _, targetNames := range targetStatusNames {
 		found := false
 		for _, alias := range resp.TargetsConnected {
-			if alias == target {
+			connectedNames := normalizedChatTargetNames(ctx, client, alias, resp.Participants)
+			if chatTargetNameListsOverlap(targetNames, connectedNames) {
 				found = true
 				break
 			}
@@ -636,15 +1180,16 @@ func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpene
 			}
 			return false, true
 		}
-		for _, target := range targets {
-			if ev.FromAgent == target {
+		eventNames := normalizedChatEventNames(ev, resp.Participants)
+		for _, targetNames := range targetStatusNames {
+			if chatTargetNameListsOverlap(targetNames, eventNames) {
 				return true, false
 			}
 		}
 		return false, false
 	}
 
-	waitResult, err := waitForMessage(ctx, client, openStream, resp.SessionID, resolvedWait, after, callback, acceptor)
+	waitResult, err := waitForMessage(ctx, client, openStream, resp.SessionID, resp.Participants, myAlias, resolvedWait, after, callback, acceptor)
 	if err != nil {
 		return nil, err
 	}
@@ -669,7 +1214,7 @@ func Listen(ctx context.Context, client *awid.Client, targetAlias string, waitSe
 
 	acceptAll := func(ev Event) (bool, bool) { return true, false }
 
-	result, err := waitForMessage(ctx, client, client.ChatStream, sessionID, waitSeconds, nil, callback, acceptAll)
+	result, err := waitForMessage(ctx, client, client.ChatStream, sessionID, nil, "", waitSeconds, nil, callback, acceptAll)
 	if err != nil {
 		return nil, err
 	}
@@ -758,11 +1303,32 @@ func Pending(ctx context.Context, client *awid.Client) (*PendingResult, error) {
 		MessagesWaiting: resp.MessagesWaiting,
 	}
 	for _, p := range resp.Pending {
+		mappedAddress, mappedStableID, mappedDID := pendingParticipantIdentityByLastFrom(
+			p.Participants,
+			p.ParticipantDIDs,
+			p.ParticipantAddresses,
+			p.LastFrom,
+		)
+		lastFromAddress := strings.TrimSpace(p.LastFromAddress)
+		if lastFromAddress == "" {
+			lastFromAddress = mappedAddress
+		}
+		lastFromStableID := strings.TrimSpace(p.LastFromStableID)
+		lastFromDID := strings.TrimSpace(p.LastFromDID)
+		if lastFromStableID == "" && lastFromDID == "" {
+			lastFromStableID = mappedStableID
+			lastFromDID = mappedDID
+		}
 		result.Pending = append(result.Pending, PendingConversation{
 			SessionID:            p.SessionID,
 			Participants:         p.Participants,
+			ParticipantDIDs:      p.ParticipantDIDs,
+			ParticipantAddresses: p.ParticipantAddresses,
 			LastMessage:          p.LastMessage,
 			LastFrom:             p.LastFrom,
+			LastFromStableID:     lastFromStableID,
+			LastFromDID:          lastFromDID,
+			LastFromAddress:      lastFromAddress,
 			UnreadCount:          p.UnreadCount,
 			LastActivity:         p.LastActivity,
 			SenderWaiting:        p.SenderWaiting,
@@ -798,32 +1364,468 @@ func ExtendWait(ctx context.Context, client *awid.Client, targetAlias string, me
 
 // ShowPending shows the pending conversation with a specific agent.
 func ShowPending(ctx context.Context, client *awid.Client, targetAlias string) (*SendResult, error) {
+	sessionID, _, err := findSession(ctx, client, targetAlias)
+	if err != nil {
+		return nil, err
+	}
+
 	pendingResp, err := client.ChatPending(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("getting pending chats: %w", err)
 	}
 
 	for _, p := range pendingResp.Pending {
-		for _, participant := range p.Participants {
-			if participant == targetAlias {
-				return &SendResult{
-					SessionID:     p.SessionID,
-					Status:        "pending",
-					TargetAgent:   targetAlias,
-					Reply:         p.LastMessage,
-					SenderWaiting: p.SenderWaiting,
-					Events: []Event{
-						{
-							Type:      "message",
-							FromAgent: p.LastFrom,
-							Body:      p.LastMessage,
-							Timestamp: p.LastActivity,
-						},
-					},
-				}, nil
+		if p.SessionID != sessionID {
+			continue
+		}
+		mappedAddress, mappedStableID, mappedDID := pendingParticipantIdentityByLastFrom(
+			p.Participants,
+			p.ParticipantDIDs,
+			p.ParticipantAddresses,
+			p.LastFrom,
+		)
+		fromAddress := strings.TrimSpace(p.LastFromAddress)
+		if fromAddress == "" {
+			fromAddress = mappedAddress
+		}
+		if fromAddress == "" {
+			unanimousAddress, _, _ := unanimousPendingParticipantIdentity(
+				p.Participants,
+				p.ParticipantDIDs,
+				p.ParticipantAddresses,
+			)
+			fromAddress = unanimousAddress
+		}
+		fromStableID := ""
+		fromDID := ""
+		if value := strings.TrimSpace(p.LastFromStableID); value != "" {
+			fromStableID = value
+		}
+		if fromStableID == "" && fromDID == "" {
+			fromStableID = mappedStableID
+			fromDID = mappedDID
+		}
+		if fromStableID == "" {
+			if value := strings.TrimSpace(p.LastFromDID); value != "" {
+				if strings.HasPrefix(value, "did:aw:") {
+					fromStableID = value
+				} else {
+					fromDID = value
+				}
 			}
 		}
+		if fromStableID == "" {
+			_, unanimousStableID, _ := unanimousPendingParticipantIdentity(
+				p.Participants,
+				p.ParticipantDIDs,
+				p.ParticipantAddresses,
+			)
+			fromStableID = unanimousStableID
+		}
+		return &SendResult{
+			SessionID:     p.SessionID,
+			Status:        "pending",
+			TargetAgent:   targetAlias,
+			Reply:         p.LastMessage,
+			SenderWaiting: p.SenderWaiting,
+			Events: []Event{
+				{
+					Type:         "message",
+					FromAgent:    p.LastFrom,
+					FromAddress:  fromAddress,
+					FromStableID: fromStableID,
+					FromDID:      fromDID,
+					Body:         p.LastMessage,
+					Timestamp:    p.LastActivity,
+				},
+			},
+		}, nil
 	}
 
 	return nil, fmt.Errorf("no pending conversation with %s", targetAlias)
+}
+
+func chatEventMatchesTarget(ev Event, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, candidate := range []string{
+		strings.TrimSpace(ev.FromAgent),
+		strings.TrimSpace(ev.FromAddress),
+		strings.TrimSpace(ev.FromStableID),
+		strings.TrimSpace(ev.FromDID),
+	} {
+		if candidate != "" && candidate == target {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedChatEventNames(ev Event, participants []awid.ChatParticipant) []string {
+	names := []string{}
+	appendUnique := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		for _, existing := range names {
+			if existing == value {
+				return
+			}
+		}
+		names = append(names, value)
+	}
+
+	hasStrongIdentity := strings.TrimSpace(ev.FromAddress) != "" ||
+		strings.TrimSpace(ev.FromStableID) != "" ||
+		strings.TrimSpace(ev.FromDID) != ""
+
+	for _, value := range []string{
+		ev.FromAddress,
+		ev.FromStableID,
+		ev.FromDID,
+		addressHandle(ev.FromAddress),
+	} {
+		appendUnique(value)
+	}
+
+	matchedParticipants := matchingChatParticipantsForEventIdentity(participants, ev)
+	for _, match := range matchedParticipants {
+		appendUnique(strings.TrimSpace(match.Alias))
+		appendUnique(strings.TrimSpace(match.Address))
+		appendUnique(strings.TrimSpace(match.DID))
+	}
+	if !hasStrongIdentity || len(participants) == 0 {
+		appendUnique(ev.FromAgent)
+	}
+
+	return names
+}
+
+func normalizedChatTargetNames(ctx context.Context, client *awid.Client, target string, participants []awid.ChatParticipant) []string {
+	names := []string{}
+	appendUnique := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		for _, existing := range names {
+			if existing == value {
+				return
+			}
+		}
+		names = append(names, value)
+	}
+	removeValue := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		filtered := names[:0]
+		for _, existing := range names {
+			if !strings.EqualFold(existing, value) {
+				filtered = append(filtered, existing)
+			}
+		}
+		names = filtered
+	}
+	appendResolved := func(identifier string) {
+		identifier = strings.TrimSpace(identifier)
+		if identifier == "" || client == nil {
+			return
+		}
+		if !strings.HasPrefix(identifier, "did:") && !strings.Contains(identifier, "/") {
+			return
+		}
+		identity, err := client.ResolveIdentity(ctx, identifier)
+		if err != nil || identity == nil {
+			return
+		}
+		appendUnique(strings.TrimSpace(identity.Address))
+		appendUnique(strings.TrimSpace(identity.StableID))
+		appendUnique(strings.TrimSpace(identity.DID))
+	}
+
+	appendUnique(target)
+	normalized := normalizeSessionTarget(ctx, client, target)
+	appendUnique(normalized)
+	appendResolved(target)
+	appendResolved(normalized)
+	participantAliasIsUnique := func(alias string) bool {
+		alias = strings.TrimSpace(alias)
+		if alias == "" {
+			return false
+		}
+		matches := 0
+		for _, participant := range participants {
+			if strings.EqualFold(strings.TrimSpace(participant.Alias), alias) {
+				matches++
+				if matches > 1 {
+					return false
+				}
+			}
+		}
+		return matches == 1
+	}
+	appendParticipant := func(participant awid.ChatParticipant) {
+		if alias := strings.TrimSpace(participant.Alias); participantAliasIsUnique(alias) {
+			appendUnique(alias)
+		}
+		appendUnique(strings.TrimSpace(participant.Address))
+		appendUnique(strings.TrimSpace(participant.DID))
+	}
+	matchedParticipants := []awid.ChatParticipant{}
+	for _, participant := range participants {
+		if chatParticipantMatchesSessionTarget(participant, target) || chatParticipantMatchesSessionTarget(participant, normalized) {
+			matchedParticipants = append(matchedParticipants, participant)
+		}
+	}
+	if len(matchedParticipants) == 1 {
+		appendParticipant(matchedParticipants[0])
+	} else if len(matchedParticipants) > 1 {
+		if !strings.HasPrefix(strings.TrimSpace(target), "did:") && !strings.Contains(strings.TrimSpace(target), "/") {
+			removeValue(target)
+		}
+		if normalized != target && !strings.HasPrefix(strings.TrimSpace(normalized), "did:") && !strings.Contains(strings.TrimSpace(normalized), "/") {
+			removeValue(normalized)
+		}
+	} else if len(matchedParticipants) == 0 {
+		handleMatches := []awid.ChatParticipant{}
+		for _, candidate := range []string{addressHandle(target), addressHandle(normalized)} {
+			if candidate == "" {
+				continue
+			}
+			handleMatches = handleMatches[:0]
+			for _, participant := range participants {
+				for _, identity := range []string{
+					strings.TrimSpace(participant.Alias),
+					addressHandle(strings.TrimSpace(participant.Address)),
+					stableAlias(strings.TrimSpace(participant.DID)),
+				} {
+					if identity != "" && strings.EqualFold(identity, candidate) {
+						handleMatches = append(handleMatches, participant)
+						break
+					}
+				}
+			}
+			if len(handleMatches) == 1 {
+				appendParticipant(handleMatches[0])
+				break
+			}
+		}
+		if len(participants) == 0 {
+			appendUnique(addressHandle(target))
+			appendUnique(addressHandle(normalized))
+		}
+	}
+	return names
+}
+
+func chatTargetNameListContains(candidates []string, value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, candidate := range candidates {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+
+func chatTargetNameListsOverlap(left []string, right []string) bool {
+	for _, candidate := range right {
+		if chatTargetNameListContains(left, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func chatEventSenderLabel(ev Event, participants []awid.ChatParticipant) string {
+	for _, participant := range matchingChatParticipantsForEventIdentity(participants, ev) {
+		if value := preferredChatIdentityLabel(
+			strings.TrimSpace(participant.Alias),
+			strings.TrimSpace(participant.Address),
+			func() string {
+				row := chatParticipantRowFromParticipant(participant)
+				if row.StableID != "" {
+					return row.StableID
+				}
+				return strings.TrimSpace(ev.FromStableID)
+			}(),
+			func() string {
+				row := chatParticipantRowFromParticipant(participant)
+				if row.DID != "" {
+					return row.DID
+				}
+				return strings.TrimSpace(ev.FromDID)
+			}(),
+		); value != "" {
+			return value
+		}
+	}
+	if value := strings.TrimSpace(ev.FromAddress); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(ev.FromStableID); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(ev.FromDID); value != "" {
+		return value
+	}
+	return strings.TrimSpace(ev.FromAgent)
+}
+
+func chatEventTrustAddress(ev Event, participants []awid.ChatParticipant) string {
+	for _, participant := range matchingChatParticipantsForEventIdentity(participants, ev) {
+		if value := strings.TrimSpace(participant.Address); value != "" {
+			return value
+		}
+		if value := strings.TrimSpace(participant.Alias); value != "" {
+			return value
+		}
+	}
+	if value := strings.TrimSpace(ev.FromAddress); value != "" {
+		return value
+	}
+	return strings.TrimSpace(ev.FromAgent)
+}
+
+func inferReadReceiptLabel(ctx context.Context, client *awid.Client, selfAlias string, readerAlias string, participants []awid.ChatParticipant) string {
+	readerAlias = strings.TrimSpace(readerAlias)
+	if readerAlias != "" {
+		return readerAlias
+	}
+	candidates := []string{}
+	appendUnique := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == value {
+				return
+			}
+		}
+		candidates = append(candidates, value)
+	}
+	for _, participant := range participants {
+		if chatParticipantMatchesSelf(participant, client, selfAlias) {
+			continue
+		}
+		appendUnique(chatParticipantLabel(ctx, client, participant))
+	}
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+	return ""
+}
+
+func chatParticipantMatchesSelf(participant awid.ChatParticipant, client *awid.Client, selfAlias string) bool {
+	selfAlias = strings.TrimSpace(selfAlias)
+	selfAddress := ""
+	selfStableID := ""
+	selfDID := ""
+	if client != nil {
+		selfAddress = strings.TrimSpace(client.Address())
+		selfStableID = strings.TrimSpace(client.StableID())
+		selfDID = strings.TrimSpace(client.DID())
+	}
+	row := chatParticipantRowFromParticipant(participant)
+	return identityutil.MatchesSelfStrict(
+		row.Alias,
+		row.Address,
+		row.StableID,
+		row.DID,
+		selfAlias,
+		selfAddress,
+		selfStableID,
+		selfDID,
+	)
+}
+
+func chatParticipantLabel(ctx context.Context, client *awid.Client, participant awid.ChatParticipant) string {
+	row := chatParticipantRowFromParticipant(participant)
+	if row.Address != "" {
+		return row.Address
+	}
+	if row.StableID != "" {
+		return row.StableID
+	}
+	if row.DID != "" && client != nil {
+		if identity, err := client.ResolveIdentity(ctx, row.DID); err == nil && identity != nil {
+			if value := strings.TrimSpace(identity.Address); value != "" {
+				return value
+			}
+			if value := strings.TrimSpace(identity.StableID); value != "" {
+				return value
+			}
+			if value := strings.TrimSpace(identity.DID); value != "" {
+				return value
+			}
+		}
+	}
+	if row.DID != "" {
+		return row.DID
+	}
+	return row.Alias
+}
+
+func chatParticipantMatchesTarget(participant awid.ChatParticipant, target string) bool {
+	return chatParticipantRowFromParticipant(participant).matchesTarget(target)
+}
+
+func chatParticipantMatchesSessionTarget(participant awid.ChatParticipant, target string) bool {
+	return chatParticipantRowFromParticipant(participant).matchesSessionTarget(target)
+}
+
+func matchingChatParticipantsForEventIdentity(participants []awid.ChatParticipant, ev Event) []awid.ChatParticipant {
+	type candidateSpec struct {
+		value  string
+		strong bool
+		kind   string
+	}
+	hasStrongIdentity := strings.TrimSpace(ev.FromAddress) != "" ||
+		strings.TrimSpace(ev.FromStableID) != "" ||
+		strings.TrimSpace(ev.FromDID) != ""
+	matchParticipants := func(candidate candidateSpec) []awid.ChatParticipant {
+		candidate.value = strings.TrimSpace(candidate.value)
+		if candidate.value == "" {
+			return nil
+		}
+		matches := []awid.ChatParticipant{}
+		if candidate.strong {
+			for _, participant := range participants {
+				if chatParticipantRowFromParticipant(participant).matchesStrongIdentity(candidate.kind, candidate.value) {
+					matches = append(matches, participant)
+				}
+			}
+			return matches
+		}
+		for _, participant := range participants {
+			if chatParticipantMatchesTarget(participant, candidate.value) {
+				matches = append(matches, participant)
+			}
+		}
+		return matches
+	}
+
+	candidates := []candidateSpec{
+		{value: ev.FromAddress, strong: true, kind: "address"},
+		{value: ev.FromStableID, strong: true, kind: "did"},
+		{value: ev.FromDID, strong: true, kind: "did"},
+	}
+	if !hasStrongIdentity {
+		candidates = append(candidates, candidateSpec{value: ev.FromAgent})
+	}
+	for _, candidate := range candidates {
+		if matches := matchParticipants(candidate); len(matches) > 0 {
+			return matches
+		}
+	}
+	return nil
 }

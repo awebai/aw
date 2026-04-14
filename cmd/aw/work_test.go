@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/awebai/aw/awconfig"
 )
 
 func TestAwWorkReadyFiltersClaimsHeldByOthers(t *testing.T) {
@@ -20,9 +18,7 @@ func TestAwWorkReadyFiltersClaimsHeldByOthers(t *testing.T) {
 	const otherID = "22222222-2222-2222-2222-222222222222"
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
-			t.Fatalf("auth=%q", r.Header.Get("Authorization"))
-		}
+		requireCertificateAuthForTest(t, r)
 		switch r.URL.Path {
 		case "/v1/claims":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -33,7 +29,6 @@ func TestAwWorkReadyFiltersClaimsHeldByOthers(t *testing.T) {
 						"alias":        "bob",
 						"human_name":   "Bob",
 						"claimed_at":   "2026-03-10T10:00:00Z",
-						"project_id":   "proj-1",
 					},
 				},
 				"has_more": false,
@@ -58,15 +53,7 @@ func TestAwWorkReadyFiltersClaimsHeldByOthers(t *testing.T) {
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "aw")
 	buildAwBinary(t, ctx, bin)
-	writeWorkspaceBindingForTest(t, tmp, awconfig.WorktreeWorkspace{
-		ServerURL:      server.URL,
-		APIKey:         "aw_sk_test",
-		IdentityID:     selfID,
-		IdentityHandle: "alice",
-		NamespaceSlug:  "demo",
-		WorkspaceID:    selfID,
-		ProjectSlug:    "demo",
-	})
+	writeWorkspaceBindingForTest(t, tmp, workspaceBinding(server.URL, "backend:demo", "alice", selfID))
 
 	run := exec.CommandContext(ctx, bin, "work", "ready")
 	run.Env = testCommandEnv(tmp)
@@ -88,9 +75,7 @@ func TestAwWorkActiveGroupsByRepo(t *testing.T) {
 	t.Parallel()
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer aw_sk_test" {
-			t.Fatalf("auth=%q", r.Header.Get("Authorization"))
-		}
+		requireCertificateAuthForTest(t, r)
 		switch r.URL.Path {
 		case "/v1/tasks/active":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -131,15 +116,7 @@ func TestAwWorkActiveGroupsByRepo(t *testing.T) {
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "aw")
 	buildAwBinary(t, ctx, bin)
-	writeWorkspaceBindingForTest(t, tmp, awconfig.WorktreeWorkspace{
-		ServerURL:      server.URL,
-		APIKey:         "aw_sk_test",
-		IdentityID:     "agent-self",
-		IdentityHandle: "self",
-		NamespaceSlug:  "demo",
-		WorkspaceID:    "agent-self",
-		ProjectSlug:    "demo",
-	})
+	writeWorkspaceBindingForTest(t, tmp, workspaceBinding(server.URL, "backend:demo", "self", "agent-self"))
 
 	run := exec.CommandContext(ctx, bin, "work", "active")
 	run.Env = testCommandEnv(tmp)

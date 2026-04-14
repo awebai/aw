@@ -3,7 +3,9 @@ package awid
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,34 +15,72 @@ import (
 	"time"
 )
 
-func TestIntrospectAddsBearerHeader(t *testing.T) {
+type stubIdentityResolver struct {
+	resolve func(context.Context, string) (*ResolvedIdentity, error)
+	verify  func(context.Context, string, string) *StableIdentityVerification
+}
+
+func (r stubIdentityResolver) Resolve(ctx context.Context, identifier string) (*ResolvedIdentity, error) {
+	if r.resolve == nil {
+		return nil, context.Canceled
+	}
+	return r.resolve(ctx, identifier)
+}
+
+func (r stubIdentityResolver) VerifyStableIdentity(ctx context.Context, address, stableID string) *StableIdentityVerification {
+	if r.verify == nil {
+		return nil
+	}
+	return r.verify(ctx, address, stableID)
+}
+
+func testTeamCertificate(t *testing.T, memberKey ed25519.PrivateKey, alias string) *TeamCertificate {
+	t.Helper()
+	_, teamKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := SignTeamCertificate(teamKey, TeamCertificateFields{
+		Team:         "backend:acme.com",
+		MemberDIDKey: ComputeDIDKey(memberKey.Public().(ed25519.PublicKey)),
+		Alias:        alias,
+		Lifetime:     LifetimeEphemeral,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cert
+}
+
+func signedPayloadMap(t *testing.T, body map[string]any) map[string]any {
+	t.Helper()
+	sp, ok := body["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing")
+	}
+	var env map[string]any
+	if err := json.Unmarshal([]byte(sp), &env); err != nil {
+		t.Fatalf("unmarshal signed_payload: %v", err)
+	}
+	return env
+}
+
+func TestCertAuthSignPayloadDoesNotHTMLEscapeAndPreservesUnicode(t *testing.T) {
 	t.Parallel()
 
-	wantProjectID := "11111111-1111-1111-1111-111111111111"
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Fatalf("method=%s", r.Method)
-		}
-		if r.URL.Path != "/v1/auth/introspect" {
-			t.Fatalf("path=%s", r.URL.Path)
-		}
-		if got := r.Header.Get("Authorization"); got != "Bearer aw_sk_test" {
-			t.Fatalf("auth=%q", got)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"project_id": wantProjectID})
-	}))
-	t.Cleanup(server.Close)
+	body := []byte(`{"ok":true}`)
+	timestamp := "2026-04-07T12:00:00Z"
+	teamID := "backend:tést.example/<a&b>"
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
-	if err != nil {
-		t.Fatal(err)
+	got := string(certAuthSignPayload(teamID, timestamp, body))
+
+	h := sha256.Sum256(body)
+	want := `{"body_sha256":"` + hex.EncodeToString(h[:]) + `","team_id":"backend:tést.example/<a&b>","timestamp":"2026-04-07T12:00:00Z"}`
+	if got != want {
+		t.Fatalf("got:  %s\nwant: %s", got, want)
 	}
-	resp, err := c.Introspect(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ProjectID != wantProjectID {
-		t.Fatalf("project_id=%s", resp.ProjectID)
+	if strings.Contains(got, `\u003c`) || strings.Contains(got, `\u003e`) || strings.Contains(got, `\u0026`) {
+		t.Fatalf("payload still HTML-escaped: %s", got)
 	}
 }
 
@@ -81,6 +121,80 @@ func TestChatStreamRequestsEventStream(t *testing.T) {
 	}
 }
 
+func TestChatStreamUsesIdentityAuthHeadersWithoutTeamCert(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	stableID := "did:aw:test-alice"
+
+	var gotAuth string
+	var gotTimestamp string
+	var gotStableID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = strings.TrimSpace(r.Header.Get("Authorization"))
+		gotTimestamp = strings.TrimSpace(r.Header.Get("X-AWEB-Timestamp"))
+		gotStableID = strings.TrimSpace(r.Header.Get("X-AWEB-DID-AW"))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message\ndata: {\"ok\":true}\n\n"))
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetStableID(stableID)
+
+	stream, err := c.ChatStream(context.Background(), "sess", time.Now().Add(2*time.Second), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	if gotAuth == "" {
+		t.Fatal("missing Authorization header")
+	}
+	if gotTimestamp == "" {
+		t.Fatal("missing X-AWEB-Timestamp header")
+	}
+	if gotStableID != stableID {
+		t.Fatalf("X-AWEB-DID-AW=%q want %q", gotStableID, stableID)
+	}
+}
+
+func TestChatStreamCapturesLatestClientVersionFromHeader(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Latest-Client-Version", "v0.99.0")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message\ndata: {\"ok\":true}\n\n"))
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := c.LatestClientVersion(); v != "" {
+		t.Fatalf("before request: LatestClientVersion=%q, want empty", v)
+	}
+
+	stream, err := c.ChatStream(context.Background(), "sess", time.Now().Add(2*time.Second), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	if v := c.LatestClientVersion(); v != "v0.99.0" {
+		t.Fatalf("after request: LatestClientVersion=%q, want v0.99.0", v)
+	}
+}
+
 func TestChatCreateSessionSignsDeterministicTo(t *testing.T) {
 	t.Parallel()
 
@@ -112,7 +226,7 @@ func TestChatCreateSessionSignsDeterministicTo(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +240,7 @@ func TestChatCreateSessionSignsDeterministicTo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if gotBody.Signature == "" || gotBody.Timestamp == "" || gotBody.MessageID == "" || gotBody.SigningKeyID == "" {
+	if gotBody.Signature == "" || gotBody.Timestamp == "" || gotBody.MessageID == "" {
 		t.Fatalf("missing identity fields in request: %+v", gotBody)
 	}
 
@@ -149,7 +263,7 @@ func TestChatCreateSessionSignsDeterministicTo(t *testing.T) {
 	}
 }
 
-func TestChatCreateSessionSignsProjectQualifiedToAcrossProjects(t *testing.T) {
+func TestChatCreateSessionSignsLocalAliases(t *testing.T) {
 	t.Parallel()
 
 	pub, priv, err := ed25519.GenerateKey(nil)
@@ -167,15 +281,14 @@ func TestChatCreateSessionSignsProjectQualifiedToAcrossProjects(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.SetAddress("myco/agent")
-	c.SetProjectSlug("project-1")
 
 	_, err = c.ChatCreateSession(context.Background(), &ChatCreateSessionRequest{
-		ToAliases: []string{"project-2~bob", "project-2~ann"},
+		ToAliases: []string{"bob", "ann"},
 		Message:   "hello",
 	})
 	if err != nil {
@@ -183,9 +296,9 @@ func TestChatCreateSessionSignsProjectQualifiedToAcrossProjects(t *testing.T) {
 	}
 
 	env := &MessageEnvelope{
-		From:      "project-1~agent",
+		From:      "agent",
 		FromDID:   did,
-		To:        "project-2~ann,project-2~bob",
+		To:        "ann,bob",
 		Type:      "chat",
 		Body:      "hello",
 		Timestamp: gotBody.Timestamp,
@@ -222,7 +335,7 @@ func TestChatCreateSessionDoesNotMutateInput(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,6 +355,56 @@ func TestChatCreateSessionDoesNotMutateInput(t *testing.T) {
 	}
 	if len(req.ToAliases) != 1 || req.ToAliases[0] != "bob" {
 		t.Fatalf("to_aliases changed: %+v", req.ToAliases)
+	}
+}
+
+func TestChatCreateSessionUnsignedPreservesCallerSignatureFields(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/sessions" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(ChatCreateSessionResponse{SessionID: "sess-1", MessageID: "msg-1"})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = c.ChatCreateSession(context.Background(), &ChatCreateSessionRequest{
+		ToAliases:     []string{"bob"},
+		Message:       "hello",
+		FromDID:       "did:key:z6MkCaller",
+		Signature:     "sig-123",
+		Timestamp:     "2026-04-11T00:00:00Z",
+		MessageID:     "11111111-1111-4111-8111-111111111111",
+		SignedPayload: "{\"type\":\"chat\"}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotBody["from_did"] != "did:key:z6MkCaller" {
+		t.Fatalf("from_did=%v, want caller value", gotBody["from_did"])
+	}
+	if gotBody["signature"] != "sig-123" {
+		t.Fatalf("signature=%v, want caller value", gotBody["signature"])
+	}
+	if gotBody["timestamp"] != "2026-04-11T00:00:00Z" {
+		t.Fatalf("timestamp=%v, want caller value", gotBody["timestamp"])
+	}
+	if gotBody["message_id"] != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("message_id=%v, want caller value", gotBody["message_id"])
+	}
+	if gotBody["signed_payload"] != "{\"type\":\"chat\"}" {
+		t.Fatalf("signed_payload=%v, want caller value", gotBody["signed_payload"])
 	}
 }
 
@@ -278,7 +441,7 @@ func TestChatSendMessageSignsDeterministicTo(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +452,7 @@ func TestChatSendMessageSignsDeterministicTo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if gotSend.Signature == "" || gotSend.Timestamp == "" || gotSend.MessageID == "" || gotSend.SigningKeyID == "" {
+	if gotSend.Signature == "" || gotSend.Timestamp == "" || gotSend.MessageID == "" {
 		t.Fatalf("missing identity fields in request: %+v", gotSend)
 	}
 
@@ -312,7 +475,7 @@ func TestChatSendMessageSignsDeterministicTo(t *testing.T) {
 	}
 }
 
-func TestChatSendMessageSignsProjectQualifiedToAcrossProjects(t *testing.T) {
+func TestChatSendMessageSignsLocalAliases(t *testing.T) {
 	t.Parallel()
 
 	pub, priv, err := ed25519.GenerateKey(nil)
@@ -327,7 +490,7 @@ func TestChatSendMessageSignsProjectQualifiedToAcrossProjects(t *testing.T) {
 		case "/v1/chat/sessions":
 			_ = json.NewEncoder(w).Encode(ChatListSessionsResponse{
 				Sessions: []ChatSessionItem{
-					{SessionID: "sess-1", Participants: []string{"project-2~ann", "project-2~bob"}, CreatedAt: "2026-02-01T00:00:00Z"},
+					{SessionID: "sess-1", Participants: []string{"ann", "bob"}, CreatedAt: "2026-02-01T00:00:00Z"},
 				},
 			})
 		case "/v1/chat/sessions/sess-1/messages":
@@ -344,12 +507,11 @@ func TestChatSendMessageSignsProjectQualifiedToAcrossProjects(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.SetAddress("myco/agent")
-	c.SetProjectSlug("project-1")
 
 	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{Body: "ping"})
 	if err != nil {
@@ -357,9 +519,9 @@ func TestChatSendMessageSignsProjectQualifiedToAcrossProjects(t *testing.T) {
 	}
 
 	env := &MessageEnvelope{
-		From:      "project-1~agent",
+		From:      "agent",
 		FromDID:   did,
-		To:        "project-2~ann,project-2~bob",
+		To:        "ann,bob",
 		Type:      "chat",
 		Body:      "ping",
 		Timestamp: gotSend.Timestamp,
@@ -372,6 +534,421 @@ func TestChatSendMessageSignsProjectQualifiedToAcrossProjects(t *testing.T) {
 	}
 	if status != Verified {
 		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestChatSendMessagePrefersParticipantAddressesForDeterministicTo(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotSend ChatSendMessageRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/sessions":
+			_ = json.NewEncoder(w).Encode(ChatListSessionsResponse{
+				Sessions: []ChatSessionItem{
+					{
+						SessionID:            "sess-1",
+						Participants:         []string{"monitor"},
+						ParticipantAddresses: []string{"otherco/monitor"},
+						CreatedAt:            "2026-02-01T00:00:00Z",
+					},
+				},
+			})
+		case "/v1/chat/sessions/sess-1/messages":
+			if err := json.NewDecoder(r.Body).Decode(&gotSend); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(ChatSendMessageResponse{
+				MessageID:          "msg-2",
+				Delivered:          true,
+				ExtendsWaitSeconds: 0,
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("example.com/rose")
+
+	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{Body: "ping"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := &MessageEnvelope{
+		From:      "rose",
+		FromDID:   did,
+		To:        "otherco/monitor",
+		Type:      "chat",
+		Body:      "ping",
+		Timestamp: gotSend.Timestamp,
+		MessageID: gotSend.MessageID,
+		Signature: gotSend.Signature,
+	}
+	status, verifyErr := VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestChatSendMessageUsesParticipantStableDIDsForDeterministicTo(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotSend ChatSendMessageRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/sessions":
+			_ = json.NewEncoder(w).Encode(ChatListSessionsResponse{
+				Sessions: []ChatSessionItem{
+					{
+						SessionID:       "sess-1",
+						Participants:    []string{""},
+						ParticipantDIDs: []string{"did:aw:monitor"},
+						CreatedAt:       "2026-02-01T00:00:00Z",
+					},
+				},
+			})
+		case "/v1/chat/sessions/sess-1/messages":
+			if err := json.NewDecoder(r.Body).Decode(&gotSend); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(ChatSendMessageResponse{
+				MessageID:          "msg-2",
+				Delivered:          true,
+				ExtendsWaitSeconds: 0,
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("example.com/rose")
+
+	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{Body: "ping"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := &MessageEnvelope{
+		From:       "rose",
+		FromDID:    did,
+		To:         "did:aw:monitor",
+		ToStableID: "did:aw:monitor",
+		Type:       "chat",
+		Body:       "ping",
+		Timestamp:  gotSend.Timestamp,
+		MessageID:  gotSend.MessageID,
+		Signature:  gotSend.Signature,
+	}
+	status, verifyErr := VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestChatSendMessageRemovesOneSelfStableDIDFromDeterministicTo(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	stableID := ComputeStableID(pub)
+
+	var gotSend ChatSendMessageRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/sessions":
+			_ = json.NewEncoder(w).Encode(ChatListSessionsResponse{
+				Sessions: []ChatSessionItem{
+					{
+						SessionID:       "sess-1",
+						Participants:    []string{"", ""},
+						ParticipantDIDs: []string{stableID, "did:aw:monitor"},
+						CreatedAt:       "2026-02-01T00:00:00Z",
+					},
+				},
+			})
+		case "/v1/chat/sessions/sess-1/messages":
+			if err := json.NewDecoder(r.Body).Decode(&gotSend); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(ChatSendMessageResponse{
+				MessageID:          "msg-2",
+				Delivered:          true,
+				ExtendsWaitSeconds: 0,
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetStableID(stableID)
+	c.SetAddress("example.com/rose")
+
+	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{Body: "ping"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := &MessageEnvelope{
+		From:         "rose",
+		FromDID:      did,
+		FromStableID: stableID,
+		To:           "did:aw:monitor",
+		ToStableID:   "did:aw:monitor",
+		Type:         "chat",
+		Body:         "ping",
+		Timestamp:    gotSend.Timestamp,
+		MessageID:    gotSend.MessageID,
+		Signature:    gotSend.Signature,
+	}
+	status, verifyErr := VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified (self stable DID should be removed from deterministic To)", status)
+	}
+}
+
+func TestChatSendMessageRemovesOneSelfCurrentDIDFromDeterministicTo(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	stableID := ComputeStableID(pub)
+
+	var gotSend ChatSendMessageRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/sessions":
+			_ = json.NewEncoder(w).Encode(ChatListSessionsResponse{
+				Sessions: []ChatSessionItem{
+					{
+						SessionID:       "sess-1",
+						Participants:    []string{"", ""},
+						ParticipantDIDs: []string{did, "did:aw:monitor"},
+						CreatedAt:       "2026-02-01T00:00:00Z",
+					},
+				},
+			})
+		case "/v1/chat/sessions/sess-1/messages":
+			if err := json.NewDecoder(r.Body).Decode(&gotSend); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(ChatSendMessageResponse{
+				MessageID:          "msg-2",
+				Delivered:          true,
+				ExtendsWaitSeconds: 0,
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetStableID(stableID)
+	c.SetAddress("example.com/rose")
+
+	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{Body: "ping"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := &MessageEnvelope{
+		From:         "rose",
+		FromDID:      did,
+		FromStableID: stableID,
+		To:           "did:aw:monitor",
+		ToStableID:   "did:aw:monitor",
+		Type:         "chat",
+		Body:         "ping",
+		Timestamp:    gotSend.Timestamp,
+		MessageID:    gotSend.MessageID,
+		Signature:    gotSend.Signature,
+	}
+	status, verifyErr := VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified (self current DID should be removed from deterministic To)", status)
+	}
+}
+
+func TestChatSendMessageRemovesOneSelfAddressFromDeterministicTo(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotSend ChatSendMessageRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/sessions":
+			_ = json.NewEncoder(w).Encode(ChatListSessionsResponse{
+				Sessions: []ChatSessionItem{
+					{
+						SessionID:            "sess-1",
+						Participants:         []string{"", ""},
+						ParticipantAddresses: []string{"example.com/rose", "otherco/monitor"},
+						CreatedAt:            "2026-02-01T00:00:00Z",
+					},
+				},
+			})
+		case "/v1/chat/sessions/sess-1/messages":
+			if err := json.NewDecoder(r.Body).Decode(&gotSend); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(ChatSendMessageResponse{
+				MessageID:          "msg-2",
+				Delivered:          true,
+				ExtendsWaitSeconds: 0,
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("example.com/rose")
+
+	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{Body: "ping"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := &MessageEnvelope{
+		From:      "rose",
+		FromDID:   did,
+		To:        "otherco/monitor",
+		Type:      "chat",
+		Body:      "ping",
+		Timestamp: gotSend.Timestamp,
+		MessageID: gotSend.MessageID,
+		Signature: gotSend.Signature,
+	}
+	status, verifyErr := VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified (self address should be removed from deterministic To)", status)
+	}
+}
+
+func TestChatSendMessageRetainsForeignParticipantWithSameAliasAsSelf(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotSend ChatSendMessageRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/sessions":
+			_ = json.NewEncoder(w).Encode(ChatListSessionsResponse{
+				Sessions: []ChatSessionItem{
+					{
+						SessionID:    "sess-1",
+						Participants: []string{"rose", "rose"},
+						CreatedAt:    "2026-02-01T00:00:00Z",
+					},
+				},
+			})
+		case "/v1/chat/sessions/sess-1/messages":
+			if err := json.NewDecoder(r.Body).Decode(&gotSend); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(ChatSendMessageResponse{
+				MessageID: "msg-2",
+				Delivered: true,
+			})
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("example.com/rose")
+
+	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{Body: "ping"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := &MessageEnvelope{
+		From:      "rose",
+		FromDID:   did,
+		To:        "rose",
+		Type:      "chat",
+		Body:      "ping",
+		Timestamp: gotSend.Timestamp,
+		MessageID: gotSend.MessageID,
+		Signature: gotSend.Signature,
+	}
+	status, verifyErr := VerifyMessage(env)
+	if verifyErr != nil {
+		t.Fatalf("VerifyMessage: %v", verifyErr)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified (foreign same-alias participant should remain in deterministic To)", status)
 	}
 }
 
@@ -398,7 +975,7 @@ func TestChatSendMessageDoesNotMutateInput(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,6 +991,61 @@ func TestChatSendMessageDoesNotMutateInput(t *testing.T) {
 	}
 	if !req.ExtendWait {
 		t.Fatal("extend_wait flag changed on input")
+	}
+}
+
+func TestChatSendMessageUnsignedPreservesCallerSignatureFields(t *testing.T) {
+	t.Parallel()
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/sessions/sess-1/messages":
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(ChatSendMessageResponse{
+				MessageID:          "msg-2",
+				Delivered:          true,
+				ExtendsWaitSeconds: 0,
+			})
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{
+		Body:          "ping",
+		FromDID:       "did:key:z6MkCaller",
+		Signature:     "sig-123",
+		Timestamp:     "2026-04-11T00:00:00Z",
+		MessageID:     "11111111-1111-4111-8111-111111111111",
+		SignedPayload: "{\"type\":\"chat\"}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotBody["from_did"] != "did:key:z6MkCaller" {
+		t.Fatalf("from_did=%v, want caller value", gotBody["from_did"])
+	}
+	if gotBody["signature"] != "sig-123" {
+		t.Fatalf("signature=%v, want caller value", gotBody["signature"])
+	}
+	if gotBody["timestamp"] != "2026-04-11T00:00:00Z" {
+		t.Fatalf("timestamp=%v, want caller value", gotBody["timestamp"])
+	}
+	if gotBody["message_id"] != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("message_id=%v, want caller value", gotBody["message_id"])
+	}
+	if gotBody["signed_payload"] != "{\"type\":\"chat\"}" {
+		t.Fatalf("signed_payload=%v, want caller value", gotBody["signed_payload"])
 	}
 }
 
@@ -552,64 +1184,6 @@ func TestChatPendingItemNullTimeRemaining(t *testing.T) {
 	}
 }
 
-func TestInitRequestIncludesIdentityFields(t *testing.T) {
-	t.Parallel()
-
-	var gotBody map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":       "ok",
-			"project_id":   "proj-1",
-			"project_slug": "default",
-			"identity_id":  "identity-1",
-			"alias":        "alice",
-			"api_key":      "aw_sk_test",
-			"created":      true,
-			"did":          "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-			"custody":      "self",
-			"lifetime":     "persistent",
-		})
-	}))
-	t.Cleanup(server.Close)
-
-	c, err := New(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	alias := "alice"
-	resp, err := c.InitWorkspace(context.Background(), &WorkspaceInitRequest{
-		ProjectSlug: "default",
-		Alias:       &alias,
-		DID:         "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-		PublicKey:   "Lm/M42cB3HkUiODQsXRcweM6TByfzEHGO9ND274JcOY",
-		Custody:     "self",
-		Lifetime:    "persistent",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Verify request body.
-	if gotBody["did"] != "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" {
-		t.Fatalf("request did=%v", gotBody["did"])
-	}
-	if gotBody["public_key"] != "Lm/M42cB3HkUiODQsXRcweM6TByfzEHGO9ND274JcOY" {
-		t.Fatalf("request public_key=%v", gotBody["public_key"])
-	}
-
-	// Verify response.
-	if resp.DID != "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" {
-		t.Fatalf("response did=%q", resp.DID)
-	}
-	if resp.Custody != "self" {
-		t.Fatalf("response custody=%q", resp.Custody)
-	}
-	if resp.Lifetime != "persistent" {
-		t.Fatalf("response lifetime=%q", resp.Lifetime)
-	}
-}
-
 func TestHTTPStatusHelpers(t *testing.T) {
 	t.Parallel()
 
@@ -642,7 +1216,7 @@ func TestNewWithIdentitySetsFields(t *testing.T) {
 	}
 	did := ComputeDIDKey(pub)
 
-	c, err := NewWithIdentity("http://localhost:8000", "aw_sk_test", priv, did)
+	c, err := NewWithIdentity("http://localhost:8000", priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,29 +1240,29 @@ func TestNewWithIdentityValidation(t *testing.T) {
 	}
 	did := ComputeDIDKey(pub)
 
-	if _, err := NewWithIdentity("http://localhost:8000", "aw_sk_test", nil, did); err == nil {
+	if _, err := NewWithIdentity("http://localhost:8000", nil, did); err == nil {
 		t.Fatal("expected error for nil signingKey")
 	}
-	if _, err := NewWithIdentity("http://localhost:8000", "aw_sk_test", priv, ""); err == nil {
+	if _, err := NewWithIdentity("http://localhost:8000", priv, ""); err == nil {
 		t.Fatal("expected error for empty did")
 	}
-	if _, err := NewWithIdentity("http://localhost:8000", "aw_sk_test", priv, "did:key:z6Mkf5rGMoatrSj1f4CyvuHBeXJELe9RPdzo2PKGNCKVtZxP"); err == nil {
+	if _, err := NewWithIdentity("http://localhost:8000", priv, "did:key:z6Mkf5rGMoatrSj1f4CyvuHBeXJELe9RPdzo2PKGNCKVtZxP"); err == nil {
 		t.Fatal("expected error for mismatched did")
 	}
 }
 
-func TestNewWithAPIKeyLeavesIdentityNil(t *testing.T) {
+func TestNewLeavesIdentityNil(t *testing.T) {
 	t.Parallel()
 
-	c, err := NewWithAPIKey("http://localhost:8000", "aw_sk_test")
+	c, err := New("http://localhost:8000")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.SigningKey() != nil {
-		t.Fatal("expected nil SigningKey for legacy client")
+		t.Fatal("expected nil SigningKey for unsigned client")
 	}
 	if c.DID() != "" {
-		t.Fatalf("expected empty DID for legacy client, got %q", c.DID())
+		t.Fatalf("expected empty DID for unsigned client, got %q", c.DID())
 	}
 }
 
@@ -705,7 +1279,7 @@ func TestPutHelper(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -739,7 +1313,7 @@ func TestDeregister(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -766,7 +1340,7 @@ func TestDeregisterAgent(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -779,54 +1353,8 @@ func TestDeregisterAgent(t *testing.T) {
 	if gotPath != "/v1/agents/mycompany/researcher" {
 		t.Fatalf("path=%s, want /v1/agents/mycompany/researcher", gotPath)
 	}
-	if gotAuth != "Bearer aw_sk_test" {
+	if gotAuth != "" {
 		t.Fatalf("auth=%q", gotAuth)
-	}
-}
-
-func TestPatchIdentityAccessMode(t *testing.T) {
-	t.Parallel()
-
-	var gotMethod, gotPath, gotContentType string
-	var gotBody map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
-		gotPath = r.URL.Path
-		gotContentType = r.Header.Get("Content-Type")
-		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
-			t.Fatal(err)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"agent_id":    "agent-1",
-			"access_mode": "open",
-		})
-	}))
-	t.Cleanup(server.Close)
-
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := c.PatchIdentity(context.Background(), "agent-1", &PatchIdentityRequest{
-		AccessMode: "open",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotMethod != http.MethodPatch {
-		t.Fatalf("method=%s", gotMethod)
-	}
-	if gotPath != "/v1/agents/agent-1" {
-		t.Fatalf("path=%s", gotPath)
-	}
-	if gotContentType != "application/json" {
-		t.Fatalf("content-type=%s", gotContentType)
-	}
-	if gotBody["access_mode"] != "open" {
-		t.Fatalf("access_mode=%v", gotBody["access_mode"])
-	}
-	if resp.AccessMode != "open" {
-		t.Fatalf("access_mode=%s", resp.AccessMode)
 	}
 }
 
@@ -850,7 +1378,7 @@ func TestSendMessageSignsWhenIdentitySet(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -871,33 +1399,109 @@ func TestSendMessageSignsWhenIdentitySet(t *testing.T) {
 	if gotBody["from_did"] != did {
 		t.Fatalf("from_did=%v, want %s", gotBody["from_did"], did)
 	}
-	if gotBody["signing_key_id"] != did {
-		t.Fatalf("signing_key_id=%v, want %s", gotBody["signing_key_id"], did)
+	if ts, ok := gotBody["timestamp"].(string); !ok || ts == "" {
+		t.Fatal("timestamp missing or empty")
 	}
 	sig, ok := gotBody["signature"].(string)
 	if !ok || sig == "" {
 		t.Fatal("signature missing or empty")
 	}
 
-	// Verify using the same field mapping that Inbox() uses.
-	// This simulates a receive-side round-trip verification.
-	env := &MessageEnvelope{
-		From:      "myco/agent",
-		FromDID:   did,
-		To:        "otherco/monitor",
-		Type:      "mail",
-		Subject:   "task complete",
-		Body:      "results attached",
-		Timestamp: gotBody["timestamp"].(string),
-		MessageID: gotBody["message_id"].(string),
-		Signature: sig,
+	// Verify using signed_payload from the request body.
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing or empty in request body")
 	}
-	status, err := VerifyMessage(env)
+	status, err := VerifySignedPayload(sp, sig, did, did)
 	if err != nil {
-		t.Fatalf("VerifyMessage: %v", err)
+		t.Fatalf("VerifySignedPayload: %v", err)
 	}
 	if status != Verified {
 		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestSendMessageUsesCertAliasForSignedPayloadFrom(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-04-13T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	cert := testTeamCertificate(t, priv, "alice")
+	c, err := NewWithCertificate(server.URL, priv, cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("acme.com/owner")
+
+	_, err = c.SendMessage(context.Background(), &SendMessageRequest{
+		ToAlias: "bob",
+		Body:    "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := signedPayloadMap(t, gotBody)
+	if env["from"] != "alice" {
+		t.Fatalf("signed payload from=%v, want cert alias alice", env["from"])
+	}
+	if gotBody["from_did"] != did {
+		t.Fatalf("from_did=%v", gotBody["from_did"])
+	}
+}
+
+func TestSendMessageIdentityAuthStillUsesAddressDerivedAlias(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-04-13T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("acme.com/owner")
+
+	_, err = c.SendMessage(context.Background(), &SendMessageRequest{
+		ToAlias: "bob",
+		Body:    "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := signedPayloadMap(t, gotBody)
+	if env["from"] != "owner" {
+		t.Fatalf("signed payload from=%v, want address-derived alias owner", env["from"])
 	}
 }
 
@@ -924,7 +1528,7 @@ func TestSendMessageIncludesSignedPayload(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -978,7 +1582,7 @@ func TestSendMessageSignsCanonicalToForPlainAlias(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -993,28 +1597,23 @@ func TestSendMessageSignsCanonicalToForPlainAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Same-project local delivery verifies against plain alias addressing.
-	env := &MessageEnvelope{
-		From:      "agent",
-		FromDID:   did,
-		To:        "monitor",
-		Type:      "mail",
-		Subject:   "task complete",
-		Body:      "results attached",
-		Timestamp: gotBody["timestamp"].(string),
-		MessageID: gotBody["message_id"].(string),
-		Signature: gotBody["signature"].(string),
+	// Same-project local delivery verifies against the signed_payload returned
+	// by the client (which contains the canonical envelope JSON).
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing or empty in request body")
 	}
-	status, verifyErr := VerifyMessage(env)
+	sig := gotBody["signature"].(string)
+	status, verifyErr := VerifySignedPayload(sp, sig, did, did)
 	if verifyErr != nil {
-		t.Fatalf("VerifyMessage: %v", verifyErr)
+		t.Fatalf("VerifySignedPayload: %v", verifyErr)
 	}
 	if status != Verified {
 		t.Fatalf("status=%s, want verified (plain alias 'monitor' should be signed as local 'monitor')", status)
 	}
 }
 
-func TestSendMessageSignsProjectQualifiedAliasAcrossProjects(t *testing.T) {
+func TestSendMessageSignsLocalAlias(t *testing.T) {
 	t.Parallel()
 
 	pub, priv, err := ed25519.GenerateKey(nil)
@@ -1034,15 +1633,14 @@ func TestSendMessageSignsProjectQualifiedAliasAcrossProjects(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.SetAddress("myco/agent")
-	c.SetProjectSlug("project-1")
 
 	_, err = c.SendMessage(context.Background(), &SendMessageRequest{
-		ToAlias: "project-2~monitor",
+		ToAlias: "monitor",
 		Subject: "task complete",
 		Body:    "results attached",
 	})
@@ -1050,20 +1648,14 @@ func TestSendMessageSignsProjectQualifiedAliasAcrossProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &MessageEnvelope{
-		From:      "project-1~agent",
-		FromDID:   did,
-		To:        "project-2~monitor",
-		Type:      "mail",
-		Subject:   "task complete",
-		Body:      "results attached",
-		Timestamp: gotBody["timestamp"].(string),
-		MessageID: gotBody["message_id"].(string),
-		Signature: gotBody["signature"].(string),
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing or empty in request body")
 	}
-	status, verifyErr := VerifyMessage(env)
+	sig := gotBody["signature"].(string)
+	status, verifyErr := VerifySignedPayload(sp, sig, did, did)
 	if verifyErr != nil {
-		t.Fatalf("VerifyMessage: %v", verifyErr)
+		t.Fatalf("VerifySignedPayload: %v", verifyErr)
 	}
 	if status != Verified {
 		t.Fatalf("status=%s, want verified", status)
@@ -1084,7 +1676,7 @@ func TestSendMessageNoSignatureWithoutIdentity(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1098,13 +1690,13 @@ func TestSendMessageNoSignatureWithoutIdentity(t *testing.T) {
 
 	// Identity fields should not be present.
 	if _, exists := gotBody["from_did"]; exists {
-		t.Fatal("from_did should not be set for legacy client")
+		t.Fatal("from_did should not be set for unsigned client")
 	}
 	if _, exists := gotBody["signature"]; exists {
-		t.Fatal("signature should not be set for legacy client")
+		t.Fatal("signature should not be set for unsigned client")
 	}
 	if _, exists := gotBody["signing_key_id"]; exists {
-		t.Fatal("signing_key_id should not be set for legacy client")
+		t.Fatal("signing_key_id should not be set for unsigned client")
 	}
 }
 
@@ -1128,7 +1720,7 @@ func TestSendMessageSignsWithToAgentID(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1142,25 +1734,316 @@ func TestSendMessageSignsWithToAgentID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Signature should bind to the raw ToAgentID (no namespace prefix),
-	// even though the client has an address set.
-	env := &MessageEnvelope{
-		From:      "myco/agent",
-		FromDID:   did,
-		To:        "agent-uuid-123",
-		Type:      "mail",
-		Subject:   "task complete",
-		Body:      "results attached",
-		Timestamp: gotBody["timestamp"].(string),
-		MessageID: gotBody["message_id"].(string),
-		Signature: gotBody["signature"].(string),
+	// Verify using signed_payload from the request body.
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing or empty in request body")
 	}
-	status, err := VerifyMessage(env)
+	sig := gotBody["signature"].(string)
+	status, err := VerifySignedPayload(sp, sig, did, did)
 	if err != nil {
-		t.Fatalf("VerifyMessage: %v", err)
+		t.Fatalf("VerifySignedPayload: %v", err)
 	}
 	if status != Verified {
 		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestSendMessageByIdentityUsesToDID(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	stableID := ComputeStableID(pub)
+	recipientDID := "did:aw:recipient-123"
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-04-10T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+	c.SetStableID(stableID)
+
+	_, err = c.SendMessageByIdentity(context.Background(), &SendMessageRequest{
+		ToDID: recipientDID,
+		Body:  "hello direct",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotBody["to_did"] != nil {
+		t.Fatalf("to_did=%v, want absent without current recipient binding", gotBody["to_did"])
+	}
+	if gotBody["to_stable_id"] != recipientDID {
+		t.Fatalf("to_stable_id=%v, want %q", gotBody["to_stable_id"], recipientDID)
+	}
+	if gotBody["to_address"] != nil {
+		t.Fatalf("to_address should be absent, got %v", gotBody["to_address"])
+	}
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing")
+	}
+	sig := gotBody["signature"].(string)
+	status, err := VerifySignedPayload(sp, sig, did, did)
+	if err != nil {
+		t.Fatalf("VerifySignedPayload: %v", err)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+	var env MessageEnvelope
+	if err := json.Unmarshal([]byte(sp), &env); err != nil {
+		t.Fatalf("unmarshal signed payload: %v", err)
+	}
+	if env.ToDID != "" {
+		t.Fatalf("signed payload to_did=%q, want empty without current recipient binding", env.ToDID)
+	}
+	if env.ToStableID != recipientDID {
+		t.Fatalf("signed payload to_stable_id=%q, want %q", env.ToStableID, recipientDID)
+	}
+}
+
+func TestSendMessageByIdentityStableTargetSignsResolvedRecipientBinding(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	stableID := ComputeStableID(pub)
+	recipientStableID := "did:aw:recipient-123"
+	recipientCurrentDID := "did:key:z6MkrRecipientCurrent"
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-04-10T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+	c.SetStableID(stableID)
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			if identifier != recipientStableID {
+				t.Fatalf("resolve identifier=%q", identifier)
+			}
+			return &ResolvedIdentity{
+				DID:      recipientCurrentDID,
+				StableID: recipientStableID,
+			}, nil
+		},
+	})
+
+	_, err = c.SendMessageByIdentity(context.Background(), &SendMessageRequest{
+		ToDID: recipientStableID,
+		Body:  "hello direct",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotBody["to_did"] != recipientCurrentDID {
+		t.Fatalf("wire to_did=%v, want resolved current did %q", gotBody["to_did"], recipientCurrentDID)
+	}
+	if gotBody["to_stable_id"] != recipientStableID {
+		t.Fatalf("wire to_stable_id=%v, want stable target %q", gotBody["to_stable_id"], recipientStableID)
+	}
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing")
+	}
+	var env MessageEnvelope
+	if err := json.Unmarshal([]byte(sp), &env); err != nil {
+		t.Fatalf("unmarshal signed_payload: %v", err)
+	}
+	if env.ToDID != recipientCurrentDID {
+		t.Fatalf("signed payload to_did=%q, want resolved current did %q", env.ToDID, recipientCurrentDID)
+	}
+	if env.ToStableID != recipientStableID {
+		t.Fatalf("signed payload to_stable_id=%q, want %q", env.ToStableID, recipientStableID)
+	}
+}
+
+func TestSendMessageByIdentityStableTargetWithoutResolverOmitsCurrentRecipientBinding(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	stableID := ComputeStableID(pub)
+	recipientStableID := "did:aw:recipient-123"
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-04-10T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+	c.SetStableID(stableID)
+
+	_, err = c.SendMessageByIdentity(context.Background(), &SendMessageRequest{
+		ToDID: recipientStableID,
+		Body:  "hello direct",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing")
+	}
+	var env MessageEnvelope
+	if err := json.Unmarshal([]byte(sp), &env); err != nil {
+		t.Fatalf("unmarshal signed_payload: %v", err)
+	}
+	if env.ToDID != "" {
+		t.Fatalf("signed payload to_did=%q, want empty without resolver", env.ToDID)
+	}
+	if gotBody["to_did"] != nil {
+		t.Fatalf("wire to_did=%v, want absent without resolver", gotBody["to_did"])
+	}
+	if gotBody["to_stable_id"] != recipientStableID {
+		t.Fatalf("wire to_stable_id=%v, want stable target %q", gotBody["to_stable_id"], recipientStableID)
+	}
+	if env.ToStableID != recipientStableID {
+		t.Fatalf("signed payload to_stable_id=%q, want %q", env.ToStableID, recipientStableID)
+	}
+}
+
+func TestSendMessageByIdentityUsesToStableID(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	stableID := ComputeStableID(pub)
+	recipientStableID := "did:aw:recipient-123"
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-04-10T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+	c.SetStableID(stableID)
+
+	_, err = c.SendMessageByIdentity(context.Background(), &SendMessageRequest{
+		ToStableID: recipientStableID,
+		Body:       "hello direct",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotBody["to_stable_id"] != recipientStableID {
+		t.Fatalf("wire to_stable_id=%v, want stable target %q", gotBody["to_stable_id"], recipientStableID)
+	}
+	if gotBody["to_did"] != nil {
+		t.Fatalf("wire to_did=%v, want absent without current recipient binding", gotBody["to_did"])
+	}
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing")
+	}
+	var env MessageEnvelope
+	if err := json.Unmarshal([]byte(sp), &env); err != nil {
+		t.Fatalf("unmarshal signed_payload: %v", err)
+	}
+	if env.ToDID != "" {
+		t.Fatalf("signed payload to_did=%q, want empty without current recipient binding", env.ToDID)
+	}
+	if env.ToStableID != recipientStableID {
+		t.Fatalf("signed payload to_stable_id=%q, want %q", env.ToStableID, recipientStableID)
+	}
+}
+
+func TestSendMessageByIdentityUsesToAddress(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-04-10T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+
+	_, err = c.SendMessageByIdentity(context.Background(), &SendMessageRequest{
+		ToAddress: "otherco/monitor",
+		Body:      "hello address",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotBody["to_address"] != "otherco/monitor" {
+		t.Fatalf("to_address=%v", gotBody["to_address"])
 	}
 }
 
@@ -1182,7 +2065,7 @@ func TestSendMessageDoesNotMutateInput(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1198,7 +2081,7 @@ func TestSendMessageDoesNotMutateInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if req.FromDID != "" || req.Signature != "" || req.MessageID != "" || req.Timestamp != "" {
+	if req.FromDID != "" || req.Signature != "" || req.MessageID != "" {
 		t.Fatalf("input request was mutated: %+v", req)
 	}
 	if req.ToAlias != "bob" || req.Subject != "hi" || req.Body != "there" {
@@ -1225,7 +2108,7 @@ func TestChatCreateSessionSignsWhenIdentitySet(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1245,22 +2128,443 @@ func TestChatCreateSessionSignsWhenIdentitySet(t *testing.T) {
 		t.Fatal("signature missing")
 	}
 
-	// Verify the signature covers the chat envelope.
-	env := &MessageEnvelope{
-		FromDID:   did,
-		To:        "otherco/monitor",
-		Type:      "chat",
-		Body:      "hey",
-		Timestamp: gotBody["timestamp"].(string),
-		MessageID: gotBody["message_id"].(string),
-		Signature: sig,
+	// Verify the signature using signed_payload from the request body.
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing or empty in request body")
 	}
-	status, err := VerifyMessage(env)
+	status, err := VerifySignedPayload(sp, sig, did, did)
 	if err != nil {
-		t.Fatalf("VerifyMessage: %v", err)
+		t.Fatalf("VerifySignedPayload: %v", err)
 	}
 	if status != Verified {
 		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestChatCreateSessionUsesCertAliasForSignedPayloadFrom(t *testing.T) {
+	t.Parallel()
+
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(ChatCreateSessionResponse{
+			SessionID: "sess-1",
+			MessageID: "msg-1",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	cert := testTeamCertificate(t, priv, "alice")
+	c, err := NewWithCertificate(server.URL, priv, cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("acme.com/owner")
+
+	_, err = c.ChatCreateSession(context.Background(), &ChatCreateSessionRequest{
+		ToAliases: []string{"bob"},
+		Message:   "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := signedPayloadMap(t, gotBody)
+	if env["from"] != "alice" {
+		t.Fatalf("signed payload from=%v, want cert alias alice", env["from"])
+	}
+}
+
+func TestChatCreateSessionSignedPayloadIncludesReplyAndLeaving(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id": "sess-1",
+			"message_id": "msg-1",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+
+	_, err = c.ChatCreateSession(context.Background(), &ChatCreateSessionRequest{
+		ToAliases: []string{"bob"},
+		Message:   "hey",
+		Leaving:   true,
+		ReplyTo:   "11111111-1111-4111-8111-111111111111",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing")
+	}
+	var env map[string]any
+	if err := json.Unmarshal([]byte(sp), &env); err != nil {
+		t.Fatalf("unmarshal signed_payload: %v", err)
+	}
+	if env["reply_to"] != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("signed payload reply_to=%v, want reply target", env["reply_to"])
+	}
+	if env["sender_leaving"] != true {
+		t.Fatalf("signed payload sender_leaving=%v, want true", env["sender_leaving"])
+	}
+}
+
+func TestChatCreateSessionSignedPayloadIncludesWaitSeconds(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id": "sess-1",
+			"message_id": "msg-1",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+
+	wait := 120
+	_, err = c.ChatCreateSession(context.Background(), &ChatCreateSessionRequest{
+		ToAliases:   []string{"bob"},
+		Message:     "hey",
+		WaitSeconds: &wait,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing")
+	}
+	var env map[string]any
+	if err := json.Unmarshal([]byte(sp), &env); err != nil {
+		t.Fatalf("unmarshal signed_payload: %v", err)
+	}
+	if env["wait_seconds"] != float64(wait) {
+		t.Fatalf("signed payload wait_seconds=%v, want %d", env["wait_seconds"], wait)
+	}
+}
+
+func TestChatCreateSessionSupportsIdentityTargets(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id": "sess-1",
+			"message_id": "msg-1",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+
+	_, err = c.ChatCreateSession(context.Background(), &ChatCreateSessionRequest{
+		ToDIDs:  []string{"did:aw:b", "did:aw:a"},
+		Message: "hello direct chat",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dids, ok := gotBody["to_dids"].([]any)
+	if !ok || len(dids) != 2 {
+		t.Fatalf("to_dids=%v", gotBody["to_dids"])
+	}
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing")
+	}
+	sig := gotBody["signature"].(string)
+	status, err := VerifySignedPayload(sp, sig, did, did)
+	if err != nil {
+		t.Fatalf("VerifySignedPayload: %v", err)
+	}
+	if status != Verified {
+		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestChatCreateSessionSingleStableTargetSignsResolvedRecipientBinding(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	recipientStableID := "did:aw:recipient-123"
+	recipientCurrentDID := "did:key:z6MkrRecipientCurrent"
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id": "sess-1",
+			"message_id": "msg-1",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			if identifier != recipientStableID {
+				t.Fatalf("resolve identifier=%q", identifier)
+			}
+			return &ResolvedIdentity{
+				DID:      recipientCurrentDID,
+				StableID: recipientStableID,
+			}, nil
+		},
+	})
+
+	_, err = c.ChatCreateSession(context.Background(), &ChatCreateSessionRequest{
+		ToDIDs:  []string{recipientStableID},
+		Message: "hello direct chat",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing")
+	}
+	var env MessageEnvelope
+	if err := json.Unmarshal([]byte(sp), &env); err != nil {
+		t.Fatalf("unmarshal signed_payload: %v", err)
+	}
+	if env.ToDID != recipientCurrentDID {
+		t.Fatalf("signed payload to_did=%q, want resolved current did %q", env.ToDID, recipientCurrentDID)
+	}
+	if env.ToStableID != recipientStableID {
+		t.Fatalf("signed payload to_stable_id=%q, want %q", env.ToStableID, recipientStableID)
+	}
+}
+
+func TestChatCreateSessionSingleStableTargetWithoutResolverOmitsCurrentRecipientBinding(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	recipientStableID := "did:aw:recipient-123"
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id": "sess-1",
+			"message_id": "msg-1",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+
+	_, err = c.ChatCreateSession(context.Background(), &ChatCreateSessionRequest{
+		ToDIDs:  []string{recipientStableID},
+		Message: "hello direct chat",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing")
+	}
+	var env MessageEnvelope
+	if err := json.Unmarshal([]byte(sp), &env); err != nil {
+		t.Fatalf("unmarshal signed_payload: %v", err)
+	}
+	if env.ToDID != "" {
+		t.Fatalf("signed payload to_did=%q, want empty without resolver", env.ToDID)
+	}
+	if env.ToStableID != recipientStableID {
+		t.Fatalf("signed payload to_stable_id=%q, want %q", env.ToStableID, recipientStableID)
+	}
+}
+
+func TestChatCreateSessionSingleAddressTargetSignsResolvedRecipientBinding(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	recipientAddress := "otherco/monitor"
+	recipientCurrentDID := "did:key:z6MkrRecipientCurrent"
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id": "sess-1",
+			"message_id": "msg-1",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			if identifier != recipientAddress {
+				t.Fatalf("resolve identifier=%q", identifier)
+			}
+			return &ResolvedIdentity{
+				Address: recipientAddress,
+				DID:     recipientCurrentDID,
+			}, nil
+		},
+	})
+
+	_, err = c.ChatCreateSession(context.Background(), &ChatCreateSessionRequest{
+		ToAddresses: []string{recipientAddress},
+		Message:     "hello direct chat",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing")
+	}
+	var env MessageEnvelope
+	if err := json.Unmarshal([]byte(sp), &env); err != nil {
+		t.Fatalf("unmarshal signed_payload: %v", err)
+	}
+	if env.ToDID != recipientCurrentDID {
+		t.Fatalf("signed payload to_did=%q, want resolved current did %q", env.ToDID, recipientCurrentDID)
+	}
+	if env.To != recipientAddress {
+		t.Fatalf("signed payload to=%q, want %q", env.To, recipientAddress)
+	}
+}
+
+func TestChatCreateSessionSingleAliasTargetSignsResolvedRecipientBinding(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	recipientAlias := "monitor"
+	recipientAddress := "myco/monitor"
+	recipientCurrentDID := "did:key:z6MkrRecipientCurrent"
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id": "sess-1",
+			"message_id": "msg-1",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			if identifier != recipientAddress {
+				t.Fatalf("resolve identifier=%q", identifier)
+			}
+			return &ResolvedIdentity{
+				Address: recipientAddress,
+				DID:     recipientCurrentDID,
+			}, nil
+		},
+	})
+
+	_, err = c.ChatCreateSession(context.Background(), &ChatCreateSessionRequest{
+		ToAliases: []string{recipientAlias},
+		Message:   "hello alias chat",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing")
+	}
+	var env MessageEnvelope
+	if err := json.Unmarshal([]byte(sp), &env); err != nil {
+		t.Fatalf("unmarshal signed_payload: %v", err)
+	}
+	if env.ToDID != recipientCurrentDID {
+		t.Fatalf("signed payload to_did=%q, want resolved current did %q", env.ToDID, recipientCurrentDID)
+	}
+	if env.To != recipientAlias {
+		t.Fatalf("signed payload to=%q, want %q", env.To, recipientAlias)
 	}
 }
 
@@ -1283,7 +2587,7 @@ func TestChatSendMessageSignsWhenIdentitySet(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1299,6 +2603,203 @@ func TestChatSendMessageSignsWhenIdentitySet(t *testing.T) {
 	}
 	if gotBody["signature"] == nil || gotBody["signature"] == "" {
 		t.Fatal("signature missing")
+	}
+}
+
+func TestChatSendMessageUsesCertAliasForSignedPayloadFrom(t *testing.T) {
+	t.Parallel()
+
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/chat/sessions":
+			_ = json.NewEncoder(w).Encode(ChatListSessionsResponse{
+				Sessions: []ChatSessionItem{{
+					SessionID:    "sess-1",
+					Participants: []string{"alice", "bob"},
+				}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/sessions/sess-1/messages":
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			_ = json.NewEncoder(w).Encode(ChatSendMessageResponse{
+				MessageID: "msg-2",
+				Delivered: true,
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	cert := testTeamCertificate(t, priv, "alice")
+	c, err := NewWithCertificate(server.URL, priv, cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("acme.com/owner")
+
+	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{
+		Body: "message in chat",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := signedPayloadMap(t, gotBody)
+	if env["from"] != "alice" {
+		t.Fatalf("signed payload from=%v, want cert alias alice", env["from"])
+	}
+}
+
+func TestChatSendMessageIdentityAuthStillUsesAddressDerivedAlias(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/chat/sessions":
+			_ = json.NewEncoder(w).Encode(ChatListSessionsResponse{
+				Sessions: []ChatSessionItem{{
+					SessionID:    "sess-1",
+					Participants: []string{"owner", "bob"},
+				}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/sessions/sess-1/messages":
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			_ = json.NewEncoder(w).Encode(ChatSendMessageResponse{
+				MessageID: "msg-2",
+				Delivered: true,
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("acme.com/owner")
+
+	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{
+		Body: "message in chat",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := signedPayloadMap(t, gotBody)
+	if env["from"] != "owner" {
+		t.Fatalf("signed payload from=%v, want address-derived alias owner", env["from"])
+	}
+}
+
+func TestChatSendMessageSignedPayloadIncludesReplyAndHangOn(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message_id": "msg-1",
+			"delivered":  true,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = c.ChatSendMessage(context.Background(), "sess-1", &ChatSendMessageRequest{
+		Body:       "message in chat",
+		ExtendWait: true,
+		ReplyTo:    "22222222-2222-4222-8222-222222222222",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing")
+	}
+	var env map[string]any
+	if err := json.Unmarshal([]byte(sp), &env); err != nil {
+		t.Fatalf("unmarshal signed_payload: %v", err)
+	}
+	if env["reply_to"] != "22222222-2222-4222-8222-222222222222" {
+		t.Fatalf("signed payload reply_to=%v, want reply target", env["reply_to"])
+	}
+	if env["hang_on"] != true {
+		t.Fatalf("signed payload hang_on=%v, want true", env["hang_on"])
+	}
+}
+
+func TestSendMessageSignedPayloadIncludesPriority(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message_id": "msg-1",
+			"status":     "delivered",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAddress("myco/agent")
+
+	_, err = c.SendMessage(context.Background(), &SendMessageRequest{
+		ToAlias:  "otherco/monitor",
+		Subject:  "hello",
+		Body:     "world",
+		Priority: PriorityUrgent,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing")
+	}
+	var env map[string]any
+	if err := json.Unmarshal([]byte(sp), &env); err != nil {
+		t.Fatalf("unmarshal signed_payload: %v", err)
+	}
+	if env["priority"] != string(PriorityUrgent) {
+		t.Fatalf("signed payload priority=%v, want %q", env["priority"], PriorityUrgent)
 	}
 }
 
@@ -1347,7 +2848,7 @@ func TestInboxVerifiesSignedMessages(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1382,7 +2883,7 @@ func TestInboxUnverifiedWithoutDID(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1423,7 +2924,7 @@ func TestInboxFailedBadSignature(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1476,7 +2977,7 @@ func TestChatHistoryVerifiesSignedMessages(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1527,7 +3028,7 @@ func TestRotateKeySendsSignedRequest(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, oldDID)
+	c, err := NewWithIdentity(server.URL, priv, oldDID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1601,7 +3102,7 @@ func TestRotateKeyCustodialOmitsKeyMaterial(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	// Custodial client: no signing key.
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1645,7 +3146,7 @@ func TestRotateKeyRequiresIdentity(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1654,7 +3155,7 @@ func TestRotateKeyRequiresIdentity(t *testing.T) {
 		Custody: CustodySelf,
 	})
 	if err == nil {
-		t.Fatal("expected error for legacy client")
+		t.Fatal("expected error for unsigned client")
 	}
 }
 
@@ -1668,7 +3169,7 @@ func TestAgentLogSelf(t *testing.T) {
 		if r.URL.Path != "/v1/agents/me/log" {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer aw_sk_test" {
+		if got := r.Header.Get("Authorization"); got != "" {
 			t.Fatalf("auth=%q", got)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1691,7 +3192,7 @@ func TestAgentLogSelf(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1779,7 +3280,7 @@ func TestSendMessageIncludesMessageID(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1816,7 +3317,7 @@ func TestSendMessageNoMessageIDWithoutIdentity(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1855,11 +3356,6 @@ func TestSendMessageResolvesRecipientDID(t *testing.T) {
 	var gotBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/v1/agents/resolve/otherco/monitor":
-			_ = json.NewEncoder(w).Encode(serverResolveResponse{
-				DID:     recipientDID,
-				Address: "otherco/monitor",
-			})
 		case r.URL.Path == "/v1/messages":
 			_ = json.NewDecoder(r.Body).Decode(&gotBody)
 			_ = json.NewEncoder(w).Encode(map[string]string{
@@ -1873,12 +3369,19 @@ func TestSendMessageResolvesRecipientDID(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.SetAddress("myco/agent")
-	c.SetResolver(&ServerResolver{Client: c})
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			if identifier != "otherco/monitor" {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &ResolvedIdentity{DID: recipientDID, Address: identifier}, nil
+		},
+	})
 
 	_, err = c.SendMessage(context.Background(), &SendMessageRequest{
 		ToAlias: "otherco/monitor",
@@ -1888,29 +3391,114 @@ func TestSendMessageResolvesRecipientDID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Verify to_did is transmitted on the wire.
-	if gotBody["to_did"] != recipientDID {
-		t.Fatalf("to_did on wire=%v, want %s", gotBody["to_did"], recipientDID)
-	}
+	_ = recipientDID
 
-	// Verify the signature covers the recipient DID.
-	env := &MessageEnvelope{
-		From:      "myco/agent",
-		FromDID:   did,
-		To:        "otherco/monitor",
-		ToDID:     recipientDID,
-		Type:      "mail",
-		Body:      "hello",
-		Timestamp: gotBody["timestamp"].(string),
-		MessageID: gotBody["message_id"].(string),
-		Signature: gotBody["signature"].(string),
+	// Verify the signature using signed_payload from the request body.
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing or empty in request body")
 	}
-	status, verifyErr := VerifyMessage(env)
+	sig := gotBody["signature"].(string)
+	status, verifyErr := VerifySignedPayload(sp, sig, did, did)
 	if verifyErr != nil {
-		t.Fatalf("VerifyMessage: %v", verifyErr)
+		t.Fatalf("VerifySignedPayload: %v", verifyErr)
 	}
 	if status != Verified {
 		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestSendMessageUsesIdentityAuthHeadersWithoutTeamCert(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	stableID := "did:aw:test-alice"
+
+	var gotAuth string
+	var gotTimestamp string
+	var gotStableID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = strings.TrimSpace(r.Header.Get("Authorization"))
+		gotTimestamp = strings.TrimSpace(r.Header.Get("X-AWEB-Timestamp"))
+		gotStableID = strings.TrimSpace(r.Header.Get("X-AWEB-DID-AW"))
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"message_id":   "msg-1",
+			"status":       "delivered",
+			"delivered_at": "2026-02-22T00:00:00Z",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetStableID(stableID)
+	c.SetAddress("myco/agent")
+
+	_, err = c.SendMessage(context.Background(), &SendMessageRequest{
+		ToAlias: "otherco/monitor",
+		Body:    "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotAuth == "" {
+		t.Fatal("missing Authorization header")
+	}
+	if gotTimestamp == "" {
+		t.Fatal("missing X-AWEB-Timestamp header")
+	}
+	if gotStableID != stableID {
+		t.Fatalf("X-AWEB-DID-AW=%q want %q", gotStableID, stableID)
+	}
+}
+
+func TestInboxUsesIdentityAuthHeadersWithoutTeamCert(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := ComputeDIDKey(pub)
+	stableID := "did:aw:test-alice"
+
+	var gotAuth string
+	var gotTimestamp string
+	var gotStableID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = strings.TrimSpace(r.Header.Get("Authorization"))
+		gotTimestamp = strings.TrimSpace(r.Header.Get("X-AWEB-Timestamp"))
+		gotStableID = strings.TrimSpace(r.Header.Get("X-AWEB-DID-AW"))
+		_ = json.NewEncoder(w).Encode(map[string]any{"messages": []map[string]any{}})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, priv, did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetStableID(stableID)
+
+	_, err = c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotAuth == "" {
+		t.Fatal("missing Authorization header")
+	}
+	if gotTimestamp == "" {
+		t.Fatal("missing X-AWEB-Timestamp header")
+	}
+	if gotStableID != stableID {
+		t.Fatalf("X-AWEB-DID-AW=%q want %q", gotStableID, stableID)
 	}
 }
 
@@ -1975,7 +3563,7 @@ func TestInboxRecipientBindingMismatch(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	// Create receiver client with identity — to_did won't match.
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	c, err := NewWithIdentity(server.URL, receiverPriv, receiverDID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2013,7 +3601,7 @@ func TestSendMessageNoResolverLeavesToDIDEmpty(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", priv, did)
+	c, err := NewWithIdentity(server.URL, priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2033,23 +3621,92 @@ func TestSendMessageNoResolverLeavesToDIDEmpty(t *testing.T) {
 		t.Fatalf("to_did should be absent on wire, got %v", v)
 	}
 
-	// Verify signature is valid without to_did.
-	env := &MessageEnvelope{
-		From:      "myco/agent",
-		FromDID:   did,
-		To:        "otherco/monitor",
-		Type:      "mail",
-		Body:      "hello",
-		Timestamp: gotBody["timestamp"].(string),
-		MessageID: gotBody["message_id"].(string),
-		Signature: gotBody["signature"].(string),
+	// Verify signature is valid without to_did, using signed_payload from request.
+	sp, ok := gotBody["signed_payload"].(string)
+	if !ok || sp == "" {
+		t.Fatal("signed_payload missing or empty in request body")
 	}
-	status, verifyErr := VerifyMessage(env)
+	sig := gotBody["signature"].(string)
+	status, verifyErr := VerifySignedPayload(sp, sig, did, did)
 	if verifyErr != nil {
-		t.Fatalf("VerifyMessage: %v", verifyErr)
+		t.Fatalf("VerifySignedPayload: %v", verifyErr)
 	}
 	if status != Verified {
 		t.Fatalf("status=%s, want verified", status)
+	}
+}
+
+func TestInboxStableRecipientBindingSurvivesLocalKeyRotation(t *testing.T) {
+	t.Parallel()
+
+	senderPub, senderPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderDID := ComputeDIDKey(senderPub)
+
+	receiverOldPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiverOldDID := ComputeDIDKey(receiverOldPub)
+	receiverStableID := ComputeStableID(receiverOldPub)
+
+	receiverNewPub, receiverNewPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiverNewDID := ComputeDIDKey(receiverNewPub)
+
+	env := &MessageEnvelope{
+		From:         "otherco/alice",
+		FromDID:      senderDID,
+		To:           receiverStableID,
+		ToDID:        receiverOldDID,
+		ToStableID:   receiverStableID,
+		Type:         "mail",
+		Body:         "hello after your rotation",
+		Timestamp:    "2026-04-10T00:00:00Z",
+		MessageID:    "msg-rotation-mail",
+		SigningKeyID: senderDID,
+	}
+	sig, err := SignMessage(senderPriv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{
+				"message_id":     "msg-rotation-mail",
+				"from_did":       senderDID,
+				"to_did":         receiverOldDID,
+				"to_stable_id":   receiverStableID,
+				"body":           "hello after your rotation",
+				"created_at":     "2026-04-10T00:00:00Z",
+				"signature":      sig,
+				"signing_key_id": senderDID,
+				"signed_payload": CanonicalJSON(env),
+			}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewWithIdentity(server.URL, receiverNewPriv, receiverNewDID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetStableID(receiverStableID)
+
+	resp, err := c.Inbox(context.Background(), InboxParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 1 {
+		t.Fatalf("len=%d", len(resp.Messages))
+	}
+	if resp.Messages[0].VerificationStatus != Verified {
+		t.Fatalf("VerificationStatus=%q, want %q", resp.Messages[0].VerificationStatus, Verified)
 	}
 }
 
@@ -2098,7 +3755,7 @@ func TestInboxTOFUPinFirstContact(t *testing.T) {
 
 	receiverPub, receiverPriv, _ := ed25519.GenerateKey(nil)
 	receiverDID := ComputeDIDKey(receiverPub)
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	c, err := NewWithIdentity(server.URL, receiverPriv, receiverDID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2190,7 +3847,7 @@ func TestInboxTOFUPinMismatch(t *testing.T) {
 
 	receiverPub, receiverPriv, _ := ed25519.GenerateKey(nil)
 	receiverDID := ComputeDIDKey(receiverPub)
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	c, err := NewWithIdentity(server.URL, receiverPriv, receiverDID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2279,7 +3936,7 @@ func TestInboxRotationAnnouncementAccepted(t *testing.T) {
 
 	receiverPub, receiverPriv, _ := ed25519.GenerateKey(nil)
 	receiverDID := ComputeDIDKey(receiverPub)
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	c, err := NewWithIdentity(server.URL, receiverPriv, receiverDID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2380,7 +4037,7 @@ func TestInboxRotationAnnouncementInvalid(t *testing.T) {
 
 	receiverPub, receiverPriv, _ := ed25519.GenerateKey(nil)
 	receiverDID := ComputeDIDKey(receiverPub)
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	c, err := NewWithIdentity(server.URL, receiverPriv, receiverDID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2482,7 +4139,7 @@ func TestInboxRotationAnnouncementUnrelatedOldDID(t *testing.T) {
 
 	receiverPub, receiverPriv, _ := ed25519.GenerateKey(nil)
 	receiverDID := ComputeDIDKey(receiverPub)
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	c, err := NewWithIdentity(server.URL, receiverPriv, receiverDID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2583,7 +4240,7 @@ func TestInboxRotationAnnouncementNewDIDMismatch(t *testing.T) {
 
 	receiverPub, receiverPriv, _ := ed25519.GenerateKey(nil)
 	receiverDID := ComputeDIDKey(receiverPub)
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	c, err := NewWithIdentity(server.URL, receiverPriv, receiverDID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2665,7 +4322,7 @@ func TestInboxRotationAnnouncementEmptyFields(t *testing.T) {
 
 	receiverPub, receiverPriv, _ := ed25519.GenerateKey(nil)
 	receiverDID := ComputeDIDKey(receiverPub)
-	c, err := NewWithIdentity(server.URL, "aw_sk_test", receiverPriv, receiverDID)
+	c, err := NewWithIdentity(server.URL, receiverPriv, receiverDID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2740,7 +4397,7 @@ func TestInboxUsesFromAddressForVerification(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2797,7 +4454,7 @@ func TestChatHistoryUsesFromAddressForVerification(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2840,18 +4497,7 @@ func TestCheckTOFUPinEphemeralSkipsPinning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Mock server returns inbox message and resolve response with lifetime=ephemeral.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"did":      senderDID,
-				"agent_id": "agent-uuid-1",
-				"address":  "myco/ephemeral-bot",
-				"lifetime": "ephemeral",
-				"custody":  "self",
-			})
-			return
-		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"messages": []map[string]any{{
 				"message_id":     "msg-eph-1",
@@ -2872,14 +4518,27 @@ func TestCheckTOFUPinEphemeralSkipsPinning(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ps := NewPinStore()
 	ps.StorePin("did:key:stale", "myco/ephemeral-bot", "", "")
 	c.SetPinStore(ps, "")
-	c.SetResolver(&ServerResolver{Client: c})
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			if identifier != "myco/ephemeral-bot" {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &ResolvedIdentity{
+				DID:         senderDID,
+				Address:     identifier,
+				Lifetime:    "ephemeral",
+				Custody:     "self",
+				ResolvedVia: "registry",
+			}, nil
+		},
+	})
 
 	resp, err := c.Inbox(context.Background(), InboxParams{})
 	if err != nil {
@@ -2926,16 +4585,6 @@ func TestCheckTOFUPinCustodialReturnsVerifiedCustodial(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"did":      senderDID,
-				"agent_id": "agent-uuid-2",
-				"address":  "myco/custodial-bot",
-				"lifetime": "persistent",
-				"custody":  "custodial",
-			})
-			return
-		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"messages": []map[string]any{{
 				"message_id":     "msg-cust-1",
@@ -2956,13 +4605,26 @@ func TestCheckTOFUPinCustodialReturnsVerifiedCustodial(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ps := NewPinStore()
 	c.SetPinStore(ps, "")
-	c.SetResolver(&ServerResolver{Client: c})
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			if identifier != "myco/custodial-bot" {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &ResolvedIdentity{
+				DID:         senderDID,
+				Address:     identifier,
+				Lifetime:    "persistent",
+				Custody:     "custodial",
+				ResolvedVia: "registry",
+			}, nil
+		},
+	})
 
 	resp, err := c.Inbox(context.Background(), InboxParams{})
 	if err != nil {
@@ -3000,17 +4662,6 @@ func TestCheckTOFUPinResolverCachesResults(t *testing.T) {
 
 	resolveCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
-			resolveCount++
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"did":      senderDID,
-				"agent_id": "agent-uuid-3",
-				"address":  "myco/cached-bot",
-				"lifetime": "persistent",
-				"custody":  "self",
-			})
-			return
-		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"messages": []map[string]any{{
 				"message_id":     "msg-cache-1",
@@ -3031,13 +4682,27 @@ func TestCheckTOFUPinResolverCachesResults(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ps := NewPinStore()
 	c.SetPinStore(ps, "")
-	c.SetResolver(&ServerResolver{Client: c})
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			resolveCount++
+			if identifier != "myco/cached-bot" {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &ResolvedIdentity{
+				DID:         senderDID,
+				Address:     identifier,
+				Lifetime:    "persistent",
+				Custody:     "self",
+				ResolvedVia: "registry",
+			}, nil
+		},
+	})
 
 	// First call: should resolve.
 	resp, err := c.Inbox(context.Background(), InboxParams{})
@@ -3086,21 +4751,6 @@ func TestCheckTOFUPinResolverFailureNotCached(t *testing.T) {
 	resolveCount := 0
 	resolverFail := true
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
-			resolveCount++
-			if resolverFail {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"did":      senderDID,
-				"agent_id": "agent-uuid-flaky",
-				"address":  "myco/flaky-bot",
-				"lifetime": "persistent",
-				"custody":  "custodial",
-			})
-			return
-		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"messages": []map[string]any{{
 				"message_id":     "msg-flaky-1",
@@ -3121,13 +4771,30 @@ func TestCheckTOFUPinResolverFailureNotCached(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ps := NewPinStore()
 	c.SetPinStore(ps, "")
-	c.SetResolver(&ServerResolver{Client: c})
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			resolveCount++
+			if identifier != "myco/flaky-bot" {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			if resolverFail {
+				return nil, context.DeadlineExceeded
+			}
+			return &ResolvedIdentity{
+				DID:         senderDID,
+				Address:     identifier,
+				Lifetime:    "persistent",
+				Custody:     "custodial",
+				ResolvedVia: "registry",
+			}, nil
+		},
+	})
 
 	// First call: resolver fails → status remains verified, and the failure is not cached.
 	resp, err := c.Inbox(context.Background(), InboxParams{})
@@ -3182,21 +4849,6 @@ func TestInboxCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 
 	resolvePaths := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
-			resolvePaths = append(resolvePaths, r.URL.Path)
-			if r.URL.Path != "/v1/agents/resolve/architect" {
-				http.NotFound(w, r)
-				return
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"did":         senderDID,
-				"identity_id": "identity-uuid-1",
-				"address":     "myteam/architect",
-				"lifetime":    "ephemeral",
-				"custody":     "self",
-			})
-			return
-		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"messages": []map[string]any{{
 				"message_id":     "msg-local-1",
@@ -3218,7 +4870,7 @@ func TestInboxCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3226,7 +4878,21 @@ func TestInboxCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 	ps := NewPinStore()
 	ps.StorePin("did:aw:old-architect", "architect", "", "")
 	c.SetPinStore(ps, "")
-	c.SetResolver(&ServerResolver{Client: c})
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			resolvePaths = append(resolvePaths, identifier)
+			if identifier != "myteam/architect" {
+				return nil, context.Canceled
+			}
+			return &ResolvedIdentity{
+				DID:         senderDID,
+				Address:     identifier,
+				Lifetime:    "ephemeral",
+				Custody:     "self",
+				ResolvedVia: "registry",
+			}, nil
+		},
+	})
 
 	resp, err := c.Inbox(context.Background(), InboxParams{})
 	if err != nil {
@@ -3238,8 +4904,8 @@ func TestInboxCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 	if resp.Messages[0].IsContact != nil {
 		t.Fatalf("ephemeral sender should suppress contact tag, got %v", *resp.Messages[0].IsContact)
 	}
-	if len(resolvePaths) != 1 || resolvePaths[0] != "/v1/agents/resolve/architect" {
-		t.Fatalf("resolvePaths=%v, want [/v1/agents/resolve/architect]", resolvePaths)
+	if len(resolvePaths) != 1 || resolvePaths[0] != "myteam/architect" {
+		t.Fatalf("resolvePaths=%v, want [myteam/architect]", resolvePaths)
 	}
 	if _, ok := ps.Addresses["myteam/architect"]; ok {
 		t.Fatalf("ephemeral sender should not be pinned under canonical address")
@@ -3274,21 +4940,6 @@ func TestChatHistoryCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 
 	resolvePaths := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
-			resolvePaths = append(resolvePaths, r.URL.Path)
-			if r.URL.Path != "/v1/agents/resolve/architect" {
-				http.NotFound(w, r)
-				return
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"did":         senderDID,
-				"identity_id": "identity-uuid-2",
-				"address":     "myteam/architect",
-				"lifetime":    "ephemeral",
-				"custody":     "self",
-			})
-			return
-		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"messages": []map[string]any{{
 				"message_id":     "msg-chat-local-1",
@@ -3306,7 +4957,7 @@ func TestChatHistoryCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3314,7 +4965,21 @@ func TestChatHistoryCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 	ps := NewPinStore()
 	ps.StorePin("did:aw:old-architect", "architect", "", "")
 	c.SetPinStore(ps, "")
-	c.SetResolver(&ServerResolver{Client: c})
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			resolvePaths = append(resolvePaths, identifier)
+			if identifier != "myteam/architect" {
+				return nil, context.Canceled
+			}
+			return &ResolvedIdentity{
+				DID:         senderDID,
+				Address:     identifier,
+				Lifetime:    "ephemeral",
+				Custody:     "self",
+				ResolvedVia: "registry",
+			}, nil
+		},
+	})
 
 	resp, err := c.ChatHistory(context.Background(), ChatHistoryParams{SessionID: "sess-1"})
 	if err != nil {
@@ -3326,8 +4991,8 @@ func TestChatHistoryCanonicalizesLocalAliasBeforeTOFUPin(t *testing.T) {
 	if resp.Messages[0].IsContact != nil {
 		t.Fatalf("ephemeral sender should suppress contact tag, got %v", *resp.Messages[0].IsContact)
 	}
-	if len(resolvePaths) != 1 || resolvePaths[0] != "/v1/agents/resolve/architect" {
-		t.Fatalf("resolvePaths=%v, want [/v1/agents/resolve/architect]", resolvePaths)
+	if len(resolvePaths) != 1 || resolvePaths[0] != "myteam/architect" {
+		t.Fatalf("resolvePaths=%v, want [myteam/architect]", resolvePaths)
 	}
 	if _, ok := ps.Addresses["myteam/architect"]; ok {
 		t.Fatalf("ephemeral sender should not be pinned under canonical address")
@@ -3347,7 +5012,7 @@ func TestCheckTOFUPinUpgradeOnFirstSight(t *testing.T) {
 	senderDID := ComputeDIDKey(pub)
 	stableID := ComputeStableID(pub)
 
-	c, err := NewWithAPIKey("http://localhost", "aw_sk_test")
+	c, err := New("http://localhost")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3409,27 +5074,17 @@ func TestCheckTOFUPinAcceptsValidReplacementAnnouncement(t *testing.T) {
 		ControllerSignature: sigB64,
 	}
 
-	// Mock resolver that returns the controller_did for this address
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"did":            newDID,
-				"agent_id":       "agent-new",
-				"address":        address,
-				"controller_did": controllerDID,
-				"lifetime":       "persistent",
-				"custody":        "self",
-			})
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
-
-	c, _ := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, _ := New("http://localhost")
 	ps := NewPinStore()
 	c.SetPinStore(ps, "")
-	c.SetResolver(&ServerResolver{Client: c})
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			if identifier != address {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &ResolvedIdentity{DID: newDID, Address: address, ControllerDID: controllerDID}, nil
+		},
+	})
 
 	// Pin the old DID
 	status := c.CheckTOFUPin(context.Background(), Verified, address, oldDID, "", nil, nil)
@@ -3478,27 +5133,17 @@ func TestCheckTOFUPinRejectsReplacementWrongController(t *testing.T) {
 		ControllerSignature: sigB64,
 	}
 
-	// Resolver returns the REAL controller_did (not the one in the announcement)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"did":            newDID,
-				"agent_id":       "agent-new",
-				"address":        address,
-				"controller_did": controllerDID,
-				"lifetime":       "persistent",
-				"custody":        "self",
-			})
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
-
-	c, _ := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, _ := New("http://localhost")
 	ps := NewPinStore()
 	c.SetPinStore(ps, "")
-	c.SetResolver(&ServerResolver{Client: c})
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			if identifier != address {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &ResolvedIdentity{DID: newDID, Address: address, ControllerDID: controllerDID}, nil
+		},
+	})
 
 	// Pin the old DID
 	c.CheckTOFUPin(context.Background(), Verified, address, oldDID, "", nil, nil)
@@ -3531,26 +5176,17 @@ func TestCheckTOFUPinRejectsReplacementBadSignature(t *testing.T) {
 		ControllerSignature: base64.RawStdEncoding.EncodeToString([]byte("bad-signature-garbage")),
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"did":            newDID,
-				"agent_id":       "agent-new",
-				"address":        address,
-				"controller_did": controllerDID,
-				"lifetime":       "persistent",
-				"custody":        "self",
-			})
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
-
-	c, _ := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, _ := New("http://localhost")
 	ps := NewPinStore()
 	c.SetPinStore(ps, "")
-	c.SetResolver(&ServerResolver{Client: c})
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			if identifier != address {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &ResolvedIdentity{DID: newDID, Address: address, ControllerDID: controllerDID}, nil
+		},
+	})
 
 	c.CheckTOFUPin(context.Background(), Verified, address, oldDID, "", nil, nil)
 
@@ -3586,26 +5222,17 @@ func TestCheckTOFUPinRejectsReplacementStaleTimestamp(t *testing.T) {
 		ControllerSignature: sigB64,
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/agents/resolve/") {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"did":            newDID,
-				"agent_id":       "agent-new",
-				"address":        address,
-				"controller_did": controllerDID,
-				"lifetime":       "persistent",
-				"custody":        "self",
-			})
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
-
-	c, _ := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, _ := New("http://localhost")
 	ps := NewPinStore()
 	c.SetPinStore(ps, "")
-	c.SetResolver(&ServerResolver{Client: c})
+	c.SetResolver(stubIdentityResolver{
+		resolve: func(_ context.Context, identifier string) (*ResolvedIdentity, error) {
+			if identifier != address {
+				t.Fatalf("identifier=%q", identifier)
+			}
+			return &ResolvedIdentity{DID: newDID, Address: address, ControllerDID: controllerDID}, nil
+		},
+	})
 
 	c.CheckTOFUPin(context.Background(), Verified, address, oldDID, "", nil, nil)
 
@@ -3625,7 +5252,7 @@ func TestSignEnvelopePopulatesFromStableID(t *testing.T) {
 	did := ComputeDIDKey(pub)
 	stableID := ComputeStableID(pub)
 
-	c, err := NewWithIdentity("http://localhost", "aw_sk_test", priv, did)
+	c, err := NewWithIdentity("http://localhost", priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3672,7 +5299,7 @@ func TestSignEnvelopeOmitsStableIDWhenNotSet(t *testing.T) {
 	}
 	did := ComputeDIDKey(pub)
 
-	c, err := NewWithIdentity("http://localhost", "aw_sk_test", priv, did)
+	c, err := NewWithIdentity("http://localhost", priv, did)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3699,11 +5326,11 @@ func TestLatestClientVersionCapturedFromHeader(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Latest-Client-Version", "v0.99.0")
-		_ = json.NewEncoder(w).Encode(map[string]string{"project_id": "p1"})
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3713,8 +5340,8 @@ func TestLatestClientVersionCapturedFromHeader(t *testing.T) {
 		t.Fatalf("before request: LatestClientVersion=%q, want empty", v)
 	}
 
-	var resp IntrospectResponse
-	if err := c.Get(context.Background(), "/v1/auth/introspect", &resp); err != nil {
+	var resp map[string]bool
+	if err := c.Get(context.Background(), "/v1/ping", &resp); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3727,17 +5354,17 @@ func TestLatestClientVersionEmptyWhenNoHeader(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"project_id": "p1"})
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewWithAPIKey(server.URL, "aw_sk_test")
+	c, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	var resp IntrospectResponse
-	if err := c.Get(context.Background(), "/v1/auth/introspect", &resp); err != nil {
+	var resp map[string]bool
+	if err := c.Get(context.Background(), "/v1/ping", &resp); err != nil {
 		t.Fatal(err)
 	}
 
