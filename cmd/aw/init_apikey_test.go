@@ -168,6 +168,7 @@ func TestInitBootstrapsFromAPIKeyEphemeral(t *testing.T) {
 }
 
 func TestInitBootstrapsFromAPIKeyPersistentWritesIdentity(t *testing.T) {
+	t.Parallel()
 
 	const apiKey = "aw_sk_test_persistent"
 
@@ -178,34 +179,23 @@ func TestInitBootstrapsFromAPIKeyPersistentWritesIdentity(t *testing.T) {
 	teamDIDKey := awid.ComputeDIDKey(teamPub)
 
 	var initBody map[string]any
-	var didRegistered bool
 	var server *httptest.Server
 	server = newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/v1/did":
-			didRegistered = true
-			w.WriteHeader(http.StatusCreated)
-		case strings.HasPrefix(r.URL.Path, "/v1/did/") && strings.HasSuffix(r.URL.Path, "/full"):
-			stableID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/did/"), "/full")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"did_aw":          stableID,
-				"current_did_key": "",
-				"server":          "",
-				"address":         "",
-				"handle":          nil,
-				"created_at":      "2026-04-15T00:00:00Z",
-				"updated_at":      "2026-04-15T00:00:00Z",
-			})
-		case r.URL.Path == "/api/v1/workspaces/init":
+		switch r.URL.Path {
+		case "/api/v1/workspaces/init":
 			if err := json.NewDecoder(r.Body).Decode(&initBody); err != nil {
 				t.Fatal(err)
 			}
 			didKey, _ := initBody["did"].(string)
+			pubKeyB64, _ := initBody["public_key"].(string)
+			pubKeyBytes, _ := base64.StdEncoding.DecodeString(pubKeyB64)
+			stableID := awid.ComputeStableID(ed25519.PublicKey(pubKeyBytes))
+			memberAddress := "alice.aweb.ai/alice"
 			cert, err := awid.SignTeamCertificate(teamKey, awid.TeamCertificateFields{
 				Team:          "default:alice.aweb.ai",
 				MemberDIDKey:  didKey,
-				MemberDIDAW:   "did:aw:alice",
-				MemberAddress: "alice.aweb.ai/alice",
+				MemberDIDAW:   stableID,
+				MemberAddress: memberAddress,
 				Alias:         "alice",
 				Lifetime:      awid.LifetimePersistent,
 			})
@@ -223,12 +213,12 @@ func TestInitBootstrapsFromAPIKeyPersistentWritesIdentity(t *testing.T) {
 				"team_id":      "default:alice.aweb.ai",
 				"workspace_id": "ws-1",
 				"did":          didKey,
-				"stable_id":    "did:aw:alice",
+				"stable_id":    stableID,
 				"lifetime":     awid.LifetimePersistent,
 				"custody":      awid.CustodySelf,
 				"api_key":      "workspace-sk-persistent",
 			})
-		case r.URL.Path == "/v1/connect":
+		case "/v1/connect":
 			requireCertificateAuthForTest(t, r)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"team_id":      "default:alice.aweb.ai",
@@ -238,35 +228,40 @@ func TestInitBootstrapsFromAPIKeyPersistentWritesIdentity(t *testing.T) {
 				"repo_id":      "repo-1",
 				"team_did_key": teamDIDKey,
 			})
-		case r.URL.Path == "/v1/agents/heartbeat":
+		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 	}))
 
-	t.Setenv("AWID_REGISTRY_URL", server.URL)
-
 	tmp := t.TempDir()
 	result, err := runAPIKeyBootstrapInit(apiKeyInitRequest{
 		WorkingDir:  tmp,
 		AwebURL:     externalLikeTestURL(t, server.URL),
-		RegistryURL: server.URL,
+		RegistryURL: "https://api.awid.ai",
 		APIKey:      apiKey,
 		Name:        "alice",
-		Alias:       "alice",
 		Role:        "backend",
+		HumanName:   "Alice",
+		AgentType:   "codex",
 		Persistent:  true,
 	})
 	if err != nil {
 		t.Fatalf("runAPIKeyBootstrapInit persistent: %v", err)
 	}
 
-	if !didRegistered {
-		t.Fatal("expected DID registration for persistent API key bootstrap")
-	}
 	if initBody["lifetime"] != awid.LifetimePersistent {
 		t.Fatalf("init lifetime=%v", initBody["lifetime"])
+	}
+	if initBody["name"] != "alice" {
+		t.Fatalf("init name=%v", initBody["name"])
+	}
+	if a, ok := initBody["alias"]; ok && strings.TrimSpace(a.(string)) != "" {
+		t.Fatalf("persistent init should not send alias, got %v", a)
+	}
+	if initBody["custody"] != awid.CustodySelf {
+		t.Fatalf("init custody=%v", initBody["custody"])
 	}
 	if result.TeamID != "default:alice.aweb.ai" {
 		t.Fatalf("team_id=%q", result.TeamID)
@@ -282,8 +277,11 @@ func TestInitBootstrapsFromAPIKeyPersistentWritesIdentity(t *testing.T) {
 	if identity.DID != cert.MemberDIDKey {
 		t.Fatalf("identity did=%q want %q", identity.DID, cert.MemberDIDKey)
 	}
-	if identity.StableID != "did:aw:alice" {
-		t.Fatalf("stable_id=%q", identity.StableID)
+	if !strings.HasPrefix(identity.StableID, "did:aw:") || identity.StableID == "" {
+		t.Fatalf("stable_id=%q want did:aw:...", identity.StableID)
+	}
+	if identity.StableID != cert.MemberDIDAW {
+		t.Fatalf("identity stable_id=%q does not match cert member_did_aw=%q", identity.StableID, cert.MemberDIDAW)
 	}
 	if identity.Address != "alice.aweb.ai/alice" {
 		t.Fatalf("address=%q", identity.Address)
