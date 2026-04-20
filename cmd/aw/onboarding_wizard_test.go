@@ -435,9 +435,6 @@ func TestExecuteHostedPathConnectsAndClaimsHumanAgainstServers(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did_aw":          stableID,
 				"current_did_key": current["new_did_key"],
-				"server":          "",
-				"address":         "",
-				"handle":          nil,
 				"created_at":      "2026-04-07T00:00:00Z",
 				"updated_at":      "2026-04-07T00:00:00Z",
 			})
@@ -684,9 +681,6 @@ func TestExecuteHostedPathRetriesUsernameAfterSignupConflict(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did_aw":          stableID,
 				"current_did_key": current["new_did_key"],
-				"server":          "",
-				"address":         "",
-				"handle":          nil,
 				"created_at":      "2026-04-07T00:00:00Z",
 				"updated_at":      "2026-04-07T00:00:00Z",
 			})
@@ -872,9 +866,6 @@ func TestExecuteBYODPathProvisionsIdentityTeamAndWorkspaceAgainstServers(t *test
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did_aw":          stableID,
 				"current_did_key": gotDIDPayload["new_did_key"],
-				"server":          "",
-				"address":         "",
-				"handle":          nil,
 				"created_at":      "2026-04-07T00:00:00Z",
 				"updated_at":      "2026-04-07T00:00:00Z",
 			})
@@ -1086,9 +1077,6 @@ func TestExecuteBYODPathUsesSplitOriginServiceDiscovery(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did_aw":          stableID,
 				"current_did_key": gotDIDPayload["new_did_key"],
-				"server":          "",
-				"address":         "",
-				"handle":          nil,
 				"created_at":      "2026-04-07T00:00:00Z",
 				"updated_at":      "2026-04-07T00:00:00Z",
 			})

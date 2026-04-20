@@ -79,9 +79,6 @@ func TestInitHostedPersistentWritesIdentityAndSignsCloudRequest(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did_aw":          didAW,
 				"current_did_key": registeredDIDKey,
-				"server":          "",
-				"address":         "",
-				"handle":          nil,
 				"created_at":      "2026-04-08T00:00:00Z",
 				"updated_at":      "2026-04-08T00:00:00Z",
 			})

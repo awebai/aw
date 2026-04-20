@@ -41,7 +41,6 @@ func TestAwIDCommandsHappyPath(t *testing.T) {
 	logEntry := testDidLogEntry(t, stableID, priv, did, "create", nil, nil, 1, strings.Repeat("a", 64))
 
 	var registerCalls atomic.Int32
-	var serverURL string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/did":
@@ -51,9 +50,6 @@ func TestAwIDCommandsHappyPath(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did_aw":          stableID,
 				"current_did_key": did,
-				"server":          serverURL,
-				"address":         address,
-				"handle":          "alice",
 				"created_at":      "2026-04-04T00:00:00Z",
 				"updated_at":      "2026-04-04T00:00:00Z",
 			})
@@ -92,7 +88,6 @@ func TestAwIDCommandsHappyPath(t *testing.T) {
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 	}))
-	serverURL = server.URL
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -127,13 +122,19 @@ func TestAwIDCommandsHappyPath(t *testing.T) {
 	if got := runJSON("id", "show", "--json"); got["registry_status"] != "registered" {
 		t.Fatalf("show registry_status=%v", got["registry_status"])
 	}
-	if got := runJSON("id", "resolve", stableID, "--json"); got["current_did_key"] != did {
-		t.Fatalf("resolve current_did_key=%v", got["current_did_key"])
+	if got := runJSON("id", "resolve", stableID, "--json"); got["version"] != supportContractVersion {
+		t.Fatalf("resolve version=%v", got["version"])
+	} else if payload, _ := got["payload"].(map[string]any); payload["registry_url"] == "" {
+		t.Fatalf("resolve registry_url missing: %+v", got)
+	} else if didKey, _ := payload["did_key"].(map[string]any); didKey["current_did_key"] != did {
+		t.Fatalf("resolve current_did_key=%v", didKey["current_did_key"])
 	}
 	if got := runJSON("id", "verify", stableID, "--json"); got["status"] != "OK" {
 		t.Fatalf("verify status=%v", got["status"])
 	}
-	if got := runJSON("id", "namespace", "myteam.aweb.ai", "--json"); got["registry_url"] == "" {
+	if got := runJSON("id", "namespace", "myteam.aweb.ai", "--json"); got["version"] != supportContractVersion {
+		t.Fatalf("namespace version=%v", got["version"])
+	} else if payload, _ := got["payload"].(map[string]any); payload["registry_url"] == "" {
 		t.Fatalf("namespace registry_url missing: %+v", got)
 	}
 }
@@ -266,9 +267,6 @@ func TestAwIDCreateWritesStandaloneIdentityAndRegisters(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did_aw":          createdDIDAW,
 				"current_did_key": createdDIDKey,
-				"server":          "",
-				"address":         "",
-				"handle":          nil,
 				"created_at":      "2026-04-04T00:00:00Z",
 				"updated_at":      "2026-04-04T00:00:00Z",
 			})
@@ -620,9 +618,6 @@ func TestAwIDCreateKeepsRegisteredIdentityWhenAddressClaimFails(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did_aw":          didAW,
 				"current_did_key": didKey,
-				"server":          "",
-				"address":         "",
-				"handle":          nil,
 				"created_at":      "2026-04-05T00:00:00Z",
 				"updated_at":      "2026-04-05T00:00:00Z",
 			})
@@ -686,9 +681,8 @@ func TestAwIDCreateAllowsMultipleIdentitiesOnSameDomain(t *testing.T) {
 	t.Parallel()
 
 	type didMapping struct {
-		didKey  string
-		address string
-		handle  string
+		didKey string
+		handle string
 	}
 
 	var namespaceControllerDID string
@@ -760,7 +754,7 @@ func TestAwIDCreateAllowsMultipleIdentitiesOnSameDomain(t *testing.T) {
 			stableID, _ := payload["did_aw"].(string)
 			didKey, _ := payload["current_did_key"].(string)
 			name, _ := payload["name"].(string)
-			didMappings[stableID] = didMapping{didKey: didKey, address: "acme.com/" + name, handle: name}
+			didMappings[stableID] = didMapping{didKey: didKey, handle: name}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"address_id":      "addr-" + name,
 				"domain":          "acme.com",
@@ -782,7 +776,9 @@ func TestAwIDCreateAllowsMultipleIdentitiesOnSameDomain(t *testing.T) {
 					t.Fatalf("register_did payload unexpectedly carried %q", field)
 				}
 			}
-			didMappings[stableID] = didMapping{didKey: didKey}
+			mapping := didMappings[stableID]
+			mapping.didKey = didKey
+			didMappings[stableID] = mapping
 			_ = json.NewEncoder(w).Encode(map[string]any{"registered": true})
 		case strings.HasPrefix(r.URL.Path, "/v1/did/") && strings.HasSuffix(r.URL.Path, "/full") && r.Method == http.MethodGet:
 			stableID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/did/"), "/full")
@@ -794,9 +790,6 @@ func TestAwIDCreateAllowsMultipleIdentitiesOnSameDomain(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did_aw":          stableID,
 				"current_did_key": mapping.didKey,
-				"server":          "",
-				"address":         mapping.address,
-				"handle":          mapping.handle,
 				"created_at":      "2026-04-05T00:00:00Z",
 				"updated_at":      "2026-04-05T00:00:00Z",
 			})
@@ -928,9 +921,6 @@ func TestAwIDRotateKeyRotatesStandaloneIdentityAndUpdatesLocalState(t *testing.T
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did_aw":          stableID,
 				"current_did_key": currentDID,
-				"server":          "",
-				"address":         address,
-				"handle":          "alice",
 				"created_at":      "2026-04-05T00:00:00Z",
 				"updated_at":      "2026-04-05T00:00:00Z",
 			})
@@ -1219,15 +1209,15 @@ func TestAwIDResolveUsesAWIDRegistryURLEnvWithoutWorkspace(t *testing.T) {
 		t.Fatalf("id resolve failed: %v\n%s", err, string(out))
 	}
 
-	var got map[string]any
+	var got registryReadEnvelope
 	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
-	if got["registry_url"] != registryServer.URL {
-		t.Fatalf("registry_url=%v want %v", got["registry_url"], registryServer.URL)
+	if got.Payload.RegistryURL != registryServer.URL {
+		t.Fatalf("registry_url=%v want %v", got.Payload.RegistryURL, registryServer.URL)
 	}
-	if got["current_did_key"] != did {
-		t.Fatalf("current_did_key=%v want %v", got["current_did_key"], did)
+	if got.Payload.DIDKey == nil || got.Payload.DIDKey.CurrentDIDKey != did {
+		t.Fatalf("current_did_key=%+v want %v", got.Payload.DIDKey, did)
 	}
 	if registryHits.Load() != 1 {
 		t.Fatalf("registry hits=%d want 1", registryHits.Load())
@@ -1388,15 +1378,15 @@ func TestAwIDResolveWorksWithoutSigningKeyWhenIdentityRegistryURLPresent(t *test
 		t.Fatalf("id resolve failed: %v\n%s", err, string(out))
 	}
 
-	var got map[string]any
+	var got registryReadEnvelope
 	if err := json.Unmarshal(extractJSON(t, out), &got); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, string(out))
 	}
-	if got["current_did_key"] != did {
-		t.Fatalf("current_did_key=%v want %v", got["current_did_key"], did)
+	if got.Payload.DIDKey == nil || got.Payload.DIDKey.CurrentDIDKey != did {
+		t.Fatalf("current_did_key=%+v want %v", got.Payload.DIDKey, did)
 	}
-	if got["registry_url"] != registryServer.URL {
-		t.Fatalf("registry_url=%v want %v", got["registry_url"], registryServer.URL)
+	if got.Payload.RegistryURL != registryServer.URL {
+		t.Fatalf("registry_url=%v want %v", got.Payload.RegistryURL, registryServer.URL)
 	}
 }
 
@@ -1873,9 +1863,6 @@ func TestAwIDRegisterWorksWithStandaloneIdentity(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did_aw":          stableID,
 				"current_did_key": did,
-				"server":          "",
-				"address":         "",
-				"handle":          nil,
 				"created_at":      "2026-04-05T00:00:00Z",
 				"updated_at":      "2026-04-05T00:00:00Z",
 			})

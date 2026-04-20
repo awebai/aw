@@ -98,9 +98,6 @@ func TestRegisterIdentityMatchesRegisterVector(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did_aw":          vectors.Mapping.DIDAW,
 				"current_did_key": vectors.Mapping.InitialDIDKey,
-				"server":          "",
-				"address":         "",
-				"handle":          nil,
 				"created_at":      "2026-04-18T12:00:00Z",
 				"updated_at":      "2026-04-18T12:00:00Z",
 			})
@@ -166,9 +163,6 @@ func TestRegisterIdentityPostsCreateEntry(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did_aw":          stableID,
 				"current_did_key": did,
-				"server":          "https://app.example.com",
-				"address":         "acme.com/alice",
-				"handle":          "alice",
 				"created_at":      "2026-04-04T00:00:00Z",
 				"updated_at":      "2026-04-04T00:00:00Z",
 			})
