@@ -98,14 +98,14 @@ func resolveIdentity() (*awconfig.ResolvedIdentity, error) {
 }
 
 func resolveEphemeralIdentityWithoutState(workingDir string) (*awconfig.ResolvedIdentity, error) {
-	workspace, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir)
+	workspace, teamState, _, err := awconfig.LoadWorkspaceAndTeamState(workingDir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if workspace == nil && errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("invalid worktree workspace: %w", err)
 	}
-	activeMembership := workspace.ActiveMembership()
+	activeMembership := awconfig.ActiveMembershipFor(workspace, teamState)
 	if activeMembership == nil {
 		return nil, usageError("current worktree is missing active_team membership; run `aw init` first")
 	}
@@ -286,6 +286,7 @@ func resolveIdentityMessagingClientSelectionForDir(workingDir string) (*aweb.Cli
 		configuredSel.StableID = ""
 		configuredSel.Domain = ""
 		configuredSel.Alias = ""
+		sel = &configuredSel
 	}
 	if err := configureResolvedClient(c, &configuredSel, baseURL); err != nil {
 		return nil, nil, err
@@ -1146,5 +1147,16 @@ func workspaceMembershipForSelection(ws *awconfig.WorktreeWorkspace, sel *awconf
 		}
 		return nil, fmt.Errorf("team %q is not present in workspace memberships; available: %s", teamID, strings.Join(ws.AvailableTeamIDs(), ", "))
 	}
-	return ws.ActiveMembership(), nil
+	workingDir := ""
+	if sel != nil {
+		workingDir = strings.TrimSpace(sel.WorkingDir)
+	}
+	if workingDir == "" {
+		return nil, nil
+	}
+	teamState, err := awconfig.LoadTeamState(workingDir)
+	if err != nil {
+		return nil, err
+	}
+	return awconfig.ActiveMembershipFor(ws, teamState), nil
 }

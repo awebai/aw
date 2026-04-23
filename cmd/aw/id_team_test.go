@@ -1317,7 +1317,7 @@ func TestCertShow(t *testing.T) {
 	}
 }
 
-func TestTeamListMigratesMembershipsFromWorkspaceYAML(t *testing.T) {
+func TestTeamListMigratesLegacyWorkspaceYAML(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1327,29 +1327,32 @@ func TestTeamListMigratesMembershipsFromWorkspaceYAML(t *testing.T) {
 	bin := filepath.Join(tmp, "aw")
 	buildAwBinary(t, ctx, bin)
 
-	writeWorkspaceBindingForTest(t, tmp, awconfig.WorktreeWorkspace{
-		AwebURL:    "https://app.aweb.ai/api",
-		ActiveTeam: "backend:acme.com",
-		Memberships: []awconfig.WorktreeMembership{
-			{
-				TeamID:      "backend:acme.com",
-				Alias:       "alice",
-				WorkspaceID: "ws-backend",
-				CertPath:    awconfig.TeamCertificateRelativePath("backend:acme.com"),
-				JoinedAt:    "2026-04-13T00:00:00Z",
-			},
-			{
-				TeamID:      "ops:acme.com",
-				Alias:       "alice-ops",
-				WorkspaceID: "ws-ops",
-				CertPath:    awconfig.TeamCertificateRelativePath("ops:acme.com"),
-				JoinedAt:    "2026-04-14T00:00:00Z",
-			},
-		},
-	})
+	workspacePath := filepath.Join(tmp, awconfig.DefaultWorktreeWorkspaceRelativePath())
+	if err := os.MkdirAll(filepath.Dir(workspacePath), 0o700); err != nil {
+		t.Fatalf("mkdir .aw: %v", err)
+	}
+	if err := os.WriteFile(workspacePath, []byte(strings.TrimSpace(`
+aweb_url: https://app.aweb.ai/api
+active_team: backend:acme.com
+memberships:
+  - team_id: backend:acme.com
+    alias: alice
+    role_name: backend
+    workspace_id: ws-backend
+    cert_path: team-certs/backend__acme.com.pem
+    joined_at: "2026-04-13T00:00:00Z"
+  - team_id: ops:acme.com
+    alias: alice-ops
+    role_name: ops
+    workspace_id: ws-ops
+    cert_path: team-certs/ops__acme.com.pem
+    joined_at: "2026-04-14T00:00:00Z"
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write workspace: %v", err)
+	}
 
 	if _, err := os.Stat(awconfig.TeamStatePath(tmp)); !os.IsNotExist(err) {
-		t.Fatalf("teams.yaml should not exist before migration, stat err=%v", err)
+		t.Fatalf("teams.yaml should not exist before list, stat err=%v", err)
 	}
 
 	run := exec.CommandContext(ctx, bin, "id", "team", "list", "--json")
@@ -1588,6 +1591,86 @@ func TestTeamAddSwitchListLeaveFlow(t *testing.T) {
 	}
 	if _, err := os.Stat(awconfig.TeamCertificatePath(tmp, "ops:acme.com")); !os.IsNotExist(err) {
 		t.Fatalf("ops cert should be removed, stat err=%v", err)
+	}
+}
+
+func TestTeamSwitchWritesOnlyTeamsYAML(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+
+	workspacePath := filepath.Join(tmp, awconfig.DefaultWorktreeWorkspaceRelativePath())
+	if err := os.MkdirAll(filepath.Dir(workspacePath), 0o700); err != nil {
+		t.Fatalf("mkdir .aw: %v", err)
+	}
+	workspaceBody := []byte(strings.TrimSpace(`
+# Keep this comment to prove team switch does not rewrite workspace.yaml.
+aweb_url: https://app.aweb.ai/api
+active_team: backend:demo
+memberships:
+  - team_id: backend:demo
+    alias: alice
+    role_name: backend
+    workspace_id: ws-backend
+    cert_path: team-certs/backend__demo.pem
+  - team_id: ops:demo
+    alias: alice-ops
+    role_name: ops
+    workspace_id: ws-ops
+    cert_path: team-certs/ops__demo.pem
+`) + "\n")
+	if err := os.WriteFile(workspacePath, workspaceBody, 0o600); err != nil {
+		t.Fatalf("write workspace: %v", err)
+	}
+	writeTeamStateForTest(t, tmp, awconfig.TeamState{
+		ActiveTeam: "backend:demo",
+		Memberships: []awconfig.TeamMembership{
+			{
+				TeamID:   "backend:demo",
+				Alias:    "alice",
+				CertPath: awconfig.TeamCertificateRelativePath("backend:demo"),
+			},
+			{
+				TeamID:   "ops:demo",
+				Alias:    "alice-ops",
+				CertPath: awconfig.TeamCertificateRelativePath("ops:demo"),
+			},
+		},
+	})
+
+	run := exec.CommandContext(ctx, bin, "id", "team", "switch", "ops:demo", "--json")
+	run.Env = testCommandEnv(tmp)
+	run.Dir = tmp
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("team switch failed: %v\n%s", err, string(out))
+	}
+	var switchGot map[string]any
+	if err := json.Unmarshal(extractJSON(t, out), &switchGot); err != nil {
+		t.Fatalf("invalid switch json: %v\n%s", err, string(out))
+	}
+	if switchGot["active_team"] != "ops:demo" {
+		t.Fatalf("active_team=%v", switchGot["active_team"])
+	}
+
+	workspaceAfter, err := os.ReadFile(workspacePath)
+	if err != nil {
+		t.Fatalf("read workspace after switch: %v", err)
+	}
+	if !bytes.Equal(workspaceAfter, workspaceBody) {
+		t.Fatalf("workspace.yaml changed after team switch:\n%s", string(workspaceAfter))
+	}
+	teamState, err := awconfig.LoadTeamState(tmp)
+	if err != nil {
+		t.Fatalf("load team state: %v", err)
+	}
+	if teamState.ActiveTeam != "ops:demo" {
+		t.Fatalf("teams active_team=%q", teamState.ActiveTeam)
 	}
 }
 

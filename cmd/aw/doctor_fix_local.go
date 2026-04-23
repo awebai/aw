@@ -32,7 +32,7 @@ type doctorLocalURLNormalization struct {
 }
 
 func init() {
-	registerDoctorFixHandler(localActiveTeamFixHandler{checkID: doctorCheckWorkspaceActiveTeam})
+	registerDoctorFixHandler(localActiveTeamFixHandler{checkID: doctorCheckTeamsActiveTeam})
 	registerDoctorFixHandler(localActiveTeamFixHandler{checkID: doctorCheckWorkspaceMembership})
 	registerDoctorFixHandler(localWorkspaceURLFixHandler{})
 	registerDoctorFixHandler(localIdentityRegistryURLFixHandler{})
@@ -208,27 +208,27 @@ func (h localActiveTeamFixHandler) Plan(_ context.Context, ctx doctorFixContext,
 	workspacePath := filepath.Join(ctx.WorkingDir, awconfig.DefaultWorktreeWorkspaceRelativePath())
 	workspace, err := loadDoctorWorkspaceFrom(workspacePath)
 	if err != nil {
-		return refusedLocalFixPlan(plan, "precondition", "workspace_yaml_unreadable", "Workspace binding could not be loaded for active_team repair."), nil
+		return refusedLocalFixPlan(plan, "precondition", "workspace_yaml_unreadable", "Workspace binding could not be loaded for teams.yaml active_team repair."), nil
 	}
 	teamID, reason := localSelectableActiveTeam(workspace)
 	if reason != "" {
 		return refusedLocalFixPlan(plan, localFixReasonAmbiguousState, reason, "Repair workspace memberships manually or reinitialize the workspace binding."), nil
 	}
-	if workspace.Membership(workspace.ActiveTeam) != nil && strings.EqualFold(strings.TrimSpace(workspace.ActiveTeam), teamID) {
+	if teamState, err := awconfig.LoadTeamState(ctx.WorkingDir); err == nil && teamState.Membership(teamID) != nil && strings.EqualFold(strings.TrimSpace(teamState.ActiveTeam), teamID) {
 		plan.Status = doctorFixStatusNoop
 		return plan, nil
 	}
 	snapshot, err := snapshotLocalFile(workspacePath)
 	if err != nil {
-		return refusedLocalFixPlan(plan, "precondition", "workspace_yaml_unreadable", "Workspace binding could not be inspected for active_team repair."), nil
+		return refusedLocalFixPlan(plan, "precondition", "workspace_yaml_unreadable", "Workspace binding could not be inspected for teams.yaml active_team repair."), nil
 	}
 	detail := snapshot.detail()
 	detail["selected_team_id"] = teamID
 	plan.PlannedMutations = []doctorFixMutation{{
-		Operation:     "rewrite_workspace_metadata",
-		Description:   "Set active_team from the sole local workspace membership.",
-		Target:        localPathTarget(workspacePath),
-		Path:          awconfig.DefaultWorktreeWorkspaceRelativePath(),
+		Operation:     "rewrite_teams_metadata",
+		Description:   "Set teams.yaml active_team from the sole local workspace membership.",
+		Target:        localPathTarget(awconfig.TeamStatePath(ctx.WorkingDir)),
+		Path:          awconfig.DefaultTeamStateRelativePath(),
 		Resource:      "active_team",
 		SourceOfTruth: "local workspace memberships",
 	}}
@@ -236,7 +236,7 @@ func (h localActiveTeamFixHandler) Plan(_ context.Context, ctx doctorFixContext,
 		{ID: localFixPreconditionWorkspaceYAMLUnchanged, Passed: true, Detail: detail},
 		{ID: localFixPreconditionSingleMembership, Passed: true, Detail: map[string]any{"team_id": teamID}},
 	}
-	plan.NextStep = "Run without --dry-run to update active_team from local workspace metadata."
+	plan.NextStep = "Run without --dry-run to update teams.yaml active_team from local workspace metadata."
 	return plan, nil
 }
 
@@ -248,13 +248,13 @@ func (h localActiveTeamFixHandler) Apply(_ context.Context, ctx doctorFixContext
 	}
 	current, err := snapshotLocalFile(workspacePath)
 	if err != nil {
-		return refusedLocalFixPlan(plan, "precondition", "workspace_yaml_unreadable", "Workspace binding could not be inspected for active_team repair."), nil
+		return refusedLocalFixPlan(plan, "precondition", "workspace_yaml_unreadable", "Workspace binding could not be inspected for teams.yaml active_team repair."), nil
 	}
 	workspace, err := loadDoctorWorkspaceFrom(workspacePath)
 	if err != nil {
-		return refusedLocalFixPlan(plan, "precondition", "workspace_yaml_unreadable", "Workspace binding could not be loaded for active_team repair."), nil
+		return refusedLocalFixPlan(plan, "precondition", "workspace_yaml_unreadable", "Workspace binding could not be loaded for teams.yaml active_team repair."), nil
 	}
-	if wantTeamID != "" && workspace.Membership(workspace.ActiveTeam) != nil && strings.EqualFold(strings.TrimSpace(workspace.ActiveTeam), wantTeamID) {
+	if teamState, err := awconfig.LoadTeamState(ctx.WorkingDir); err == nil && wantTeamID != "" && teamState.Membership(wantTeamID) != nil && strings.EqualFold(strings.TrimSpace(teamState.ActiveTeam), wantTeamID) {
 		plan.Status = doctorFixStatusNoop
 		return plan, nil
 	}
@@ -266,12 +266,28 @@ func (h localActiveTeamFixHandler) Apply(_ context.Context, ctx doctorFixContext
 	if reason != "" || (wantTeamID != "" && !strings.EqualFold(teamID, wantTeamID)) {
 		return refusedLocalFixPlan(plan, localFixReasonStateChanged, "workspace_membership_changed", "Workspace memberships changed after planning; rerun doctor before applying fixes."), nil
 	}
-	workspace.ActiveTeam = teamID
-	if err := awconfig.SaveWorktreeWorkspaceTo(workspacePath, workspace); err != nil {
+	teamState := teamStateRepairFromWorkspaceMemberships(workspace, teamID)
+	if err := awconfig.SaveTeamState(ctx.WorkingDir, teamState); err != nil {
 		return doctorFixPlan{}, err
 	}
 	plan.Status = doctorFixStatusApplied
 	return plan, nil
+}
+
+func teamStateRepairFromWorkspaceMemberships(workspace *awconfig.WorktreeWorkspace, activeTeam string) *awconfig.TeamState {
+	if workspace == nil {
+		return nil
+	}
+	state := &awconfig.TeamState{ActiveTeam: strings.TrimSpace(activeTeam)}
+	for _, membership := range workspace.Memberships {
+		state.Memberships = append(state.Memberships, awconfig.TeamMembership{
+			TeamID:   strings.TrimSpace(membership.TeamID),
+			Alias:    strings.TrimSpace(membership.Alias),
+			CertPath: filepath.ToSlash(strings.TrimSpace(membership.CertPath)),
+			JoinedAt: strings.TrimSpace(membership.JoinedAt),
+		})
+	}
+	return state
 }
 
 func localSelectableActiveTeam(workspace *awconfig.WorktreeWorkspace) (string, string) {
