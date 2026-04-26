@@ -3,6 +3,7 @@ package awid
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -114,6 +115,33 @@ func TestPinResolverByAddress(t *testing.T) {
 	}
 }
 
+func TestPinResolverByStableAddressReturnsCurrentDIDKey(t *testing.T) {
+	t.Parallel()
+
+	ps := NewPinStore()
+	stableID := "did:aw:2TdFnyW1MyzkH5x8Q3hM7Pgx98Mn"
+	did := "did:key:z6MkpfXL8ijUSkuwevHQhYJaUwoD46EekWmdRc6jX7p5bmEm"
+	ps.Pins[stableID] = &Pin{
+		Address:  "juan.aweb.ai/randy",
+		StableID: stableID,
+		DIDKey:   did,
+		Server:   "https://api.awid.ai",
+	}
+	ps.Addresses["juan.aweb.ai/randy"] = stableID
+
+	r := &PinResolver{Store: ps}
+	identity, err := r.Resolve(context.Background(), "juan.aweb.ai/randy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.DID != did {
+		t.Fatalf("DID=%q, want %q", identity.DID, did)
+	}
+	if identity.StableID != stableID {
+		t.Fatalf("StableID=%q, want %q", identity.StableID, stableID)
+	}
+}
+
 func TestPinResolverNotFound(t *testing.T) {
 	t.Parallel()
 
@@ -175,6 +203,119 @@ func TestChainResolverNoRegistry(t *testing.T) {
 	}
 }
 
+func TestChainResolverFallsBackToPinWhenRegistryAddressMissing(t *testing.T) {
+	t.Parallel()
+
+	stableID := "did:aw:2TdFnyW1MyzkH5x8Q3hM7Pgx98Mn"
+	did := "did:key:z6MkpfXL8ijUSkuwevHQhYJaUwoD46EekWmdRc6jX7p5bmEm"
+	address := "juan.aweb.ai/randy"
+
+	var registryHits atomic.Int64
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		registryHits.Add(1)
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	ps := NewPinStore()
+	ps.Pins[stableID] = &Pin{
+		Address:  address,
+		StableID: stableID,
+		DIDKey:   did,
+		Server:   server.URL,
+	}
+	ps.Addresses[address] = stableID
+
+	registry := NewRegistryResolver(server.Client(), staticTXTResolver{})
+	if err := registry.SetFallbackRegistryURL(server.URL); err != nil {
+		t.Fatal(err)
+	}
+	cr := &ChainResolver{
+		DIDKey:   &DIDKeyResolver{},
+		Registry: registry,
+		Pin:      &PinResolver{Store: ps},
+	}
+
+	identity, err := cr.Resolve(context.Background(), address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registryHits.Load() == 0 {
+		t.Fatal("registry was not tried before pin fallback")
+	}
+	if identity.ResolvedVia != "pin" {
+		t.Fatalf("ResolvedVia=%q, want pin", identity.ResolvedVia)
+	}
+	if identity.DID != did {
+		t.Fatalf("DID=%q, want %q", identity.DID, did)
+	}
+	if identity.StableID != stableID {
+		t.Fatalf("StableID=%q, want %q", identity.StableID, stableID)
+	}
+}
+
+func TestChainResolverDoesNotFallBackToPinOnRegistryHardError(t *testing.T) {
+	t.Parallel()
+
+	address := "juan.aweb.ai/randy"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "registry unavailable", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	ps := NewPinStore()
+	ps.StorePin("did:key:z6MkpfXL8ijUSkuwevHQhYJaUwoD46EekWmdRc6jX7p5bmEm", address, "randy", server.URL)
+	registry := NewRegistryResolver(server.Client(), staticTXTResolver{})
+	if err := registry.SetFallbackRegistryURL(server.URL); err != nil {
+		t.Fatal(err)
+	}
+	cr := &ChainResolver{
+		DIDKey:   &DIDKeyResolver{},
+		Registry: registry,
+		Pin:      &PinResolver{Store: ps},
+	}
+
+	_, err := cr.Resolve(context.Background(), address)
+	if err == nil {
+		t.Fatal("expected registry hard error")
+	}
+	apiErr, ok := err.(*APIError)
+	if !ok || apiErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("err=%T %v, want registry 500", err, err)
+	}
+}
+
+func TestChainResolverDoesNotFallBackToPinOnRegistryUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	address := "juan.aweb.ai/randy"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+
+	ps := NewPinStore()
+	ps.StorePin("did:key:z6MkpfXL8ijUSkuwevHQhYJaUwoD46EekWmdRc6jX7p5bmEm", address, "randy", server.URL)
+	registry := NewRegistryResolver(server.Client(), staticTXTResolver{})
+	if err := registry.SetFallbackRegistryURL(server.URL); err != nil {
+		t.Fatal(err)
+	}
+	cr := &ChainResolver{
+		DIDKey:   &DIDKeyResolver{},
+		Registry: registry,
+		Pin:      &PinResolver{Store: ps},
+	}
+
+	_, err := cr.Resolve(context.Background(), address)
+	if err == nil {
+		t.Fatal("expected registry unauthorized error")
+	}
+	apiErr, ok := err.(*APIError)
+	if !ok || apiErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("err=%T %v, want registry 401", err, err)
+	}
+}
+
 func TestRegistryResolverResolvesPersistentAddress(t *testing.T) {
 	t.Parallel()
 
@@ -188,6 +329,12 @@ func TestRegistryResolverResolvesPersistentAddress(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/namespaces/acme.com/addresses/alice":
+			if got := r.Header.Get("Authorization"); got != "" {
+				t.Fatalf("Authorization=%q, want unsigned address lookup without configured key", got)
+			}
+			if got := r.Header.Get("X-AWEB-Timestamp"); got != "" {
+				t.Fatalf("X-AWEB-Timestamp=%q, want unset without configured key", got)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"address_id":      "addr-1",
 				"domain":          "acme.com",
@@ -228,6 +375,102 @@ func TestRegistryResolverResolvesPersistentAddress(t *testing.T) {
 	}
 	if identity.ControllerDID != did {
 		t.Fatalf("ControllerDID=%q", identity.ControllerDID)
+	}
+}
+
+func TestRegistryResolverSignsAddressLookupWhenKeyConfigured(t *testing.T) {
+	t.Parallel()
+
+	callerPub, callerPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callerDID := ComputeDIDKey(callerPub)
+	recipientPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipientDID := ComputeDIDKey(recipientPub)
+	recipientStableID := ComputeStableID(recipientPub)
+	timestamp := "2026-04-26T10:30:00Z"
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/namespaces/acme.com/addresses/randy":
+			if got := r.Header.Get("X-AWEB-Timestamp"); got != timestamp {
+				t.Fatalf("X-AWEB-Timestamp=%q, want %q", got, timestamp)
+			}
+			parts := strings.Fields(r.Header.Get("Authorization"))
+			if len(parts) != 3 || parts[0] != "DIDKey" {
+				t.Fatalf("Authorization=%q", r.Header.Get("Authorization"))
+			}
+			if parts[1] != callerDID {
+				t.Fatalf("auth did=%q, want %q", parts[1], callerDID)
+			}
+			pub, err := ExtractPublicKey(parts[1])
+			if err != nil {
+				t.Fatalf("extract auth key: %v", err)
+			}
+			sig, err := base64.RawStdEncoding.DecodeString(parts[2])
+			if err != nil {
+				t.Fatalf("decode auth signature: %v", err)
+			}
+			canonical, err := CanonicalJSONValue(map[string]any{
+				"domain":    "acme.com",
+				"name":      "randy",
+				"operation": "get_address",
+				"timestamp": timestamp,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !ed25519.Verify(pub, []byte(canonical), sig) {
+				t.Fatal("address lookup signature did not verify")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"address_id":      "addr-randy",
+				"domain":          "acme.com",
+				"name":            "randy",
+				"did_aw":          recipientStableID,
+				"current_did_key": recipientDID,
+				"reachability":    "org_only",
+				"created_at":      "2026-04-26T00:00:00Z",
+			})
+		case "/v1/did/" + recipientStableID + "/key":
+			if got := r.Header.Get("Authorization"); got != "" {
+				t.Fatalf("key lookup Authorization=%q, want unsigned", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did_aw":          recipientStableID,
+				"current_did_key": recipientDID,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	resolver := NewRegistryResolver(server.Client(), staticTXTResolver{})
+	lookupTime, err := time.Parse(time.RFC3339, timestamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver.Now = func() time.Time { return lookupTime }
+	resolver.SetLookupSigningKey(callerPriv)
+	resolver.registryCache["acme.com"] = cachedValue[DomainAuthority]{
+		value:     DomainAuthority{RegistryURL: server.URL},
+		expiresAt: time.Now().Add(time.Minute),
+	}
+
+	identity, err := resolver.Resolve(context.Background(), "acme.com/randy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.DID != recipientDID {
+		t.Fatalf("DID=%q, want %q", identity.DID, recipientDID)
+	}
+	if identity.StableID != recipientStableID {
+		t.Fatalf("StableID=%q, want %q", identity.StableID, recipientStableID)
 	}
 }
 
