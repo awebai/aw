@@ -343,7 +343,7 @@ func configureResolvedClient(c *aweb.Client, sel *awconfig.Selection, baseURL st
 		ps = awid.NewPinStore()
 	}
 	c.SetPinStore(ps, pinPath)
-	registry, err := newConfiguredRegistryResolver(c.Client.HTTPClient(), baseURL)
+	registry, err := newConfiguredRegistryResolver(c.Client.HTTPClient(), baseURL, sel.RegistryURL)
 	if err != nil {
 		return err
 	}
@@ -507,9 +507,9 @@ func configureBaseURLFallback(c *aweb.Client, sel *awconfig.Selection, baseURL s
 	})
 }
 
-func newConfiguredRegistryResolver(httpClient *http.Client, baseURL string) (*awid.RegistryResolver, error) {
+func newConfiguredRegistryResolver(httpClient *http.Client, baseURL, preferredRegistryURL string) (*awid.RegistryResolver, error) {
 	registry := awid.NewRegistryResolver(httpClient, nil)
-	if err := configureEmbeddedRegistryBaseURL(baseURL, registry.SetFallbackRegistryURL); err != nil {
+	if err := configureEmbeddedRegistryBaseURLWithDefault(baseURL, preferredRegistryURL, registry.SetFallbackRegistryURL); err != nil {
 		return nil, err
 	}
 	return registry, nil
@@ -517,6 +517,8 @@ func newConfiguredRegistryResolver(httpClient *http.Client, baseURL string) (*aw
 
 func newConfiguredRegistryClient(httpClient *http.Client, baseURL string) (*awid.RegistryClient, error) {
 	client := awid.NewAWIDRegistryClient(httpClient, nil)
+	// Admin and awid callers that need a specific registry URL set it after
+	// construction; otherwise AWID_REGISTRY_URL is global at this layer.
 	if err := configureEmbeddedRegistryBaseURL(baseURL, client.SetFallbackRegistryURL); err != nil {
 		return nil, err
 	}
@@ -544,17 +546,24 @@ func loadOptionalWorktreeSigningKey(workingDir string) (ed25519.PrivateKey, erro
 }
 
 func configureEmbeddedRegistryBaseURL(baseURL string, setFallback func(string) error) error {
+	return configureEmbeddedRegistryBaseURLWithDefault(baseURL, "", setFallback)
+}
+
+func configureEmbeddedRegistryBaseURLWithDefault(baseURL, preferredRegistryURL string, setFallback func(string) error) error {
 	registryValue := strings.TrimSpace(os.Getenv("AWID_REGISTRY_URL"))
+	if registryValue == "" {
+		registryValue = strings.TrimSpace(preferredRegistryURL)
+	}
 	if registryValue == "" {
 		return nil
 	}
 	if !strings.EqualFold(registryValue, "local") {
 		if err := setFallback(registryValue); err != nil {
-			return fmt.Errorf("invalid AWID_REGISTRY_URL: %w", err)
+			return fmt.Errorf("invalid registry URL: %w", err)
 		}
 		return nil
 	}
-	return fmt.Errorf("AWID_REGISTRY_URL=local is not supported; use an explicit registry URL")
+	return fmt.Errorf("registry URL 'local' is not supported; use an explicit registry URL")
 }
 
 func persistResolvedAwebURL(workspacePath, baseURL string) error {
