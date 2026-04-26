@@ -332,6 +332,7 @@ func configureResolvedClient(c *aweb.Client, sel *awconfig.Selection, baseURL st
 	if sel.StableID != "" {
 		c.SetStableID(sel.StableID)
 	}
+	c.SetRequireRecipientBindingForDirectAddresses(strings.TrimSpace(sel.Lifetime) == awid.LifetimePersistent || strings.TrimSpace(sel.StableID) != "")
 
 	pinPath, err := awconfig.DefaultKnownAgentsPath()
 	if err != nil {
@@ -1084,6 +1085,10 @@ func checkVerificationRequired(err error) string {
 // is "aweb: http 404: ..." which looks like a broken endpoint. This rewrites it
 // to mention the target address.
 func networkError(err error, target string) error {
+	var recipientErr *awid.RecipientResolutionError
+	if errors.As(err, &recipientErr) {
+		return err
+	}
 	code, ok := awid.HTTPStatusCode(err)
 	if ok && code == 404 {
 		return fmt.Errorf("agent not found: %s", target)
