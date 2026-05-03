@@ -34,11 +34,32 @@ type VerificationStatus string
 
 const (
 	Verified          VerificationStatus = "verified"
+	VerifiedLegacy    VerificationStatus = "verified_legacy"
 	VerifiedCustodial VerificationStatus = "verified_custodial"
 	Unverified        VerificationStatus = "unverified"
 	Failed            VerificationStatus = "failed"
 	IdentityMismatch  VerificationStatus = "identity_mismatch"
 )
+
+func SignedPayloadConversationStatus(signedPayload, conversationID string) VerificationStatus {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return Verified
+	}
+	var payload struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if err := json.Unmarshal([]byte(signedPayload), &payload); err != nil {
+		return Failed
+	}
+	if payload.ConversationID == conversationID {
+		return Verified
+	}
+	if strings.TrimSpace(payload.ConversationID) == "" {
+		return VerifiedLegacy
+	}
+	return Failed
+}
 
 // RotationAnnouncement is attached to messages after key rotation.
 // The old key signs the transition to the new key.
@@ -64,22 +85,23 @@ type ReplacementAnnouncement struct {
 // Transport-only fields (Signature, SigningKeyID) are not part of the
 // signed payload but are carried here for convenience.
 type MessageEnvelope struct {
-	From          string `json:"from"`
-	FromDID       string `json:"from_did"`
-	To            string `json:"to"`
-	ToDID         string `json:"to_did"`
-	Type          string `json:"type"`
-	Priority      string `json:"priority,omitempty"`
-	WaitSeconds   *int   `json:"wait_seconds,omitempty"`
-	Subject       string `json:"subject"`
-	Body          string `json:"body"`
-	Timestamp     string `json:"timestamp"`
-	FromStableID  string `json:"from_stable_id,omitempty"`
-	ToStableID    string `json:"to_stable_id,omitempty"`
-	MessageID     string `json:"message_id,omitempty"`
-	ReplyTo       string `json:"reply_to,omitempty"`
-	SenderLeaving bool   `json:"sender_leaving,omitempty"`
-	HangOn        bool   `json:"hang_on,omitempty"`
+	From           string `json:"from"`
+	FromDID        string `json:"from_did"`
+	To             string `json:"to"`
+	ToDID          string `json:"to_did"`
+	Type           string `json:"type"`
+	Priority       string `json:"priority,omitempty"`
+	WaitSeconds    *int   `json:"wait_seconds,omitempty"`
+	Subject        string `json:"subject"`
+	Body           string `json:"body"`
+	Timestamp      string `json:"timestamp"`
+	FromStableID   string `json:"from_stable_id,omitempty"`
+	ToStableID     string `json:"to_stable_id,omitempty"`
+	MessageID      string `json:"message_id,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	ReplyTo        string `json:"reply_to,omitempty"`
+	SenderLeaving  bool   `json:"sender_leaving,omitempty"`
+	HangOn         bool   `json:"hang_on,omitempty"`
 
 	RequireRecipientBinding bool `json:"-"`
 
@@ -274,7 +296,7 @@ func VerifyReplacementSignature(controllerPub ed25519.PublicKey, address, contro
 
 // CanonicalJSON builds the canonical JSON payload for message signing.
 // Fields are sorted lexicographically, no whitespace, minimal escaping.
-// Optional fields (from_stable_id, message_id, to_stable_id) are omitted when empty.
+// Optional fields (conversation_id, from_stable_id, message_id, to_stable_id) are omitted when empty.
 // See also LogEntry.CanonicalJSON which always includes all fields with null for absent values.
 func CanonicalJSON(env *MessageEnvelope) string {
 	type field struct {
@@ -303,6 +325,9 @@ func CanonicalJSON(env *MessageEnvelope) string {
 	}
 	if env.MessageID != "" {
 		fields = append(fields, field{"message_id", jsonStringValue(env.MessageID)})
+	}
+	if env.ConversationID != "" {
+		fields = append(fields, field{"conversation_id", jsonStringValue(env.ConversationID)})
 	}
 	if env.Priority != "" {
 		fields = append(fields, field{"priority", jsonStringValue(env.Priority)})

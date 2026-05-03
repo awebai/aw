@@ -21,13 +21,14 @@ var mailCmd = &cobra.Command{
 // mail send
 
 var (
-	mailSendTo        string
-	mailSendToDID     string
-	mailSendToAddress string
-	mailSendSubject   string
-	mailSendBody      string
-	mailSendBodyFile  string
-	mailSendPriority  string
+	mailSendTo             string
+	mailSendToDID          string
+	mailSendToAddress      string
+	mailSendSubject        string
+	mailSendBody           string
+	mailSendBodyFile       string
+	mailSendPriority       string
+	mailSendConversationID string
 )
 
 var mailSendCmd = &cobra.Command{
@@ -50,11 +51,21 @@ var mailSendCmd = &cobra.Command{
 		var c *aweb.Client
 		var sel *awconfig.Selection
 		req := &awid.SendMessageRequest{
-			Subject:  mailSendSubject,
-			Body:     mailSendBody,
-			Priority: awid.MessagePriority(mailSendPriority),
+			Subject:        mailSendSubject,
+			Body:           mailSendBody,
+			Priority:       awid.MessagePriority(mailSendPriority),
+			ConversationID: strings.TrimSpace(mailSendConversationID),
 		}
 		switch targetKind {
+		case "conversation":
+			if strings.TrimSpace(teamFlag) != "" {
+				c, sel, err = resolveClientSelection()
+			} else {
+				c, sel, err = resolveIdentityMessagingClientSelection()
+			}
+			if err != nil {
+				return err
+			}
 		case "alias":
 			c, sel, err = resolveClientSelectionForAliasTarget(ctx, targetValue)
 			if err != nil {
@@ -92,6 +103,9 @@ var mailSendCmd = &cobra.Command{
 			resp, err = c.SendMessageByIdentity(ctx, req)
 		}
 		if err != nil {
+			if targetKind == "conversation" {
+				return err
+			}
 			return networkError(err, targetValue)
 		}
 		logsDir := defaultLogsDir()
@@ -103,25 +117,29 @@ var mailSendCmd = &cobra.Command{
 			"",
 		)
 		appendCommLog(logsDir, commLogNameForSelection(sel), &CommLogEntry{
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			Dir:       "send",
-			Channel:   "mail",
-			MessageID: resp.MessageID,
-			From:      from,
-			To:        targetValue,
-			Subject:   mailSendSubject,
-			Body:      mailSendBody,
+			Timestamp:      time.Now().UTC().Format(time.RFC3339),
+			Dir:            "send",
+			Channel:        "mail",
+			MessageID:      resp.MessageID,
+			ConversationID: resp.ConversationID,
+			From:           from,
+			To:             targetValue,
+			Subject:        mailSendSubject,
+			Body:           mailSendBody,
 		})
 		appendInteractionLogForCWD(&InteractionEntry{
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			Kind:      interactionKindMailOut,
-			MessageID: resp.MessageID,
-			To:        targetValue,
-			Subject:   mailSendSubject,
-			Text:      mailSendBody,
+			Timestamp:      time.Now().UTC().Format(time.RFC3339),
+			Kind:           interactionKindMailOut,
+			MessageID:      resp.MessageID,
+			ConversationID: resp.ConversationID,
+			To:             targetValue,
+			Subject:        mailSendSubject,
+			Text:           mailSendBody,
 		})
 		if jsonFlag {
 			printJSON(resp)
+		} else if targetKind == "conversation" {
+			fmt.Printf("Sent mail in conversation %s (message_id=%s)\n", targetValue, resp.MessageID)
 		} else {
 			fmt.Printf("Sent mail to %s (message_id=%s)\n", targetValue, resp.MessageID)
 		}
@@ -167,6 +185,13 @@ func resolveMailTarget() (string, string, error) {
 	}
 	if strings.TrimSpace(mailSendToAddress) != "" {
 		count++
+	}
+	conversationID := strings.TrimSpace(mailSendConversationID)
+	if conversationID != "" {
+		if count > 0 {
+			return "", "", usageError("--conversation-id cannot be combined with recipient flags")
+		}
+		return "conversation", conversationID, nil
 	}
 	if count == 0 {
 		return "", "", usageError("missing required recipient flag: one of --to, --to-did, or --to-address")
@@ -242,33 +267,88 @@ var mailInboxCmd = &cobra.Command{
 				"",
 			)
 			appendCommLog(logsDir, commLogNameForSelection(sel), &CommLogEntry{
-				Timestamp:    msg.CreatedAt,
-				Dir:          "recv",
-				Channel:      "mail",
-				MessageID:    msg.MessageID,
-				From:         from,
-				To:           to,
-				Subject:      msg.Subject,
-				Body:         msg.Body,
-				FromDID:      msg.FromDID,
-				ToDID:        msg.ToDID,
-				FromStableID: msg.FromStableID,
-				ToStableID:   msg.ToStableID,
-				Signature:    msg.Signature,
-				SigningKeyID: msg.SigningKeyID,
-				Verification: string(msg.VerificationStatus),
+				Timestamp:      msg.CreatedAt,
+				Dir:            "recv",
+				Channel:        "mail",
+				MessageID:      msg.MessageID,
+				ConversationID: msg.ConversationID,
+				From:           from,
+				To:             to,
+				Subject:        msg.Subject,
+				Body:           msg.Body,
+				FromDID:        msg.FromDID,
+				ToDID:          msg.ToDID,
+				FromStableID:   msg.FromStableID,
+				ToStableID:     msg.ToStableID,
+				Signature:      msg.Signature,
+				SigningKeyID:   msg.SigningKeyID,
+				Verification:   string(msg.VerificationStatus),
 			})
 			appendInteractionLogForCWD(&InteractionEntry{
-				Timestamp: msg.CreatedAt,
-				Kind:      interactionKindMailIn,
-				MessageID: msg.MessageID,
-				From:      from,
-				To:        to,
-				Subject:   msg.Subject,
-				Text:      msg.Body,
+				Timestamp:      msg.CreatedAt,
+				Kind:           interactionKindMailIn,
+				MessageID:      msg.MessageID,
+				ConversationID: msg.ConversationID,
+				From:           from,
+				To:             to,
+				Subject:        msg.Subject,
+				Text:           msg.Body,
 			})
 		}
 		printOutput(resp, formatMailInbox)
+		return nil
+	},
+}
+
+var (
+	mailShowConversationID string
+	mailShowMessageID      string
+	mailShowLimit          int
+)
+
+var mailShowCmd = &cobra.Command{
+	Use:   "show",
+	Short: "Show a mail conversation",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		conversationID := strings.TrimSpace(mailShowConversationID)
+		messageID := strings.TrimSpace(mailShowMessageID)
+		if conversationID == "" && messageID == "" {
+			return usageError("missing required flag: --conversation-id or --message-id")
+		}
+		if conversationID != "" && messageID != "" {
+			return usageError("--conversation-id and --message-id are mutually exclusive")
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		var c *aweb.Client
+		var err error
+		if strings.TrimSpace(teamFlag) != "" {
+			c, _, err = resolveClientSelection()
+		} else {
+			c, _, err = resolveIdentityMessagingClientSelection()
+		}
+		if err != nil {
+			return err
+		}
+		var resp *awid.InboxResponse
+		if messageID != "" {
+			resp, err = c.Inbox(ctx, awid.InboxParams{
+				UnreadOnly: false,
+				Limit:      mailShowLimit,
+				MessageID:  messageID,
+			})
+		} else {
+			resp, err = c.MailConversation(ctx, conversationID, mailShowLimit)
+		}
+		if err != nil {
+			if conversationID != "" {
+				return mailShowConversationError(err, conversationID)
+			}
+			return networkError(err, messageID)
+		}
+		printOutput(resp, formatMailConversation)
 		return nil
 	},
 }
@@ -281,10 +361,14 @@ func init() {
 	mailSendCmd.Flags().StringVar(&mailSendBody, "body", "", "Body (mutually exclusive with --body-file)")
 	mailSendCmd.Flags().StringVar(&mailSendBodyFile, "body-file", "", "Read body from file (use this for markdown with backticks; bypasses shell interpolation)")
 	mailSendCmd.Flags().StringVar(&mailSendPriority, "priority", "normal", "Priority: low|normal|high|urgent")
+	mailSendCmd.Flags().StringVar(&mailSendConversationID, "conversation-id", "", "Existing mail conversation to continue")
 
 	mailInboxCmd.Flags().BoolVar(&mailInboxShowAll, "show-all", false, "Show all messages including already-read")
 	mailInboxCmd.Flags().IntVar(&mailInboxLimit, "limit", 50, "Max messages")
+	mailShowCmd.Flags().StringVar(&mailShowConversationID, "conversation-id", "", "Mail conversation to inspect")
+	mailShowCmd.Flags().StringVar(&mailShowMessageID, "message-id", "", "Legacy mail message to inspect")
+	mailShowCmd.Flags().IntVar(&mailShowLimit, "limit", 200, "Max messages")
 
-	mailCmd.AddCommand(mailSendCmd, mailInboxCmd)
+	mailCmd.AddCommand(mailSendCmd, mailInboxCmd, mailShowCmd)
 	rootCmd.AddCommand(mailCmd)
 }
