@@ -386,21 +386,26 @@ func shouldSearchOtherLocalTeamsForAlias(sel *awconfig.Selection, targetAlias st
 	return len(workspace.Memberships) > 1
 }
 
-func clientHasAgentAlias(ctx context.Context, c *aweb.Client, targetAlias string) (bool, error) {
+func clientAgentForAlias(ctx context.Context, c *aweb.Client, targetAlias string) (awid.AgentView, bool, error) {
 	if c == nil || c.Client == nil {
-		return false, nil
+		return awid.AgentView{}, false, nil
 	}
 	resp, err := c.Client.ListAgents(ctx)
 	if err != nil {
-		return false, err
+		return awid.AgentView{}, false, err
 	}
 	targetAlias = strings.TrimSpace(targetAlias)
 	for _, agent := range resp.Agents {
 		if strings.TrimSpace(agent.Alias) == targetAlias {
-			return true, nil
+			return agent, true, nil
 		}
 	}
-	return false, nil
+	return awid.AgentView{}, false, nil
+}
+
+func clientHasAgentAlias(ctx context.Context, c *aweb.Client, targetAlias string) (bool, error) {
+	_, found, err := clientAgentForAlias(ctx, c, targetAlias)
+	return found, err
 }
 
 // resolveCertificateClient attempts to create a certificate-authenticated client.
@@ -451,7 +456,7 @@ func configureResolvedClient(c *aweb.Client, sel *awconfig.Selection, baseURL st
 		ps = awid.NewPinStore()
 	}
 	c.SetPinStore(ps, pinPath)
-	registry, err := newConfiguredRegistryResolver(c.Client.HTTPClient(), baseURL, sel.RegistryURL)
+	registry, err := newSelectionRegistryResolver(c.Client.HTTPClient(), baseURL, sel.RegistryURL)
 	if err != nil {
 		return err
 	}
@@ -626,6 +631,23 @@ func configureBaseURLFallback(c *aweb.Client, sel *awconfig.Selection, baseURL s
 func newConfiguredRegistryResolver(httpClient *http.Client, baseURL, preferredRegistryURL string) (*awid.RegistryResolver, error) {
 	registry := awid.NewRegistryResolver(httpClient, nil)
 	if err := configureEmbeddedRegistryBaseURLWithDefault(baseURL, preferredRegistryURL, registry.SetFallbackRegistryURL); err != nil {
+		return nil, err
+	}
+	return registry, nil
+}
+
+func newSelectionRegistryResolver(httpClient *http.Client, baseURL, selectionRegistryURL string) (*awid.RegistryResolver, error) {
+	registry := awid.NewRegistryResolver(httpClient, nil)
+	if registryURL := strings.TrimSpace(selectionRegistryURL); registryURL != "" {
+		if strings.EqualFold(registryURL, "local") {
+			return nil, fmt.Errorf("registry URL 'local' is not supported; use an explicit registry URL")
+		}
+		if err := registry.SetFallbackRegistryURL(registryURL); err != nil {
+			return nil, fmt.Errorf("invalid registry URL: %w", err)
+		}
+		return registry, nil
+	}
+	if err := configureEmbeddedRegistryBaseURL(baseURL, registry.SetFallbackRegistryURL); err != nil {
 		return nil, err
 	}
 	return registry, nil

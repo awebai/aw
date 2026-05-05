@@ -394,6 +394,11 @@ func TestAwChatSendAndLeavePositionalArgs(t *testing.T) {
 				"targets_connected": []string{},
 				"targets_left":      []string{},
 			})
+		case "/v1/agents":
+			_ = json.NewEncoder(w).Encode(awid.ListAgentsResponse{
+				TeamID: "backend:demo",
+				Agents: []awid.AgentView{},
+			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -540,6 +545,11 @@ func TestAwChatSendAndLeavePositionalArgsOrder(t *testing.T) {
 				"sse_url":           "/v1/chat/sessions/sess-1/stream",
 				"targets_connected": []string{},
 				"targets_left":      []string{},
+			})
+		case "/v1/agents":
+			_ = json.NewEncoder(w).Encode(awid.ListAgentsResponse{
+				TeamID: "backend:demo",
+				Agents: []awid.AgentView{},
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -896,6 +906,11 @@ func TestAwMailSendAliasUsesTeamScopedTarget(t *testing.T) {
 				"status":       "delivered",
 				"delivered_at": "2026-03-17T12:00:00Z",
 			})
+		case "/v1/agents":
+			_ = json.NewEncoder(w).Encode(awid.ListAgentsResponse{
+				TeamID: "backend:demo",
+				Agents: []awid.AgentView{},
+			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -958,6 +973,10 @@ func TestAwMailSendToDIDUsesIdentityAuth(t *testing.T) {
 	var gotStableID string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/conversations":
+			_ = json.NewEncoder(w).Encode(awid.ConversationsResponse{})
+		case "/v1/messages/inbox":
+			_ = json.NewEncoder(w).Encode(awid.InboxResponse{})
 		case "/v1/messages":
 			gotAuth = r.Header.Get("Authorization")
 			gotTeamCert = r.Header.Get("X-AWID-Team-Certificate")
@@ -1063,6 +1082,10 @@ func TestAwMailSendToAddressUsesIdentityAuth(t *testing.T) {
 	var gotBody map[string]any
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/conversations":
+			_ = json.NewEncoder(w).Encode(awid.ConversationsResponse{})
+		case "/v1/messages/inbox":
+			_ = json.NewEncoder(w).Encode(awid.InboxResponse{})
 		case "/v1/messages":
 			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 				t.Fatalf("decode request body: %v", err)
@@ -1199,6 +1222,10 @@ func TestAwMessagingUsesIdentityRegistryURLForRecipientBinding(t *testing.T) {
 	var chatBody map[string]any
 	apiServer := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/conversations":
+			_ = json.NewEncoder(w).Encode(awid.ConversationsResponse{})
+		case "/v1/messages/inbox":
+			_ = json.NewEncoder(w).Encode(awid.InboxResponse{Messages: []awid.InboxMessage{}})
 		case "/v1/messages":
 			if err := json.NewDecoder(r.Body).Decode(&mailBody); err != nil {
 				t.Fatalf("decode mail body: %v", err)
@@ -1269,7 +1296,7 @@ func TestAwMessagingUsesIdentityRegistryURLForRecipientBinding(t *testing.T) {
 		CreatedAt:   "2026-04-25T00:00:00Z",
 	})
 
-	env := withoutEnvForTest(testCommandEnv(tmp), "AWID_REGISTRY_URL")
+	env := append(withoutEnvForTest(testCommandEnv(tmp), "AWID_REGISTRY_URL"), "AWID_REGISTRY_URL=http://127.0.0.1:1")
 	runMail := exec.CommandContext(ctx, bin, "mail", "send", "--to-address", "example.invalid/randy", "--body", "mail repro")
 	runMail.Env = env
 	runMail.Dir = tmp
@@ -1319,6 +1346,10 @@ func TestAwMessagingUsesKnownAgentPinWhenRegistryAddressMissing(t *testing.T) {
 	var chatTeamCert string
 	apiServer := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/conversations":
+			_ = json.NewEncoder(w).Encode(awid.ConversationsResponse{})
+		case "/v1/messages/inbox":
+			_ = json.NewEncoder(w).Encode(awid.InboxResponse{Messages: []awid.InboxMessage{}})
 		case "/v1/messages":
 			mailTeamCert = r.Header.Get("X-AWID-Team-Certificate")
 			if err := json.NewDecoder(r.Body).Decode(&mailBody); err != nil {
@@ -1555,6 +1586,10 @@ func TestAwMailSendToDIDLogsStableIDForStandaloneIdentityWithoutAddress(t *testi
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/conversations":
+			_ = json.NewEncoder(w).Encode(awid.ConversationsResponse{})
+		case "/v1/messages/inbox":
+			_ = json.NewEncoder(w).Encode(awid.InboxResponse{})
 		case "/v1/messages":
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"message_id":   "msg-standalone-1",
@@ -1778,6 +1813,8 @@ func TestAwMailSendWritesCommLog(t *testing.T) {
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/agents":
+			_ = json.NewEncoder(w).Encode(awid.ListAgentsResponse{Agents: []awid.AgentView{}})
 		case "/v1/messages":
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"message_id":   "msg-log-1",
