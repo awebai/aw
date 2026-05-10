@@ -17,6 +17,34 @@ import (
 func TestRoleNameSetPatchesCurrentWorkspace(t *testing.T) {
 	t.Parallel()
 
+	t.Run("current server returns role_name", func(t *testing.T) {
+		t.Parallel()
+		runRoleNameSetPatchTest(t, map[string]any{
+			"agent_id":       "agent-1",
+			"alias":          "alice",
+			"hostname":       "devbox",
+			"workspace_path": "/tmp/repo",
+			"role_name":      "reviewer",
+			"human_name":     "Alice",
+		})
+	})
+
+	t.Run("legacy server returns role", func(t *testing.T) {
+		t.Parallel()
+		runRoleNameSetPatchTest(t, map[string]any{
+			"agent_id":       "agent-1",
+			"alias":          "alice",
+			"hostname":       "devbox",
+			"workspace_path": "/tmp/repo",
+			"role":           "reviewer",
+			"human_name":     "Alice",
+		})
+	})
+}
+
+func runRoleNameSetPatchTest(t *testing.T, patchResponse map[string]any) {
+	t.Helper()
+
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/roles/active":
@@ -38,16 +66,12 @@ func TestRoleNameSetPatchesCurrentWorkspace(t *testing.T) {
 				t.Fatalf("decode request: %v", err)
 			}
 			if req["role"] != "reviewer" {
-				t.Fatalf("role=%v", req["role"])
+				t.Fatalf("role=%v in request %#v", req["role"], req)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"agent_id":       "agent-1",
-				"alias":          "alice",
-				"hostname":       "devbox",
-				"workspace_path": "/tmp/repo",
-				"role":           "reviewer",
-				"human_name":     "Alice",
-			})
+			if req["role_name"] != "reviewer" {
+				t.Fatalf("role_name=%v in request %#v", req["role_name"], req)
+			}
+			_ = json.NewEncoder(w).Encode(patchResponse)
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
 		default:
