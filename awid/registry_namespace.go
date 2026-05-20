@@ -22,11 +22,9 @@ type namespaceUpdateRequest struct {
 }
 
 type addressRegisterRequest struct {
-	Name            string  `json:"name"`
-	DIDAW           string  `json:"did_aw"`
-	CurrentDIDKey   string  `json:"current_did_key"`
-	Reachability    string  `json:"reachability"`
-	VisibleToTeamID *string `json:"visible_to_team_id,omitempty"`
+	Name          string `json:"name"`
+	DIDAW         string `json:"did_aw"`
+	CurrentDIDKey string `json:"current_did_key"`
 }
 
 type deleteReasonRequest struct {
@@ -78,13 +76,7 @@ func (c *RegistryClient) GetNamespaceAddressAtSigned(
 	registryURL, domain, name string,
 	signingKey ed25519.PrivateKey,
 ) (*RegistryAddress, string, error) {
-	var out RegistryAddress
-	path := "/v1/namespaces/" + urlPathEscape(canonicalizeDomain(domain)) + "/addresses/" + urlPathEscape(strings.TrimSpace(name))
-	headers := signedAddressLookupHeaders(domain, strings.TrimSpace(name), "get_address", signingKey)
-	if err := c.requestJSON(ctx, http.MethodGet, registryURL, path, headers, nil, &out); err != nil {
-		return nil, "", err
-	}
-	return &out, registryURL, nil
+	return c.GetNamespaceAddressAt(ctx, registryURL, domain, name)
 }
 
 func (c *RegistryClient) RegisterNamespace(
@@ -303,15 +295,13 @@ func (c *RegistryClient) RegisterAddress(
 	name string,
 	didAW string,
 	currentDIDKey string,
-	reachability string,
 	controllerSigningKey ed25519.PrivateKey,
-	visibleToTeamID string,
 ) (*RegistryAddress, string, error) {
 	registryURL, err := c.DiscoverRegistry(ctx, domain)
 	if err != nil {
 		return nil, "", err
 	}
-	address, err := c.RegisterAddressAt(ctx, registryURL, domain, name, didAW, currentDIDKey, reachability, controllerSigningKey, visibleToTeamID)
+	address, err := c.RegisterAddressAt(ctx, registryURL, domain, name, didAW, currentDIDKey, controllerSigningKey)
 	return address, registryURL, err
 }
 
@@ -322,16 +312,12 @@ func (c *RegistryClient) RegisterAddressAt(
 	name string,
 	didAW string,
 	currentDIDKey string,
-	reachability string,
 	controllerSigningKey ed25519.PrivateKey,
-	visibleToTeamID string,
 ) (*RegistryAddress, error) {
 	domain = canonicalizeDomain(domain)
 	name = strings.TrimSpace(name)
 	didAW = strings.TrimSpace(didAW)
 	currentDIDKey = strings.TrimSpace(currentDIDKey)
-	reachability = strings.TrimSpace(reachability)
-	visibleToTeamID = strings.TrimSpace(visibleToTeamID)
 	if domain == "" {
 		return nil, fmt.Errorf("domain is required")
 	}
@@ -344,19 +330,12 @@ func (c *RegistryClient) RegisterAddressAt(
 	if !strings.HasPrefix(currentDIDKey, "did:key:") {
 		return nil, fmt.Errorf("currentDIDKey must start with did:key:")
 	}
-	if reachability == "" {
-		reachability = "nobody"
-	}
 	if controllerSigningKey == nil {
 		return nil, fmt.Errorf("controller signing key is required")
 	}
 
 	path := "/v1/namespaces/" + urlPathEscape(domain) + "/addresses"
 	var out RegistryAddress
-	var requestVisibleToTeamID *string
-	if visibleToTeamID != "" {
-		requestVisibleToTeamID = &visibleToTeamID
-	}
 	if err := c.requestJSON(
 		ctx,
 		http.MethodPost,
@@ -364,11 +343,9 @@ func (c *RegistryClient) RegisterAddressAt(
 		path,
 		signedAddressHeaders(domain, name, "register_address", controllerSigningKey),
 		addressRegisterRequest{
-			Name:            name,
-			DIDAW:           didAW,
-			CurrentDIDKey:   currentDIDKey,
-			Reachability:    reachability,
-			VisibleToTeamID: requestVisibleToTeamID,
+			Name:          name,
+			DIDAW:         didAW,
+			CurrentDIDKey: currentDIDKey,
 		},
 		&out,
 	); err != nil {
@@ -469,24 +446,6 @@ func signedAddressHeaders(
 		"operation": strings.TrimSpace(operation),
 		"timestamp": timestamp,
 	}, signingKey, timestamp)
-}
-
-func signedAddressLookupHeaders(
-	domain string,
-	name string,
-	operation string,
-	signingKey ed25519.PrivateKey,
-) map[string]string {
-	timestamp := time.Now().UTC().Format(time.RFC3339)
-	fields := map[string]string{
-		"domain":    canonicalizeDomain(domain),
-		"operation": strings.TrimSpace(operation),
-		"timestamp": timestamp,
-	}
-	if strings.TrimSpace(name) != "" {
-		fields["name"] = strings.TrimSpace(name)
-	}
-	return signedCanonicalHeaders(fields, signingKey, timestamp)
 }
 
 func signedCanonicalHeaders(fields map[string]string, signingKey ed25519.PrivateKey, timestamp string) map[string]string {

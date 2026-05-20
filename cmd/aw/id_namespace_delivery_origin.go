@@ -30,7 +30,7 @@ var (
 	idNamespaceDeliveryOriginOrigin string
 	idNamespaceDeliveryOriginCmd    = &cobra.Command{
 		Use:   "set-delivery-origin",
-		Short: "Set the namespace default delivery origin using the local controller key",
+		Short: "Set namespace address-route default delivery origin using the local controller key",
 		RunE:  runIDNamespaceDeliveryOrigin,
 	}
 )

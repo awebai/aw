@@ -92,11 +92,11 @@ func (c *Client) signEnvelope(ctx context.Context, env *MessageEnvelope) (signed
 
 	// Stable did:aw targets belong in to_stable_id; to_did is reserved for the
 	// recipient's current did:key binding.
-	if strings.HasPrefix(strings.TrimSpace(env.ToDID), "did:aw:") {
+	if strings.HasPrefix(strings.TrimSpace(env.ToDID), "did:aw:") && !strings.Contains(strings.TrimSpace(env.ToDID), ",") {
 		env.ToStableID = strings.TrimSpace(env.ToDID)
 		env.ToDID = ""
 	}
-	if strings.TrimSpace(env.ToStableID) == "" && strings.HasPrefix(strings.TrimSpace(env.To), "did:aw:") {
+	if strings.TrimSpace(env.ToStableID) == "" && strings.HasPrefix(strings.TrimSpace(env.To), "did:aw:") && !strings.Contains(strings.TrimSpace(env.To), ",") {
 		env.ToStableID = strings.TrimSpace(env.To)
 	}
 
@@ -104,31 +104,41 @@ func (c *Client) signEnvelope(ctx context.Context, env *MessageEnvelope) (signed
 	// identity target or an explicit routable address. Bare aliases are
 	// team-scoped selectors; the server resolves them under the authenticated
 	// team certificate.
-	if c.resolver != nil && env.ToDID == "" {
-		target := strings.TrimSpace(env.ToStableID)
-		if target == "" && env.Type == "mail" && isRoutableAddressTarget(env.To) {
-			target = c.canonicalTrustAddress(env.To)
-		} else if target == "" && env.Type == "chat" && !strings.Contains(env.To, ",") && isRoutableAddressTarget(env.To) {
-			target = c.canonicalTrustAddress(env.To)
+	bindingTarget := ""
+	if env.ToDID == "" {
+		bindingTarget = strings.TrimSpace(env.ToStableID)
+		if bindingTarget == "" && env.Type == "mail" && isRoutableAddressTarget(env.To) {
+			bindingTarget = c.canonicalTrustAddress(env.To)
+		} else if bindingTarget == "" && env.Type == "chat" && !strings.Contains(env.To, ",") && isRoutableAddressTarget(env.To) {
+			bindingTarget = c.canonicalTrustAddress(env.To)
 		}
-		if target != "" {
-			identity, err := c.resolver.Resolve(ctx, target)
-			if err != nil {
-				if env.RequireRecipientBinding {
-					return signedFields{}, &RecipientResolutionError{Target: target, MessageType: env.Type, Err: err}
-				}
-				identity = nil
+	}
+	globalStableTarget := strings.HasPrefix(strings.TrimSpace(env.ToStableID), "did:aw:")
+	storedRouteGlobalTarget := globalStableTarget && env.AllowStoredRouteGlobalBinding
+	bindingRequired := env.RequireRecipientBinding || (globalStableTarget && !env.AllowStoredRouteGlobalBinding)
+	if c.resolver != nil && env.ToDID == "" && bindingTarget != "" && !storedRouteGlobalTarget {
+		identity, err := c.resolver.Resolve(ctx, bindingTarget)
+		if err != nil {
+			if bindingRequired {
+				return signedFields{}, &RecipientResolutionError{Target: bindingTarget, MessageType: env.Type, Err: err}
 			}
-			if identity != nil {
-				if strings.TrimSpace(identity.DID) == "" {
-					return signedFields{}, &RecipientResolutionError{Target: target, MessageType: env.Type, Err: errors.New("missing current did:key")}
-				}
-				env.ToDID = strings.TrimSpace(identity.DID)
-				if strings.TrimSpace(env.ToStableID) == "" && strings.TrimSpace(identity.StableID) != "" {
-					env.ToStableID = strings.TrimSpace(identity.StableID)
-				}
+			identity = nil
+		}
+		if identity != nil {
+			if strings.TrimSpace(identity.DID) == "" {
+				return signedFields{}, &RecipientResolutionError{Target: bindingTarget, MessageType: env.Type, Err: errors.New("missing current did:key")}
+			}
+			env.ToDID = strings.TrimSpace(identity.DID)
+			if strings.TrimSpace(env.ToStableID) == "" && strings.TrimSpace(identity.StableID) != "" {
+				env.ToStableID = strings.TrimSpace(identity.StableID)
 			}
 		}
+	}
+	if storedRouteGlobalTarget && env.ToDID == "" && bindingTarget == strings.TrimSpace(env.ToStableID) {
+		env.ToDID = strings.TrimSpace(env.ToStableID)
+	}
+	if bindingRequired && env.ToDID == "" && bindingTarget != "" {
+		return signedFields{}, &RecipientResolutionError{Target: bindingTarget, MessageType: env.Type, Err: errors.New("missing current did:key")}
 	}
 
 	sig, err := SignMessage(c.signingKey, env)
@@ -190,11 +200,6 @@ type Client struct {
 	metaCache               sync.Map         // address → *agentMeta; cached resolver results
 	latestClientVersion     atomic.Value     // last seen X-Latest-Client-Version header (string)
 }
-
-const (
-	addressLookupAuthHeader      = "X-AWID-Address-Lookup-Authorization"
-	addressLookupTimestampHeader = "X-AWID-Address-Lookup-Timestamp"
-)
 
 // New creates a new client.
 func New(baseURL string) (*Client, error) {
@@ -365,32 +370,6 @@ func (c *Client) ResolveIdentity(ctx context.Context, identifier string) (*Resol
 		return nil, errors.New("aweb: no identity resolver configured")
 	}
 	return c.resolver.Resolve(ctx, identifier)
-}
-
-func (c *Client) addressLookupProofHeaders(address string) (map[string]string, error) {
-	address = strings.TrimSpace(address)
-	if c == nil || c.signingKey == nil || !strings.Contains(address, "/") {
-		return nil, nil
-	}
-	parts := strings.SplitN(address, "/", 2)
-	domain := strings.TrimSpace(parts[0])
-	name := strings.TrimSpace(parts[1])
-	if domain == "" || name == "" {
-		return nil, nil
-	}
-	timestamp := time.Now().UTC().Format(time.RFC3339)
-	didKey, signature, _, err := SignArbitraryPayload(c.signingKey, map[string]any{
-		"domain":    canonicalizeDomain(domain),
-		"name":      name,
-		"operation": "get_address",
-	}, timestamp)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]string{
-		addressLookupAuthHeader:      "DIDKey " + didKey + " " + signature,
-		addressLookupTimestampHeader: timestamp,
-	}, nil
 }
 
 // SetPinStore sets the TOFU pin store for sender identity verification.

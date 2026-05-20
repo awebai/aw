@@ -24,14 +24,15 @@ type cachedValue[T any] struct {
 }
 
 type registryAddressResponse struct {
-	AddressID       string  `json:"address_id"`
-	Domain          string  `json:"domain"`
-	Name            string  `json:"name"`
-	DIDAW           string  `json:"did_aw"`
-	CurrentDIDKey   string  `json:"current_did_key"`
-	Reachability    string  `json:"reachability"`
-	VisibleToTeamID *string `json:"visible_to_team_id,omitempty"`
-	CreatedAt       string  `json:"created_at"`
+	AddressID       string            `json:"address_id"`
+	Domain          string            `json:"domain"`
+	Name            string            `json:"name"`
+	DIDAW           string            `json:"did_aw"`
+	CurrentDIDKey   string            `json:"current_did_key"`
+	Reachability    string            `json:"reachability"`
+	VisibleToTeamID *string           `json:"visible_to_team_id,omitempty"`
+	Delivery        *RegistryDelivery `json:"delivery,omitempty"`
+	CreatedAt       string            `json:"created_at"`
 }
 
 type registryTeamMemberResponse struct {
@@ -79,15 +80,12 @@ type RegistryResolver struct {
 	DNSResolver         TXTResolver
 	Now                 func() time.Time
 	fallbackRegistryURL string
-	lookupSigningKey    ed25519.PrivateKey
-	lookupCertificate   *TeamCertificate
-
-	mu            sync.Mutex
-	registryCache map[string]cachedValue[DomainAuthority]
-	addressCache  map[string]cachedValue[*registryAddressCacheValue]
-	memberCache   map[string]cachedValue[*registryTeamMemberCacheValue]
-	keyCache      map[string]cachedValue[*DidKeyResolution]
-	headCache     map[string]*VerifiedLogHead
+	mu                  sync.Mutex
+	registryCache       map[string]cachedValue[DomainAuthority]
+	addressCache        map[string]cachedValue[*registryAddressCacheValue]
+	memberCache         map[string]cachedValue[*registryTeamMemberCacheValue]
+	keyCache            map[string]cachedValue[*DidKeyResolution]
+	headCache           map[string]*VerifiedLogHead
 }
 
 func NewRegistryResolver(httpClient *http.Client, dnsResolver TXTResolver) *RegistryResolver {
@@ -109,43 +107,6 @@ func NewRegistryResolver(httpClient *http.Client, dnsResolver TXTResolver) *Regi
 	}
 }
 
-// SetLookupSigningKey configures optional DIDKey authentication for namespace
-// address reads so private reachability rows can be resolved when authorized.
-func (r *RegistryResolver) SetLookupSigningKey(key ed25519.PrivateKey) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if key == nil {
-		r.lookupSigningKey = nil
-		if r.addressCache != nil {
-			r.addressCache = make(map[string]cachedValue[*registryAddressCacheValue])
-		}
-		return
-	}
-	r.lookupSigningKey = append(ed25519.PrivateKey(nil), key...)
-	if r.addressCache != nil {
-		r.addressCache = make(map[string]cachedValue[*registryAddressCacheValue])
-	}
-}
-
-// SetLookupTeamCertificate configures the optional team certificate presented
-// alongside signed namespace address reads.
-func (r *RegistryResolver) SetLookupTeamCertificate(cert *TeamCertificate) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if cert == nil {
-		r.lookupCertificate = nil
-		if r.addressCache != nil {
-			r.addressCache = make(map[string]cachedValue[*registryAddressCacheValue])
-		}
-		return
-	}
-	copyCert := *cert
-	r.lookupCertificate = &copyCert
-	if r.addressCache != nil {
-		r.addressCache = make(map[string]cachedValue[*registryAddressCacheValue])
-	}
-}
-
 func (r *RegistryResolver) SetFallbackRegistryURL(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -162,7 +123,7 @@ func (r *RegistryResolver) SetFallbackRegistryURL(raw string) error {
 
 func (r *RegistryResolver) Resolve(ctx context.Context, identifier string) (*ResolvedIdentity, error) {
 	if strings.HasPrefix(strings.TrimSpace(identifier), "did:aw:") {
-		return r.resolveStableIdentity(ctx, strings.TrimSpace(identifier))
+		return nil, fmt.Errorf("RegistryResolver: bare did:aw first-contact is unsupported; use domain/name address or stored route")
 	}
 
 	if teamID, alias, ok := splitTeamMemberReference(identifier); ok {
@@ -186,17 +147,32 @@ func (r *RegistryResolver) Resolve(ctx context.Context, identifier string) (*Res
 			if err != nil {
 				return nil, fmt.Errorf("RegistryResolver: invalid current did:key: %w", err)
 			}
+			deliveryOrigin := ""
+			if domain, name, ok := splitRegistryAddress(address); ok {
+				addr, err := r.resolveAddress(ctx, domain, name)
+				if err != nil {
+					return nil, err
+				}
+				if strings.TrimSpace(addr.response.DIDAW) != stableID {
+					return nil, fmt.Errorf("RegistryResolver: team member address did:aw mismatch for %s", identifier)
+				}
+				deliveryOrigin, err = canonicalDeliveryOrigin(keyRes, addr.response)
+				if err != nil {
+					return nil, fmt.Errorf("RegistryResolver: %w", err)
+				}
+			}
 			return &ResolvedIdentity{
-				DID:         keyRes.CurrentDIDKey,
-				StableID:    stableID,
-				Address:     address,
-				Handle:      member.response.Alias,
-				PublicKey:   ed25519.PublicKey(pub),
-				RegistryURL: member.authority.RegistryURL,
-				Custody:     CustodySelf,
-				Lifetime:    member.response.Lifetime,
-				ResolvedAt:  r.now().UTC(),
-				ResolvedVia: "registry",
+				DID:            keyRes.CurrentDIDKey,
+				StableID:       stableID,
+				Address:        address,
+				Handle:         member.response.Alias,
+				PublicKey:      ed25519.PublicKey(pub),
+				RegistryURL:    member.authority.RegistryURL,
+				DeliveryOrigin: deliveryOrigin,
+				Custody:        CustodySelf,
+				Lifetime:       member.response.Lifetime,
+				ResolvedAt:     r.now().UTC(),
+				ResolvedVia:    "registry",
 			}, nil
 		}
 		pub, err := ExtractPublicKey(member.response.MemberDIDKey)
@@ -250,59 +226,32 @@ func (r *RegistryResolver) Resolve(ctx context.Context, identifier string) (*Res
 	if err != nil {
 		return nil, fmt.Errorf("RegistryResolver: invalid current did:key: %w", err)
 	}
+	deliveryOrigin, err := canonicalDeliveryOrigin(keyRes, address.response)
+	if err != nil {
+		return nil, fmt.Errorf("RegistryResolver: %w", err)
+	}
 	return &ResolvedIdentity{
-		DID:           keyRes.CurrentDIDKey,
-		StableID:      keyRes.DIDAW,
-		Address:       domain + "/" + name,
-		Handle:        name,
-		ControllerDID: address.authority.ControllerDID,
-		PublicKey:     ed25519.PublicKey(pub),
-		RegistryURL:   address.authority.RegistryURL,
-		Custody:       CustodySelf,
-		Lifetime:      LifetimePersistent,
-		ResolvedAt:    r.now().UTC(),
-		ResolvedVia:   "registry",
+		DID:            keyRes.CurrentDIDKey,
+		StableID:       keyRes.DIDAW,
+		Address:        domain + "/" + name,
+		Handle:         name,
+		ControllerDID:  address.authority.ControllerDID,
+		PublicKey:      ed25519.PublicKey(pub),
+		RegistryURL:    address.authority.RegistryURL,
+		DeliveryOrigin: deliveryOrigin,
+		Custody:        CustodySelf,
+		Lifetime:       LifetimePersistent,
+		ResolvedAt:     r.now().UTC(),
+		ResolvedVia:    "registry",
 	}, nil
 }
 
-func (r *RegistryResolver) resolveStableIdentity(ctx context.Context, didAW string) (*ResolvedIdentity, error) {
-	registryURL := strings.TrimSpace(r.fallbackRegistryURL)
-	if registryURL == "" {
-		return nil, fmt.Errorf("RegistryResolver: no registry URL configured for %s", didAW)
+func canonicalDeliveryOrigin(keyRes *DidKeyResolution, address *registryAddressResponse) (string, error) {
+	_ = keyRes // Current-key resolution verifies identity binding only; route origin belongs to the address route.
+	if address != nil && address.Delivery != nil {
+		return strings.TrimSpace(address.Delivery.Origin), nil
 	}
-	keyRes, err := r.resolveKey(ctx, registryURL, didAW)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(keyRes.DIDAW) != didAW {
-		return nil, fmt.Errorf("RegistryResolver: key did:aw mismatch for %s", didAW)
-	}
-	r.mu.Lock()
-	cachedHead := r.headCache[didAW]
-	r.mu.Unlock()
-	outcome, nextHead, verifyErr := VerifyDidKeyResolution(keyRes, cachedHead, r.now())
-	if outcome == StableIdentityVerified && nextHead != nil {
-		r.mu.Lock()
-		r.headCache[didAW] = nextHead
-		r.mu.Unlock()
-	}
-	if outcome == StableIdentityHardError {
-		return nil, fmt.Errorf("RegistryResolver: invalid log head for %s: %w", didAW, verifyErr)
-	}
-	pub, err := ExtractPublicKey(keyRes.CurrentDIDKey)
-	if err != nil {
-		return nil, fmt.Errorf("RegistryResolver: invalid current did:key: %w", err)
-	}
-	return &ResolvedIdentity{
-		DID:         keyRes.CurrentDIDKey,
-		StableID:    keyRes.DIDAW,
-		PublicKey:   ed25519.PublicKey(pub),
-		RegistryURL: registryURL,
-		Custody:     CustodySelf,
-		Lifetime:    LifetimePersistent,
-		ResolvedAt:  r.now().UTC(),
-		ResolvedVia: "registry",
-	}, nil
+	return "", nil
 }
 
 func (r *RegistryResolver) VerifyStableIdentity(ctx context.Context, address, stableID string) *StableIdentityVerification {
@@ -532,49 +481,7 @@ func (r *RegistryResolver) discoverAuthority(ctx context.Context, domain string)
 
 func (r *RegistryResolver) getAddressJSON(ctx context.Context, baseURL, domain, name string, out any) error {
 	path := "/v1/namespaces/" + urlPathEscape(domain) + "/addresses/" + urlPathEscape(name)
-	headers, err := r.addressLookupAuthHeaders(domain, name)
-	if err != nil {
-		return err
-	}
-	return r.getJSONWithHeaders(ctx, baseURL, path, headers, out)
-}
-
-func (r *RegistryResolver) addressLookupAuthHeaders(domain, name string) (map[string]string, error) {
-	r.mu.Lock()
-	key := append(ed25519.PrivateKey(nil), r.lookupSigningKey...)
-	var cert *TeamCertificate
-	if r.lookupCertificate != nil {
-		copyCert := *r.lookupCertificate
-		cert = &copyCert
-	}
-	r.mu.Unlock()
-	if key == nil {
-		return nil, nil
-	}
-	if len(key) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("registry lookup signing key has invalid length")
-	}
-	timestamp := r.now().UTC().Format(time.RFC3339)
-	didKey, signature, _, err := SignArbitraryPayload(key, map[string]any{
-		"domain":    canonicalizeDomain(domain),
-		"name":      strings.TrimSpace(name),
-		"operation": "get_address",
-	}, timestamp)
-	if err != nil {
-		return nil, err
-	}
-	headers := map[string]string{
-		"Authorization":    "DIDKey " + didKey + " " + signature,
-		"X-AWEB-Timestamp": timestamp,
-	}
-	if cert != nil {
-		encoded, err := EncodeTeamCertificateHeader(cert)
-		if err != nil {
-			return nil, fmt.Errorf("encode lookup team certificate: %w", err)
-		}
-		headers["X-AWID-Team-Certificate"] = encoded
-	}
-	return headers, nil
+	return r.getJSON(ctx, baseURL, path, out)
 }
 
 func (r *RegistryResolver) getJSON(ctx context.Context, baseURL, path string, out any) error {

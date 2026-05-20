@@ -956,7 +956,7 @@ func TestAwMailSendAliasUsesTeamScopedTarget(t *testing.T) {
 	}
 }
 
-func TestAwMailSendToDIDUsesTeamCertificateWhenAvailable(t *testing.T) {
+func TestAwMailSendToDIDStableFirstContactFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	pub, priv, err := ed25519.GenerateKey(nil)
@@ -966,6 +966,11 @@ func TestAwMailSendToDIDUsesTeamCertificateWhenAvailable(t *testing.T) {
 	did := awid.ComputeDIDKey(pub)
 	stableID := stableIDFromDidForTest(t, did)
 	recipientDID := "did:aw:recipient-123"
+	recipientPub, _, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipientCurrentDID := awid.ComputeDIDKey(recipientPub)
 
 	var gotBody map[string]any
 	var gotAuth string
@@ -977,6 +982,11 @@ func TestAwMailSendToDIDUsesTeamCertificateWhenAvailable(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(awid.ConversationsResponse{})
 		case "/v1/messages/inbox":
 			_ = json.NewEncoder(w).Encode(awid.InboxResponse{})
+		case "/v1/did/" + recipientDID + "/key":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did_aw":          recipientDID,
+				"current_did_key": recipientCurrentDID,
+			})
 		case "/v1/messages":
 			gotAuth = r.Header.Get("Authorization")
 			gotTeamCert = r.Header.Get("X-AWID-Team-Certificate")
@@ -1025,6 +1035,7 @@ func TestAwMailSendToDIDUsesTeamCertificateWhenAvailable(t *testing.T) {
 		Address:     address,
 		Custody:     awid.CustodySelf,
 		Lifetime:    awid.LifetimePersistent,
+		RegistryURL: server.URL,
 		SigningKey:  priv,
 	})
 
@@ -1035,39 +1046,15 @@ func TestAwMailSendToDIDUsesTeamCertificateWhenAvailable(t *testing.T) {
 	run.Env = testCommandEnv(tmp)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
-	if err != nil {
-		t.Fatalf("run failed: %v\n%s", err, string(out))
+	if err == nil || !strings.Contains(string(out), "bare did:aw first-contact is unsupported") {
+		t.Fatalf("expected bare did:aw first-contact failure, err=%v out=%s", err, string(out))
 	}
-
-	// Verify the request carries identity fields.
-	if gotBody["from_did"] != did {
-		t.Fatalf("from_did=%v, want %s", gotBody["from_did"], did)
+	if gotBody != nil {
+		t.Fatalf("/v1/messages should not be called for bare did:aw first-contact: %#v", gotBody)
 	}
-	if gotBody["to_did"] != nil {
-		t.Fatalf("to_did=%v, want absent without current recipient binding", gotBody["to_did"])
+	if gotTeamCert != "" || gotStableID != "" || gotAuth != "" {
+		t.Fatalf("unexpected auth headers on unsent request team_cert=%q stable=%q auth=%q", gotTeamCert, gotStableID, gotAuth)
 	}
-	if gotBody["to_stable_id"] != recipientDID {
-		t.Fatalf("to_stable_id=%v, want %s", gotBody["to_stable_id"], recipientDID)
-	}
-	if gotTeamCert == "" {
-		t.Fatal("expected team certificate auth")
-	}
-	if gotStableID != "" {
-		t.Fatalf("X-AWEB-DID-AW=%q, want empty with team certificate auth", gotStableID)
-	}
-	if !strings.HasPrefix(gotAuth, "DIDKey ") {
-		t.Fatalf("Authorization=%q", gotAuth)
-	}
-	sig, ok := gotBody["signature"].(string)
-	if !ok || sig == "" {
-		t.Fatal("signature missing or empty")
-	}
-	msgID, ok := gotBody["message_id"].(string)
-	if !ok || msgID == "" {
-		t.Fatal("message_id missing or empty")
-	}
-
-	_ = msgID
 }
 
 func TestAwMailSendToAddressUsesIdentityAuth(t *testing.T) {
@@ -1186,19 +1173,10 @@ func TestAwMessagingUsesIdentityRegistryURLForRecipientBinding(t *testing.T) {
 	recipientStableID := awid.ComputeStableID(recipientPub)
 
 	var registryHits atomic.Int64
-	var signedAddressHits atomic.Int64
 	registryServer := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		registryHits.Add(1)
 		switch r.URL.Path {
 		case "/v1/namespaces/example.invalid/addresses/randy":
-			auth := r.Header.Get("Authorization")
-			if !strings.HasPrefix(auth, "DIDKey "+did+" ") {
-				t.Fatalf("address lookup Authorization=%q, want DIDKey auth for sender", auth)
-			}
-			if strings.TrimSpace(r.Header.Get("X-AWEB-Timestamp")) == "" {
-				t.Fatal("address lookup missing X-AWEB-Timestamp")
-			}
-			signedAddressHits.Add(1)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"address_id":      "addr-randy",
 				"domain":          "example.invalid",
@@ -1220,10 +1198,6 @@ func TestAwMessagingUsesIdentityRegistryURLForRecipientBinding(t *testing.T) {
 
 	var mailBody map[string]any
 	var chatBody map[string]any
-	var mailLookupAuth string
-	var mailLookupTimestamp string
-	var chatLookupAuth string
-	var chatLookupTimestamp string
 	apiServer := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/conversations":
@@ -1231,8 +1205,6 @@ func TestAwMessagingUsesIdentityRegistryURLForRecipientBinding(t *testing.T) {
 		case "/v1/messages/inbox":
 			_ = json.NewEncoder(w).Encode(awid.InboxResponse{Messages: []awid.InboxMessage{}})
 		case "/v1/messages":
-			mailLookupAuth = r.Header.Get("X-AWID-Address-Lookup-Authorization")
-			mailLookupTimestamp = r.Header.Get("X-AWID-Address-Lookup-Timestamp")
 			if err := json.NewDecoder(r.Body).Decode(&mailBody); err != nil {
 				t.Fatalf("decode mail body: %v", err)
 			}
@@ -1248,8 +1220,6 @@ func TestAwMessagingUsesIdentityRegistryURLForRecipientBinding(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(awid.ChatListSessionsResponse{Sessions: []awid.ChatSessionItem{}})
 				return
 			}
-			chatLookupAuth = r.Header.Get("X-AWID-Address-Lookup-Authorization")
-			chatLookupTimestamp = r.Header.Get("X-AWID-Address-Lookup-Timestamp")
 			if err := json.NewDecoder(r.Body).Decode(&chatBody); err != nil {
 				t.Fatalf("decode chat body: %v", err)
 			}
@@ -1321,15 +1291,6 @@ func TestAwMessagingUsesIdentityRegistryURLForRecipientBinding(t *testing.T) {
 
 	if registryHits.Load() == 0 {
 		t.Fatal("identity registry_url was not used for messaging recipient resolution")
-	}
-	if signedAddressHits.Load() != 2 {
-		t.Fatalf("signed address lookups=%d, want 2", signedAddressHits.Load())
-	}
-	if !strings.HasPrefix(mailLookupAuth, "DIDKey "+did+" ") || mailLookupTimestamp == "" {
-		t.Fatalf("mail lookup proof auth=%q timestamp=%q", mailLookupAuth, mailLookupTimestamp)
-	}
-	if !strings.HasPrefix(chatLookupAuth, "DIDKey "+did+" ") || chatLookupTimestamp == "" {
-		t.Fatalf("chat lookup proof auth=%q timestamp=%q", chatLookupAuth, chatLookupTimestamp)
 	}
 	requireSignedPayloadBindingForTest(t, mailBody["signed_payload"], "mail", recipientDID, recipientStableID, "aweb.ai/amy")
 	requireSignedPayloadBindingForTest(t, chatBody["signed_payload"], "chat", recipientDID, recipientStableID, "aweb.ai/amy")
@@ -1588,7 +1549,7 @@ func requireSignedPayloadBindingForTest(t *testing.T, raw any, messageType, reci
 	}
 }
 
-func TestAwMailSendToDIDLogsStableIDForStandaloneIdentityWithoutAddress(t *testing.T) {
+func TestAwMailSendToDIDStandaloneFirstContactFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	pub, priv, err := ed25519.GenerateKey(nil)
@@ -1597,6 +1558,11 @@ func TestAwMailSendToDIDLogsStableIDForStandaloneIdentityWithoutAddress(t *testi
 	}
 	did := awid.ComputeDIDKey(pub)
 	stableID := stableIDFromDidForTest(t, did)
+	recipientPub, _, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipientDID := awid.ComputeDIDKey(recipientPub)
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1604,6 +1570,11 @@ func TestAwMailSendToDIDLogsStableIDForStandaloneIdentityWithoutAddress(t *testi
 			_ = json.NewEncoder(w).Encode(awid.ConversationsResponse{})
 		case "/v1/messages/inbox":
 			_ = json.NewEncoder(w).Encode(awid.InboxResponse{})
+		case "/v1/did/did:aw:monitor/key":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did_aw":          "did:aw:monitor",
+				"current_did_key": recipientDID,
+			})
 		case "/v1/messages":
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"message_id":   "msg-standalone-1",
@@ -1625,11 +1596,12 @@ func TestAwMailSendToDIDLogsStableIDForStandaloneIdentityWithoutAddress(t *testi
 	buildAwBinary(t, ctx, bin)
 
 	writeIdentityForTest(t, tmp, awconfig.WorktreeIdentity{
-		DID:       did,
-		StableID:  stableID,
-		Custody:   awid.CustodySelf,
-		Lifetime:  awid.LifetimePersistent,
-		CreatedAt: "2026-04-04T00:00:00Z",
+		DID:         did,
+		StableID:    stableID,
+		Custody:     awid.CustodySelf,
+		Lifetime:    awid.LifetimePersistent,
+		RegistryURL: server.URL,
+		CreatedAt:   "2026-04-04T00:00:00Z",
 	})
 	if err := awid.SaveSigningKey(filepath.Join(tmp, ".aw", "signing.key"), priv); err != nil {
 		t.Fatalf("write signing key: %v", err)
@@ -1642,21 +1614,8 @@ func TestAwMailSendToDIDLogsStableIDForStandaloneIdentityWithoutAddress(t *testi
 	run.Env = append(testCommandEnv(tmp), "AWEB_URL="+server.URL)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
-	if err != nil {
-		t.Fatalf("run failed: %v\n%s", err, string(out))
-	}
-
-	logDir := filepath.Join(tmp, ".config", "aw", "logs")
-	logName := commLogNameForSelection(&awconfig.Selection{StableID: stableID, DID: did})
-	entries, err := readCommLog(commLogPath(logDir, logName), 0)
-	if err != nil {
-		t.Fatalf("readCommLog: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("entries=%d, want 1", len(entries))
-	}
-	if entries[0].From != stableID {
-		t.Fatalf("from=%q, want stable id %q", entries[0].From, stableID)
+	if err == nil || !strings.Contains(string(out), "bare did:aw first-contact is unsupported") {
+		t.Fatalf("expected bare did:aw first-contact failure, err=%v out=%s", err, string(out))
 	}
 }
 
