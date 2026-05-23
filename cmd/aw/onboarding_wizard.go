@@ -49,6 +49,11 @@ type guidedOnboardingRequest struct {
 	AgentType          string
 	Role               string
 	Persistent         bool
+	// InboundMode is the canonical wire form ("" | "open" | "contacts_only")
+	// chosen at the CLI by --inbound-mode. Only meaningful when
+	// Persistent is true. Forwarded to whichever creation endpoint
+	// the wizard ends up calling.
+	InboundMode        string
 	InjectAgentDocs    bool
 	DoNotTouchAgentsMD bool
 	AskPostCreateSetup bool
@@ -134,7 +139,7 @@ func executeHostedPath(req guidedOnboardingRequest) (*guidedOnboardingResult, er
 
 	var provisioned hostedIdentityProvision
 	for {
-		provisioned, err = provisionHostedIdentity(serviceURLs.OnboardingURL, serviceURLs.RegistryURL, username, alias, req.Persistent)
+		provisioned, err = provisionHostedIdentity(serviceURLs.OnboardingURL, serviceURLs.RegistryURL, username, alias, req.Persistent, req.InboundMode)
 		if err != nil {
 			if hostedUsernameTakenOnSignup(err) {
 				if req.NonInteractive {
@@ -335,14 +340,14 @@ func guidedOnboardingSkipDNSVerify() bool {
 }
 
 func resolveGuidedBYODPersistent(req guidedOnboardingRequest) (bool, error) {
-	// Default ephemeral; the --persistent flag is the only signal that promotes
-	// the identity to a durable did:aw. --name no longer implies persistent —
+	// Default local; the --global flag is the canonical signal that promotes
+	// the identity to an addressed did:aw. --name no longer implies global —
 	// it's just the agent name.
 	return req.Persistent, nil
 }
 
 func resolveGuidedHostedPersistent(req guidedOnboardingRequest) (bool, error) {
-	// Default ephemeral; --persistent is the only signal. Matches BYOD shape.
+	// Default local; --global is the canonical signal. Matches BYOD shape.
 	return req.Persistent, nil
 }
 
@@ -389,11 +394,11 @@ func printGuidedBYODIdentityPlan(out io.Writer, persistent bool, name, domain st
 	}
 	normalizedDomain := awconfig.NormalizeDomain(domain)
 	if persistent {
-		fmt.Fprintln(out, "Creating persistent BYOD identity.")
+		fmt.Fprintln(out, "Creating global BYOD identity.")
 		fmt.Fprintf(out, "  Agent name %q becomes public address %s/%s.\n", name, normalizedDomain, name)
 		return
 	}
-	fmt.Fprintln(out, "Creating ephemeral BYOD identity.")
+	fmt.Fprintln(out, "Creating local BYOD workspace identity.")
 	fmt.Fprintf(out, "  Agent alias %q is used inside team %s:%s.\n", name, guidedOnboardingDefaultTeamName, normalizedDomain)
 	fmt.Fprintln(out, "  No public did:aw address will be registered for this workspace.")
 }
@@ -434,7 +439,7 @@ func provisionBYODIdentity(req guidedOnboardingRequest, name, domain string) (*g
 	defer cancel()
 
 	if req.Persistent {
-		// Persistent BYOD shares the id-create registry path: namespace, identity,
+		// Global BYOD shares the id-create registry path: namespace, identity,
 		// then controller-signed address binding.
 		if err := ensureStandaloneRegistryRegistration(ctx, registry, prepared.Plan, prepared.ControllerKey, prepared.IdentityKey); err != nil {
 			return nil, err
@@ -565,7 +570,7 @@ func resolveGuidedHostedAlias(req guidedOnboardingRequest) (string, error) {
 	}
 	// "alice" is the canonical first-agent name from cli-tutorial.md. The
 	// developer who hits Enter at the prompt lands at <username>.aweb.ai/alice
-	// for persistent or inside the local team for ephemeral. Sibling worktrees
+	// for global identity or inside the local team for local workspaces. Sibling worktrees
 	// for a second identity pass --alias explicitly (e.g., "bob"). $USER is
 	// deliberately not used as a default — that previous behavior silently
 	// bound the developer's OS login name to a public did:aw address.
@@ -657,7 +662,7 @@ type hostedIdentityProvision struct {
 }
 
 func provisionHostedIdentity(
-	onboardingURL, registryURL, username, alias string, persistent bool,
+	onboardingURL, registryURL, username, alias string, persistent bool, inboundMode string,
 ) (hostedIdentityProvision, error) {
 	registry, err := newConfiguredRegistryClient(nil, "")
 	if err != nil {
@@ -691,10 +696,11 @@ func provisionHostedIdentity(
 	}
 
 	resp, err := guidedOnboardingCliSignup(ctx, onboardingURL, &awid.CliSignupRequest{
-		Username: username,
-		DIDKey:   didKey,
-		DIDAW:    didAW,
-		Alias:    alias,
+		Username:    username,
+		DIDKey:      didKey,
+		DIDAW:       didAW,
+		Alias:       alias,
+		InboundMode: strings.TrimSpace(inboundMode),
 	}, signingKey)
 	if err != nil {
 		return hostedIdentityProvision{}, err
@@ -766,10 +772,10 @@ func validateHostedSignupResponse(
 		return nil, fmt.Errorf("hosted signup certificate member_address %q does not match response member_address %q", cert.MemberAddress, resp.MemberAddress)
 	}
 	if strings.TrimSpace(didAW) != "" && strings.TrimSpace(cert.MemberAddress) == "" {
-		return nil, fmt.Errorf("hosted signup response missing member_address for persistent identity")
+		return nil, fmt.Errorf("hosted signup response missing member_address for global identity")
 	}
 	if strings.TrimSpace(didAW) == "" && strings.TrimSpace(cert.MemberAddress) != "" {
-		return nil, fmt.Errorf("hosted signup response returned member_address %q for ephemeral identity", cert.MemberAddress)
+		return nil, fmt.Errorf("hosted signup response returned member_address %q for local identity", cert.MemberAddress)
 	}
 	if cert.Alias != alias {
 		return nil, fmt.Errorf("hosted signup certificate alias %q does not match %q", cert.Alias, alias)

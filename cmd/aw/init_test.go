@@ -862,14 +862,14 @@ func TestImplicitLocalInitProvisioningAgainstLocalServers(t *testing.T) {
 	if gotTeamPayload["name"] != "default" {
 		t.Fatalf("team name=%v", gotTeamPayload["name"])
 	}
-	if gotCertPayload["lifetime"] != awid.LifetimeEphemeral {
-		t.Fatalf("cert lifetime=%v", gotCertPayload["lifetime"])
+	if gotCertPayload["identity_scope"] != awid.IdentityModeLocal {
+		t.Fatalf("cert lifetime=%v", gotCertPayload["identity_scope"])
 	}
 	if _, ok := gotCertPayload["member_did_aw"]; ok {
-		t.Fatalf("ephemeral local cert should not include member_did_aw: %v", gotCertPayload["member_did_aw"])
+		t.Fatalf("local cert should not include member_did_aw: %v", gotCertPayload["member_did_aw"])
 	}
 	if _, ok := gotCertPayload["member_address"]; ok {
-		t.Fatalf("ephemeral local cert should not include member_address: %v", gotCertPayload["member_address"])
+		t.Fatalf("local cert should not include member_address: %v", gotCertPayload["member_address"])
 	}
 	if gotConnectBody["role"] != "developer" {
 		t.Fatalf("connect role=%v", gotConnectBody["role"])

@@ -38,31 +38,39 @@ type apiKeyInitRequest struct {
 	HumanName   string
 	AgentType   string
 	Persistent  bool
+	// InboundMode is "open" or "contacts_only" when --inbound-mode is
+	// set on a global init, "" otherwise. The runner forwards it to
+	// /api/v1/workspaces/init only when non-empty; the server defaults
+	// to "open" when the field is absent.
+	InboundMode string
 }
 
 type apiKeyBootstrapRequest struct {
-	DID       string `json:"did"`
-	PublicKey string `json:"public_key"`
-	Name      string `json:"name,omitempty"`
-	Alias     string `json:"alias,omitempty"`
-	Custody   string `json:"custody"`
-	RoleName  string `json:"role_name,omitempty"`
-	HumanName string `json:"human_name,omitempty"`
-	AgentType string `json:"agent_type,omitempty"`
-	Lifetime  string `json:"lifetime"`
+	DID           string `json:"did"`
+	PublicKey     string `json:"public_key"`
+	Name          string `json:"name,omitempty"`
+	Alias         string `json:"alias,omitempty"`
+	Custody       string `json:"custody"`
+	RoleName      string `json:"role_name,omitempty"`
+	HumanName     string `json:"human_name,omitempty"`
+	AgentType     string `json:"agent_type,omitempty"`
+	IdentityScope string `json:"identity_scope"`
+	InboundMode   string `json:"inbound_mode,omitempty"`
 }
 
 type apiKeyBootstrapResponse struct {
-	ServerURL   string `json:"server_url"`
-	TeamCert    string `json:"team_cert"`
-	Alias       string `json:"alias"`
-	TeamID      string `json:"team_id"`
-	WorkspaceID string `json:"workspace_id"`
-	DID         string `json:"did"`
-	StableID    string `json:"stable_id"`
-	Lifetime    string `json:"lifetime"`
-	Custody     string `json:"custody"`
-	APIKey      string `json:"api_key"`
+	ServerURL     string `json:"server_url"`
+	TeamCert      string `json:"team_cert"`
+	Alias         string `json:"alias"`
+	TeamID        string `json:"team_id"`
+	WorkspaceID   string `json:"workspace_id"`
+	DID           string `json:"did"`
+	StableID      string `json:"stable_id"`
+	IdentityScope string `json:"identity_scope"`
+	// Lifetime is accepted only for compatibility with older hosted responses.
+	Lifetime string `json:"lifetime"`
+	Custody  string `json:"custody"`
+	APIKey   string `json:"api_key"`
 }
 
 type apiKeyPartialInitState struct {
@@ -117,14 +125,14 @@ func runAPIKeyBootstrapInit(req apiKeyInitRequest) (connectOutput, error) {
 		return connectOutput{}, err
 	}
 
-	// Cloud contract: persistent uses name (not alias), ephemeral uses alias (not name).
+	// Cloud contract: global uses name (not alias), local uses alias (not name).
 	name := strings.TrimSpace(req.Name)
 	alias := strings.TrimSpace(req.Alias)
 	if req.Persistent {
 		if name == "" {
-			return connectOutput{}, usageError("--name is required for persistent API key bootstrap")
+			return connectOutput{}, usageError("--name is required for global API-key bootstrap")
 		}
-		alias = "" // cloud rejects alias for persistent
+		alias = "" // cloud rejects alias for global identity bootstrap
 	}
 
 	var registry *awid.RegistryClient
@@ -163,15 +171,16 @@ func runAPIKeyBootstrapInit(req apiKeyInitRequest) (connectOutput, error) {
 	}
 
 	resp, err := postAPIKeyWorkspaceInit(context.Background(), strings.TrimSpace(req.AwebURL), strings.TrimSpace(req.APIKey), apiKeyBootstrapRequest{
-		DID:       didKey,
-		PublicKey: base64.StdEncoding.EncodeToString(pub),
-		Name:      name,
-		Alias:     alias,
-		Custody:   awid.CustodySelf,
-		RoleName:  strings.TrimSpace(req.Role),
-		HumanName: strings.TrimSpace(req.HumanName),
-		AgentType: strings.TrimSpace(req.AgentType),
-		Lifetime:  initLifetimeValue(req.Persistent),
+		DID:           didKey,
+		PublicKey:     base64.StdEncoding.EncodeToString(pub),
+		Name:          name,
+		Alias:         alias,
+		Custody:       awid.CustodySelf,
+		RoleName:      strings.TrimSpace(req.Role),
+		HumanName:     strings.TrimSpace(req.HumanName),
+		AgentType:     strings.TrimSpace(req.AgentType),
+		IdentityScope: initIdentityScopeValue(req.Persistent),
+		InboundMode:   strings.TrimSpace(req.InboundMode),
 	})
 	if err != nil {
 		return connectOutput{}, err
@@ -213,11 +222,11 @@ func runAPIKeyBootstrapInit(req apiKeyInitRequest) (connectOutput, error) {
 	})
 }
 
-func initLifetimeValue(persistent bool) string {
+func initIdentityScopeValue(persistent bool) string {
 	if persistent {
-		return awid.LifetimePersistent
+		return awid.IdentityModeGlobal
 	}
-	return awid.LifetimeEphemeral
+	return awid.IdentityModeLocal
 }
 
 func prepareAPIKeyBootstrapIdentity(
@@ -228,7 +237,7 @@ func prepareAPIKeyBootstrapIdentity(
 	if !req.Persistent {
 		if _, err := os.Stat(apiKeyPartialInitPath(req.WorkingDir)); err == nil {
 			return apiKeyBootstrapIdentityMaterial{}, usageError(
-				"found partial persistent API-key init state at %s; retry the persistent init or remove the file explicitly",
+				"found partial global API-key init state at %s; retry the global init or remove the file explicitly",
 				apiKeyPartialInitPath(req.WorkingDir),
 			)
 		} else if !os.IsNotExist(err) {
@@ -237,7 +246,7 @@ func prepareAPIKeyBootstrapIdentity(
 		return generateAPIKeyBootstrapIdentity()
 	}
 	if registry == nil {
-		return apiKeyBootstrapIdentityMaterial{}, fmt.Errorf("identity registry client is required for persistent API-key bootstrap")
+		return apiKeyBootstrapIdentityMaterial{}, fmt.Errorf("identity registry client is required for global API-key bootstrap")
 	}
 
 	path := apiKeyPartialInitPath(req.WorkingDir)
@@ -473,32 +482,32 @@ func validateAPIKeyBootstrapResponse(
 	if len(strings.TrimSpace(resp.APIKey)) > maxWorkspaceAPIKeyLength {
 		return false, "", "", fmt.Errorf("workspace init response api_key exceeds %d bytes", maxWorkspaceAPIKeyLength)
 	}
-	lifetime := strings.TrimSpace(resp.Lifetime)
-	switch lifetime {
-	case awid.LifetimePersistent:
+	identityScope := awid.NormalizeIdentityScope(firstNonEmpty(resp.IdentityScope, resp.Lifetime, cert.IdentityScope, cert.Lifetime))
+	switch identityScope {
+	case awid.IdentityModeGlobal:
 		persistent = true
-	case awid.LifetimeEphemeral:
+	case awid.IdentityModeLocal:
 		persistent = false
 	default:
-		return false, "", "", fmt.Errorf("workspace init response has unsupported lifetime %q", resp.Lifetime)
+		return false, "", "", fmt.Errorf("workspace init response has unsupported identity_scope %q", firstNonEmpty(resp.IdentityScope, resp.Lifetime))
 	}
 	if persistent != requestedPersistent {
 		return false, "", "", fmt.Errorf(
-			"workspace init response lifetime %q does not match requested lifetime %q",
-			lifetime,
-			initLifetimeValue(requestedPersistent),
+			"workspace init response identity_scope %q does not match requested identity_scope %q",
+			identityScope,
+			initIdentityScopeValue(requestedPersistent),
 		)
 	}
 	stableID = strings.TrimSpace(resp.StableID)
 	if persistent {
 		if stableID == "" {
-			return false, "", "", fmt.Errorf("persistent workspace init response is missing stable_id")
+			return false, "", "", fmt.Errorf("global identity workspace init response is missing stable_id")
 		}
 		if strings.TrimSpace(cert.MemberDIDAW) == "" {
-			return false, "", "", fmt.Errorf("persistent workspace init response is missing member_did_aw")
+			return false, "", "", fmt.Errorf("global identity workspace init response is missing member_did_aw")
 		}
 		if strings.TrimSpace(cert.MemberAddress) == "" {
-			return false, "", "", fmt.Errorf("persistent workspace init response is missing member_address")
+			return false, "", "", fmt.Errorf("global identity workspace init response is missing member_address")
 		}
 		if strings.TrimSpace(cert.MemberDIDAW) != stableID {
 			return false, "", "", fmt.Errorf(
@@ -510,10 +519,10 @@ func validateAPIKeyBootstrapResponse(
 		return persistent, serverURL, stableID, nil
 	}
 	if stableID != "" {
-		return false, "", "", fmt.Errorf("ephemeral workspace init response unexpectedly returned stable_id %q", stableID)
+		return false, "", "", fmt.Errorf("local workspace init response unexpectedly returned stable_id %q", stableID)
 	}
 	if strings.TrimSpace(cert.MemberDIDAW) != "" || strings.TrimSpace(cert.MemberAddress) != "" {
-		return false, "", "", fmt.Errorf("ephemeral workspace init response unexpectedly contains persistent identity fields")
+		return false, "", "", fmt.Errorf("local workspace init response unexpectedly contains global identity fields")
 	}
 	return persistent, serverURL, "", nil
 }

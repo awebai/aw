@@ -2,6 +2,7 @@ package awid
 
 import (
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -39,8 +40,11 @@ func TestSignAndVerifyTeamCertificate(t *testing.T) {
 	if cert.Alias != "alice" {
 		t.Fatalf("alias=%q", cert.Alias)
 	}
+	if cert.IdentityScope != IdentityModeGlobal {
+		t.Fatalf("identity_scope=%q", cert.IdentityScope)
+	}
 	if cert.Lifetime != LifetimePersistent {
-		t.Fatalf("lifetime=%q", cert.Lifetime)
+		t.Fatalf("legacy lifetime=%q", cert.Lifetime)
 	}
 	if cert.TeamDIDKey != teamDIDKey {
 		t.Fatalf("team_did_key=%q", cert.TeamDIDKey)
@@ -265,11 +269,114 @@ func TestTeamCertificateJSON(t *testing.T) {
 	if decoded.CertificateID != cert.CertificateID {
 		t.Fatalf("certificate_id mismatch after JSON round-trip")
 	}
+	if decoded.IdentityScope != IdentityModeGlobal {
+		t.Fatalf("identity_scope=%q", decoded.IdentityScope)
+	}
+	if strings.Contains(string(data), "lifetime") {
+		t.Fatalf("new certificate JSON must not emit lifetime: %s", string(data))
+	}
 
 	// Verify the key signature_payload is present when verifying
 	teamPub := teamPriv.Public().(ed25519.PublicKey)
 	if err := VerifyTeamCertificate(&decoded, teamPub); err != nil {
 		t.Fatalf("verify after JSON round-trip: %v", err)
+	}
+}
+
+func TestLegacyLifetimeTeamCertificatePreservesSignedWireShape(t *testing.T) {
+	teamPub, teamPriv, err := GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberPub, _, err := GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberDIDKey := ComputeDIDKey(memberPub)
+	certID := "cert-legacy"
+	teamID := "default:alice.aweb.ai"
+	teamDIDKey := ComputeDIDKey(teamPub)
+	issuedAt := "2026-05-22T00:00:00Z"
+
+	payload := canonicalCertificatePayload(
+		certID,
+		teamID,
+		teamDIDKey,
+		memberDIDKey,
+		"",
+		"",
+		"alice",
+		LifetimePersistent,
+		issuedAt,
+		true,
+	)
+	signature := base64.RawStdEncoding.EncodeToString(ed25519.Sign(teamPriv, []byte(payload)))
+	type legacyWire struct {
+		Version       int    `json:"version"`
+		CertificateID string `json:"certificate_id"`
+		Team          string `json:"team_id"`
+		TeamDIDKey    string `json:"team_did_key"`
+		MemberDIDKey  string `json:"member_did_key"`
+		Alias         string `json:"alias"`
+		Lifetime      string `json:"lifetime"`
+		IssuedAt      string `json:"issued_at"`
+		Signature     string `json:"signature"`
+	}
+	legacyJSON, err := json.Marshal(legacyWire{
+		Version:       1,
+		CertificateID: certID,
+		Team:          teamID,
+		TeamDIDKey:    teamDIDKey,
+		MemberDIDKey:  memberDIDKey,
+		Alias:         "alice",
+		Lifetime:      LifetimePersistent,
+		IssuedAt:      issuedAt,
+		Signature:     signature,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	decoded, err := DecodeTeamCertificateHeader(base64.StdEncoding.EncodeToString(legacyJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.IdentityScope != IdentityModeGlobal {
+		t.Fatalf("identity_scope=%q", decoded.IdentityScope)
+	}
+	if err := VerifyTeamCertificate(decoded, teamPub); err != nil {
+		t.Fatalf("verify decoded legacy certificate: %v", err)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "team-cert.pem")
+	if err := SaveTeamCertificate(path, decoded); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadTeamCertificate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := EncodeTeamCertificateHeader(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roundTripJSON, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(roundTripJSON), `"lifetime"`) {
+		t.Fatalf("legacy certificate header lost signed lifetime field: %s", string(roundTripJSON))
+	}
+	if strings.Contains(string(roundTripJSON), `"identity_scope"`) {
+		t.Fatalf("legacy certificate header must not rewrite signed lifetime to identity_scope: %s", string(roundTripJSON))
+	}
+	roundTrip, err := DecodeTeamCertificateHeader(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyTeamCertificate(roundTrip, teamPub); err != nil {
+		t.Fatalf("verify preserved legacy certificate: %v", err)
 	}
 }
 
@@ -282,8 +389,9 @@ func TestCanonicalCertificatePayloadSortsKeys(t *testing.T) {
 		"did:aw:test",
 		"acme.com/alice",
 		"alice",
-		LifetimePersistent,
+		IdentityModeGlobal,
 		"2026-04-09T00:00:00Z",
+		false,
 	)
 
 	if strings.Index(payload, `"team_did_key"`) > strings.Index(payload, `"team_id"`) {

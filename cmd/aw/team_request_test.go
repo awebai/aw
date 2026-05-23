@@ -13,7 +13,7 @@ import (
 	"github.com/awebai/aw/awid"
 )
 
-func TestTeamRequestEphemeralPrintsAddMemberCommandWithoutStableFields(t *testing.T) {
+func TestTeamRequestLocalPrintsAddMemberCommandWithoutStableFields(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -54,11 +54,11 @@ func TestTeamRequestEphemeralPrintsAddMemberCommandWithoutStableFields(t *testin
 		t.Fatalf("output missing alias:\n%s", text)
 	}
 	if strings.Contains(text, "--did-aw") || strings.Contains(text, "--address") || strings.Contains(text, "--lifetime") {
-		t.Fatalf("ephemeral output unexpectedly included persistent flags:\n%s", text)
+		t.Fatalf("local output unexpectedly included global compatibility flags:\n%s", text)
 	}
 }
 
-func TestTeamRequestPersistentJSONIncludesStableFields(t *testing.T) {
+func TestTeamRequestGlobalJSONIncludesStableFields(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -116,8 +116,8 @@ func TestTeamRequestPersistentJSONIncludesStableFields(t *testing.T) {
 		t.Fatalf("address=%v", got["address"])
 	}
 	command, _ := got["command"].(string)
-	if !strings.Contains(command, "--lifetime persistent") {
-		t.Fatalf("command missing persistent lifetime: %q", command)
+	if !strings.Contains(command, "--global") {
+		t.Fatalf("command missing global identity flag: %q", command)
 	}
 	if !strings.Contains(command, "--did-aw "+stableID) {
 		t.Fatalf("command missing did-aw: %q", command)

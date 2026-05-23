@@ -7,17 +7,37 @@ type IdentityClass string
 const (
 	IdentityClassEphemeral  IdentityClass = LifetimeEphemeral
 	IdentityClassPersistent IdentityClass = LifetimePersistent
+	IdentityModeLocal                     = "local"
+	IdentityModeGlobal                    = "global"
 )
 
 func NormalizeLifetime(lifetime string) string {
 	switch strings.TrimSpace(strings.ToLower(lifetime)) {
-	case "", LifetimeEphemeral:
+	case "", LifetimeEphemeral, IdentityModeLocal:
 		return LifetimeEphemeral
-	case LifetimePersistent:
+	case LifetimePersistent, IdentityModeGlobal:
 		return LifetimePersistent
 	default:
 		return strings.TrimSpace(strings.ToLower(lifetime))
 	}
+}
+
+func NormalizeIdentityScope(scope string) string {
+	switch strings.TrimSpace(strings.ToLower(scope)) {
+	case "", LifetimeEphemeral, IdentityModeLocal:
+		return IdentityModeLocal
+	case LifetimePersistent, IdentityModeGlobal:
+		return IdentityModeGlobal
+	default:
+		return strings.TrimSpace(strings.ToLower(scope))
+	}
+}
+
+func LegacyLifetimeForIdentityScope(scope string) string {
+	if NormalizeIdentityScope(scope) == IdentityModeGlobal {
+		return LifetimePersistent
+	}
+	return LifetimeEphemeral
 }
 
 func IdentityClassFromLifetime(lifetime string) IdentityClass {
@@ -53,9 +73,9 @@ func PublicAddress(address, lifetime string) string {
 func DescribeIdentityClass(lifetime string) string {
 	switch IdentityClassFromLifetime(lifetime) {
 	case IdentityClassPersistent:
-		return "persistent"
+		return IdentityModeGlobal
 	default:
-		return "ephemeral"
+		return IdentityModeLocal
 	}
 }
 

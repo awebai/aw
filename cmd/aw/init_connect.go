@@ -23,14 +23,14 @@ import (
 
 // connectOutput is the JSON output for `aw init` when using certificate auth.
 type connectOutput struct {
-	Status      string `json:"status"`
-	TeamID      string `json:"team_id"`
-	Alias       string `json:"alias"`
-	AwebURL     string `json:"aweb_url"`
-	WorkspaceID string `json:"workspace_id,omitempty"`
-	StableID    string `json:"stable_id,omitempty"`
-	Address     string `json:"address,omitempty"`
-	Lifetime    string `json:"lifetime,omitempty"`
+	Status        string `json:"status"`
+	TeamID        string `json:"team_id"`
+	Alias         string `json:"alias"`
+	AwebURL       string `json:"aweb_url"`
+	WorkspaceID   string `json:"workspace_id,omitempty"`
+	StableID      string `json:"stable_id,omitempty"`
+	Address       string `json:"address,omitempty"`
+	IdentityScope string `json:"identity_scope,omitempty"`
 }
 
 // connectResponse is the server response from POST /v1/connect.
@@ -167,15 +167,16 @@ func initCertificateConnectWithOptions(workingDir, awebURL string, opts certific
 		return connectOutput{}, err
 	}
 
+	identityScope := awid.NormalizeIdentityScope(firstNonEmpty(cert.IdentityScope, cert.Lifetime))
 	return connectOutput{
-		Status:      "connected",
-		TeamID:      resp.TeamID,
-		Alias:       resp.Alias,
-		AwebURL:     awebURL,
-		WorkspaceID: resp.WorkspaceID,
-		StableID:    strings.TrimSpace(cert.MemberDIDAW),
-		Address:     strings.TrimSpace(cert.MemberAddress),
-		Lifetime:    strings.TrimSpace(cert.Lifetime),
+		Status:        "connected",
+		TeamID:        resp.TeamID,
+		Alias:         resp.Alias,
+		AwebURL:       awebURL,
+		WorkspaceID:   resp.WorkspaceID,
+		StableID:      strings.TrimSpace(cert.MemberDIDAW),
+		Address:       strings.TrimSpace(cert.MemberAddress),
+		IdentityScope: identityScope,
 	}, nil
 }
 
