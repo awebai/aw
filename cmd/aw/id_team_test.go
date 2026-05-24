@@ -107,14 +107,12 @@ func setTeamImportRequestGlobalsForTest(t *testing.T, team, namespace string) {
 	oldNamespace := teamImportRequestNamespace
 	oldOrganizationID := teamImportRequestOrganizationID
 	oldCloudTeamID := teamImportRequestCloudTeamID
-	oldAccessMode := teamImportRequestAccessMode
 	oldTimestamp := teamImportRequestTimestamp
 	oldApply := teamImportRequestApply
 	teamImportRequestTeam = team
 	teamImportRequestNamespace = namespace
 	teamImportRequestOrganizationID = "org-1"
 	teamImportRequestCloudTeamID = ""
-	teamImportRequestAccessMode = "open"
 	teamImportRequestTimestamp = "2026-05-09T12:00:00Z"
 	teamImportRequestApply = false
 	t.Cleanup(func() {
@@ -122,7 +120,6 @@ func setTeamImportRequestGlobalsForTest(t *testing.T, team, namespace string) {
 		teamImportRequestNamespace = oldNamespace
 		teamImportRequestOrganizationID = oldOrganizationID
 		teamImportRequestCloudTeamID = oldCloudTeamID
-		teamImportRequestAccessMode = oldAccessMode
 		teamImportRequestTimestamp = oldTimestamp
 		teamImportRequestApply = oldApply
 	})
@@ -184,14 +181,13 @@ func TestBuildTeamImportRequestOutputSignsCanonicalACPayload(t *testing.T) {
 		"org-1",
 		"",
 		true,
-		"open",
 		"2026-05-09T12:00:00Z",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	wantCanonical := `{"access_mode":"open","awid_team_id":"research:acme.com","dry_run":true,"operation":"byoidt_import","organization_id":"org-1","team_id":"","timestamp":"2026-05-09T12:00:00Z"}`
+	wantCanonical := `{"awid_team_id":"research:acme.com","dry_run":true,"operation":"byoidt_import","organization_id":"org-1","team_id":"","timestamp":"2026-05-09T12:00:00Z"}`
 	if out.CanonicalPayload != wantCanonical {
 		t.Fatalf("canonical payload mismatch:\n got: %s\nwant: %s", out.CanonicalPayload, wantCanonical)
 	}
@@ -201,7 +197,7 @@ func TestBuildTeamImportRequestOutputSignsCanonicalACPayload(t *testing.T) {
 	if out.ControllerDID != "did:key:z6MkehRgf7yJbgaGfYsdoAsKdBPE3dj2CYhowQdcjqSJgvVd" {
 		t.Fatalf("controller did interop vector changed: %q", out.ControllerDID)
 	}
-	const wantSignature = "5mdXJbmrncZUuu6701IZDBUZfonfChxtdTn3JZ/bVz+79CkMOaosWSaNq5OD23U6LOHzQTuka9RraSOvS0gcCA"
+	const wantSignature = "wJ9qUNecyxiqSF45ALU6upFloyUPiQW1RXkste671QcTjBM9nGqN9ngTcgGwVX2OO+s4gQ/yFIXKL7OewHelBw"
 	if out.ControllerSignature != wantSignature {
 		t.Fatalf("signature mismatch:\n got: %s\nwant: %s", out.ControllerSignature, wantSignature)
 	}
@@ -220,6 +216,22 @@ func TestBuildTeamImportRequestOutputSignsCanonicalACPayload(t *testing.T) {
 	}
 	if got := out.RequestBody["controller_signature"]; got != out.ControllerSignature {
 		t.Fatalf("request signature=%v want %s", got, out.ControllerSignature)
+	}
+	if _, ok := out.RequestBody["access_mode"]; ok {
+		t.Fatal("request body must not include stale unsigned access_mode")
+	}
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "access_mode") {
+		t.Fatalf("import-request output must not expose stale access_mode, got %s", encoded)
+	}
+}
+
+func TestTeamImportRequestCommandDoesNotExposeAccessModeFlag(t *testing.T) {
+	if flag := teamImportRequestCmd.Flags().Lookup("access-mode"); flag != nil {
+		t.Fatal("BYOT import-request must not expose stale --access-mode flag")
 	}
 }
 
