@@ -814,7 +814,7 @@ func bootstrapBYODTeamAndInitAgentDirs(cmd *cobra.Command, plans []teamBootstrap
 	controllerKey, err := awconfig.LoadControllerKey(namespace)
 	if err != nil {
 		return fmt.Errorf(
-			"no local namespace controller key for %s: %w\n\nRun `aw id create --domain %s --name <controller-name>` first.",
+			"no local namespace controller key for %s: %w\n\nRun `aw id namespace prepare-controller --domain %s` first.",
 			namespace,
 			err,
 			namespace,
@@ -842,7 +842,7 @@ func bootstrapBYODTeamAndInitAgentDirs(cmd *cobra.Command, plans []teamBootstrap
 		return fmt.Errorf("ensure namespace %s: %w", namespace, err)
 	}
 
-	// Ensure the team exists (creates ~/.config/aw/team-keys/<namespace>/<team>.key if needed).
+	// Ensure the team exists (creates ~/.awid/team-keys/<namespace>/<team>.key if needed).
 	if _, err := ensureLocalTeamRegistered(
 		ctx,
 		registry,

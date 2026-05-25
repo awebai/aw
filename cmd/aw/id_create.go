@@ -332,9 +332,15 @@ func confirmAndVerifyIDCreateDNS(plan *idCreatePlan, opts idCreateOptions) error
 	if promptOut == nil {
 		promptOut = os.Stderr
 	}
+	if readerIsNonTerminalFile(promptIn) {
+		return idCreateDNSNeedsInteractiveInputError(plan)
+	}
 	for {
 		proceed, err := promptYesNoWithIO("Verify this DNS TXT record now?", true, promptIn, promptOut)
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return idCreateDNSNeedsInteractiveInputError(plan)
+			}
 			return err
 		}
 		if !proceed {
@@ -348,6 +354,10 @@ func confirmAndVerifyIDCreateDNS(plan *idCreatePlan, opts idCreateOptions) error
 		}
 		fmt.Fprintf(promptOut, "%v\n", err)
 	}
+}
+
+func idCreateDNSNeedsInteractiveInputError(plan *idCreatePlan) error {
+	return usageError("DNS verification needs interactive input. Publish the TXT record, verify it with `aw id namespace check-txt --domain %s`, then rerun `aw id create --domain %s --name %s`.", plan.Domain, plan.Domain, plan.Name)
 }
 
 func verifyIDCreateDomainAuthority(ctx context.Context, resolver awid.TXTResolver, domain, expectedControllerDID, expectedRegistryURL string) error {
