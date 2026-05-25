@@ -201,9 +201,13 @@ aw id team add-member                 # Add a member to a team and publish a fet
 aw id team fetch-cert                 # Fetch and install an approved team certificate
 aw id team accept-invite <token>      # Accept hosted aw_inv_ or local-controller team invite
 aw id team remove-member              # Remove a member from a team
+aw id team delete                     # Delete an AWID team after active certs are revoked
+aw id team cleanup-cloud              # Delete aweb Cloud's imported BYOT projection
+aw id team cleanup-cloud --namespace-controller  # Recover cleanup with namespace authority
 aw id team import-request --namespace <domain> --team <team> --organization-id <org>
 aw id rotate-key                      # Rotate the local signing key
 aw id show                            # Show current identity and registry status
+aw id namespace delete                # Delete an AWID namespace after active certs are revoked
 aw claim-human --email <email>        # Attach a human owner for dashboard access
 ```
 
@@ -248,6 +252,7 @@ metadata is read-only compatibility data and is no longer set by the CLI.
 
 ```bash
 aw id namespace assign-address --domain acme.com --name alice --did-aw <did:aw>
+aw id namespace delete-address --domain acme.com --name alice
 aw directory                                    # List discoverable identities
 aw directory acme.com/alice                     # Look up a specific identity
 aw directory --capability code --query "python" # Filter
