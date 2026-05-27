@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -367,7 +368,7 @@ func TestAwMailSendBodyFilePreservesBackticksOnTheWire(t *testing.T) {
 		t.Fatalf("write body file: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "mail", "send",
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--plaintext",
 		"--to-address", "otherco.com/monitor",
 		"--body-file", bodyFile,
 	)
@@ -452,7 +453,7 @@ func TestAwMailSendConversationIDSignsPayloadWithRediscoveredRecipient(t *testin
 		t.Fatalf("write signing key: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "mail", "send",
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--plaintext",
 		"--conversation-id", conversationID,
 		"--subject", "Re",
 		"--body", "reply",
@@ -568,7 +569,7 @@ func TestAwMailSendToAddressAutoThreadsUniqueConversation(t *testing.T) {
 		t.Fatalf("write signing key: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "mail", "send",
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--plaintext",
 		"--to-address", "otherco.com/bob",
 		"--subject", "Re",
 		"--body", "reply",
@@ -685,7 +686,7 @@ func TestAwMailSendToAddressAutoThreadsSentConversationFromIndex(t *testing.T) {
 		t.Fatalf("write signing key: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "mail", "send",
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--plaintext",
 		"--to-address", "test.local/alice",
 		"--subject", "Re",
 		"--body", "reply",
@@ -814,7 +815,7 @@ func TestAwMailSendAliasAutoThreadsConcreteAgentConversation(t *testing.T) {
 		CreatedAt:   "2026-05-02T00:00:00Z",
 	})
 
-	run := exec.CommandContext(ctx, bin, "mail", "send",
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--plaintext",
 		"--to", "alice",
 		"--subject", "Re",
 		"--body", "reply",
@@ -927,7 +928,7 @@ func TestAwMailSendAliasToSelfSkipsConversationDiscovery(t *testing.T) {
 		CreatedAt:   "2026-05-02T00:00:00Z",
 	})
 
-	run := exec.CommandContext(ctx, bin, "mail", "send",
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--plaintext",
 		"--to", "gsk",
 		"--subject", "self",
 		"--body", "hello from integration test",
@@ -1044,7 +1045,7 @@ func TestAwMailReplyUsesMessageConversation(t *testing.T) {
 		t.Fatalf("write signing key: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "mail", "reply", "msg-in", "--body", "reply")
+	run := exec.CommandContext(ctx, bin, "mail", "reply", "--plaintext", "msg-in", "--body", "reply")
 	run.Env = append(testCommandEnv(tmp), "AWEB_URL="+server.URL)
 	run.Dir = tmp
 	out, err := run.CombinedOutput()
@@ -1119,7 +1120,7 @@ func TestAwMailSendConversationIDSurfacesNonParticipantRejection(t *testing.T) {
 		t.Fatalf("write signing key: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "mail", "send",
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--plaintext",
 		"--conversation-id", conversationID,
 		"--body", "not allowed",
 	)
@@ -1175,7 +1176,7 @@ func TestAwMailSendConversationIDSurfacesMissingConversation(t *testing.T) {
 		t.Fatalf("write signing key: %v", err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "mail", "send",
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--plaintext",
 		"--conversation-id", conversationID,
 		"--body", "missing",
 	)
@@ -1377,7 +1378,7 @@ func TestAwMailSendRejectsBothBodyAndBodyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := exec.CommandContext(ctx, bin, "mail", "send",
+	run := exec.CommandContext(ctx, bin, "mail", "send", "--plaintext",
 		"--to", "alice",
 		"--body", "from flag",
 		"--body-file", bodyFile,
@@ -1390,5 +1391,121 @@ func TestAwMailSendRejectsBothBodyAndBodyFile(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "mutually exclusive") {
 		t.Fatalf("expected mutually exclusive error, got:\n%s", string(out))
+	}
+}
+
+func TestMailAndChatDefaultPlaintextAndE2EEOptInFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+	var mailBody map[string]any
+	var chatBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/chat/pending":
+			_ = json.NewEncoder(w).Encode(awid.ChatPendingResponse{Pending: []awid.ChatPendingItem{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/chat/sessions":
+			_ = json.NewEncoder(w).Encode(awid.ChatListSessionsResponse{Sessions: []awid.ChatSessionItem{}})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/sessions":
+			if err := json.NewDecoder(r.Body).Decode(&chatBody); err != nil {
+				t.Fatalf("decode chat body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(awid.ChatCreateSessionResponse{
+				SessionID: "session-1",
+				MessageID: "chat-1",
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages":
+			if err := json.NewDecoder(r.Body).Decode(&mailBody); err != nil {
+				t.Fatalf("decode mail body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"message_id":   "mail-1",
+				"status":       "delivered",
+				"delivered_at": "2026-03-17T12:00:00Z",
+			})
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/did/") && strings.HasSuffix(r.URL.Path, "/encryption-key"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "published"})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/agents/me/encryption-key":
+			_ = json.NewEncoder(w).Encode(awid.PublishAgentEncryptionKeyResponse{
+				AgentID: "workspace-1",
+				TeamID:  "backend:demo",
+				Alias:   "alice",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agents":
+			_ = json.NewEncoder(w).Encode(awid.ListAgentsResponse{
+				TeamID: "backend:demo",
+				Agents: []awid.AgentView{{
+					AgentID: "agent-alice",
+					Alias:   "alice",
+					DIDKey:  "did:key:z6Mkalice",
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	writeDefaultWorkspaceBindingForTest(t, tmp, server.URL)
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "mail", args: []string{"mail", "send", "--to", "alice", "--body", "hello"}},
+		{name: "chat", args: []string{"chat", "send-and-leave", "alice", "hello"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := exec.CommandContext(ctx, bin, tc.args...)
+			run.Env = append(testCommandEnv(tmp), "AWID_REGISTRY_URL="+server.URL)
+			run.Dir = tmp
+			out, err := run.CombinedOutput()
+			if err != nil {
+				t.Fatalf("expected default plaintext success, got failure: %v\n%s", err, string(out))
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+	}{
+		{name: "mail", body: mailBody},
+		{name: "chat", body: chatBody},
+	} {
+		if tc.body == nil {
+			t.Fatalf("%s default send did not reach server", tc.name)
+		}
+		if got := tc.body["content_mode"]; got == "encrypted_v2" {
+			t.Fatalf("%s default send unexpectedly used encrypted_v2: %#v", tc.name, tc.body)
+		}
+		if _, ok := tc.body["encrypted_envelope"]; ok {
+			t.Fatalf("%s default send unexpectedly included encrypted_envelope: %#v", tc.name, tc.body)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "mail", args: []string{"mail", "send", "--e2ee", "--to", "alice", "--body", "hello"}},
+		{name: "chat", args: []string{"chat", "send-and-leave", "--e2ee", "alice", "hello"}},
+	} {
+		t.Run(tc.name+"_e2ee_opt_in", func(t *testing.T) {
+			run := exec.CommandContext(ctx, bin, tc.args...)
+			run.Env = append(testCommandEnv(tmp), "AWID_REGISTRY_URL="+server.URL)
+			run.Dir = tmp
+			out, err := run.CombinedOutput()
+			if err == nil {
+				t.Fatalf("expected explicit E2E failure for old recipient without encryption key, got success:\n%s", string(out))
+			}
+			if !strings.Contains(string(out), "has no E2E encryption key") &&
+				!strings.Contains(string(out), "has no published E2E encryption key") {
+				t.Fatalf("expected explicit E2E recipient-key error, got:\n%s", string(out))
+			}
+		})
 	}
 }

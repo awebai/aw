@@ -27,7 +27,7 @@ func chatSend(ctx context.Context, toAlias, message string, opts chat.SendOption
 		return nil, nil, err
 	}
 	if opts.EncryptE2EE {
-		if err := configureClientE2EEForMail(c, sel, true); err != nil {
+		if err := configureClientE2EE(ctx, c, sel, true); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -111,6 +111,13 @@ var (
 	chatSendAndWaitE2EE               bool
 	chatSendAndLeaveE2EE              bool
 	chatExtendWaitE2EE                bool
+	chatSendAndWaitPlaintext          bool
+	chatSendAndLeavePlaintext         bool
+	chatExtendWaitPlaintext           bool
+	chatHistorySessionID              string
+	chatHistoryMessageID              string
+	chatHistoryLimit                  int
+	chatHistoryUnreadOnly             bool
 	chatListenWait                    int
 )
 
@@ -119,6 +126,9 @@ var chatSendAndWaitCmd = &cobra.Command{
 	Short: "Send a message and wait for a reply",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if cmd.Flags().Changed("e2ee") && chatSendAndWaitPlaintext {
+			return usageError("--e2ee and --plaintext are mutually exclusive")
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), chat.MaxSendTimeout)
 		defer cancel()
 
@@ -165,6 +175,9 @@ var chatSendAndLeaveCmd = &cobra.Command{
 	Short: "Send a message and leave the conversation",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if cmd.Flags().Changed("e2ee") && chatSendAndLeavePlaintext {
+			return usageError("--e2ee and --plaintext are mutually exclusive")
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), chat.MaxSendTimeout)
 		defer cancel()
 
@@ -212,7 +225,7 @@ var chatPendingCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		_ = configureClientE2EEForMail(c, sel, false)
+		_ = configureClientE2EE(ctx, c, sel, false)
 		result, err := chat.Pending(ctx, c.Client)
 		if err != nil {
 			return err
@@ -236,7 +249,7 @@ var chatOpenCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		_ = configureClientE2EEForMail(c, sel, false)
+		_ = configureClientE2EE(ctx, c, sel, false)
 		result, err := chat.Open(ctx, c.Client, args[0])
 		if err != nil {
 			return err
@@ -256,7 +269,18 @@ var chatOpenCmd = &cobra.Command{
 var chatHistoryCmd = &cobra.Command{
 	Use:   "history <alias>",
 	Short: "Show chat history with alias",
-	Args:  cobra.ExactArgs(1),
+	Args: func(cmd *cobra.Command, args []string) error {
+		if strings.TrimSpace(chatHistorySessionID) != "" {
+			if len(args) != 0 {
+				return usageError("chat history with --session-id does not accept an alias")
+			}
+			return nil
+		}
+		if len(args) != 1 {
+			return usageError("chat history requires an alias, or use --session-id")
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -265,8 +289,13 @@ var chatHistoryCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		_ = configureClientE2EEForMail(c, sel, false)
-		result, err := chat.History(ctx, c.Client, args[0])
+		_ = configureClientE2EE(ctx, c, sel, false)
+		var result *chat.HistoryResult
+		if strings.TrimSpace(chatHistorySessionID) != "" {
+			result, err = chat.HistoryBySession(ctx, c.Client, chatHistorySessionID, chatHistoryMessageID, chatHistoryUnreadOnly, chatHistoryLimit)
+		} else {
+			result, err = chat.History(ctx, c.Client, args[0])
+		}
 		if err != nil {
 			return err
 		}
@@ -283,6 +312,9 @@ var chatExtendWaitCmd = &cobra.Command{
 	Short: "Ask the other party to wait longer",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if cmd.Flags().Changed("e2ee") && chatExtendWaitPlaintext {
+			return usageError("--e2ee and --plaintext are mutually exclusive")
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
@@ -290,12 +322,13 @@ var chatExtendWaitCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if chatExtendWaitE2EE {
-			if err := configureClientE2EEForMail(c, sel, true); err != nil {
+		encryptE2EE := chatExtendWaitE2EE
+		if encryptE2EE {
+			if err := configureClientE2EE(ctx, c, sel, true); err != nil {
 				return err
 			}
 		}
-		result, err := chat.ExtendWait(ctx, c.Client, args[0], args[1], chatExtendWaitE2EE)
+		result, err := chat.ExtendWait(ctx, c.Client, args[0], args[1], encryptE2EE)
 		if err != nil {
 			return err
 		}
@@ -336,7 +369,7 @@ var chatListenCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		_ = configureClientE2EEForMail(c, sel, false)
+		_ = configureClientE2EE(ctx, c, sel, false)
 		result, err := chat.Listen(ctx, c.Client, args[0], chatListenWait, chatStderrCallback)
 		if err != nil {
 			return err
@@ -363,7 +396,7 @@ var chatShowPendingCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		_ = configureClientE2EEForMail(c, sel, false)
+		_ = configureClientE2EE(ctx, c, sel, false)
 		result, err := chat.ShowPending(ctx, c.Client, args[0])
 		if err != nil {
 			return err
@@ -379,10 +412,18 @@ var chatShowPendingCmd = &cobra.Command{
 func init() {
 	chatSendAndWaitCmd.Flags().IntVar(&chatSendAndWaitWait, "wait", chat.DefaultWait, "Seconds to wait for reply")
 	chatSendAndWaitCmd.Flags().BoolVar(&chatSendAndWaitStartConversation, "start-conversation", false, "Start conversation (5min default wait)")
-	chatSendAndWaitCmd.Flags().BoolVar(&chatSendAndWaitE2EE, "e2ee", false, "Send E2E encrypted chat; fails closed if local or recipient encryption keys are missing")
+	chatSendAndWaitCmd.Flags().BoolVar(&chatSendAndWaitPlaintext, "plaintext", false, "Send explicit server-readable plaintext chat (currently the default)")
+	chatSendAndWaitCmd.Flags().BoolVar(&chatSendAndWaitE2EE, "e2ee", false, "Send E2E encrypted chat; fails closed if encryption keys are missing")
 	chatSendAndLeaveCmd.Flags().BoolVar(&chatSendAndLeaveStartConversation, "start-conversation", false, "Start a new conversation instead of continuing an existing one")
-	chatSendAndLeaveCmd.Flags().BoolVar(&chatSendAndLeaveE2EE, "e2ee", false, "Send E2E encrypted chat; fails closed if local or recipient encryption keys are missing")
-	chatExtendWaitCmd.Flags().BoolVar(&chatExtendWaitE2EE, "e2ee", false, "Send E2E encrypted chat; fails closed if local or recipient encryption keys are missing")
+	chatSendAndLeaveCmd.Flags().BoolVar(&chatSendAndLeavePlaintext, "plaintext", false, "Send explicit server-readable plaintext chat (currently the default)")
+	chatSendAndLeaveCmd.Flags().BoolVar(&chatSendAndLeaveE2EE, "e2ee", false, "Send E2E encrypted chat; fails closed if encryption keys are missing")
+	chatExtendWaitCmd.Flags().BoolVar(&chatExtendWaitPlaintext, "plaintext", false, "Send explicit server-readable plaintext wait extension (currently the default)")
+	chatExtendWaitCmd.Flags().BoolVar(&chatExtendWaitE2EE, "e2ee", false, "Send E2E encrypted wait extension; fails closed if encryption keys are missing")
+
+	chatHistoryCmd.Flags().StringVar(&chatHistorySessionID, "session-id", "", "Fetch chat history by session id instead of alias")
+	chatHistoryCmd.Flags().StringVar(&chatHistoryMessageID, "message-id", "", "Fetch one message by id when using --session-id")
+	chatHistoryCmd.Flags().IntVar(&chatHistoryLimit, "limit", 1000, "Maximum messages to fetch")
+	chatHistoryCmd.Flags().BoolVar(&chatHistoryUnreadOnly, "unread-only", false, "Fetch unread messages only")
 
 	chatListenCmd.Flags().IntVar(&chatListenWait, "wait", chat.DefaultWait, "Seconds to wait for a message (0 = no wait)")
 
