@@ -207,6 +207,8 @@ func TestAwWorkspaceStatusShowsTeamState(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"workspaces": []map[string]any{}, "has_more": false})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
+		case "/v1/agents/me/encryption-key":
+			writePublishEncryptionKeyResponseForTest(t, w, "agent-3", "backend:demo", "charlie")
 		default:
 			t.Fatalf("path=%s", r.URL.Path)
 		}
@@ -289,6 +291,8 @@ func TestAwWorkspaceStatusAllShowsAllMemberships(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"workspaces": []map[string]any{}, "has_more": false})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
+		case "/v1/agents/me/encryption-key":
+			writePublishEncryptionKeyResponseForTest(t, w, "agent-3", "backend:demo", "mallory")
 		default:
 			t.Fatalf("path=%s", r.URL.Path)
 		}
@@ -470,6 +474,8 @@ func TestAwWorkspaceStatusWithoutLocalWorkspaceShowsAgentContext(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"workspaces": []map[string]any{}, "has_more": false})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
+		case "/v1/agents/me/encryption-key":
+			writePublishEncryptionKeyResponseForTest(t, w, "agent-3", "backend:demo", "charlie")
 		default:
 			t.Fatalf("path=%s", r.URL.Path)
 		}
@@ -567,6 +573,8 @@ func TestAwWorkspaceStatusTruncatesTeamLocks(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"workspaces": []map[string]any{}, "has_more": false})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
+		case "/v1/agents/me/encryption-key":
+			writePublishEncryptionKeyResponseForTest(t, w, "agent-3", "backend:demo", "mallory")
 		default:
 			t.Fatalf("path=%s", r.URL.Path)
 		}
@@ -1187,6 +1195,8 @@ func TestAwWorkspaceAddWorktreeCreatesLocalSelfCustodialCLIWorkspaceWithTeamKey(
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
+		case "/v1/agents/me/encryption-key":
+			writePublishEncryptionKeyResponseForTest(t, w, "agent-3", teamID, "charlie")
 		default:
 			t.Fatalf("path=%s", r.URL.Path)
 		}
@@ -1473,6 +1483,8 @@ func TestAwWorkspaceAddWorktreeWithoutIdentityUsesDiscoveryAndMailRoundTrip(t *t
 					"body_md": "Use aw for coordination.",
 				},
 			})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/agents/me/encryption-key":
+			writePublishEncryptionKeyResponseForTest(t, w, "agent-1", teamID, "alice")
 		default:
 			t.Fatalf("unexpected aweb %s %s", r.Method, r.URL.Path)
 		}
@@ -1792,6 +1804,8 @@ func TestAPIKeyBootstrapAddWorktreeMailRoundTrip(t *testing.T) {
 					"body_md": "Use aw for coordination.",
 				},
 			})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/agents/me/encryption-key":
+			writePublishEncryptionKeyResponseForTest(t, w, "agent-1", teamID, "alice")
 		default:
 			t.Fatalf("unexpected aweb %s %s", r.Method, r.URL.Path)
 		}
@@ -1951,6 +1965,8 @@ func TestAwWorkspaceAddWorktreeRevokesCertificateWhenConnectFails(t *testing.T) 
 			http.Error(w, "alias conflict", http.StatusConflict)
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
+		case "/v1/agents/me/encryption-key":
+			writePublishEncryptionKeyResponseForTest(t, w, "agent-3", teamID, "mallory")
 		default:
 			t.Fatalf("path=%s", r.URL.Path)
 		}
@@ -2062,6 +2078,8 @@ func TestAwWorkspaceAddWorktreeRevokesCertificateWhenConnectAliasMismatches(t *t
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
+		case "/v1/agents/me/encryption-key":
+			writePublishEncryptionKeyResponseForTest(t, w, "agent-3", teamID, "mallory")
 		default:
 			t.Fatalf("path=%s", r.URL.Path)
 		}
@@ -2145,6 +2163,8 @@ func TestAwWorkspaceAddWorktreeRejectsAliasAlreadyInUse(t *testing.T) {
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
+		case "/v1/agents/me/encryption-key":
+			writePublishEncryptionKeyResponseForTest(t, w, "agent-grace", "backend:demo", "grace")
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
@@ -2174,6 +2194,175 @@ func TestAwWorkspaceAddWorktreeRejectsAliasAlreadyInUse(t *testing.T) {
 	}
 	if !strings.Contains(string(out), `alias "bob" is already in use by this team`) {
 		t.Fatalf("unexpected output:\n%s", string(out))
+	}
+}
+
+func TestAwWorkspaceAddWorktreeUsesHostedInviteWithoutTeamKeyOrAPIKey(t *testing.T) {
+	t.Parallel()
+
+	const origin = "https://github.com/acme/repo.git"
+	const teamID = "default:acme.aweb.ai"
+
+	_, teamKey, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var createInviteHit atomic.Bool
+	var workspaceInitHit atomic.Bool
+	var connectRole string
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/roles/active":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"team_roles_id": "roles-1",
+				"roles": map[string]any{
+					"frontend": map[string]any{"title": "Frontend"},
+				},
+			})
+		case "/v1/agents/suggest-alias-prefix":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"team_id":     teamID,
+				"name_prefix": "alice",
+			})
+		case "/api/v1/spawn/create-invite":
+			cert := requireCertificateAuthForTest(t, r)
+			if cert.Team != teamID || cert.Alias != "dev" {
+				t.Fatalf("create-invite cert team/alias=%q/%q", cert.Team, cert.Alias)
+			}
+			var body awid.SpawnCreateInviteRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode create-invite body: %v", err)
+			}
+			if body.AccessMode != "open" || body.MaxUses != 1 {
+				t.Fatalf("create-invite body=%+v", body)
+			}
+			createInviteHit.Store(true)
+			_ = json.NewEncoder(w).Encode(awid.SpawnCreateInviteResponse{
+				InviteID:      "invite-1",
+				Token:         "aw_inv_hosted_child",
+				TokenPrefix:   "aw_inv",
+				AccessMode:    "open",
+				MaxUses:       1,
+				NamespaceSlug: "acme",
+				Namespace:     "acme.aweb.ai",
+				ServerURL:     "http://" + r.Host,
+			})
+		case "/api/v1/spawn/accept-invite":
+			if didFromDIDKeyAuthorizationForTest(r.Header.Get("Authorization")) == "" {
+				t.Fatalf("accept-invite missing DIDKey auth")
+			}
+			var body awid.SpawnAcceptInviteRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode accept-invite body: %v", err)
+			}
+			if body.Token != "aw_inv_hosted_child" || body.Alias != "alice" {
+				t.Fatalf("accept-invite token/alias=%q/%q", body.Token, body.Alias)
+			}
+			cert, err := awid.SignTeamCertificate(teamKey, awid.TeamCertificateFields{
+				Team:          teamID,
+				MemberDIDKey:  body.DID,
+				Alias:         body.Alias,
+				IdentityScope: awid.IdentityModeLocal,
+			})
+			if err != nil {
+				t.Fatalf("sign child cert: %v", err)
+			}
+			encoded, err := awid.EncodeTeamCertificateHeader(cert)
+			if err != nil {
+				t.Fatalf("encode child cert: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(awid.SpawnAcceptInviteResponse{
+				TeamID:     teamID,
+				TeamSlug:   "default",
+				Namespace:  "acme.aweb.ai",
+				Alias:      body.Alias,
+				ServerURL:  "http://" + r.Host,
+				DID:        body.DID,
+				Lifetime:   awid.IdentityModeLocal,
+				AccessMode: "open",
+				Created:    true,
+				TeamCert:   encoded,
+			})
+		case "/v1/connect":
+			cert := requireCertificateAuthForTest(t, r)
+			if cert.Alias != "alice" {
+				t.Fatalf("connect alias=%q", cert.Alias)
+			}
+			var body connectRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode connect body: %v", err)
+			}
+			connectRole = body.Role
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"team_id":      teamID,
+				"alias":        "alice",
+				"agent_id":     "agent-alice",
+				"workspace_id": "ws-alice",
+				"repo_id":      "repo-alice",
+				"team_did_key": awid.ComputeDIDKey(teamKey.Public().(ed25519.PublicKey)),
+				"role":         body.Role,
+			})
+		case "/v1/agents/me/encryption-key":
+			writePublishEncryptionKeyResponseForTest(t, w, "agent-alice", teamID, "alice")
+		case "/api/v1/workspaces/init":
+			workspaceInitHit.Store(true)
+			t.Fatalf("cert-only hosted add-worktree must not call workspace init")
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepoWithOriginAndCommit(t, repo, origin)
+	buildAwBinary(t, ctx, bin)
+
+	// No local team key and no API key: this matches hosted worktree agents
+	// created by `aw team bootstrap` through the primary-workspace invite path.
+	writeWorkspaceBindingForTest(t, repo, workspaceBinding(server.URL, teamID, "dev", "ws-dev"))
+	if err := awconfig.SaveWorktreeContextTo(filepath.Join(repo, ".aw", "context"), &awconfig.WorktreeContext{}); err != nil {
+		t.Fatalf("seed .aw/context: %v", err)
+	}
+
+	run := exec.CommandContext(ctx, bin, "workspace", "add-worktree", "frontend")
+	run.Env = testCommandEnv(tmp)
+	run.Stdin = strings.NewReader("")
+	run.Dir = repo
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected success, got error: %v\n%s", err, string(out))
+	}
+	if !createInviteHit.Load() {
+		t.Fatal("expected hosted invite creation")
+	}
+	if workspaceInitHit.Load() {
+		t.Fatal("unexpected workspace init call")
+	}
+	if connectRole != "frontend" {
+		t.Fatalf("connect role=%q, want frontend", connectRole)
+	}
+	if !strings.Contains(string(out), "New agent worktree created at") || !strings.Contains(string(out), "alice") {
+		t.Fatalf("unexpected output:\n%s", string(out))
+	}
+
+	child := filepath.Join(tmp, "repo-alice")
+	childWorkspace, err := awconfig.LoadWorktreeWorkspaceFrom(filepath.Join(child, ".aw", "workspace.yaml"))
+	if err != nil {
+		t.Fatalf("load child workspace: %v", err)
+	}
+	if childWorkspace.APIKey != "" {
+		t.Fatalf("hosted invite child should be cert-only, api_key=%q", childWorkspace.APIKey)
+	}
+	if _, err := os.Stat(filepath.Join(child, ".aw", "identity.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("identity.yaml should not exist for local hosted-invite child: %v", err)
 	}
 }
 
@@ -2256,6 +2445,8 @@ func TestAwWorkspaceAddWorktreeCreatesLocalSelfCustodialCLIWorkspaceWithParentAP
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
+		case "/v1/agents/me/encryption-key":
+			writePublishEncryptionKeyResponseForTest(t, w, "agent-grace", teamID, "grace")
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
