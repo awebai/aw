@@ -89,6 +89,7 @@ func TestAwTopLevelHelpGroupsCommandsByArchitecture(t *testing.T) {
 		"Identity",
 		"Messaging & Network",
 		"Coordination & Runtime",
+		"Obsolete / Legacy Compatibility",
 		"Utility",
 	} {
 		if !strings.Contains(text, want) {
@@ -99,8 +100,10 @@ func TestAwTopLevelHelpGroupsCommandsByArchitecture(t *testing.T) {
 	identityIdx := strings.Index(text, "Identity")
 	networkIdx := strings.Index(text, "Messaging & Network")
 	coordinationIdx := strings.Index(text, "Coordination & Runtime")
+	obsoleteIdx := strings.Index(text, "Obsolete / Legacy Compatibility")
+	utilityIdx := strings.Index(text, "Utility")
 	workspaceIdx := strings.Index(text, "Workspace Setup")
-	if workspaceIdx < 0 || identityIdx < 0 || networkIdx < 0 || coordinationIdx < 0 {
+	if workspaceIdx < 0 || identityIdx < 0 || networkIdx < 0 || coordinationIdx < 0 || obsoleteIdx < 0 || utilityIdx < 0 {
 		t.Fatalf("missing expected group boundaries:\n%s", text)
 	}
 
@@ -109,9 +112,19 @@ func TestAwTopLevelHelpGroupsCommandsByArchitecture(t *testing.T) {
 		t.Fatalf("expected claim-human in Workspace Setup group:\n%s", text)
 	}
 
+	checkIdx := strings.Index(text, "\n  check")
+	if checkIdx < workspaceIdx || checkIdx > identityIdx {
+		t.Fatalf("expected check in Workspace Setup group:\n%s", text)
+	}
+
 	mcpIdx := strings.Index(text, "mcp-config")
 	if mcpIdx < identityIdx || mcpIdx > networkIdx {
 		t.Fatalf("expected mcp-config in Identity group:\n%s", text)
+	}
+
+	teamIdx := strings.Index(text, "\n  team")
+	if teamIdx < identityIdx || teamIdx > networkIdx {
+		t.Fatalf("expected team in Identity group:\n%s", text)
 	}
 
 	whoamiIdx := strings.Index(text, "whoami")
@@ -120,8 +133,16 @@ func TestAwTopLevelHelpGroupsCommandsByArchitecture(t *testing.T) {
 	}
 
 	runIdx := strings.Index(text, "run")
-	if runIdx < coordinationIdx {
+	if runIdx < coordinationIdx || runIdx > obsoleteIdx {
 		t.Fatalf("expected run in Coordination & Runtime group:\n%s", text)
+	}
+
+	agentsIdx := strings.Index(text, "\n  agents")
+	if agentsIdx < obsoleteIdx || agentsIdx > utilityIdx {
+		t.Fatalf("expected agents in Obsolete / Legacy Compatibility group:\n%s", text)
+	}
+	if !strings.Contains(text, "Obsolete compatibility for repo-local agent layouts") {
+		t.Fatalf("expected agents help to be marked obsolete compatibility:\n%s", text)
 	}
 	if strings.Contains(text, "\n  spawn") || strings.Contains(text, "\nspawn") {
 		t.Fatalf("spawn should not appear in top-level help:\n%s", text)

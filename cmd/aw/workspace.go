@@ -31,9 +31,20 @@ var workspaceStatusCmd = &cobra.Command{
 
 var workspaceAddWorktreeCmd = &cobra.Command{
 	Use:   "add-worktree [role]",
-	Short: "Create a sibling git worktree and initialize a new coordination workspace in it",
-	Args:  cobra.RangeArgs(0, 1),
-	RunE:  runWorkspaceAddWorktree,
+	Short: "Legacy convenience: create a sibling git worktree and coordination workspace",
+	Long: "Legacy convenience for existing users: create a sibling git worktree and initialize a new coordination workspace in it.\n\n" +
+		"New setup flows should prefer explicit git worktree/filesystem steps followed by aw init, invite/join, or service init primitives unless this command is reduced to a transparent wrapper with no identity/team orchestration.",
+	Args: cobra.RangeArgs(0, 1),
+	RunE: runWorkspaceAddWorktree,
+}
+
+var workspaceConnectCmd = &cobra.Command{
+	Use:   "connect",
+	Short: "Connect this workspace to a service using an existing team certificate",
+	Long: "Connect this workspace to a service using the existing .aw signing key and team certificate in this directory.\n\n" +
+		"This is the first-class workspace connection verb. It does not create identities,\n" +
+		"create teams, or change AWID team membership. It is equivalent to `aw service init`.",
+	RunE: runServiceInit,
 }
 
 var workspaceMigrateMultiTeamCmd = &cobra.Command{
@@ -103,8 +114,12 @@ func init() {
 	workspaceStatusCmd.Flags().IntVar(&workspaceStatusLimit, "limit", 15, "Maximum team workspaces to show")
 	workspaceStatusCmd.Flags().BoolVar(&workspaceStatusAll, "all", false, "Show all local team memberships in addition to the selected team status")
 	workspaceAddWorktreeCmd.Flags().StringVar(&workspaceAddAlias, "alias", "", "Override the default alias")
+	workspaceConnectCmd.Flags().StringVar(&serviceInitServiceURL, "service", "", "Service URL to connect to")
+	workspaceConnectCmd.Flags().StringVar(&serviceInitTeamID, "team", "", "Canonical AWID team id to activate before connecting")
+	workspaceConnectCmd.Flags().StringVar(&serviceInitRole, "role", "", "Optional role name for this workspace")
 
 	workspaceCmd.AddCommand(workspaceStatusCmd)
+	workspaceCmd.AddCommand(workspaceConnectCmd)
 	workspaceCmd.AddCommand(workspaceAddWorktreeCmd)
 	workspaceCmd.AddCommand(workspaceMigrateMultiTeamCmd)
 	workspaceCmd.AddCommand(workspaceDeleteCmd)

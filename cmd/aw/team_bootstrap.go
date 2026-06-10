@@ -27,13 +27,17 @@ import (
 
 var agentsCmd = &cobra.Command{
 	Use:   "agents",
-	Short: "Manage repo-local agent layouts and provisioning",
-	Long: `Manage repo-local agent layouts and provisioning.
+	Short: "Obsolete compatibility for repo-local agent layouts and provisioning",
+	Long: `Obsolete compatibility for repo-local agent layouts and provisioning.
 
-The agents command family manages the project-local agents/ convention:
-shared layout, agent homes, worktree-bound agents, and per-agent workspace
-provisioning. It does not manage AWID team authority in general; use aw id team
-for membership and team-controller operations.
+The agents command family manages the bootstrap-era project-local agents/
+convention: shared layout, agent homes, worktree-bound agents, and per-agent
+workspace provisioning. It is kept for existing users and scripts, but it is no
+longer the product center for new setup flows.
+
+For new teams, prefer explicit team/identity/workspace primitives plus skills
+and resource packs. In particular, use invite/join/connect primitives for
+membership and normal git/filesystem operations for worktrees/resources.
 
 Run aw agents commands from the customer project repo root unless a subcommand
 explicitly says otherwise. The repo root itself is not an aw identity; generated
@@ -42,8 +46,14 @@ agent homes live under agents/home/<responsibility>.`,
 
 var teamBootstrapCmd = &cobra.Command{
 	Use:   "bootstrap <template>",
-	Short: "Bootstrap repo-local agents from a template repository",
-	Long: `Bootstrap repo-local agents from a template repository.
+	Short: "Obsolete compatibility: bootstrap repo-local agents from a template repository",
+	Long: `Obsolete compatibility: bootstrap repo-local agents from a template repository.
+
+This command composes template, filesystem, team, identity, role, instruction,
+and optional git-worktree mutations. It is preserved for existing bootstrap-era
+layouts, but new setup flows should prefer explicit primitives and resource
+packs.
+
 
 The template repository is convention-first:
 
@@ -77,7 +87,7 @@ generated display names before provisioning.`,
 
 var agentsPlanCmd = &cobra.Command{
 	Use:   "plan",
-	Short: "Plan repo-local agent names and paths",
+	Short: "Compatibility: plan bootstrap-era repo-local agent names and paths",
 	Long: `Plan repo-local agent names and paths.
 
 For BYOT planning with --namespace/--team, aw agents plan contacts the AWID
@@ -88,28 +98,28 @@ registry to fail closed on existing team aliases and namespace addresses.`,
 
 var agentsProvisionCmd = &cobra.Command{
 	Use:   "provision",
-	Short: "Provision identities for an existing agents layout",
+	Short: "Obsolete compatibility: provision identities for an existing agents layout",
 	Args:  cobra.NoArgs,
 	RunE:  runAgentsProvision,
 }
 
 var agentsAddCmd = &cobra.Command{
 	Use:   "add <responsibility>",
-	Short: "Add a responsibility to the agents layout",
+	Short: "Obsolete compatibility: add a responsibility to the agents layout",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runAgentsAdd,
 }
 
 var agentsAddWorktreeCmd = &cobra.Command{
 	Use:   "add-worktree [role]",
-	Short: "Create a repo-local git worktree and initialize a new local agent in it",
+	Short: "Obsolete compatibility: create a repo-local git worktree agent",
 	Args:  cobra.RangeArgs(0, 1),
 	RunE:  runAgentsAddWorktree,
 }
 
 var agentsRemoveCmd = &cobra.Command{
 	Use:   "remove <responsibility>",
-	Short: "Remove or deprovision an agent responsibility",
+	Short: "Compatibility: remove or deprovision a bootstrap-era agent responsibility",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runAgentsRemove,
 }
@@ -261,6 +271,18 @@ type teamBootstrapLayout struct {
 	WorkRepoURL      string
 }
 
+type inRepoBootstrapRollbackState struct {
+	Gitignore        *gitignoreRollbackSnapshot
+	CreatedBranches  map[string]string
+	AddedWorktreeDir map[string]string
+}
+
+type gitignoreRollbackSnapshot struct {
+	Path    string
+	Existed bool
+	Data    []byte
+}
+
 type agentsProvisionOutput struct {
 	DryRun         bool                     `json:"dry_run"`
 	AgentsDir      string                   `json:"agents_dir"`
@@ -350,7 +372,7 @@ func init() {
 	teamBootstrapCmd.Flags().StringVar(&teamBootstrapWorkRepoURL, "work-repo-url", "", "Legacy mode: git URL or local repo path to clone into <template-dir>/worktrees/<derived-name> (mutually exclusive with --work-directory)")
 	teamBootstrapCmd.Flags().StringVar(&teamBootstrapWorkRepo, "work-repo", "", "Deprecated alias for --work-directory (kept for one release cycle)")
 	_ = teamBootstrapCmd.Flags().MarkHidden("work-repo")
-	teamBootstrapCmd.Flags().StringVar(&teamBootstrapTemplateCacheDir, "template-cache-dir", "", "Directory where remote templates are cloned (advanced; in-repo mode defaults to a temporary checkout)")
+	teamBootstrapCmd.Flags().StringVar(&teamBootstrapTemplateCacheDir, "template-cache-dir", "", "Directory where remote templates are cloned (compatibility override; in-repo mode defaults to a temporary checkout)")
 	teamBootstrapCmd.Flags().BoolVar(&teamBootstrapRefreshTemplate, "refresh-template", false, "Re-clone the template into the destination directory before using it")
 	teamBootstrapCmd.Flags().BoolVar(&teamBootstrapForkTemplate, "fork", false, "Fork the template repository with gh and clone the fork into the destination directory")
 	teamBootstrapCmd.Flags().StringVar(&teamBootstrapUsername, "username", "", "Hosted onboarding username to create/use (prompts when omitted and onboarding is used)")
@@ -395,7 +417,7 @@ func init() {
 		agentsRemoveCmd,
 	)
 	rootCmd.AddCommand(agentsCmd)
-	agentsCmd.GroupID = groupWorkspace
+	agentsCmd.GroupID = groupObsolete
 	bindTeamSelector(agentsCmd)
 }
 
@@ -516,6 +538,7 @@ func runTeamBootstrap(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	rollbackState := &inRepoBootstrapRollbackState{}
 	if layout.Mode == teamBootstrapLayoutLegacy && workRepoURL != "" {
 		if err := ensureTeamBootstrapWorktreesGitIgnored(resolved.TemplateDir); err != nil {
 			return err
@@ -527,13 +550,16 @@ func runTeamBootstrap(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		if err := prepareInRepoBootstrapAgentsDir(layout, resolved.TemplateDir, plans); err != nil {
-			return err
+			return wrapInRepoBootstrapFailureWithRollback(err, layout, plans, rollbackState)
+		}
+		if err := rollbackState.captureGitignore(layout); err != nil {
+			return wrapInRepoBootstrapFailureWithRollback(err, layout, plans, rollbackState)
 		}
 		if err := ensureInRepoBootstrapGitignore(layout); err != nil {
-			return err
+			return wrapInRepoBootstrapFailureWithRollback(err, layout, plans, rollbackState)
 		}
-		if err := createInRepoBootstrapWorktrees(layout, plans); err != nil {
-			return err
+		if err := createInRepoBootstrapWorktrees(layout, plans, rollbackState); err != nil {
+			return wrapInRepoBootstrapFailureWithRollback(err, layout, plans, rollbackState)
 		}
 	}
 
@@ -543,7 +569,7 @@ func runTeamBootstrap(cmd *cobra.Command, args []string) error {
 			planWorkDirectory = plan.WorkDir
 		}
 		if err := materializeTeamBootstrapAgent(resolved.TemplateDir, plan, planWorkDirectory); err != nil {
-			return err
+			return wrapInRepoBootstrapFailureWithRollback(err, layout, plans, rollbackState)
 		}
 	}
 
@@ -555,7 +581,7 @@ func runTeamBootstrap(cmd *cobra.Command, args []string) error {
 
 	rolesInstalled, instructionsInstalled, err := bootstrapTeamAndInitAgentDirs(cmd, source, spec, resolved.TemplateDir, plans)
 	if err != nil {
-		return err
+		return wrapInRepoBootstrapFailureWithRollback(err, layout, plans, rollbackState)
 	}
 	out.RolesInstalled = rolesInstalled
 	out.InstructionsInstalled = instructionsInstalled
@@ -2897,7 +2923,7 @@ func applyInRepoBootstrapWorkBindings(layout teamBootstrapLayout, plans []teamBo
 	return nil
 }
 
-func createInRepoBootstrapWorktrees(layout teamBootstrapLayout, plans []teamBootstrapAgentPlan) error {
+func createInRepoBootstrapWorktrees(layout teamBootstrapLayout, plans []teamBootstrapAgentPlan, rollbackState *inRepoBootstrapRollbackState) error {
 	if layout.Mode != teamBootstrapLayoutInRepo {
 		return nil
 	}
@@ -2934,8 +2960,10 @@ func createInRepoBootstrapWorktrees(layout teamBootstrapLayout, plans []teamBoot
 		if err != nil {
 			return fmt.Errorf("failed to create git worktree for %s: %w", plan.Responsibility, err)
 		}
+		recordInRepoBootstrapWorktreeForRollback(rollbackState, plan.WorkDir, branchName, branchCreated)
 		if err := ensureAwebRuntimeGitIgnored(plan.WorkDir); err != nil {
 			cleanupWorkspaceWorktree(layout.CustomerRepoRoot, plan.WorkDir, branchName, branchCreated)
+			forgetInRepoBootstrapWorktreeRollback(rollbackState, plan.WorkDir, branchName)
 			return err
 		}
 	}
@@ -4179,6 +4207,129 @@ func installTeamBootstrapInstructionsWithClient(client *aweb.Client, spec *teamB
 		return false, err
 	}
 	return true, nil
+}
+
+func (s *inRepoBootstrapRollbackState) captureGitignore(layout teamBootstrapLayout) error {
+	if s == nil || layout.Mode != teamBootstrapLayoutInRepo {
+		return nil
+	}
+	path := filepath.Join(layout.CustomerRepoRoot, ".gitignore")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.Gitignore = &gitignoreRollbackSnapshot{Path: path, Existed: false}
+			return nil
+		}
+		return fmt.Errorf("snapshot .gitignore before bootstrap mutation: %w", err)
+	}
+	s.Gitignore = &gitignoreRollbackSnapshot{Path: path, Existed: true, Data: append([]byte(nil), data...)}
+	return nil
+}
+
+func recordInRepoBootstrapWorktreeForRollback(state *inRepoBootstrapRollbackState, worktreePath, branchName string, branchCreated bool) {
+	if state == nil {
+		return
+	}
+	if state.AddedWorktreeDir == nil {
+		state.AddedWorktreeDir = map[string]string{}
+	}
+	state.AddedWorktreeDir[worktreePath] = branchName
+	if branchCreated {
+		if state.CreatedBranches == nil {
+			state.CreatedBranches = map[string]string{}
+		}
+		state.CreatedBranches[branchName] = worktreePath
+	}
+}
+
+func forgetInRepoBootstrapWorktreeRollback(state *inRepoBootstrapRollbackState, worktreePath, branchName string) {
+	if state == nil {
+		return
+	}
+	delete(state.AddedWorktreeDir, worktreePath)
+	delete(state.CreatedBranches, branchName)
+}
+
+func wrapInRepoBootstrapFailureWithRollback(original error, layout teamBootstrapLayout, plans []teamBootstrapAgentPlan, rollbackState *inRepoBootstrapRollbackState) error {
+	if layout.Mode != teamBootstrapLayoutInRepo || strings.TrimSpace(layout.AgentsRoot) == "" {
+		return original
+	}
+	rolledBack, rollbackErr := rollbackInRepoBootstrapLayoutIfIdentityFree(layout, rollbackState)
+	if rollbackErr != nil {
+		return fmt.Errorf("%w (bootstrap failed and rollback of %s also failed: %v)", original, layout.AgentsRoot, rollbackErr)
+	}
+	if rolledBack {
+		return fmt.Errorf("%w (rolled back newly-created agents layout, generated worktrees, generated branches, and .gitignore changes for %s; retry is safe)", original, layout.AgentsRoot)
+	}
+	return fmt.Errorf("%w (left agents layout at %s in place because it contains .aw identity state; do not delete private keys; retry with `aw agents provision` or inspect the generated homes)", original, layout.AgentsRoot)
+}
+
+func rollbackInRepoBootstrapLayoutIfIdentityFree(layout teamBootstrapLayout, rollbackState *inRepoBootstrapRollbackState) (bool, error) {
+	if hasAwebIdentityState(layout.AgentsRoot) {
+		return false, nil
+	}
+	if err := rollbackInRepoBootstrapWorktrees(layout, rollbackState); err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(layout.AgentsRoot); os.IsNotExist(err) {
+		if err := restoreInRepoBootstrapGitignore(rollbackState); err != nil {
+			return false, err
+		}
+		return true, nil
+	} else if err != nil {
+		return false, err
+	}
+	if err := os.RemoveAll(layout.AgentsRoot); err != nil {
+		return false, err
+	}
+	if err := restoreInRepoBootstrapGitignore(rollbackState); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func rollbackInRepoBootstrapWorktrees(layout teamBootstrapLayout, rollbackState *inRepoBootstrapRollbackState) error {
+	if rollbackState == nil {
+		return nil
+	}
+	for worktreePath, branchName := range rollbackState.AddedWorktreeDir {
+		if _, err := os.Stat(worktreePath); err == nil {
+			deleteBranch := rollbackState != nil && rollbackState.CreatedBranches != nil && rollbackState.CreatedBranches[branchName] == worktreePath
+			cleanupWorkspaceWorktree(layout.CustomerRepoRoot, worktreePath, branchName, deleteBranch)
+		} else if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func restoreInRepoBootstrapGitignore(rollbackState *inRepoBootstrapRollbackState) error {
+	if rollbackState == nil || rollbackState.Gitignore == nil {
+		return nil
+	}
+	snapshot := rollbackState.Gitignore
+	if snapshot.Existed {
+		return os.WriteFile(snapshot.Path, snapshot.Data, 0o644)
+	}
+	if err := os.Remove(snapshot.Path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func hasAwebIdentityState(root string) bool {
+	found := false
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || found {
+			return nil
+		}
+		if d.IsDir() && d.Name() == ".aw" {
+			found = true
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return found
 }
 
 func materializeTeamBootstrapAgent(templateDir string, plan teamBootstrapAgentPlan, workDirectory string) error {

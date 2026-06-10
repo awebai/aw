@@ -262,13 +262,32 @@ func initGitRepo(t *testing.T, dir string) {
 	run("commit", "-m", "init")
 }
 
-func TestAgentsCommandSurfaceReplacesTeamBootstrap(t *testing.T) {
+func gitBranchExistsForTest(t *testing.T, repoDir, branch string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repoDir, "branch", "--list", branch)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --list %s: %v\n%s", branch, err, out)
+	}
+	return strings.TrimSpace(string(out)) != ""
+}
+
+func TestAgentsCommandSurfaceKeepsLegacyAgentsAlongsideHumanTeamVerbs(t *testing.T) {
 	agents := findRootSubcommand("agents")
 	if agents == nil {
 		t.Fatal("root command missing aw agents")
 	}
-	if findRootSubcommand("team") != nil {
-		t.Fatal("root command should not expose aw team")
+	if agents.GroupID != groupObsolete {
+		t.Fatalf("aw agents GroupID=%q, want %q", agents.GroupID, groupObsolete)
+	}
+	team := findRootSubcommand("team")
+	if team == nil {
+		t.Fatal("root command missing aw team")
+	}
+	for _, name := range []string{"create", "invite", "join", "list", "switch", "leave", "remove-agent"} {
+		if findSubcommand(team, name) == nil {
+			t.Fatalf("aw team missing %s subcommand", name)
+		}
 	}
 	for _, tt := range []struct {
 		name string
@@ -2399,6 +2418,79 @@ func TestTeamBootstrapInRepoMissingSourceFailsBeforeMutation(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repoDir, ".gitignore")); !os.IsNotExist(err) {
 		t.Fatalf("missing-source run created .gitignore or unexpected stat error: %v", err)
 	}
+}
+
+func TestTeamBootstrapHostedNonInteractiveFailureRollsBackAgentsLayout(t *testing.T) {
+	resetTeamBootstrapGlobals(t)
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+	templateDir := writeInRepoTeamBootstrapFixture(t)
+	originalGitignore := "# existing project ignore\nnode_modules/\n"
+	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte(originalGitignore), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repoDir)
+	teamBootstrapUsername = "maria"
+
+	oldWizard := guidedOnboardingWizard
+	t.Cleanup(func() { guidedOnboardingWizard = oldWizard })
+	guidedOnboardingWizard = func(req guidedOnboardingRequest) (*guidedOnboardingResult, error) {
+		return nil, fmt.Errorf("hosted setup unavailable")
+	}
+
+	cmd := testTeamBootstrapCommand(t)
+	cmd.SetIn(strings.NewReader(""))
+	err := runTeamBootstrap(cmd, []string{templateDir})
+	if err == nil {
+		t.Fatal("expected hosted setup failure")
+	}
+	if !strings.Contains(err.Error(), "rolled back newly-created agents layout") || !strings.Contains(err.Error(), "retry is safe") {
+		t.Fatalf("error=%q, want rollback guidance", err)
+	}
+	assertPathMissing(t, filepath.Join(repoDir, "agents"))
+	gitignoreAfter, readErr := os.ReadFile(filepath.Join(repoDir, ".gitignore"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(gitignoreAfter) != originalGitignore {
+		t.Fatalf(".gitignore was not restored after rollback:\n%s", string(gitignoreAfter))
+	}
+	if gitBranchExistsForTest(t, repoDir, "implementation") {
+		t.Fatal("generated implementation branch remained after rollback")
+	}
+}
+
+func TestTeamBootstrapRollbackPreservesAgentsLayoutWithIdentityState(t *testing.T) {
+	resetTeamBootstrapGlobals(t)
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+	templateDir := writeInRepoTeamBootstrapFixture(t)
+	t.Chdir(repoDir)
+	teamBootstrapUsername = "maria"
+
+	oldWizard := guidedOnboardingWizard
+	t.Cleanup(func() { guidedOnboardingWizard = oldWizard })
+	guidedOnboardingWizard = func(req guidedOnboardingRequest) (*guidedOnboardingResult, error) {
+		awDir := filepath.Join(req.WorkingDir, ".aw")
+		if err := os.MkdirAll(awDir, 0o700); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(awDir, "signing.key"), []byte("do-not-delete"), 0o600); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("connect failed after identity write")
+	}
+
+	cmd := testTeamBootstrapCommand(t)
+	cmd.SetIn(strings.NewReader(""))
+	err := runTeamBootstrap(cmd, []string{templateDir})
+	if err == nil {
+		t.Fatal("expected hosted setup failure")
+	}
+	if !strings.Contains(err.Error(), "contains .aw identity state") || !strings.Contains(err.Error(), "do not delete private keys") {
+		t.Fatalf("error=%q, want preserve guidance", err)
+	}
+	assertPathExists(t, filepath.Join(repoDir, "agents", "home", "coordinator", ".aw", "signing.key"))
 }
 
 func TestTeamBootstrapLayoutRejectsMixedAgentsDirAndLegacyWorkFlags(t *testing.T) {

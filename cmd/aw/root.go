@@ -18,6 +18,7 @@ const (
 	groupIdentity     = "identity"
 	groupNetwork      = "network"
 	groupCoordination = "coordination"
+	groupObsolete     = "obsolete"
 	groupUtility      = "utility"
 )
 
@@ -60,11 +61,13 @@ func init() {
 		&cobra.Group{ID: groupIdentity, Title: "Identity"},
 		&cobra.Group{ID: groupNetwork, Title: "Messaging & Network"},
 		&cobra.Group{ID: groupCoordination, Title: "Coordination & Runtime"},
+		&cobra.Group{ID: groupObsolete, Title: "Obsolete / Legacy Compatibility"},
 		&cobra.Group{ID: groupUtility, Title: "Utility"},
 	)
 	initCmd.GroupID = groupWorkspace
 	resetCmd.GroupID = groupWorkspace
 	workspaceCmd.GroupID = groupWorkspace
+	checkCmd.GroupID = groupWorkspace
 
 	introspectCmd.GroupID = groupIdentity
 	identityCmd.GroupID = groupIdentity
@@ -103,6 +106,7 @@ func init() {
 	bindTeamSelector(workCmd)
 	bindTeamSelector(taskCmd)
 	bindTeamSelector(workspaceCmd)
+	bindTeamSelector(checkCmd)
 	bindTeamSelector(runCmd)
 	bindTeamSelector(lockCmd)
 	bindTeamSelector(notifyCmd)
