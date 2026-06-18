@@ -5,6 +5,22 @@ These vectors define byte-level contracts shared by independent aweb consumers.
 Existing AWID/trust vectors cover signing, stable IDs, rotation announcements,
 and team-auth envelopes.
 
+## `app-emit-credential-v1.json`
+
+The vector's `aud` (`core.aweb.ai`) and `path` (`/v1/events/app`) are
+byte-parity fixture values for the signing algorithm, not mandated runtime
+endpoints. At runtime, the signer uses the actual external audience as a bare
+origin (for example, `https://app.aweb.ai`) and the root-path-aware
+`raw_request_target` that the verifier reconstructs.
+
+For app-emit credentials, standalone deployments sign `/v1/events/app`. Hosted
+deployments mounted at `root_path=/api` sign `/api/v1/events/app` because the
+mount prefix is part of the reconstructed raw request target. Query strings, if
+present, are included exactly as reconstructed in `raw_request_target`.
+
+The vector freezes the canonical JSON, `body_sha256`, and signature
+construction. `aud` and `path` are runtime request bindings.
+
 ## `app-manifest-interpretation-v1.json`
 
 Manifest interpretation vectors are the anti-drift contract for app manifests.
