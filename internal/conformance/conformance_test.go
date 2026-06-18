@@ -7,14 +7,17 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	awid "github.com/awebai/aw/awid"
+	"github.com/awebai/aw/internal/appmanifest"
 	"github.com/gowebpki/jcs"
 )
 
@@ -192,6 +195,398 @@ func TestTeamAuthEnvelopeV2Vectors(t *testing.T) {
 				t.Fatalf("body_sha256 got %s want %s", got, hex.EncodeToString(sum[:]))
 			}
 		})
+	}
+}
+
+// --- app-emit-credential-v1 ---
+
+type appEmitCredentialVectors struct {
+	Schema              string                    `json:"schema"`
+	ReplayWindowSeconds int                       `json:"replay_window_seconds"`
+	Cases               []appEmitCredentialVector `json:"cases"`
+	NegativeCases       []struct {
+		Name string `json:"name"`
+	} `json:"negative_cases"`
+}
+
+type appEmitCredentialVector struct {
+	Name                string         `json:"name"`
+	SeedHex             string         `json:"seed_hex"`
+	DIDKey              string         `json:"did_key"`
+	Body                string         `json:"body"`
+	Payload             map[string]any `json:"payload"`
+	CanonicalPayload    string         `json:"canonical_payload"`
+	SignedPayloadB64URL string         `json:"signed_payload_b64url"`
+	SignatureB64        string         `json:"signature_b64"`
+}
+
+func TestAppEmitCredentialVectors(t *testing.T) {
+	data, err := vectorsFS.ReadFile("vectors/app-emit-credential-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors appEmitCredentialVectors
+	if err := json.Unmarshal(data, &vectors); err != nil {
+		t.Fatal(err)
+	}
+	if vectors.Schema != "aweb.app-emit-credential.v1" {
+		t.Fatalf("schema=%q", vectors.Schema)
+	}
+	if vectors.ReplayWindowSeconds > 300 {
+		t.Fatalf("replay_window_seconds=%d want <= 300", vectors.ReplayWindowSeconds)
+	}
+	if len(vectors.NegativeCases) < 2 {
+		t.Fatalf("expected stale timestamp and tampered body negative cases")
+	}
+
+	for _, v := range vectors.Cases {
+		t.Run(v.Name, func(t *testing.T) {
+			seed, err := hex.DecodeString(v.SeedHex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := ed25519.NewKeyFromSeed(seed)
+			if got := awid.ComputeDIDKey(key.Public().(ed25519.PublicKey)); got != v.DIDKey {
+				t.Fatalf("did:key got %s want %s", got, v.DIDKey)
+			}
+			if v.Payload["auth"] != "app-event" || v.Payload["v"] != float64(1) {
+				t.Fatalf("payload must be app-event v1: %#v", v.Payload)
+			}
+			target, err := url.Parse(fmt.Sprintf("%s%s", v.Payload["aud"], v.Payload["path"]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential, err := awid.SignAppEmitCredential(
+				key,
+				fmt.Sprint(v.Payload["method"]),
+				target,
+				fmt.Sprint(v.Payload["team_id"]),
+				fmt.Sprint(v.Payload["app_id"]),
+				fmt.Sprint(v.Payload["kid"]),
+				[]byte(v.Body),
+				fmt.Sprint(v.Payload["timestamp"]),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if credential.DIDKey != v.DIDKey {
+				t.Fatalf("SignAppEmitCredential did:key got %s want %s", credential.DIDKey, v.DIDKey)
+			}
+			if credential.CanonicalPayload != v.CanonicalPayload {
+				t.Fatalf("canonical:\n got:  %s\n want: %s", credential.CanonicalPayload, v.CanonicalPayload)
+			}
+			if credential.SignedPayloadB64URL != v.SignedPayloadB64URL {
+				t.Fatalf("signed payload b64 got %s want %s", credential.SignedPayloadB64URL, v.SignedPayloadB64URL)
+			}
+			if credential.SignatureB64 != v.SignatureB64 {
+				t.Fatalf("signature got %s want %s", credential.SignatureB64, v.SignatureB64)
+			}
+			sum := sha256.Sum256([]byte(v.Body))
+			if got := strings.TrimSpace(v.Payload["body_sha256"].(string)); got != hex.EncodeToString(sum[:]) {
+				t.Fatalf("body_sha256 got %s want %s", got, hex.EncodeToString(sum[:]))
+			}
+			if credential.Headers.Get("Authorization") != fmt.Sprintf("AWEB-App DIDKey %s %s", v.DIDKey, v.SignatureB64) {
+				t.Fatalf("authorization header mismatch: %q", credential.Headers.Get("Authorization"))
+			}
+			if credential.Headers.Get("X-AWEB-App-ID") != fmt.Sprint(v.Payload["app_id"]) || credential.Headers.Get("X-AWEB-App-Key-ID") != fmt.Sprint(v.Payload["kid"]) || credential.Headers.Get("X-AWEB-Team-ID") != fmt.Sprint(v.Payload["team_id"]) {
+				t.Fatalf("app emit headers mismatch: %#v", credential.Headers)
+			}
+			if credential.Headers.Get("X-AWEB-Timestamp") != fmt.Sprint(v.Payload["timestamp"]) || credential.Headers.Get("X-AWEB-Signed-Payload") != v.SignedPayloadB64URL {
+				t.Fatalf("signed payload headers mismatch: %#v", credential.Headers)
+			}
+		})
+	}
+}
+
+// --- app-manifest-interpretation-v1 ---
+
+type appManifestInterpretationVectors struct {
+	Schema        string                            `json:"schema"`
+	Description   string                            `json:"description"`
+	ReservedNames []string                          `json:"reserved_names"`
+	Cases         []appManifestInterpretationVector `json:"cases"`
+	NegativeCases []appManifestNegativeVector       `json:"negative_cases"`
+}
+
+type appManifestInterpretationVector struct {
+	Name     string                  `json:"name"`
+	Manifest appmanifest.Manifest    `json:"manifest"`
+	Verb     string                  `json:"verb"`
+	Args     map[string]any          `json:"args"`
+	RawBody  string                  `json:"raw_body"`
+	Expected appManifestExpectedSpec `json:"expected"`
+}
+
+type appManifestExpectedSpec struct {
+	Method        string                           `json:"method"`
+	URL           string                           `json:"url"`
+	PathQuery     string                           `json:"path_query"`
+	Headers       map[string]string                `json:"headers"`
+	Body          string                           `json:"body"`
+	BodySHA256    string                           `json:"body_sha256"`
+	Mutation      bool                             `json:"mutation"`
+	SignedPayload appManifestExpectedSignedPayload `json:"signed_payload"`
+}
+
+type appManifestExpectedSignedPayload struct {
+	TeamID              string `json:"team_id"`
+	Timestamp           string `json:"timestamp"`
+	CanonicalPayload    string `json:"canonical_payload"`
+	SignedPayloadB64URL string `json:"signed_payload_b64url"`
+}
+
+type appManifestNegativeVector struct {
+	Name                  string               `json:"name"`
+	Description           string               `json:"description"`
+	Manifest              appmanifest.Manifest `json:"manifest"`
+	Verb                  string               `json:"verb"`
+	Args                  map[string]any       `json:"args"`
+	ExpectedErrorContains string               `json:"expected_error_contains"`
+}
+
+func TestAppManifestInterpretationVectors(t *testing.T) {
+	data, err := vectorsFS.ReadFile("vectors/app-manifest-interpretation-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors appManifestInterpretationVectors
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&vectors); err != nil {
+		t.Fatal(err)
+	}
+	if vectors.Schema != "aweb.app-manifest.interpretation.v1" {
+		t.Fatalf("schema=%q", vectors.Schema)
+	}
+	reserved := map[string]bool{}
+	for _, name := range vectors.ReservedNames {
+		reserved[name] = true
+	}
+
+	for _, v := range vectors.Cases {
+		t.Run(v.Name, func(t *testing.T) {
+			got, err := appmanifest.Interpret(appmanifest.InterpretRequest{
+				Manifest:      v.Manifest,
+				Verb:          v.Verb,
+				Args:          v.Args,
+				RawBody:       []byte(v.RawBody),
+				ReservedNames: reserved,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Method != v.Expected.Method {
+				t.Fatalf("method got %q want %q", got.Method, v.Expected.Method)
+			}
+			if got.URL != v.Expected.URL {
+				t.Fatalf("url got %q want %q", got.URL, v.Expected.URL)
+			}
+			if got.PathQuery != v.Expected.PathQuery {
+				t.Fatalf("path_query got %q want %q", got.PathQuery, v.Expected.PathQuery)
+			}
+			if appmanifest.SortedHeaderString(got.Headers) != appmanifest.SortedHeaderString(v.Expected.Headers) {
+				t.Fatalf("headers got %#v want %#v", got.Headers, v.Expected.Headers)
+			}
+			if string(got.Body) != v.Expected.Body {
+				t.Fatalf("body got %q want %q", string(got.Body), v.Expected.Body)
+			}
+			if got.BodySHA256 != v.Expected.BodySHA256 {
+				t.Fatalf("body_sha256 got %s want %s", got.BodySHA256, v.Expected.BodySHA256)
+			}
+			if got.Mutation != v.Expected.Mutation {
+				t.Fatalf("mutation got %v want %v", got.Mutation, v.Expected.Mutation)
+			}
+			if v.Expected.SignedPayload.CanonicalPayload != "" {
+				payload := map[string]any{
+					"aud":         mustURLOrigin(t, got.URL),
+					"method":      got.Method,
+					"path":        got.PathQuery,
+					"team_id":     v.Expected.SignedPayload.TeamID,
+					"body_sha256": got.BodySHA256,
+					"timestamp":   v.Expected.SignedPayload.Timestamp,
+					"v":           2,
+				}
+				canonical, err := awid.CanonicalJSONValue(payload)
+				if err != nil {
+					t.Fatal(err)
+				}
+				canonicalBytes := []byte(canonical)
+				if canonical != v.Expected.SignedPayload.CanonicalPayload {
+					t.Fatalf("signed canonical payload got %s want %s", canonical, v.Expected.SignedPayload.CanonicalPayload)
+				}
+				b64 := base64.RawURLEncoding.EncodeToString(canonicalBytes)
+				if b64 != v.Expected.SignedPayload.SignedPayloadB64URL {
+					t.Fatalf("signed payload b64 got %s want %s", b64, v.Expected.SignedPayload.SignedPayloadB64URL)
+				}
+			}
+		})
+	}
+
+	for _, v := range vectors.NegativeCases {
+		t.Run(v.Name, func(t *testing.T) {
+			_, err := appmanifest.Interpret(appmanifest.InterpretRequest{
+				Manifest:      v.Manifest,
+				Verb:          v.Verb,
+				Args:          v.Args,
+				ReservedNames: reserved,
+			})
+			if err == nil {
+				t.Fatalf("expected error containing %q", v.ExpectedErrorContains)
+			}
+			if !strings.Contains(err.Error(), v.ExpectedErrorContains) {
+				t.Fatalf("error %q does not contain %q", err.Error(), v.ExpectedErrorContains)
+			}
+		})
+	}
+}
+
+func mustURLOrigin(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// --- digest-pinned vendored app manifest fixtures ---
+
+type appManifestFixtureIndex struct {
+	Schema      string               `json:"schema"`
+	Description string               `json:"description"`
+	Fixtures    []appManifestFixture `json:"fixtures"`
+}
+
+type appManifestFixture struct {
+	Name                string                            `json:"name"`
+	ManifestPath        string                            `json:"manifest_path"`
+	SHA256              string                            `json:"sha256"`
+	ReservedNames       []string                          `json:"reserved_names"`
+	InterpretationCases []appManifestInterpretationVector `json:"interpretation_cases"`
+}
+
+func TestVendoredAppManifestFixtures(t *testing.T) {
+	root := monorepoRootForTest(t)
+	base := filepath.Join(root, "test-vectors", "app-manifests")
+	data, err := os.ReadFile(filepath.Join(base, "app-manifest-fixtures-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var index appManifestFixtureIndex
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&index); err != nil {
+		t.Fatal(err)
+	}
+	if index.Schema != "aweb.app-manifest.fixtures.v1" {
+		t.Fatalf("schema=%q", index.Schema)
+	}
+	if len(index.Fixtures) == 0 {
+		t.Fatal("expected at least one vendored manifest fixture")
+	}
+
+	for _, fixture := range index.Fixtures {
+		t.Run(fixture.Name, func(t *testing.T) {
+			manifestPath := filepath.Clean(fixture.ManifestPath)
+			if filepath.IsAbs(manifestPath) || strings.HasPrefix(manifestPath, ".."+string(filepath.Separator)) || manifestPath == ".." {
+				t.Fatalf("manifest_path must stay within fixture dir: %q", fixture.ManifestPath)
+			}
+			raw, err := os.ReadFile(filepath.Join(base, manifestPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sum := sha256.Sum256(raw)
+			if got := hex.EncodeToString(sum[:]); got != fixture.SHA256 {
+				t.Fatalf("vendored fixture sha256 got %s want %s", got, fixture.SHA256)
+			}
+			if len(raw) == 0 || !utf8.Valid(raw) || strings.Contains(string(raw), "\r") {
+				t.Fatalf("vendored fixture must be non-empty UTF-8 canonical raw bytes without CR")
+			}
+			var manifest appmanifest.Manifest
+			manifestDecoder := json.NewDecoder(strings.NewReader(string(raw)))
+			manifestDecoder.UseNumber()
+			if err := manifestDecoder.Decode(&manifest); err != nil {
+				t.Fatal(err)
+			}
+			reserved := map[string]bool{}
+			for _, name := range fixture.ReservedNames {
+				reserved[name] = true
+			}
+			if err := appmanifest.Validate(manifest, reserved); err != nil {
+				t.Fatalf("vendored manifest validation failed: %v", err)
+			}
+			for _, c := range fixture.InterpretationCases {
+				t.Run(c.Name, func(t *testing.T) {
+					got, err := appmanifest.Interpret(appmanifest.InterpretRequest{
+						Manifest:      manifest,
+						Verb:          c.Verb,
+						Args:          c.Args,
+						RawBody:       []byte(c.RawBody),
+						ReservedNames: reserved,
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					assertAppManifestExpectedSpec(t, got, c.Expected)
+				})
+			}
+		})
+	}
+}
+
+func monorepoRootForTest(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "..", ".."))
+}
+
+func assertAppManifestExpectedSpec(t *testing.T, got *appmanifest.InterpretedRequest, expected appManifestExpectedSpec) {
+	t.Helper()
+	if got.Method != expected.Method {
+		t.Fatalf("method got %q want %q", got.Method, expected.Method)
+	}
+	if got.URL != expected.URL {
+		t.Fatalf("url got %q want %q", got.URL, expected.URL)
+	}
+	if got.PathQuery != expected.PathQuery {
+		t.Fatalf("path_query got %q want %q", got.PathQuery, expected.PathQuery)
+	}
+	if appmanifest.SortedHeaderString(got.Headers) != appmanifest.SortedHeaderString(expected.Headers) {
+		t.Fatalf("headers got %#v want %#v", got.Headers, expected.Headers)
+	}
+	if string(got.Body) != expected.Body {
+		t.Fatalf("body got %q want %q", string(got.Body), expected.Body)
+	}
+	if got.BodySHA256 != expected.BodySHA256 {
+		t.Fatalf("body_sha256 got %s want %s", got.BodySHA256, expected.BodySHA256)
+	}
+	if got.Mutation != expected.Mutation {
+		t.Fatalf("mutation got %v want %v", got.Mutation, expected.Mutation)
+	}
+	if expected.SignedPayload.CanonicalPayload != "" {
+		payload := map[string]any{
+			"aud":         mustURLOrigin(t, got.URL),
+			"method":      got.Method,
+			"path":        got.PathQuery,
+			"team_id":     expected.SignedPayload.TeamID,
+			"body_sha256": got.BodySHA256,
+			"timestamp":   expected.SignedPayload.Timestamp,
+			"v":           2,
+		}
+		canonical, err := awid.CanonicalJSONValue(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if canonical != expected.SignedPayload.CanonicalPayload {
+			t.Fatalf("signed canonical payload got %s want %s", canonical, expected.SignedPayload.CanonicalPayload)
+		}
+		b64 := base64.RawURLEncoding.EncodeToString([]byte(canonical))
+		if b64 != expected.SignedPayload.SignedPayloadB64URL {
+			t.Fatalf("signed payload b64 got %s want %s", b64, expected.SignedPayload.SignedPayloadB64URL)
+		}
 	}
 }
 

@@ -138,8 +138,58 @@ func runIDRequest(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	timestamp := time.Now().UTC().Format(time.RFC3339)
-	if idRequestTeamAuth {
+	result, err := executeSignedIDRequest(method, parsedURL, identity, bodyBytes, headers, signPayload, idRequestTeamAuth)
+	if err != nil {
+		return err
+	}
+	return printIDRequestExecutionResult(result, idRequestRaw)
+}
+
+type idRequestExecutionResult struct {
+	Status int
+	Header http.Header
+	Body   []byte
+}
+
+func executeSignedIDRequest(method string, parsedURL *url.URL, identity *localSigningIdentity, bodyBytes []byte, headers http.Header, signPayload map[string]any, teamAuth bool) (*idRequestExecutionResult, error) {
+	if err := signIDRequestHeaders(headers, method, parsedURL, identity, bodyBytes, signPayload, teamAuth, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header = headers.Clone()
+
+	client := &http.Client{
+		Timeout:   awid.APITimeout(),
+		Transport: awid.NewAPITransport(),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return &idRequestExecutionResult{Status: resp.StatusCode, Header: resp.Header.Clone(), Body: responseBody}, nil
+}
+
+func signIDRequestHeaders(headers http.Header, method string, parsedURL *url.URL, identity *localSigningIdentity, bodyBytes []byte, signPayload map[string]any, teamAuth bool, timestamp string) error {
+	if headers == nil {
+		return fmt.Errorf("headers are required")
+	}
+	if teamAuth {
 		teamPayload, cert, err := teamSignedRequestPayload(identity, parsedURL, method, bodyBytes, signPayload)
 		if err != nil {
 			return err
@@ -170,52 +220,30 @@ func runIDRequest(cmd *cobra.Command, args []string) error {
 	if len(bodyBytes) > 0 && strings.TrimSpace(headers.Get("Content-Type")) == "" {
 		headers.Set("Content-Type", "application/json")
 	}
+	return nil
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), bytes.NewReader(bodyBytes))
-	if err != nil {
-		return err
+func printIDRequestExecutionResult(result *idRequestExecutionResult, raw bool) error {
+	if result == nil {
+		return fmt.Errorf("missing response")
 	}
-	req.Header = headers.Clone()
-
-	client := &http.Client{
-		Timeout:   awid.APITimeout(),
-		Transport: awid.NewAPITransport(),
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-
-	if idRequestRaw {
-		if _, err := os.Stdout.Write(responseBody); err != nil {
+	if raw {
+		if _, err := os.Stdout.Write(result.Body); err != nil {
 			return err
 		}
-		if len(responseBody) > 0 && responseBody[len(responseBody)-1] != '\n' {
+		if len(result.Body) > 0 && result.Body[len(result.Body)-1] != '\n' {
 			fmt.Fprintln(os.Stdout)
 		}
-		fmt.Fprintf(os.Stderr, "HTTP %d\n", resp.StatusCode)
+		fmt.Fprintf(os.Stderr, "HTTP %d\n", result.Status)
 	} else {
 		printOutput(idRequestOutput{
-			Status:  resp.StatusCode,
-			Headers: flattenResponseHeaders(resp.Header),
-			Body:    decodeResponseBody(responseBody),
+			Status:  result.Status,
+			Headers: flattenResponseHeaders(result.Header),
+			Body:    decodeResponseBody(result.Body),
 		}, formatIDRequest)
 	}
-
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("request failed with status %d", resp.StatusCode)
+	if result.Status >= 400 {
+		return fmt.Errorf("request failed with status %d", result.Status)
 	}
 	return nil
 }

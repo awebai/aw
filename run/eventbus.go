@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -58,6 +59,11 @@ func classifyAgentEvent(evt awid.AgentEvent) (EventPriority, bool) {
 		return PriorityCommunication, true
 	case awid.AgentEventWorkAvailable, awid.AgentEventClaimUpdate, awid.AgentEventClaimRemoved:
 		return PriorityCoordination, true
+	case awid.AgentEventAppEvent:
+		if evt.DeliveryIntent == "wake" && strings.TrimSpace(evt.EventID) != "" {
+			return PriorityCommunication, true
+		}
+		return 0, false
 	default:
 		// connected, error — informational, not queued
 		return 0, false
@@ -353,6 +359,8 @@ func dedupeEventKey(evt awid.AgentEvent) string {
 		return string(evt.Type) + ":message:" + evt.MessageID
 	case evt.SignalID != "":
 		return string(evt.Type) + ":signal:" + evt.SignalID
+	case evt.EventID != "":
+		return string(evt.Type) + ":event:" + evt.EventID
 	default:
 		// Coordination events intentionally bypass dedupe for now. Their
 		// task_id/status combinations do not yet form a stable replay key,
