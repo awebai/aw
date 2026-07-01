@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/internal/appmanifest"
 	"github.com/spf13/cobra"
 )
@@ -31,6 +32,7 @@ var (
 	pluginInstallManifestVersion string
 	pluginInstallAppVersion      string
 	pluginInstallOrigin          string
+	pluginInstallDevOrigin       string
 )
 
 var pluginCmd = &cobra.Command{
@@ -118,6 +120,7 @@ func init() {
 	pluginInstallCmd.Flags().StringVar(&pluginInstallManifestVersion, "manifest-version", "", "Manifest version to record in plugin provenance")
 	pluginInstallCmd.Flags().StringVar(&pluginInstallAppVersion, "app-version", "", "App version to record in plugin provenance")
 	pluginInstallCmd.Flags().StringVar(&pluginInstallOrigin, "origin", "", "App origin to record in plugin provenance")
+	pluginInstallCmd.Flags().StringVar(&pluginInstallDevOrigin, "dev-origin", "", "Override the app origin to this base URL for a self-hosted or dev service; the request base URL becomes this, bypassing the manifest origin self-consistency check")
 
 	pluginCmd.GroupID = groupUtility
 	pluginCmd.AddCommand(pluginListCmd, pluginInstallCmd, pluginRemoveCmd, pluginUpdateCmd, pluginReservedNamesCmd)
@@ -148,7 +151,7 @@ func runPluginInstall(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if isManifestInstallSource(source) {
-		out, err := installManifestPlugin(source, dir)
+		out, err := installOrUpdateManifestPlugin(source, dir, false, strings.TrimSpace(pluginInstallDevOrigin))
 		if err != nil {
 			return err
 		}
@@ -252,7 +255,7 @@ func runPluginUpdate(cmd *cobra.Command, args []string) error {
 	if provenance == nil || strings.TrimSpace(provenance.ManifestURL) == "" {
 		return fmt.Errorf("plugin %q is missing manifest provenance", name)
 	}
-	out, err := installOrUpdateManifestPlugin(provenance.ManifestURL, dir, true)
+	out, err := installOrUpdateManifestPlugin(provenance.ManifestURL, dir, true, "")
 	if err != nil {
 		return err
 	}
@@ -424,10 +427,14 @@ func isManifestInstallSource(source string) bool {
 }
 
 func installManifestPlugin(source, dir string) (*pluginInstallOutput, error) {
-	return installOrUpdateManifestPlugin(source, dir, false)
+	return installOrUpdateManifestPlugin(source, dir, false, "")
 }
 
-func installOrUpdateManifestPlugin(source, dir string, update bool) (*pluginInstallOutput, error) {
+// installOrUpdateManifestPlugin installs (or updates) a manifest app. devOrigin,
+// when set, overrides the app's origin to that base URL and skips the
+// origin/fetch-URL self-consistency check, so aw can point at a self-hosted app
+// whose served manifest still advertises a different (e.g. production) origin.
+func installOrUpdateManifestPlugin(source, dir string, update bool, devOrigin string) (*pluginInstallOutput, error) {
 	manifestURL, err := manifestURLForSource(source)
 	if err != nil {
 		return nil, err
@@ -446,12 +453,30 @@ func installOrUpdateManifestPlugin(source, dir string, update bool) (*pluginInst
 	if err := appmanifest.Validate(manifest, reserved); err != nil {
 		return nil, err
 	}
-	claimedManifestURL, err := manifestURLForSource(manifest.App.Origin)
-	if err != nil {
-		return nil, err
-	}
-	if claimedManifestURL != manifestURL {
-		return nil, fmt.Errorf("manifest fetched from %s claims origin %s (expected manifest URL %s)", manifestURL, manifest.App.Origin, claimedManifestURL)
+	if devOrigin != "" {
+		// Operator override: point the app at this base URL regardless of the
+		// origin the manifest declares. Rewrite the stored manifest so dispatch
+		// (which builds request URLs from app.origin) targets it, and recompute
+		// the digest over the stored bytes.
+		normalized, err := normalizeManifestDevOrigin(devOrigin)
+		if err != nil {
+			return nil, err
+		}
+		manifest.App.Origin = normalized
+		manifestBytes, err = json.Marshal(manifest)
+		if err != nil {
+			return nil, fmt.Errorf("re-encode manifest with --dev-origin: %w", err)
+		}
+		sum := sha256.Sum256(manifestBytes)
+		digest = "sha256:" + hex.EncodeToString(sum[:])
+	} else {
+		claimedManifestURL, err := manifestURLForSource(manifest.App.Origin)
+		if err != nil {
+			return nil, err
+		}
+		if claimedManifestURL != manifestURL {
+			return nil, fmt.Errorf("manifest fetched from %s claims origin %s (expected manifest URL %s); pass --dev-origin <base-url> to install a self-hosted app at its real origin", manifestURL, manifest.App.Origin, claimedManifestURL)
+		}
 	}
 	name, err := normalizePluginName(manifest.App.ID)
 	if err != nil {
@@ -506,6 +531,20 @@ func installOrUpdateManifestPlugin(source, dir string, update bool) (*pluginInst
 		return nil, err
 	}
 	return &pluginInstallOutput{Name: name, Path: appDir, Provenance: &provenance}, nil
+}
+
+// normalizeManifestDevOrigin validates a --dev-origin override and returns it as
+// a bare scheme://host[/path] base URL (query and fragment stripped, trailing
+// slash trimmed).
+func normalizeManifestDevOrigin(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", usageError("invalid --dev-origin %q; expected a base URL like http://127.0.0.1:18765", raw)
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String(), nil
 }
 
 func manifestURLForSource(source string) (string, error) {
@@ -763,64 +802,16 @@ func firstNonFlagArg(args []string) (string, int) {
 	return "", -1
 }
 
+type installedManifestToolResult struct {
+	Status int
+	Body   []byte
+}
+
 func dispatchInstalledManifestPlugin(name string, args []string) (int, bool) {
-	dir, err := pluginDir()
-	if err != nil {
-		debugLog("resolve plugin dir: %v", err)
+	result, exists, err := executeInstalledManifestTool(name, args)
+	if !exists {
 		return 0, false
 	}
-	manifestPath := manifestPluginManifestPath(dir, name)
-	data, err := os.ReadFile(manifestPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return 0, false
-		}
-		fmt.Fprintln(os.Stderr, err)
-		return 1, true
-	}
-	var manifest appmanifest.Manifest
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.UseNumber()
-	if err := decoder.Decode(&manifest); err != nil {
-		fmt.Fprintf(os.Stderr, "decode manifest %s: %v\n", manifestPath, err)
-		return 1, true
-	}
-	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
-		fmt.Fprintf(os.Stderr, "missing verb for app %q\n", name)
-		return 1, true
-	}
-	verb := strings.TrimSpace(args[0])
-	parsedArgs, rawBody, err := parseManifestDispatchArgs(args[1:])
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1, true
-	}
-	spec, err := appmanifest.Interpret(appmanifest.InterpretRequest{
-		Manifest:      manifest,
-		Verb:          verb,
-		Args:          parsedArgs,
-		RawBody:       rawBody,
-		ReservedNames: reservedRootCommandNames(),
-	})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1, true
-	}
-	identity, err := resolveLocalSigningIdentity()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1, true
-	}
-	parsedURL, err := url.Parse(spec.URL)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1, true
-	}
-	headers := make(http.Header)
-	for key, value := range spec.Headers {
-		headers.Set(key, value)
-	}
-	result, err := executeSignedIDRequest(spec.Method, parsedURL, identity, spec.Body, headers, map[string]any{}, true)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1, true
@@ -833,6 +824,97 @@ func dispatchInstalledManifestPlugin(name string, args []string) (int, bool) {
 		return 1, true
 	}
 	return 0, true
+}
+
+func executeInstalledManifestTool(name string, args []string) (*installedManifestToolResult, bool, error) {
+	dir, err := pluginDir()
+	if err != nil {
+		debugLog("resolve plugin dir: %v", err)
+		return nil, false, nil
+	}
+	manifestPath := manifestPluginManifestPath(dir, name)
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, true, err
+	}
+	var manifest appmanifest.Manifest
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&manifest); err != nil {
+		return nil, true, fmt.Errorf("decode manifest %s: %w", manifestPath, err)
+	}
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+		return nil, true, fmt.Errorf("missing verb for app %q", name)
+	}
+	verb := strings.TrimSpace(args[0])
+	parsedArgs, rawBody, err := parseManifestDispatchArgs(args[1:])
+	if err != nil {
+		return nil, true, err
+	}
+	spec, err := appmanifest.Interpret(appmanifest.InterpretRequest{
+		Manifest:      manifest,
+		Verb:          verb,
+		Args:          parsedArgs,
+		RawBody:       rawBody,
+		ReservedNames: reservedRootCommandNames(),
+	})
+	if err != nil {
+		return nil, true, err
+	}
+	parsedURL, err := url.Parse(spec.URL)
+	if err != nil {
+		return nil, true, err
+	}
+	headers := make(http.Header)
+	for key, value := range spec.Headers {
+		headers.Set(key, value)
+	}
+	if spec.Auth == "none" {
+		result, err := executeUnsignedManifestRequest(spec.Method, parsedURL, spec.Body, headers)
+		if err != nil {
+			return nil, true, err
+		}
+		return result, true, nil
+	}
+	identity, err := resolveLocalSigningIdentity()
+	if err != nil {
+		return nil, true, err
+	}
+	result, err := executeSignedIDRequest(spec.Method, parsedURL, identity, spec.Body, headers, map[string]any{}, true)
+	if err != nil {
+		return nil, true, err
+	}
+	return &installedManifestToolResult{Status: result.Status, Body: result.Body}, true, nil
+}
+
+func executeUnsignedManifestRequest(method string, parsedURL *url.URL, bodyBytes []byte, headers http.Header) (*installedManifestToolResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header = headers.Clone()
+	client := &http.Client{
+		Timeout:   awid.APITimeout(),
+		Transport: awid.NewAPITransport(),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return &installedManifestToolResult{Status: resp.StatusCode, Body: responseBody}, nil
 }
 
 func parseManifestDispatchArgs(args []string) (map[string]any, []byte, error) {
@@ -919,8 +1001,14 @@ func resolveTrustedPluginCommand(name string) (pluginResolution, error) {
 		return pluginResolution{Kind: pluginResolutionManifest, Path: manifestPluginManifestPath(dir, name)}, nil
 	}
 	path, ok, err := resolveTrustedExternalPluginInDir(dir, name)
-	if err != nil || !ok {
+	if err != nil {
 		return pluginResolution{}, err
+	}
+	if !ok {
+		if strings.TrimSpace(name) == libraryPluginName {
+			return pluginResolution{}, missingLibraryPluginCommandError()
+		}
+		return pluginResolution{}, nil
 	}
 	return pluginResolution{Kind: pluginResolutionExternal, Path: path}, nil
 }

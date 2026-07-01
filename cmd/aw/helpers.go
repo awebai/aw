@@ -164,6 +164,7 @@ func resolveEphemeralIdentityWithoutState(workingDir string) (*awconfig.Resolved
 		Handle:         "",
 		Domain:         "",
 		Custody:        awid.CustodySelf,
+		IdentityScope:  awid.IdentityModeLocal,
 		Lifetime:       awid.LifetimeEphemeral,
 		RegistryURL:    "",
 		RegistryStatus: "",
@@ -178,15 +179,18 @@ func validateResolvedIdentity(identity *awconfig.ResolvedIdentity) error {
 	if strings.TrimSpace(identity.DID) == "" {
 		return usageError("current identity is invalid: .aw/identity.yaml is missing did")
 	}
-	lifetime := strings.TrimSpace(identity.Lifetime)
-	if lifetime == "" {
-		return usageError("current identity is invalid: .aw/identity.yaml is missing lifetime")
+	identityScope := strings.TrimSpace(identity.IdentityScope)
+	if identityScope == "" {
+		return usageError("current identity is invalid: .aw/identity.yaml is missing identity_scope")
+	}
+	if identityScope != awid.IdentityModeLocal && identityScope != awid.IdentityModeGlobal {
+		return usageError("current identity is invalid: .aw/identity.yaml has unsupported identity_scope %q", identityScope)
 	}
 	custody := strings.TrimSpace(identity.Custody)
 	if custody == "" {
 		return usageError("current identity is invalid: .aw/identity.yaml is missing custody")
 	}
-	if lifetime == awid.LifetimePersistent && strings.TrimSpace(identity.StableID) == "" {
+	if identityScope == awid.IdentityModeGlobal && strings.TrimSpace(identity.StableID) == "" {
 		return usageError("current identity is invalid: global .aw/identity.yaml is missing stable_id")
 	}
 	if custody != awid.CustodySelf {
@@ -382,7 +386,7 @@ func resolveClientSelectionForAliasTarget(ctx context.Context, targetAlias strin
 		for _, candidate := range candidates {
 			teamIDs = append(teamIDs, strings.TrimSpace(candidate.selection.TeamID))
 		}
-		return nil, nil, usageError("alias %q exists in multiple local team memberships (%s); pass --team to choose one", strings.TrimSpace(targetAlias), strings.Join(teamIDs, ", "))
+		return nil, nil, usageError("name %q exists in multiple local team memberships (%s); pass --team to choose one", strings.TrimSpace(targetAlias), strings.Join(teamIDs, ", "))
 	}
 	lastClient = c
 	return c, sel, nil
@@ -425,6 +429,74 @@ func clientHasAgentAlias(ctx context.Context, c *aweb.Client, targetAlias string
 	return found, err
 }
 
+type liveTeamMemberAliasTarget struct {
+	Alias   string
+	Address string
+	DIDAW   string
+	DIDKey  string
+}
+
+func (t liveTeamMemberAliasTarget) identityTarget() (kind, value string) {
+	if strings.TrimSpace(t.DIDAW) != "" {
+		return "did", strings.TrimSpace(t.DIDAW)
+	}
+	if strings.TrimSpace(t.DIDKey) != "" {
+		return "did", strings.TrimSpace(t.DIDKey)
+	}
+	if strings.TrimSpace(t.Address) != "" {
+		return "address", strings.TrimSpace(t.Address)
+	}
+	return "", ""
+}
+
+func shouldTryLiveRosterAliasFallback(targetAlias string) bool {
+	targetAlias = strings.TrimSpace(targetAlias)
+	return targetAlias != "" && !strings.Contains(targetAlias, "/") && !strings.Contains(targetAlias, "~") && !strings.HasPrefix(targetAlias, "did:")
+}
+
+func resolveLiveTeamMemberAliasTarget(ctx context.Context, sel *awconfig.Selection, targetAlias string) (liveTeamMemberAliasTarget, bool, error) {
+	targetAlias = strings.TrimSpace(targetAlias)
+	if sel == nil || strings.TrimSpace(sel.TeamID) == "" || !shouldTryLiveRosterAliasFallback(targetAlias) {
+		return liveTeamMemberAliasTarget{}, false, nil
+	}
+	domain, team, err := awid.ParseTeamID(strings.TrimSpace(sel.TeamID))
+	if err != nil {
+		return liveTeamMemberAliasTarget{}, false, err
+	}
+	registry, err := newConfiguredRegistryClient(nil, "")
+	if err != nil {
+		return liveTeamMemberAliasTarget{}, false, err
+	}
+	registryURL := ""
+	if state, stateErr := awconfig.LoadTeamState(sel.WorkingDir); stateErr != nil {
+		debugLog("load team state for alias fallback registry %s: %v", strings.TrimSpace(sel.TeamID), stateErr)
+	} else if state != nil {
+		if membership := state.Membership(sel.TeamID); membership != nil {
+			registryURL = registryURLForTeamMembersMembership(membership)
+		}
+	}
+	registryURL = firstNonEmpty(registryURL, strings.TrimSpace(sel.RegistryURL))
+	if registryURL != "" {
+		if err := registry.SetFallbackRegistryURL(registryURL); err != nil {
+			return liveTeamMemberAliasTarget{}, false, err
+		}
+	}
+	member, err := registry.ResolveTeamMember(ctx, strings.TrimSpace(registry.DefaultRegistryURL), domain, team, targetAlias)
+	if err != nil {
+		var registryErr *awid.RegistryError
+		if errors.As(err, &registryErr) && registryErr.StatusCode == http.StatusNotFound {
+			return liveTeamMemberAliasTarget{}, false, nil
+		}
+		return liveTeamMemberAliasTarget{}, false, err
+	}
+	return liveTeamMemberAliasTarget{
+		Alias:   strings.TrimSpace(member.Alias),
+		Address: strings.TrimSpace(member.MemberAddress),
+		DIDAW:   strings.TrimSpace(member.MemberDIDAW),
+		DIDKey:  strings.TrimSpace(member.MemberDIDKey),
+	}, true, nil
+}
+
 // resolveCertificateClient attempts to create a certificate-authenticated client.
 // Returns (nil, nil) if no team certificate exists. Returns an error only if the
 // certificate exists but is invalid.
@@ -459,14 +531,14 @@ func configureResolvedClient(c *aweb.Client, sel *awconfig.Selection, baseURL st
 	}
 	c.SetAddress(selectionAddress(sel))
 	e2eeAddress := ""
-	if awid.IdentityHasPublicAddress(sel.Lifetime) {
+	if strings.TrimSpace(sel.IdentityScope) == awid.IdentityModeGlobal {
 		e2eeAddress = strings.TrimSpace(sel.Address)
 	}
 	c.SetE2EESenderAddress(e2eeAddress)
 	if sel.StableID != "" {
 		c.SetStableID(sel.StableID)
 	}
-	c.SetRequireRecipientBindingForDirectAddresses(strings.TrimSpace(sel.Lifetime) == awid.LifetimePersistent || strings.TrimSpace(sel.StableID) != "")
+	c.SetRequireRecipientBindingForDirectAddresses(strings.TrimSpace(sel.IdentityScope) == awid.IdentityModeGlobal || strings.TrimSpace(sel.StableID) != "")
 
 	pinPath, err := awconfig.DefaultKnownAgentsPath()
 	if err != nil {
@@ -1136,8 +1208,42 @@ func ensureWorktreeContextAt(workingDir string) error {
 }
 
 func printJSON(v any) {
-	data, _ := json.MarshalIndent(v, "", "  ")
+	data, _ := json.Marshal(v)
+	var compat any
+	if err := json.Unmarshal(data, &compat); err == nil {
+		compat = addJSONNameScopeCompat(compat)
+		data, _ = json.MarshalIndent(compat, "", "  ")
+	} else {
+		data, _ = json.MarshalIndent(v, "", "  ")
+	}
 	fmt.Println(string(data))
+}
+
+func addJSONNameScopeCompat(v any) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		for key, value := range typed {
+			typed[key] = addJSONNameScopeCompat(value)
+		}
+		if _, hasName := typed["name"]; !hasName {
+			if alias, ok := typed["alias"].(string); ok && strings.TrimSpace(alias) != "" {
+				typed["name"] = alias
+			}
+		}
+		if _, hasScope := typed["identity_scope"]; !hasScope {
+			if lifetime, ok := typed["lifetime"].(string); ok && strings.TrimSpace(lifetime) != "" {
+				typed["identity_scope"] = awid.NormalizeIdentityScope(lifetime)
+			}
+		}
+		return typed
+	case []any:
+		for i, value := range typed {
+			typed[i] = addJSONNameScopeCompat(value)
+		}
+		return typed
+	default:
+		return v
+	}
 }
 
 func printOutput(v any, formatter func(v any) string) {

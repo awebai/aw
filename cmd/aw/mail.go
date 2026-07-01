@@ -418,6 +418,18 @@ var mailSendCmd = &cobra.Command{
 				} else {
 					req.ToAlias = targetValue
 				}
+			} else if liveTarget, liveFound, liveErr := resolveLiveTeamMemberAliasTarget(ctx, sel, targetValue); liveErr != nil {
+				debugLog("resolve live team member %s/%s: %v", strings.TrimSpace(sel.TeamID), targetValue, liveErr)
+				req.ToAlias = targetValue
+			} else if liveFound {
+				kind, value := liveTarget.identityTarget()
+				applyMailRecipientTarget(req, kind, value)
+				if mailRecipientTargetApplied(req) {
+					targetKind = kind
+					targetValue = value
+				} else {
+					req.ToAlias = targetValue
+				}
 			} else {
 				req.ToAlias = targetValue
 			}
@@ -783,7 +795,7 @@ func e2eeAssertionIdentityForSelection(sel *awconfig.Selection) *awconfig.Resolv
 		identityDID := strings.TrimSpace(identity.DID)
 		if identityDID != "" && (did == "" || identityDID == did) {
 			did = identityDID
-			if stableID == "" && (strings.TrimSpace(sel.Lifetime) == "" || awid.NormalizeIdentityScope(sel.Lifetime) != awid.IdentityModeLocal) {
+			if stableID == "" && strings.TrimSpace(sel.IdentityScope) != awid.IdentityModeLocal {
 				stableID = strings.TrimSpace(identity.StableID)
 			}
 		}
@@ -978,7 +990,7 @@ var mailShowCmd = &cobra.Command{
 }
 
 func init() {
-	mailSendCmd.Flags().StringVar(&mailSendTo, "to", "", "Recipient alias within the active team")
+	mailSendCmd.Flags().StringVar(&mailSendTo, "to", "", "Recipient name within the active team, or a routable address")
 	mailSendCmd.Flags().StringVar(&mailSendToDID, "to-did", "", "Recipient stable identity (did:aw:...)")
 	mailSendCmd.Flags().StringVar(&mailSendToAddress, "to-address", "", "Recipient address (domain/name)")
 	mailSendCmd.Flags().StringVar(&mailSendSubject, "subject", "", "Subject")

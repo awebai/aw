@@ -17,9 +17,17 @@ type implicitLocalInitRequest struct {
 	AwebURL     string
 	RegistryURL string
 	Alias       string
+	TeamName    string
 	Role        string
 	HumanName   string
 	AgentType   string
+}
+
+func implicitLocalTeamNameValue(value string) string {
+	if team := strings.TrimSpace(value); team != "" {
+		return strings.ToLower(team)
+	}
+	return implicitLocalTeamName
 }
 
 func runImplicitLocalInit(req implicitLocalInitRequest) (connectOutput, error) {
@@ -34,7 +42,7 @@ func runImplicitLocalInit(req implicitLocalInitRequest) (connectOutput, error) {
 	}
 	alias := strings.TrimSpace(req.Alias)
 	if alias == "" {
-		return connectOutput{}, usageError("--alias is required when aw init targets a localhost awid registry")
+		return connectOutput{}, usageError("--name is required when aw init targets a localhost awid registry")
 	}
 	if err := ensureConnectTargetClean(req.WorkingDir); err != nil {
 		return connectOutput{}, err
@@ -71,7 +79,7 @@ func runImplicitLocalInit(req implicitLocalInitRequest) (connectOutput, error) {
 		registry,
 		prepared.Plan.RegistryURL,
 		prepared.Plan.Domain,
-		implicitLocalTeamName,
+		implicitLocalTeamNameValue(req.TeamName),
 		"",
 		prepared.ControllerKey,
 		prepared.IdentityKey,

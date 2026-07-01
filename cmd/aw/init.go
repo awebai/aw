@@ -81,8 +81,11 @@ func init() {
 	initCmd.Flags().BoolVar(&initBYOD, "byod", false, "Use a domain you control instead of hosted aweb.ai onboarding")
 	initCmd.Flags().StringVar(&initUsername, "username", "", "Hosted username to create")
 	initCmd.Flags().StringVar(&initDomain, "domain", "", "BYOD domain to use with --byod")
-	initCmd.Flags().StringVar(&initAlias, "alias", "", "Local workspace routing alias (optional; default: server-suggested)")
-	initCmd.Flags().StringVar(&initName, "name", "", "Global identity name (required with --global unless .aw/identity.yaml already exists)")
+	initCmd.Flags().StringVar(&initAlias, "local-name", "", "Deprecated alias for --name when creating a local workspace")
+	markDeprecatedHiddenFlag(initCmd, "local-name", "name")
+	initCmd.Flags().StringVar(&initAlias, "alias", "", "Deprecated alias for --name")
+	markDeprecatedHiddenFlag(initCmd, "alias", "name")
+	initCmd.Flags().StringVar(&initName, "name", "", "Identity/member name (global address name with --global, local routing name otherwise)")
 	initCmd.Flags().BoolVar(&initInjectDocs, "inject-docs", false, "Inject aw coordination instructions into CLAUDE.md and AGENTS.md")
 	initCmd.Flags().BoolVar(&initDoNotTouchAgentsMD, "do-not-touch-agents-md", false, "Do not create or update AGENTS.md or CLAUDE.md during init")
 	initCmd.Flags().BoolVar(&initSetupHooks, "setup-hooks", false, "Set up Claude Code PostToolUse hook for aw notify")
@@ -93,8 +96,8 @@ func init() {
 	initCmd.Flags().BoolVar(&initPrintExports, "print-exports", false, "Print shell export lines after JSON output")
 	addWorkspaceRoleFlags(initCmd, &initRole, "Workspace role name (must match a role in the active team roles bundle)")
 	initCmd.Flags().BoolVar(&initPersistent, "global", false, "Create an addressed self-custodial global identity instead of the default local workspace")
-	initCmd.Flags().BoolVar(&initPersistent, "persistent", false, "Compatibility alias for --global")
-	_ = initCmd.Flags().MarkHidden("persistent")
+	initCmd.Flags().BoolVar(&initPersistent, "persistent", false, "Deprecated alias for --global")
+	markDeprecatedHiddenFlag(initCmd, "persistent", "global")
 	initCmd.Flags().StringVar(&initInboundMode, "inbound-mode", "", "Inbound delivery mode for a global identity (open|team-and-contacts). Only valid with --global.")
 
 	rootCmd.AddCommand(initCmd)
@@ -150,8 +153,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 			AwebURL:     awebURL,
 			RegistryURL: registryURL,
 			APIKey:      apiKey,
-			Name:        strings.TrimSpace(initName),
-			Alias:       resolveAliasValue(strings.TrimSpace(initAlias)),
+			Name:        resolveInitGlobalName(initPersistent),
+			Alias:       resolveAliasValue(resolveInitLocalName()),
 			Role:        resolveRequestedRole(strings.TrimSpace(initRole)),
 			HumanName:   resolveHumanNameValue(strings.TrimSpace(initHumanName)),
 			AgentType:   resolveAgentTypeValue(strings.TrimSpace(initAgentType)),
@@ -224,7 +227,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 				WorkingDir:  wd,
 				AwebURL:     awebURL,
 				RegistryURL: registryURL,
-				Alias:       resolveAliasValue(strings.TrimSpace(initAlias)),
+				Alias:       resolveAliasValue(resolveInitLocalName()),
 				Role:        resolveRequestedRole(strings.TrimSpace(initRole)),
 				HumanName:   resolveHumanNameValue(strings.TrimSpace(initHumanName)),
 				AgentType:   resolveAgentTypeValue(strings.TrimSpace(initAgentType)),
@@ -262,9 +265,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 				if initPersistent {
 					return strings.TrimSpace(initAlias)
 				}
-				return resolveAliasValue(strings.TrimSpace(initAlias))
+				return resolveAliasValue(resolveInitLocalName())
 			}(),
-			Name:               strings.TrimSpace(initName),
+			Name:               resolveInitGlobalName(initPersistent),
 			HumanName:          resolveHumanNameValue(strings.TrimSpace(initHumanName)),
 			AgentType:          resolveAgentTypeValue(strings.TrimSpace(initAgentType)),
 			Role:               resolveRequestedRole(strings.TrimSpace(initRole)),
@@ -435,7 +438,6 @@ func initShouldUseImplicitLocalFlow(registryURL string) bool {
 	return !initBYOD &&
 		strings.TrimSpace(initUsername) == "" &&
 		strings.TrimSpace(initDomain) == "" &&
-		strings.TrimSpace(initName) == "" &&
 		!initPersistent
 }
 
@@ -519,6 +521,20 @@ func resolveAgentTypeValue(value string) string {
 		return v
 	}
 	return "agent"
+}
+
+func resolveInitLocalName() string {
+	if value := strings.TrimSpace(initAlias); value != "" {
+		return value
+	}
+	return strings.TrimSpace(initName)
+}
+
+func resolveInitGlobalName(global bool) string {
+	if !global {
+		return ""
+	}
+	return strings.TrimSpace(initName)
 }
 
 func resolveAliasValue(explicit string) string {

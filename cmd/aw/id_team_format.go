@@ -28,7 +28,7 @@ func formatTeamInvite(v any) string {
 	sb.WriteString(fmt.Sprintf("Status:      %s\n", out.Status))
 	sb.WriteString(fmt.Sprintf("Invite ID:   %s\n", out.InviteID))
 	sb.WriteString(fmt.Sprintf("Token:       %s\n", out.Token))
-	sb.WriteString(fmt.Sprintf("Command:     aw id team accept-invite %s --alias <alias>\n", out.Token))
+	sb.WriteString(fmt.Sprintf("Command:     aw id team accept-invite %s --name <name>\n", out.Token))
 	return sb.String()
 }
 
@@ -37,7 +37,7 @@ func formatTeamAcceptInvite(v any) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Status:      %s\n", out.Status))
 	sb.WriteString(fmt.Sprintf("Team:        %s\n", out.TeamID))
-	sb.WriteString(fmt.Sprintf("Alias:       %s\n", out.Alias))
+	sb.WriteString(fmt.Sprintf("Name:        %s\n", out.Alias))
 	sb.WriteString(fmt.Sprintf("Certificate: %s\n", out.CertPath))
 	return sb.String()
 }
@@ -60,7 +60,7 @@ func formatTeamFetchCert(v any) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Status:      %s\n", out.Status))
 	sb.WriteString(fmt.Sprintf("Team:        %s\n", out.TeamID))
-	sb.WriteString(fmt.Sprintf("Alias:       %s\n", out.Alias))
+	sb.WriteString(fmt.Sprintf("Name:        %s\n", out.Alias))
 	sb.WriteString(fmt.Sprintf("Certificate: %s\n", out.CertificateID))
 	sb.WriteString(fmt.Sprintf("Path:        %s\n", out.CertPath))
 	return sb.String()
@@ -71,7 +71,18 @@ func formatTeamRemoveMember(v any) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Status:      %s\n", out.Status))
 	sb.WriteString(fmt.Sprintf("Team:        %s\n", out.TeamID))
-	sb.WriteString(fmt.Sprintf("Member:      %s\n", out.MemberAddress))
+	if strings.TrimSpace(out.MemberAddress) != "" {
+		sb.WriteString(fmt.Sprintf("Member:      %s\n", out.MemberAddress))
+	}
+	if strings.TrimSpace(out.CertificateID) != "" {
+		sb.WriteString(fmt.Sprintf("Certificate: %s\n", out.CertificateID))
+	}
+	if strings.TrimSpace(out.AgentID) != "" {
+		sb.WriteString(fmt.Sprintf("Agent:       %s\n", out.AgentID))
+	}
+	if strings.TrimSpace(out.WorkspaceID) != "" {
+		sb.WriteString(fmt.Sprintf("Workspace:   %s\n", out.WorkspaceID))
+	}
 	return sb.String()
 }
 
@@ -160,7 +171,7 @@ func formatTeamAdd(v any) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Status:      %s\n", out.Status))
 	sb.WriteString(fmt.Sprintf("Team:        %s\n", out.TeamID))
-	sb.WriteString(fmt.Sprintf("Alias:       %s\n", out.Alias))
+	sb.WriteString(fmt.Sprintf("Name:        %s\n", out.Alias))
 	sb.WriteString(fmt.Sprintf("Certificate: %s\n", out.CertPath))
 	return sb.String()
 }
@@ -180,7 +191,7 @@ func formatTeamList(v any) string {
 	}
 	var sb strings.Builder
 	tw := tabwriter.NewWriter(&sb, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "ACTIVE\tTEAM\tALIAS\tIDENTITY\tISSUED")
+	_, _ = fmt.Fprintln(tw, "ACTIVE\tTEAM\tNAME\tIDENTITY\tISSUED")
 	for _, item := range out.Memberships {
 		active := ""
 		if item.Active {
@@ -202,6 +213,36 @@ func formatTeamList(v any) string {
 	return sb.String()
 }
 
+func formatTeamMembers(v any) string {
+	out := v.(teamMembersOutput)
+	if len(out.Members) == 0 {
+		return fmt.Sprintf("No members found for %s.\n", strings.TrimSpace(out.TeamID))
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Team: %s\n", strings.TrimSpace(out.TeamID)))
+	tw := tabwriter.NewWriter(&sb, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "NAME\tMEMBER\tDID\tIDENTITY\tISSUED\tREVOKED\tCERTIFICATE")
+	for _, item := range out.Members {
+		member := firstNonEmpty(item.MemberAddress, item.MemberDIDAW, item.MemberDIDKey, "-")
+		did := firstNonEmpty(item.MemberDIDAW, item.MemberDIDKey, "-")
+		identity := "-"
+		if strings.TrimSpace(item.IdentityScope) != "" {
+			identity = awid.NormalizeIdentityScope(item.IdentityScope)
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			firstNonEmpty(item.Alias, "-"),
+			member,
+			did,
+			identity,
+			firstNonEmpty(item.IssuedAt, "-"),
+			firstNonEmpty(item.RevokedAt, "-"),
+			firstNonEmpty(item.CertificateID, "-"),
+		)
+	}
+	_ = tw.Flush()
+	return sb.String()
+}
+
 func formatTeamLeave(v any) string {
 	out := v.(teamLeaveOutput)
 	var sb strings.Builder
@@ -216,7 +257,7 @@ func formatCertShow(v any) string {
 	out := v.(certShowOutput)
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Team:        %s\n", out.TeamID))
-	sb.WriteString(fmt.Sprintf("Alias:       %s\n", out.Alias))
+	sb.WriteString(fmt.Sprintf("Name:        %s\n", out.Alias))
 	sb.WriteString(fmt.Sprintf("Member DID:  %s\n", out.MemberDIDKey))
 	sb.WriteString(fmt.Sprintf("Team DID:    %s\n", out.TeamDIDKey))
 	sb.WriteString(fmt.Sprintf("Identity:    %s\n", awid.NormalizeIdentityScope(out.IdentityScope)))

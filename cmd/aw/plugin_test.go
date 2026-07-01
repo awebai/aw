@@ -14,11 +14,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/awebai/aw/awid"
+	"github.com/awebai/aw/internal/appmanifest"
 )
 
 func TestReservedAppIDsArtifactMatchesLiveCobraReservedNames(t *testing.T) {
@@ -585,6 +587,155 @@ func TestInstalledManifestDispatchInvokesTeamAuthRequest(t *testing.T) {
 	}
 }
 
+func TestLibraryManifestFixtureConformsAndDeclaresExpectedTools(t *testing.T) {
+	data := readLibraryManifestFixtureForTest(t)
+	sum := sha256.Sum256(data)
+	if got, want := fmt.Sprintf("%x", sum), "2eac1d5063e454f15db344e2dbfab619495f068eb7b0a94686fff3ae45f6df16"; got != want {
+		t.Fatalf("library manifest fixture sha256=%s want %s", got, want)
+	}
+	var manifest appmanifest.Manifest
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&manifest); err != nil {
+		t.Fatalf("decode library manifest fixture: %v", err)
+	}
+	if err := appmanifest.Validate(manifest, reservedRootCommandNames()); err != nil {
+		t.Fatalf("library manifest does not validate: %v", err)
+	}
+	if manifest.App.ID != "library" || manifest.App.Origin != "https://library.aweb.ai" {
+		t.Fatalf("unexpected app identity: %#v", manifest.App)
+	}
+	got := make([]string, 0, len(manifest.Tools))
+	for _, tool := range manifest.Tools {
+		got = append(got, tool.Name)
+		if tool.Auth == "none" && tool.Mutation {
+			t.Fatalf("mutation tool %q must not be auth:none", tool.Name)
+		}
+	}
+	sort.Strings(got)
+	want := []string{"approve", "bind", "create-shelf-profile", "get-binding", "get-blueprint", "get-profile", "import-to-shelf", "list-blueprints", "materialize", "proposals", "propose", "publish-blueprint", "publish-profile", "register", "reject", "set-blueprint-tags", "set-profile-tags", "shelf", "shelf-version", "update-from-source"}
+	sort.Strings(want)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("library manifest tools got %v want %v", got, want)
+	}
+}
+
+func TestLibraryManifestPluginInstallAndDispatch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+
+	_, priv, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	did := awid.ComputeDIDKey(priv.Public().(ed25519.PublicKey))
+
+	manifestBytes := readLibraryManifestFixtureForTest(t)
+	var sawListPacks, sawImportToShelf bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/aweb-app.json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(rewriteLibraryManifestOriginForTest(t, manifestBytes, serverOriginForTest(r)))
+		case "/v1/blueprints":
+			if r.Method != http.MethodGet {
+				t.Fatalf("list-blueprints method=%s", r.Method)
+			}
+			if r.Header.Get("Authorization") != "" || r.Header.Get("X-AWEB-Signed-Payload") != "" || r.Header.Get("X-AWID-Team-Certificate") != "" {
+				t.Fatalf("auth:none list-blueprints should be unsigned, got headers: %#v", r.Header)
+			}
+			sawListPacks = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"blueprint_ref":"aweb.engineering","version":"0.1.0"}]`))
+		case "/v1/shelf/import":
+			if r.Method != http.MethodPost {
+				t.Fatalf("import-to-shelf method=%s", r.Method)
+			}
+			if r.Header.Get("Authorization") == "" || r.Header.Get("X-AWEB-Signed-Payload") == "" || r.Header.Get("X-AWID-Team-Certificate") == "" {
+				t.Fatalf("missing team-auth headers for import-to-shelf: %#v", r.Header)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["source_blueprint_ref"] != "aweb.engineering" || body["profile_ref"] != "developer" {
+				t.Fatalf("unexpected import-to-shelf body: %#v", body)
+			}
+			sawImportToShelf = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"profile_ref":"developer","version":"0.1.0","digest":"sha256:dev","source_blueprint_ref":"aweb.engineering","source_blueprint_version":"0.1.0","source_blueprint_digest":"sha256:blueprint","created":true}`))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	install := exec.CommandContext(ctx, bin, "plugin", "install", server.URL)
+	install.Dir = tmp
+	install.Env = append(testCommandEnv(tmp), "AW_NO_UPDATE_CHECK=1")
+	if out, err := install.CombinedOutput(); err != nil {
+		t.Fatalf("library plugin install failed: %v\n%s", err, string(out))
+	}
+
+	list := exec.CommandContext(ctx, bin, "library", "list-blueprints")
+	list.Dir = tmp
+	list.Env = append(testCommandEnv(tmp), "AW_NO_UPDATE_CHECK=1")
+	listOut, err := list.CombinedOutput()
+	if err != nil {
+		t.Fatalf("library list-blueprints without identity failed: %v\n%s", err, string(listOut))
+	}
+	if !strings.Contains(string(listOut), "aweb.engineering") {
+		t.Fatalf("list-blueprints output missing blueprint: %s", string(listOut))
+	}
+
+	writeLocalTeamSignedRequestWorkspaceForTest(t, tmp, server.URL, "default:acme.com", "alice", did, priv)
+	adopt := exec.CommandContext(ctx, bin, "library", "import-to-shelf", "--source_blueprint_ref", "aweb.engineering", "--profile_ref", "developer")
+	adopt.Dir = tmp
+	adopt.Env = append(testCommandEnv(tmp), "AW_NO_UPDATE_CHECK=1")
+	adoptOut, err := adopt.CombinedOutput()
+	if err != nil {
+		t.Fatalf("library import-to-shelf failed: %v\n%s", err, string(adoptOut))
+	}
+	if !strings.Contains(string(adoptOut), `"profile_ref":"developer"`) {
+		t.Fatalf("import-to-shelf output missing profile: %s", string(adoptOut))
+	}
+	if !sawListPacks || !sawImportToShelf {
+		t.Fatalf("library fixture calls missing: list=%t import=%t", sawListPacks, sawImportToShelf)
+	}
+}
+
+func readLibraryManifestFixtureForTest(t *testing.T) []byte {
+	t.Helper()
+	path := filepath.Join(cmdMonorepoRootForTest(t), "test-vectors", "app-manifests", "library", "aweb-app.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func rewriteLibraryManifestOriginForTest(t *testing.T, data []byte, origin string) []byte {
+	t.Helper()
+	var manifest map[string]any
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	app, ok := manifest["app"].(map[string]any)
+	if !ok {
+		t.Fatal("library manifest app is not an object")
+	}
+	app["origin"] = origin
+	out, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 func TestPluginInstallRejectsMalformedManifestViaSharedValidation(t *testing.T) {
 	t.Parallel()
 
@@ -638,6 +789,66 @@ func TestPluginInstallRejectsMalformedManifestViaSharedValidation(t *testing.T) 
 				t.Fatalf("install error %q does not contain %q", string(out), tc.want)
 			}
 		})
+	}
+}
+
+func TestPluginInstallDevOriginOverridesSelfHostedOrigin(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+
+	// The served manifest advertises a DIFFERENT origin than where it is served,
+	// like a self-hosted Library whose manifest still claims the production
+	// origin. Without an override the install must reject this; with --dev-origin
+	// the operator points aw at the real (self-hosted) base URL.
+	manifest := `{"manifest_version":1,"app":{"id":"devlib","version":"1.0.0","origin":"https://library.aweb.ai"},"tools":[{"name":"ping","auth":"none","method":"GET","path":"/v1/ping","input_schema":{"type":"object","properties":{}},"params":[],"mutation":false}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/aweb-app.json" {
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(manifest))
+	}))
+	defer server.Close()
+
+	home := filepath.Join(tmp, "home")
+	env := append(os.Environ(), "HOME="+home, "AW_NO_UPDATE_CHECK=1")
+
+	// Without --dev-origin the origin-mismatch guard rejects it.
+	reject := exec.CommandContext(ctx, bin, "plugin", "install", server.URL)
+	reject.Env = env
+	if out, err := reject.CombinedOutput(); err == nil || !strings.Contains(string(out), "claims origin") {
+		t.Fatalf("expected origin-mismatch rejection, got err=%v out=%s", err, string(out))
+	}
+
+	// With --dev-origin the app installs pointing at the self-hosted base URL.
+	install := exec.CommandContext(ctx, bin, "plugin", "install", server.URL, "--dev-origin", server.URL)
+	install.Env = env
+	if out, err := install.CombinedOutput(); err != nil {
+		t.Fatalf("plugin install --dev-origin failed: %v\n%s", err, string(out))
+	}
+
+	// The stored manifest now advertises the dev origin, which is the base URL
+	// dispatch uses (appmanifest.Interpret builds the request URL from app.origin).
+	manifestPath := filepath.Join(home, ".aw", "plugins", "devlib", "manifest.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read stored manifest: %v", err)
+	}
+	var stored appmanifest.Manifest
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatalf("decode stored manifest: %v\n%s", err, string(data))
+	}
+	if stored.App.Origin != server.URL {
+		t.Fatalf("stored manifest origin=%q want %q", stored.App.Origin, server.URL)
+	}
+	if strings.Contains(string(data), "library.aweb.ai") {
+		t.Fatalf("stored manifest still references the production origin:\n%s", string(data))
 	}
 }
 
