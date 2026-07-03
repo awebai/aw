@@ -37,6 +37,7 @@ func resetTeamHumanCreateGlobals(t *testing.T) {
 	oldServiceURL := teamHumanCreateServiceURL
 	oldRegistryURL := teamHumanCreateRegistryURL
 	oldAlias := teamHumanCreateAlias
+	oldCreateUsername := teamHumanCreateUsername
 	oldCreateHome := teamHumanCreateHome
 	oldCreateRuntime := teamHumanCreateRuntime
 	oldCreateLibraryURL := teamHumanCreateLibraryURL
@@ -57,6 +58,8 @@ func resetTeamHumanCreateGlobals(t *testing.T) {
 	oldAddRuntime := teamHumanAddRuntime
 	oldAddLibraryURL := teamHumanAddLibraryURL
 	oldAddBlueprint := teamHumanAddBlueprint
+	oldExtendAPIKey := teamHumanExtendAPIKey
+	oldExtendTeamID := teamHumanExtendTeamID
 	oldAddSpecOverride := teamHumanAddSpecOverride
 	t.Cleanup(func() {
 		initRunImplicitLocalFlow = oldRunImplicit
@@ -75,6 +78,7 @@ func resetTeamHumanCreateGlobals(t *testing.T) {
 		teamHumanCreateServiceURL = oldServiceURL
 		teamHumanCreateRegistryURL = oldRegistryURL
 		teamHumanCreateAlias = oldAlias
+		teamHumanCreateUsername = oldCreateUsername
 		teamHumanCreateHome = oldCreateHome
 		teamHumanCreateRuntime = oldCreateRuntime
 		teamHumanCreateLibraryURL = oldCreateLibraryURL
@@ -95,6 +99,8 @@ func resetTeamHumanCreateGlobals(t *testing.T) {
 		teamHumanAddRuntime = oldAddRuntime
 		teamHumanAddLibraryURL = oldAddLibraryURL
 		teamHumanAddBlueprint = oldAddBlueprint
+		teamHumanExtendAPIKey = oldExtendAPIKey
+		teamHumanExtendTeamID = oldExtendTeamID
 		teamHumanAddSpecOverride = oldAddSpecOverride
 	})
 	initIsTTY = func() bool { return false }
@@ -111,6 +117,7 @@ func resetTeamHumanCreateGlobals(t *testing.T) {
 	teamHumanCreateServiceURL = ""
 	teamHumanCreateRegistryURL = ""
 	teamHumanCreateAlias = ""
+	teamHumanCreateUsername = ""
 	teamHumanCreateHome = ""
 	teamHumanCreateRuntime = ""
 	teamHumanCreateLibraryURL = ""
@@ -131,6 +138,8 @@ func resetTeamHumanCreateGlobals(t *testing.T) {
 	teamHumanAddRuntime = ""
 	teamHumanAddLibraryURL = ""
 	teamHumanAddBlueprint = ""
+	teamHumanExtendAPIKey = ""
+	teamHumanExtendTeamID = ""
 	teamHumanAddSpecOverride = nil
 }
 
@@ -713,6 +722,24 @@ func TestTeamHumanAddRejectsLayoutOnlyWithLibraryProfile(t *testing.T) {
 	}
 }
 
+func TestTeamHumanCreateHostedRegistryFailsNonInteractiveWithoutUsername(t *testing.T) {
+	resetTeamHumanCreateGlobals(t)
+	t.Setenv("AWEB_API_KEY", "")
+	t.Setenv("AWEB_URL", "https://app.aweb.ai")
+	t.Setenv("AWID_REGISTRY_URL", "https://api.awid.ai")
+	t.Chdir(t.TempDir())
+
+	guidedOnboardingWizard = func(req guidedOnboardingRequest) (*guidedOnboardingResult, error) {
+		t.Fatalf("guidedOnboardingWizard should not run when required non-TTY flags are missing: %+v", req)
+		return nil, nil
+	}
+
+	err := runTeamHumanCreate(nil, []string{"eng"})
+	if err == nil || !strings.Contains(err.Error(), "missing required flag: --username") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestTeamHumanCreateHostedRegistryUsesGuidedOnboardingWhenNoIdentity(t *testing.T) {
 	resetTeamHumanCreateGlobals(t)
 	t.Setenv("AWEB_API_KEY", "")
@@ -720,6 +747,7 @@ func TestTeamHumanCreateHostedRegistryUsesGuidedOnboardingWhenNoIdentity(t *test
 	t.Setenv("AWID_REGISTRY_URL", "https://api.awid.ai")
 	root := t.TempDir()
 	t.Chdir(root)
+	teamHumanCreateUsername = "eng-user"
 
 	var got guidedOnboardingRequest
 	guidedOnboardingWizard = func(req guidedOnboardingRequest) (*guidedOnboardingResult, error) {
@@ -743,6 +771,9 @@ func TestTeamHumanCreateHostedRegistryUsesGuidedOnboardingWhenNoIdentity(t *test
 	}
 	if !got.NonInteractive {
 		t.Fatalf("expected non-interactive request when not TTY: %+v", got)
+	}
+	if got.Username != "eng-user" {
+		t.Fatalf("username=%q want eng-user", got.Username)
 	}
 	if got.Alias != "eng" {
 		t.Fatalf("alias=%q want eng", got.Alias)
@@ -1150,6 +1181,7 @@ func TestTeamHumanCreateFirstAgentGlobalHostedBootstrapAllowed(t *testing.T) {
 	t.Setenv(initAPIKeyEnvVar, "")
 	teamHumanCreateFirstGlobal = true
 	teamHumanCreateServiceURL = "https://app.example"
+	teamHumanCreateUsername = "eng-user"
 	var captured guidedOnboardingRequest
 	guidedOnboardingWizard = func(req guidedOnboardingRequest) (*guidedOnboardingResult, error) {
 		captured = req
@@ -1334,6 +1366,111 @@ func TestTeamHumanCreateExistingSelfCustodialIdentityCreatesTeam(t *testing.T) {
 	// The creator self-enrolls as the first member; without an encryption key it
 	// could not do E2E messaging, so the create flow must ensure one.
 	requireWorktreeEncryptionKeyForTest(t, root)
+}
+
+func TestTeamHumanCreateBYOTWithAgentMissingNamespaceErrorsClearly(t *testing.T) {
+	resetTeamHumanCreateGlobals(t)
+	root := t.TempDir()
+	t.Chdir(root)
+	teamHumanCreateBYOT = true
+	teamHumanCreateAgents = []string{"captain"}
+
+	err := runTeamHumanCreate(nil, []string{"Ops"})
+	if err == nil || !strings.Contains(err.Error(), "aw team create --byot requires --namespace") || strings.Contains(strings.ToLower(err.Error()), "eof") {
+		t.Fatalf("error=%v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(root, ".aw")); !os.IsNotExist(statErr) {
+		t.Fatalf("state created despite missing namespace, stat err=%v", statErr)
+	}
+}
+
+func TestTeamHumanCreateBYOTWithAgentsCreatesTeamAndRoster(t *testing.T) {
+	resetTeamHumanCreateGlobals(t)
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AW_CONFIG_PATH", "")
+	t.Chdir(root)
+	_, controllerKey, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	controllerDID := awid.ComputeDIDKey(controllerKey.Public().(ed25519.PublicKey))
+	if err := awconfig.SaveControllerKey("acme.com", controllerKey); err != nil {
+		t.Fatal(err)
+	}
+	var namespaceCreated bool
+	var certAliases []string
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/discovery":
+			_ = json.NewEncoder(w).Encode(map[string]any{"aweb_url": server.URL, "registry_url": server.URL})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/namespaces/acme.com":
+			if !namespaceCreated {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"domain": "acme.com", "controller_did": controllerDID, "created_at": "2026-06-20T00:00:00Z"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/namespaces":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["domain"] != "acme.com" || body["controller_did"] != controllerDID {
+				t.Fatalf("namespace body=%v", body)
+			}
+			namespaceCreated = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"domain": "acme.com", "controller_did": controllerDID, "created_at": "2026-06-20T00:00:00Z"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/namespaces/acme.com/teams":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["name"] != "ops" {
+				t.Fatalf("team name=%v", body["name"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"team_id": "ops:acme.com", "domain": "acme.com", "name": "ops", "team_did_key": body["team_did_key"], "created_at": "2026-06-20T00:00:00Z"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/namespaces/acme.com/teams/ops/certificates":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			alias, _ := body["alias"].(string)
+			certAliases = append(certAliases, strings.TrimSpace(alias))
+			w.WriteHeader(http.StatusCreated)
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("AWEB_URL", server.URL)
+	teamHumanCreateBYOT = true
+	teamHumanCreateNamespace = "acme.com"
+	teamHumanCreateRegistryURL = server.URL
+	teamHumanCreateAgents = []string{"captain", "crew"}
+
+	if err := runTeamHumanCreate(nil, []string{"Ops"}); err != nil {
+		t.Fatalf("runTeamHumanCreate: %v", err)
+	}
+	if strings.Join(certAliases, ",") != "captain,crew" {
+		t.Fatalf("certificate aliases=%v", certAliases)
+	}
+	state, err := awconfig.LoadTeamState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ActiveTeam != "ops:acme.com" || state.Membership("ops:acme.com") == nil {
+		t.Fatalf("root team state active=%q memberships=%v", state.ActiveTeam, state.Memberships)
+	}
+	crewHome := filepath.Join(root, "agents", "instances", "crew")
+	crewState, err := awconfig.LoadTeamState(crewHome)
+	if err != nil {
+		t.Fatalf("crew team state missing: %v", err)
+	}
+	if crewState.ActiveTeam != "ops:acme.com" || crewState.Membership("ops:acme.com") == nil {
+		t.Fatalf("crew team state active=%q memberships=%v", crewState.ActiveTeam, crewState.Memberships)
+	}
 }
 
 func TestTeamHumanCreateBYOTFirstAgentGlobalWithoutAuthorityFailsBeforeRegister(t *testing.T) {
