@@ -1,19 +1,67 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/awebai/aw/awconfig"
 	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/internal/blueprint"
+	"github.com/spf13/cobra"
 )
+
+func localSurfaceTeamUpDryRunPlan(t *testing.T, root string) teamUpPlan {
+	t.Helper()
+	oldDryRun, oldSession, oldForce, oldRecreate, oldJSON := teamUpDryRun, teamUpSession, teamUpForce, teamUpRecreate, jsonFlag
+	oldDetect := teamUpDetectActiveHomes
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		teamUpDryRun, teamUpSession, teamUpForce, teamUpRecreate, jsonFlag = oldDryRun, oldSession, oldForce, oldRecreate, oldJSON
+		teamUpDetectActiveHomes = oldDetect
+		_ = os.Chdir(cwd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	teamUpDryRun, teamUpSession, teamUpForce, teamUpRecreate, jsonFlag = true, "composition", false, false, true
+	teamUpDetectActiveHomes = func(string) (map[string]teamUpRunningProcess, error) { return map[string]teamUpRunningProcess{}, nil }
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runTeamHumanUp(cmd, nil); err != nil {
+		t.Fatalf("aw team up --dry-run: %v", err)
+	}
+	var plan teamUpPlan
+	if err := json.Unmarshal(out.Bytes(), &plan); err != nil {
+		t.Fatalf("decode dry-run plan: %v\n%s", err, out.String())
+	}
+	return plan
+}
+
+func assertLocalSurfaceTeamUpAgents(t *testing.T, root string, plan teamUpPlan, want []teamUpAgentPlan) {
+	t.Helper()
+	if len(plan.Agents) != len(want) {
+		t.Fatalf("dry-run agents=%+v want %+v", plan.Agents, want)
+	}
+	for i := range want {
+		got := plan.Agents[i]
+		wantHome := filepath.Join(root, "agents", "instances", want[i].Name)
+		if got.Name != want[i].Name || canonicalTeamUpPath(got.HomeDir) != canonicalTeamUpPath(wantHome) || got.RuntimeKind != want[i].RuntimeKind || got.Action != teamUpActionStart || !slices.Equal(got.Command, want[i].Command) {
+			t.Fatalf("dry-run agent[%d]=%+v want name=%s home=%s runtime=%s command=%v action=start", i, got, want[i].Name, wantHome, want[i].RuntimeKind, want[i].Command)
+		}
+	}
+}
 
 func TestLocalSurfaceE2EEmptyProfileCreateAdd(t *testing.T) {
 	resetTeamHumanCreateGlobals(t)
@@ -53,6 +101,8 @@ func TestLocalSurfaceE2EEmptyProfileCreateAdd(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"team_id": "eng:local", "alias": "eng", "agent_id": "agent-eng", "workspace_id": "workspace-eng", "repo_id": "", "team_did_key": "did:key:z6MkiTeam"})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/instructions/active":
 			_ = json.NewEncoder(w).Encode(map[string]any{"team_instructions_id": "instructions-1", "active_team_instructions_id": "instructions-1", "version": 1, "document": map[string]any{"body_md": "Use aw."}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agents":
+			_ = json.NewEncoder(w).Encode(awid.ListAgentsResponse{})
 		case r.Method == http.MethodGet && (r.URL.Path == "/v1/agents/heartbeat" || r.URL.Path == "/api/v1/agents/heartbeat"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 		case r.Method == http.MethodPut && r.URL.Path == "/v1/agents/me/encryption-key":
@@ -162,6 +212,8 @@ func TestLocalSurfaceE2ELibraryBoundCreateAndAdd(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 		case r.Method == http.MethodPut && r.URL.Path == "/v1/agents/me/encryption-key":
 			writePublishEncryptionKeyResponseForTest(t, w, "agent-coordinator", "eng:local", "coordinator")
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agents":
+			_ = json.NewEncoder(w).Encode(awid.ListAgentsResponse{})
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/blueprints/aweb.engineering/profiles/"):
 			profileRef := strings.TrimPrefix(r.URL.Path, "/v1/blueprints/aweb.engineering/profiles/")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -196,9 +248,9 @@ func TestLocalSurfaceE2ELibraryBoundCreateAndAdd(t *testing.T) {
 		initAwebURL = oldInitAwebURL
 		initAWIDRegistry = oldInitAWIDRegistry
 	})
-	teamHumanCreateProfiles = []string{"aweb.engineering/coordinator=claude-code", "aweb.engineering/reviewer=pi"}
+	teamHumanCreateAgents = []string{"coordinator@aweb.engineering/coordinator=claude-code", "reviewer@aweb.engineering/reviewer=pi"}
 	if err := runTeamHumanCreate(nil, []string{"eng"}); err != nil {
-		t.Fatalf("team create roster --profile: %v", err)
+		t.Fatalf("team create roster --agent: %v", err)
 	}
 	coordinatorHome := filepath.Join(root, "agents", "instances", "coordinator")
 	for _, rel := range []string{"AGENTS.md", ".aw/profile/profile.yaml", ".aw/profile/instructions.md", ".aw/profile/ref.json"} {
@@ -223,8 +275,25 @@ func TestLocalSurfaceE2ELibraryBoundCreateAndAdd(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(reviewerHome, "CLAUDE.md")); !os.IsNotExist(err) {
 		t.Fatalf("reviewer pi home unexpectedly has CLAUDE.md (first supported runtime_hints should choose pi), stat err=%v", err)
 	}
+	assertLocalSurfaceTeamUpAgents(t, root, localSurfaceTeamUpDryRunPlan(t, root), []teamUpAgentPlan{
+		{Name: "coordinator", RuntimeKind: "claude-code", Command: []string{"claude", "--dangerously-skip-permissions", "--dangerously-load-development-channels", claudeChannelSpec}},
+		{Name: "reviewer", RuntimeKind: "pi", Command: []string{"pi", "--approve"}},
+	})
 
-	teamHumanCreateProfiles = nil
+	// The taught one-agent create form must compose with the same dry-run path.
+	singleRoot := t.TempDir()
+	if err := os.Chdir(singleRoot); err != nil {
+		t.Fatal(err)
+	}
+	teamHumanCreateAgents = []string{"coordinator@aweb.engineering/coordinator=claude-code"}
+	if err := runTeamHumanCreate(nil, []string{"eng"}); err != nil {
+		t.Fatalf("single-agent team create --agent: %v", err)
+	}
+	assertLocalSurfaceTeamUpAgents(t, singleRoot, localSurfaceTeamUpDryRunPlan(t, singleRoot), []teamUpAgentPlan{
+		{Name: "coordinator", RuntimeKind: "claude-code", Command: []string{"claude", "--dangerously-skip-permissions", "--dangerously-load-development-channels", claudeChannelSpec}},
+	})
+
+	teamHumanCreateAgents = nil
 	if err := os.Chdir(root); err != nil {
 		t.Fatal(err)
 	}
@@ -407,6 +476,8 @@ func TestHostedTeamAddProfiledAgentMaterializesAndAppliesRuntime(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"team_instructions_id": "instructions-1", "active_team_instructions_id": "instructions-1", "version": 1, "document": map[string]any{"body_md": "Use aw."}})
 		case r.Method == http.MethodPut && r.URL.Path == "/v1/agents/me/encryption-key":
 			writePublishEncryptionKeyResponseForTest(t, w, "agent-rev", "gracehosted.aweb.ai", "rev")
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agents":
+			_ = json.NewEncoder(w).Encode(awid.ListAgentsResponse{})
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/blueprints/aweb.engineering/profiles/"):
 			profileRef := strings.TrimPrefix(r.URL.Path, "/v1/blueprints/aweb.engineering/profiles/")
 			_ = json.NewEncoder(w).Encode(map[string]any{
