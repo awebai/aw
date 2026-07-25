@@ -178,9 +178,9 @@ func executeSignedIDRequest(method string, parsedURL *url.URL, identity *localSi
 	}
 	defer resp.Body.Close()
 
-	responseBody, err := io.ReadAll(resp.Body)
+	responseBody, err := readAllBounded(resp.Body, maxResponseBytes)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read response: %w", err)
 	}
 	return &idRequestExecutionResult{Status: resp.StatusCode, Header: resp.Header.Clone(), Body: responseBody}, nil
 }
@@ -378,7 +378,7 @@ func loadExclusiveStringInput(inline, filePath, flagName string) (string, error)
 	}
 	switch {
 	case filePath != "":
-		data, err := os.ReadFile(filePath)
+		data, err := readFileBounded(filePath, maxBodyFileBytes)
 		if err != nil {
 			return "", err
 		}
@@ -398,7 +398,7 @@ func loadOptionalRequestBody(inline, filePath string) ([]byte, error) {
 	}
 	switch {
 	case filePath != "":
-		return os.ReadFile(filePath)
+		return readFileBounded(filePath, maxBodyFileBytes)
 	case inline != "":
 		return []byte(inline), nil
 	default:
