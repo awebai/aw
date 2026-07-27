@@ -4,9 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -782,6 +782,10 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 }
 
 type ChatMarkReadRequest struct {
+	MessageIDs []string `json:"message_ids"`
+}
+
+type chatMarkReadWatermarkRequest struct {
 	UpToMessageID string `json:"up_to_message_id"`
 }
 
@@ -791,11 +795,48 @@ type ChatMarkReadResponse struct {
 }
 
 func (c *Client) ChatMarkRead(ctx context.Context, sessionID string, req *ChatMarkReadRequest) (*ChatMarkReadResponse, error) {
+	path := "/v1/chat/sessions/" + urlPathEscape(sessionID) + "/read"
 	var out ChatMarkReadResponse
-	if err := c.Post(ctx, "/v1/chat/sessions/"+urlPathEscape(sessionID)+"/read", req, &out); err != nil {
-		return nil, err
+	originalErr := c.Post(ctx, path, req, &out)
+	if originalErr == nil {
+		return &out, nil
 	}
-	return &out, nil
+
+	// Well-formedness gates only the compatibility retry. The exact request is
+	// always sent first so the server remains the authoritative validator and
+	// its original error stays observable.
+	status, isHTTPError := HTTPStatusCode(originalErr)
+	if !isHTTPError || status < 400 || status >= 500 || !wellFormedChatMessageIDs(req) {
+		return nil, originalErr
+	}
+
+	fallback := &chatMarkReadWatermarkRequest{UpToMessageID: req.MessageIDs[len(req.MessageIDs)-1]}
+	var fallbackOut ChatMarkReadResponse
+	if err := c.Post(ctx, path, fallback, &fallbackOut); err != nil {
+		return nil, originalErr
+	}
+	return &fallbackOut, nil
+}
+
+func wellFormedChatMessageIDs(req *ChatMarkReadRequest) bool {
+	if req == nil || len(req.MessageIDs) == 0 {
+		return false
+	}
+	for _, messageID := range req.MessageIDs {
+		if !isCanonicalUUID(messageID) {
+			return false
+		}
+	}
+	return true
+}
+
+func isCanonicalUUID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
+		return false
+	}
+	compact := strings.ReplaceAll(value, "-", "")
+	_, err := hex.DecodeString(compact)
+	return err == nil
 }
 
 // ChatStream opens an SSE stream for a session.
@@ -842,7 +883,7 @@ func (c *Client) ChatStream(ctx context.Context, sessionID string, deadline time
 		}
 	}
 
-	resp, err := c.sseClient.Do(req)
+	resp, err := DoNoRedirect(c.sseClient, req)
 	if err != nil {
 		return nil, err
 	}
@@ -850,9 +891,9 @@ func (c *Client) ChatStream(ctx context.Context, sessionID string, deadline time
 		c.latestClientVersion.Store(v)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		body := ReadErrorExcerpt(resp.Body)
 		_ = resp.Body.Close()
-		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(body)}
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: body}
 	}
 	return NewSSEStream(resp.Body), nil
 }

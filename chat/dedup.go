@@ -20,11 +20,10 @@ const (
 type deliveredIDsFile map[string]string
 
 func deliveredIDsRoot(startDir string) string {
-	if path, err := awconfig.FindWorktreeContextPath(startDir); err == nil {
-		return filepath.Dir(filepath.Dir(path))
-	}
-	if path, err := awconfig.FindWorktreeWorkspacePath(startDir); err == nil {
-		return filepath.Dir(filepath.Dir(path))
+	for _, name := range []string{"context", "workspace.yaml"} {
+		if path := filepath.Join(filepath.Clean(startDir), ".aw", name); fileExists(path) {
+			return filepath.Clean(startDir)
+		}
 	}
 	if root := findGitRoot(startDir); root != "" {
 		return root
@@ -73,6 +72,25 @@ func SaveDeliveredIDsForDir(startDir string, ids []string) error {
 	}
 	now := time.Now()
 	path := deliveredIDsPath(startDir)
+
+	// Serialize the whole read-merge-write. Without it, concurrent writers each
+	// merge onto a snapshot taken before the others wrote and the last rename
+	// wins — and the loss is SILENT, because every writer still reports success.
+	// A dropped mark makes an already-delivered message look new, so it is
+	// dispatched again: a duplicate model invocation or a repeated human-visible
+	// message (default-aajc.10).
+	//
+	// Contention here is ordinary: the `aw run` wake loop and any `aw chat`
+	// command in the same worktree write this same file. Only Go writes it — the
+	// Node channel uses channel-delivered-ids.json — so a Go-side lock is
+	// sufficient. flock is released by the kernel when the process dies, so an
+	// abandoned lock cannot wedge the store.
+	unlock, err := awconfig.LockExclusive(path + ".lock")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock.Close() }()
+
 	existing, err := loadDeliveredIDTimes(path, now)
 	if err != nil {
 		return err
@@ -201,6 +219,11 @@ func writeDeliveredIDs(path string, entries map[string]time.Time) error {
 		return err
 	}
 	return nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func findGitRoot(startDir string) string {

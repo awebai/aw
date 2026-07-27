@@ -91,12 +91,13 @@ var doctorSupportBundleCmd = &cobra.Command{
 }
 
 type doctorRunOptions struct {
-	Categories []string
-	Mode       doctorMode
-	Verbose    bool
-	Fix        bool
-	DryRun     bool
-	FixTarget  string
+	Categories   []string
+	IdentityHome string
+	Mode         doctorMode
+	Verbose      bool
+	Fix          bool
+	DryRun       bool
+	FixTarget    string
 }
 
 type doctorOutput struct {
@@ -129,10 +130,12 @@ type doctorCheck struct {
 	Target        *doctorTarget   `json:"target,omitempty"`
 	Authoritative bool            `json:"authoritative"`
 	Message       string          `json:"message"`
-	Detail        map[string]any  `json:"detail,omitempty"`
-	NextStep      string          `json:"next_step,omitempty"`
-	Fix           *doctorFixInfo  `json:"fix,omitempty"`
-	Handoff       *doctorHandoff  `json:"handoff,omitempty"`
+	// Detail is available in ordinary doctor output, but is omitted from
+	// shareable support bundles because its dynamic keys cannot be allowlisted.
+	Detail   map[string]any `json:"detail,omitempty"`
+	NextStep string         `json:"next_step,omitempty"`
+	Fix      *doctorFixInfo `json:"fix,omitempty"`
+	Handoff  *doctorHandoff `json:"handoff,omitempty"`
 }
 
 type doctorTarget struct {
@@ -254,6 +257,12 @@ func runDoctorCommand(cmd *cobra.Command, opts doctorRunOptions) error {
 	if err := validateDoctorModeFlags(); err != nil {
 		return err
 	}
+	workingDir, _ := os.Getwd()
+	home, err := identityHomeForDir(workingDir)
+	if err != nil {
+		return err
+	}
+	opts.IdentityHome = externalIdentityHomeRoot(home)
 	out := buildDoctorOutput(opts)
 	printOutput(out, formatDoctorOutput)
 	return nil
@@ -263,6 +272,12 @@ func runDoctorSupportBundle(cmd *cobra.Command, opts doctorRunOptions) error {
 	if err := validateDoctorModeFlags(); err != nil {
 		return err
 	}
+	workingDir, _ := os.Getwd()
+	home, err := identityHomeForDir(workingDir)
+	if err != nil {
+		return err
+	}
+	opts.IdentityHome = externalIdentityHomeRoot(home)
 	out, knownSecrets, err := buildDoctorSupportBundle(opts)
 	if err != nil {
 		return err
@@ -272,8 +287,12 @@ func runDoctorSupportBundle(cmd *cobra.Command, opts doctorRunOptions) error {
 		return err
 	}
 	if jsonFlag {
-		printOutput(out, formatDoctorOutput)
-		return nil
+		data, err := marshalDoctorSupportBundleView(out, knownSecrets)
+		if err != nil {
+			return err
+		}
+		_, err = cmd.OutOrStdout().Write(data)
+		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Wrote doctor support bundle to %s\n", outputPath)
 	return nil
@@ -288,6 +307,10 @@ func writeDoctorSupportBundleFile(outputPath string, out doctorOutput, knownSecr
 }
 
 func marshalDoctorSupportBundle(out doctorOutput, knownSecrets []doctorKnownSecret) ([]byte, error) {
+	return marshalDoctorSupportBundleView(omitDoctorSupportBundleDynamicDetails(out), knownSecrets)
+}
+
+func marshalDoctorSupportBundleView(out doctorOutput, knownSecrets []doctorKnownSecret) ([]byte, error) {
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return nil, err
@@ -305,14 +328,15 @@ func buildDoctorOutput(opts doctorRunOptions) doctorOutput {
 		workingDir = "."
 	}
 	runner := doctorRunner{
-		opts:       opts,
-		workingDir: workingDir,
+		opts:         opts,
+		workingDir:   workingDir,
+		identityHome: opts.IdentityHome,
 		output: doctorOutput{
 			Version:     doctorVersion,
 			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 			Status:      doctorStatusInfo,
 			Mode:        opts.Mode,
-			Subject:     collectDoctorSubject(workingDir),
+			Subject:     collectDoctorSubjectAt(workingDir, opts.IdentityHome),
 			Checks:      []doctorCheck{},
 			Redactions:  defaultDoctorRedactions(),
 		},
@@ -329,9 +353,10 @@ func buildDoctorOutput(opts doctorRunOptions) doctorOutput {
 }
 
 type doctorRunner struct {
-	opts       doctorRunOptions
-	workingDir string
-	output     doctorOutput
+	opts         doctorRunOptions
+	workingDir   string
+	identityHome string
+	output       doctorOutput
 }
 
 func (r *doctorRunner) add(check doctorCheck) {
@@ -394,15 +419,21 @@ func categoryPlaceholderCheck(category string) doctorCheck {
 }
 
 func collectDoctorSubject(workingDir string) doctorSubject {
+	return collectDoctorSubjectAt(workingDir, "")
+}
+
+func collectDoctorSubjectAt(workingDir, identityHome string) doctorSubject {
 	subject := doctorSubject{WorkingDir: strings.TrimSpace(workingDir)}
 	if subject.WorkingDir == "" {
 		subject.WorkingDir = "."
 	}
 	if sel, err := awconfig.ResolveWorkspace(awconfig.ResolveOptions{
-		ServerName:        serverFlag,
-		TeamIDOverride:    strings.TrimSpace(teamFlag),
-		WorkingDir:        subject.WorkingDir,
-		AllowEnvOverrides: true,
+		ServerName:           serverFlag,
+		TeamIDOverride:       strings.TrimSpace(teamFlag),
+		WorkingDir:           subject.WorkingDir,
+		IdentityHome:         identityHome,
+		ExternalIdentityHome: strings.TrimSpace(identityHome) != "",
+		AllowEnvOverrides:    true,
 	}); err == nil && sel != nil {
 		if awebURL, urlErr := sanitizeLocalURLForOutput(sel.BaseURL); urlErr == nil {
 			subject.AwebURL = awebURL
@@ -412,7 +443,11 @@ func collectDoctorSubject(workingDir string) doctorSubject {
 		subject.Alias = strings.TrimSpace(sel.Alias)
 		subject.Lifetime = awid.LegacyLifetimeForIdentityScope(sel.IdentityScope)
 	}
-	if identity, identityPath, err := awconfig.LoadWorktreeIdentityFromDir(subject.WorkingDir); err == nil && identity != nil {
+	identityPath := awconfig.WorktreeIdentityPath(subject.WorkingDir)
+	if strings.TrimSpace(identityHome) != "" {
+		identityPath, _ = awconfig.IdentityHomePath(awconfig.IdentityHome{Root: identityHome}, "identity.yaml")
+	}
+	if identity, err := awconfig.LoadWorktreeIdentityFrom(identityPath); err == nil && identity != nil {
 		subject.IdentityPath = strings.TrimSpace(identityPath)
 		if strings.TrimSpace(subject.Lifetime) == "" {
 			subject.Lifetime = awid.LegacyLifetimeForIdentityScope(identity.IdentityScope)

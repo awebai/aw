@@ -729,6 +729,13 @@ func configureClientE2EE(ctx context.Context, c *aweb.Client, sel *awconfig.Sele
 		}
 	}
 	statePath := awconfig.WorktreeEncryptionStatePath(sel.WorkingDir)
+	if strings.TrimSpace(sel.IdentityHome) != "" {
+		var pathErr error
+		statePath, pathErr = awconfig.IdentityHomePath(awconfig.IdentityHome{Root: sel.IdentityHome}, "encryption.yaml")
+		if pathErr != nil {
+			return pathErr
+		}
+	}
 	state, err := awconfig.LoadEncryptionKeyStateFrom(statePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -746,11 +753,11 @@ func configureClientE2EE(ctx context.Context, c *aweb.Client, sel *awconfig.Sele
 		}
 		return usageError("E2E messaging requires an active local encryption key; upgrade aw and run `aw id encryption-key setup`, or pass --plaintext only for explicit server-readable messaging")
 	}
-	material, err := validateEncryptionRecordPrivateKey(sel.WorkingDir, record)
+	material, err := validateEncryptionRecordPrivateKeyAt(sel.WorkingDir, sel.IdentityHome, record)
 	if err != nil {
 		return err
 	}
-	assertion, err := loadEncryptionAssertion(sel.WorkingDir, record.AssertionPath)
+	assertion, err := loadEncryptionAssertionAt(sel.WorkingDir, sel.IdentityHome, record.AssertionPath)
 	if err != nil {
 		return err
 	}
@@ -760,7 +767,10 @@ func configureClientE2EE(ctx context.Context, c *aweb.Client, sel *awconfig.Sele
 			return err
 		}
 	}
-	privatePath := resolveWorktreeRelativePath(sel.WorkingDir, record.PrivateKeyPath)
+	privatePath, err := resolveIdentityStoredPath(sel.WorkingDir, sel.IdentityHome, record.PrivateKeyPath)
+	if err != nil {
+		return err
+	}
 	privateKey, err := awid.LoadX25519PrivateKey(privatePath)
 	if err != nil {
 		return err
@@ -770,7 +780,7 @@ func configureClientE2EE(ctx context.Context, c *aweb.Client, sel *awconfig.Sele
 }
 
 func ensureE2EEKeyReadyForSend(ctx context.Context, workingDir string) error {
-	out, err := setupOrRotateIdentityEncryptionKeyForDir(ctx, workingDir, false)
+	out, err := setupOrRotateIdentityEncryptionKeyForDir(ctx, workingDir, false, currentEncryptionKeyIdentityHome())
 	if err != nil {
 		return err
 	}
@@ -791,7 +801,14 @@ func e2eeAssertionIdentityForSelection(sel *awconfig.Selection) *awconfig.Resolv
 	// not carry member_did_aw. The local encryption-key assertion is still
 	// identity-signed and must be checked against identity.yaml when it matches
 	// the selected signing did:key.
-	if identity, err := awconfig.ResolveIdentity(sel.WorkingDir); err == nil {
+	var identity *awconfig.ResolvedIdentity
+	var err error
+	if strings.TrimSpace(sel.IdentityHome) != "" {
+		identity, err = awconfig.ResolveIdentityFromHome(sel.WorkingDir, sel.IdentityHome)
+	} else {
+		identity, err = awconfig.ResolveIdentity(sel.WorkingDir)
+	}
+	if err == nil {
 		identityDID := strings.TrimSpace(identity.DID)
 		if identityDID != "" && (did == "" || identityDID == did) {
 			did = identityDID

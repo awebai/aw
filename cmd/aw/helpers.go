@@ -74,12 +74,55 @@ func resolveSelectionForDir(workingDir string) (*awconfig.Selection, error) {
 	return resolveSelectionForDirWithTeamOverride(workingDir, strings.TrimSpace(teamFlag))
 }
 
+func identityHomeForDir(workingDir string) (awconfig.IdentityHome, error) {
+	if strings.TrimSpace(activeIdentityHome.Root) != "" {
+		return activeIdentityHome, nil
+	}
+	return awconfig.ResolveIdentityHome(workingDir, identityHomeFlag)
+}
+
+func externalIdentityHomeRoot(home awconfig.IdentityHome) string {
+	if home.External() {
+		return home.Root
+	}
+	return ""
+}
+
+func externalIdentityRef(home awconfig.IdentityHome) string {
+	identity, err := awconfig.LoadWorktreeIdentityFrom(filepath.Join(home.Root, "identity.yaml"))
+	if err == nil && identity != nil {
+		return firstNonEmpty(identity.StableID, identity.Address, identity.DID, home.Root)
+	}
+	return home.Root
+}
+
+func refuseExternalIdentityCleanup(workingDir, operation string) error {
+	home, err := identityHomeForDir(workingDir)
+	if err != nil {
+		return err
+	}
+	if !home.External() {
+		return nil
+	}
+	return usageError("refusing %s through external identity home for principal %s; deleting or detaching that principal is a separate administrative act", operation, externalIdentityRef(home))
+}
+
 func resolveSelectionForDirWithTeamOverride(workingDir, teamIDOverride string) (*awconfig.Selection, error) {
+	identityHome, err := identityHomeForDir(workingDir)
+	if err != nil {
+		return nil, err
+	}
+	return resolveSelectionAtIdentityHome(workingDir, teamIDOverride, identityHome)
+}
+
+func resolveSelectionAtIdentityHome(workingDir, teamIDOverride string, identityHome awconfig.IdentityHome) (*awconfig.Selection, error) {
 	sel, err := awconfig.ResolveWorkspace(awconfig.ResolveOptions{
-		ServerName:        serverFlag,
-		TeamIDOverride:    strings.TrimSpace(teamIDOverride),
-		WorkingDir:        workingDir,
-		AllowEnvOverrides: true,
+		ServerName:           serverFlag,
+		TeamIDOverride:       strings.TrimSpace(teamIDOverride),
+		WorkingDir:           workingDir,
+		IdentityHome:         identityHome.Root,
+		ExternalIdentityHome: identityHome.External(),
+		AllowEnvOverrides:    true,
 	})
 	if err != nil {
 		return nil, err
@@ -93,8 +136,13 @@ func resolveIdentity() (*awconfig.ResolvedIdentity, error) {
 }
 
 func resolveIdentityForDir(workingDir string) (*awconfig.ResolvedIdentity, error) {
-	identity, err := awconfig.ResolveIdentity(workingDir)
+	identityHome, homeErr := identityHomeForDir(workingDir)
+	if homeErr != nil {
+		return nil, homeErr
+	}
+	identity, err := awconfig.ResolveIdentityFromHome(workingDir, identityHome.Root)
 	if err == nil {
+		identity.ExternalIdentityHome = identityHome.External()
 		if err := validateResolvedIdentity(identity); err != nil {
 			return nil, err
 		}
@@ -223,8 +271,31 @@ func resolveClientSelectionForDirWithTeamOverride(workingDir, teamIDOverride str
 	if err != nil {
 		return nil, nil, err
 	}
+	return resolveClientForSelection(workingDir, sel)
+}
 
-	if err := checkIdentityMismatch(workingDir, sel); err != nil {
+func resolveClientSelectionAtIdentityHome(workingDir string, identityHome awconfig.IdentityHome) (*aweb.Client, *awconfig.Selection, error) {
+	return resolveClientSelectionAtIdentityHomeWithTeamOverride(workingDir, "", identityHome)
+}
+
+func resolveClientSelectionAtIdentityHomeWithTeamOverride(workingDir, teamIDOverride string, identityHome awconfig.IdentityHome) (*aweb.Client, *awconfig.Selection, error) {
+	sel, err := resolveSelectionAtIdentityHome(workingDir, teamIDOverride, identityHome)
+	if err != nil {
+		return nil, nil, err
+	}
+	return resolveClientForSelectionAtIdentityHome(workingDir, externalIdentityHomeRoot(identityHome), sel)
+}
+
+func resolveClientForSelection(workingDir string, sel *awconfig.Selection) (*aweb.Client, *awconfig.Selection, error) {
+	identityHome := ""
+	if sel != nil {
+		identityHome = strings.TrimSpace(sel.IdentityHome)
+	}
+	return resolveClientForSelectionAtIdentityHome(workingDir, identityHome, sel)
+}
+
+func resolveClientForSelectionAtIdentityHome(workingDir, identityHome string, sel *awconfig.Selection) (*aweb.Client, *awconfig.Selection, error) {
+	if err := checkIdentityMismatchAtIdentityHome(workingDir, identityHome, sel); err != nil {
 		return nil, nil, err
 	}
 
@@ -234,7 +305,7 @@ func resolveClientSelectionForDirWithTeamOverride(workingDir, teamIDOverride str
 	}
 	sel.BaseURL = baseURL
 
-	c, err := resolveCertificateClient(sel.WorkingDir, baseURL, strings.TrimSpace(sel.TeamID))
+	c, err := resolveCertificateClient(sel, baseURL)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -260,7 +331,7 @@ func resolveIdentityMessagingClientSelectionForDir(workingDir string) (*aweb.Cli
 		return nil, nil, err
 	}
 
-	if err := checkIdentityMismatch(workingDir, sel); err != nil {
+	if err := checkIdentityMismatchAtIdentityHome(workingDir, strings.TrimSpace(sel.IdentityHome), sel); err != nil {
 		return nil, nil, err
 	}
 
@@ -270,7 +341,16 @@ func resolveIdentityMessagingClientSelectionForDir(workingDir string) (*aweb.Cli
 	}
 	sel.BaseURL = baseURL
 
-	identity, err := awconfig.ResolveIdentity(workingDir)
+	home, err := identityHomeForDir(workingDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	var identity *awconfig.ResolvedIdentity
+	if home.External() {
+		identity, err = awconfig.ResolveIdentityFromHome(workingDir, home.Root)
+	} else {
+		identity, err = awconfig.ResolveIdentity(workingDir)
+	}
 	identityMissing := errors.Is(err, os.ErrNotExist)
 	if err != nil && !identityMissing {
 		return nil, nil, err
@@ -344,7 +424,7 @@ func resolveClientSelectionForAliasTarget(ctx context.Context, targetAlias strin
 		return c, sel, nil
 	}
 
-	workspace, _, err := awconfig.LoadWorktreeWorkspaceFromDir(sel.WorkingDir)
+	workspace, err := awconfig.LoadWorktreeWorkspaceFrom(sel.WorkspacePath)
 	if err != nil || workspace == nil {
 		if err != nil {
 			debugLog("load workspace for alias fallback: %v", err)
@@ -400,7 +480,7 @@ func shouldSearchOtherLocalTeamsForAlias(sel *awconfig.Selection, targetAlias st
 	if strings.Contains(targetAlias, "/") || strings.Contains(targetAlias, "~") || strings.HasPrefix(targetAlias, "did:") {
 		return false
 	}
-	workspace, _, err := awconfig.LoadWorktreeWorkspaceFromDir(sel.WorkingDir)
+	workspace, err := awconfig.LoadWorktreeWorkspaceFrom(sel.WorkspacePath)
 	if err != nil || workspace == nil {
 		return false
 	}
@@ -468,7 +548,14 @@ func resolveLiveTeamMemberAliasTarget(ctx context.Context, sel *awconfig.Selecti
 		return liveTeamMemberAliasTarget{}, false, err
 	}
 	registryURL := ""
-	if state, stateErr := awconfig.LoadTeamState(sel.WorkingDir); stateErr != nil {
+	var state *awconfig.TeamState
+	var stateErr error
+	if strings.TrimSpace(sel.IdentityHome) != "" {
+		state, stateErr = awconfig.LoadTeamStateFromIdentityHome(sel.IdentityHome)
+	} else {
+		state, stateErr = awconfig.LoadTeamState(sel.WorkingDir)
+	}
+	if stateErr != nil {
 		debugLog("load team state for alias fallback registry %s: %v", strings.TrimSpace(sel.TeamID), stateErr)
 	} else if state != nil {
 		if membership := state.Membership(sel.TeamID); membership != nil {
@@ -500,24 +587,41 @@ func resolveLiveTeamMemberAliasTarget(ctx context.Context, sel *awconfig.Selecti
 // resolveCertificateClient attempts to create a certificate-authenticated client.
 // Returns (nil, nil) if no team certificate exists. Returns an error only if the
 // certificate exists but is invalid.
-func resolveCertificateClient(workingDir, baseURL, teamID string) (*aweb.Client, error) {
-	workspace, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir)
+func resolveCertificateClient(sel *awconfig.Selection, baseURL string) (*aweb.Client, error) {
+	if sel == nil {
+		return nil, nil
+	}
+	workspace, err := awconfig.LoadWorktreeWorkspaceFrom(sel.WorkspacePath)
 	if err != nil {
 		return nil, nil
 	}
+	teamID := strings.TrimSpace(sel.TeamID)
 	selectedMembership := workspace.Membership(teamID)
 	if selectedMembership == nil {
-		if strings.TrimSpace(teamID) != "" {
+		if teamID != "" {
 			return nil, fmt.Errorf("team %q is not present in workspace memberships; available: %s", teamID, strings.Join(workspace.AvailableTeamIDs(), ", "))
 		}
 		return nil, fmt.Errorf("workspace is missing active_team membership")
 	}
-	certPath := filepath.Join(workingDir, ".aw", filepath.FromSlash(strings.TrimSpace(selectedMembership.CertPath)))
+	certHome := awconfig.WorktreeIdentityHome(sel.WorkingDir)
+	if strings.TrimSpace(sel.IdentityHome) != "" {
+		certHome = sel.IdentityHome
+	}
+	certPath, err := awconfig.IdentityHomeStoredPath(awconfig.IdentityHome{Root: certHome}, selectedMembership.CertPath)
+	if err != nil {
+		return nil, err
+	}
 	cert, err := awid.LoadTeamCertificate(certPath)
 	if err != nil {
 		return nil, fmt.Errorf("load team certificate for %s: %w", selectedMembership.TeamID, err)
 	}
-	signingKeyPath := awconfig.WorktreeSigningKeyPath(workingDir)
+	signingKeyPath := sel.SigningKey
+	if strings.TrimSpace(sel.IdentityHome) != "" {
+		signingKeyPath, err = awconfig.IdentityHomePath(awconfig.IdentityHome{Root: sel.IdentityHome}, "signing.key")
+		if err != nil {
+			return nil, err
+		}
+	}
 	signingKey, err := awid.LoadSigningKey(signingKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("team certificate found but signing key missing: %w", err)
@@ -544,12 +648,18 @@ func configureResolvedClient(c *aweb.Client, sel *awconfig.Selection, baseURL st
 	if err != nil {
 		return err
 	}
+	// Fail closed. Substituting an empty store here would silently discard every
+	// pinned identity and reopen first-contact TOFU, so anything except a
+	// genuinely absent file (which LoadPinStore reports as a fresh store) aborts
+	// the command. channel-core's loadPinStore already refuses to start on the
+	// same shared ~/.config/aw/known_agents.yaml; Go swallowed it, which left the
+	// two runtimes with opposite behaviour on one file (default-aajc.9).
 	ps, err := awid.LoadPinStore(pinPath)
 	if err != nil {
-		debugLog("load pin store: %v", err)
-		ps = awid.NewPinStore()
+		return fmt.Errorf("%w; refusing to continue without the trust database", err)
 	}
 	c.SetPinStore(ps, pinPath)
+	c.SetPinStorePersister(compareAndSetPinStore)
 	registry, err := newSelectionRegistryResolver(c.Client.HTTPClient(), baseURL, sel.RegistryURL)
 	if err != nil {
 		return err
@@ -752,15 +862,17 @@ func newConfiguredRegistryClient(httpClient *http.Client, baseURL string) (*awid
 }
 
 func loadOptionalWorktreeSigningKey(workingDir string) (ed25519.PrivateKey, error) {
-	workingDir = strings.TrimSpace(workingDir)
-	if workingDir == "" {
-		var err error
-		workingDir, err = os.Getwd()
+	home, err := identityHomeForDir(workingDir)
+	if err != nil {
+		return nil, err
+	}
+	signingKeyPath := awconfig.WorktreeSigningKeyPath(workingDir)
+	if home.External() {
+		signingKeyPath, err = awconfig.IdentityHomePath(home, "signing.key")
 		if err != nil {
 			return nil, err
 		}
 	}
-	signingKeyPath := awconfig.WorktreeSigningKeyPath(workingDir)
 	signingKey, err := awid.LoadSigningKey(signingKeyPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1192,7 +1304,18 @@ func handleFromAddress(address string) string {
 }
 
 func ensureWorktreeContextAt(workingDir string) error {
-	ctxPath := filepath.Join(workingDir, awconfig.DefaultWorktreeContextRelativePath())
+	home, err := identityHomeForDir(workingDir)
+	if err != nil {
+		return err
+	}
+	return ensureWorktreeContextAtIdentityHome(home.Root)
+}
+
+func ensureWorktreeContextAtIdentityHome(identityHome string) error {
+	ctxPath, err := awconfig.IdentityHomePath(awconfig.IdentityHome{Root: identityHome}, "context")
+	if err != nil {
+		return err
+	}
 	if _, err := os.Stat(ctxPath); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
@@ -1408,10 +1531,24 @@ func mailShowConversationError(err error, conversationID string) error {
 // wrong agent when .aw/context resolves to a different account than
 // .aw/workspace.yaml expects.
 func checkIdentityMismatch(workingDir string, sel *awconfig.Selection) error {
+	return checkIdentityMismatchAtIdentityHome(workingDir, "", sel)
+}
+
+func checkIdentityMismatchAtIdentityHome(workingDir, identityHome string, sel *awconfig.Selection) error {
 	if sel == nil || strings.TrimSpace(sel.Alias) == "" {
 		return nil
 	}
-	ws, _, err := awconfig.LoadWorktreeWorkspaceFromDir(workingDir)
+	var ws *awconfig.WorktreeWorkspace
+	var workspacePath string
+	var err error
+	if strings.TrimSpace(identityHome) != "" {
+		workspacePath, err = awconfig.IdentityHomePath(awconfig.IdentityHome{Root: identityHome}, "workspace.yaml")
+		if err == nil {
+			ws, err = awconfig.LoadWorktreeWorkspaceFrom(workspacePath)
+		}
+	} else {
+		ws, workspacePath, err = awconfig.LoadWorktreeWorkspaceFromDir(workingDir)
+	}
 	if err != nil || ws == nil {
 		return nil
 	}
@@ -1429,12 +1566,18 @@ func checkIdentityMismatch(workingDir string, sel *awconfig.Selection) error {
 	}
 	if wsAlias != selAlias {
 		ctxPath := "(resolved from config)"
-		if p, err := awconfig.FindWorktreeContextPath(workingDir); err == nil {
-			ctxPath = p
+		wsPath := workspacePath
+		if strings.TrimSpace(identityHome) != "" {
+			if p, pathErr := awconfig.IdentityHomePath(awconfig.IdentityHome{Root: identityHome}, "context"); pathErr == nil {
+				ctxPath = p
+			}
+		} else {
+			if p, pathErr := awconfig.FindWorktreeContextPath(workingDir); pathErr == nil {
+				ctxPath = p
+			}
 		}
-		wsPath := "(unknown)"
-		if p, err := awconfig.FindWorktreeWorkspacePath(workingDir); err == nil {
-			wsPath = p
+		if strings.TrimSpace(wsPath) == "" {
+			wsPath = "(unknown)"
 		}
 		return &identityMismatchError{
 			ContextPath:    ctxPath,

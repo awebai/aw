@@ -926,7 +926,7 @@ func TestTeamHumanCreateAPIKeyToleratesAPISuffixedAwebURL(t *testing.T) {
 
 			var initPaths []string
 			var server *httptest.Server
-			server = newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server = newLocalHTTPServerHandlerWithURL(t, func(serverURL string, w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/api/v1/workspaces/init":
 					initPaths = append(initPaths, r.URL.Path)
@@ -949,7 +949,7 @@ func TestTeamHumanCreateAPIKeyToleratesAPISuffixedAwebURL(t *testing.T) {
 						t.Fatal(err)
 					}
 					_ = json.NewEncoder(w).Encode(map[string]any{
-						"server_url":     server.URL,
+						"server_url":     serverURL,
 						"team_cert":      encoded,
 						"alias":          "eng",
 						"team_id":        "backend:acme.com",
@@ -977,7 +977,7 @@ func TestTeamHumanCreateAPIKeyToleratesAPISuffixedAwebURL(t *testing.T) {
 				default:
 					t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 				}
-			}))
+			})
 
 			t.Setenv("AWEB_API_KEY", apiKey)
 			t.Setenv("AWEB_URL", server.URL+tc.suffix)
@@ -1005,7 +1005,7 @@ func TestTeamHumanCreateRootOperatorDefaultsToTeamName(t *testing.T) {
 	teamDIDKey := awid.ComputeDIDKey(teamPub)
 	var gotInitAlias string
 	var server *httptest.Server
-	server = newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newLocalHTTPServerHandlerWithURL(t, func(serverURL string, w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/workspaces/init":
 			var body map[string]any
@@ -1022,7 +1022,7 @@ func TestTeamHumanCreateRootOperatorDefaultsToTeamName(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"server_url": server.URL, "team_cert": encoded, "alias": gotInitAlias, "team_id": "backend:acme.com", "workspace_id": "ws-1", "did": didKey, "identity_scope": awid.IdentityModeLocal, "custody": awid.CustodySelf, "api_key": "workspace-sk-ephemeral"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"server_url": serverURL, "team_cert": encoded, "alias": gotInitAlias, "team_id": "backend:acme.com", "workspace_id": "ws-1", "did": didKey, "identity_scope": awid.IdentityModeLocal, "custody": awid.CustodySelf, "api_key": "workspace-sk-ephemeral"})
 		case "/api/v1/connect", "/v1/connect":
 			requireCertificateAuthForTest(t, r)
 			_ = json.NewEncoder(w).Encode(map[string]any{"team_id": "backend:acme.com", "alias": gotInitAlias, "agent_id": "agent-1", "workspace_id": "ws-1", "repo_id": "", "team_did_key": teamDIDKey})
@@ -1033,7 +1033,7 @@ func TestTeamHumanCreateRootOperatorDefaultsToTeamName(t *testing.T) {
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-	}))
+	})
 
 	t.Setenv("AWEB_API_KEY", apiKey)
 	t.Setenv("AWEB_URL", server.URL)
@@ -1195,6 +1195,19 @@ func TestTeamHumanAddAPIKeyNoActiveTeamBootstrapsAndMaterializesProfile(t *testi
 	t.Setenv("HOME", home)
 	t.Setenv("AW_CONFIG_PATH", "")
 	t.Setenv("AWEB_API_KEY", "aw_sk_owner")
+	externalIdentityHome := filepath.Join(root, "external-principal")
+	if err := os.MkdirAll(externalIdentityHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(externalIdentityHome, "sentinel"), []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	canonicalExternalIdentityHome, err := filepath.EvalSymlinks(externalIdentityHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalIdentityHome = canonicalExternalIdentityHome
+	t.Setenv(awconfig.IdentityHomeEnv, externalIdentityHome)
 	t.Chdir(root)
 	jsonFlag = true
 
@@ -1209,7 +1222,7 @@ func TestTeamHumanAddAPIKeyNoActiveTeamBootstrapsAndMaterializesProfile(t *testi
 	var initCalls, connectCalls int
 	var initBody map[string]any
 	var server *httptest.Server
-	server = newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newLocalHTTPServerHandlerWithURL(t, func(serverURL string, w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspaces/init":
 			initCalls++
@@ -1228,7 +1241,7 @@ func TestTeamHumanAddAPIKeyNoActiveTeamBootstrapsAndMaterializesProfile(t *testi
 			if err != nil {
 				t.Fatal(err)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"server_url": server.URL, "team_cert": encoded, "alias": "developer", "team_id": "default:launch.aweb.ai", "workspace_id": "ws-dev", "did": didKey, "stable_id": "", "identity_scope": awid.IdentityModeLocal, "custody": awid.CustodySelf, "api_key": "workspace-sk-dev"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"server_url": serverURL, "team_cert": encoded, "alias": "developer", "team_id": "default:launch.aweb.ai", "workspace_id": "ws-dev", "did": didKey, "stable_id": "", "identity_scope": awid.IdentityModeLocal, "custody": awid.CustodySelf, "api_key": "workspace-sk-dev"})
 		case r.Method == http.MethodPost && (r.URL.Path == "/api/v1/connect" || r.URL.Path == "/v1/connect"):
 			connectCalls++
 			requireCertificateAuthForTest(t, r)
@@ -1248,7 +1261,7 @@ func TestTeamHumanAddAPIKeyNoActiveTeamBootstrapsAndMaterializesProfile(t *testi
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-	}))
+	})
 	t.Setenv("AWEB_URL", server.URL+"/api")
 	t.Setenv(libraryURLEnvVar, server.URL)
 
@@ -1271,6 +1284,13 @@ func TestTeamHumanAddAPIKeyNoActiveTeamBootstrapsAndMaterializesProfile(t *testi
 	}
 	if workspace.APIKey != "workspace-sk-dev" {
 		t.Fatalf("workspace api key=%q", workspace.APIKey)
+	}
+	entries, err := os.ReadDir(externalIdentityHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "sentinel" {
+		t.Fatalf("target provisioning contaminated current external principal: %v", entries)
 	}
 }
 
@@ -1296,7 +1316,7 @@ func TestTeamHumanAddAPIKeyNoActiveTeamBootstrapsGlobalThroughWorkspaceInit(t *t
 	var initBody map[string]any
 	var registeredDIDKey string
 	var server *httptest.Server
-	server = newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newLocalHTTPServerHandlerWithURL(t, func(serverURL string, w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/did":
 			requestOrder = append(requestOrder, "register_identity")
@@ -1330,7 +1350,7 @@ func TestTeamHumanAddAPIKeyNoActiveTeamBootstrapsGlobalThroughWorkspaceInit(t *t
 			if err != nil {
 				t.Fatal(err)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"server_url": server.URL, "team_cert": encoded, "alias": "global-dev", "team_id": "default:launch.aweb.ai", "workspace_id": "ws-global", "did": didKey, "stable_id": stableID, "identity_scope": awid.IdentityModeGlobal, "custody": awid.CustodySelf, "api_key": "workspace-sk-global"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"server_url": serverURL, "team_cert": encoded, "alias": "global-dev", "team_id": "default:launch.aweb.ai", "workspace_id": "ws-global", "did": didKey, "stable_id": stableID, "identity_scope": awid.IdentityModeGlobal, "custody": awid.CustodySelf, "api_key": "workspace-sk-global"})
 		case r.Method == http.MethodPost && (r.URL.Path == "/api/v1/connect" || r.URL.Path == "/v1/connect"):
 			requireCertificateAuthForTest(t, r)
 			_ = json.NewEncoder(w).Encode(map[string]any{"team_id": "default:launch.aweb.ai", "alias": "global-dev", "agent_id": "global-dev", "workspace_id": "ws-global", "repo_id": "repo-1", "team_did_key": teamDIDKey})
@@ -1349,7 +1369,7 @@ func TestTeamHumanAddAPIKeyNoActiveTeamBootstrapsGlobalThroughWorkspaceInit(t *t
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-	}))
+	})
 	t.Setenv("AWEB_URL", server.URL)
 	t.Setenv(libraryURLEnvVar, server.URL)
 	t.Setenv("AWID_REGISTRY_URL", server.URL)
@@ -1621,10 +1641,10 @@ func TestTeamHumanCreateBYOTWithAgentsCreatesTeamAndRoster(t *testing.T) {
 	var namespaceCreated bool
 	var certAliases []string
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newHTTPTestServerHandlerWithURL(t, func(serverURL string, w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/discovery":
-			_ = json.NewEncoder(w).Encode(map[string]any{"aweb_url": server.URL, "registry_url": server.URL})
+			_ = json.NewEncoder(w).Encode(map[string]any{"aweb_url": serverURL, "registry_url": serverURL})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/namespaces/acme.com":
 			if !namespaceCreated {
 				http.NotFound(w, r)
@@ -1665,7 +1685,7 @@ func TestTeamHumanCreateBYOTWithAgentsCreatesTeamAndRoster(t *testing.T) {
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-	}))
+	})
 	defer server.Close()
 	t.Setenv("AWEB_URL", server.URL)
 	teamHumanCreateBYOT = true
@@ -1960,10 +1980,10 @@ func TestTeamHumanAddProfileMaterializeFailureRollsBackCreatedHome(t *testing.T)
 	var registeredCertID string
 	var revokedCertID string
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newHTTPTestServerHandlerWithURL(t, func(serverURL string, w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/discovery":
-			_ = json.NewEncoder(w).Encode(map[string]any{"aweb_url": server.URL, "registry_url": server.URL})
+			_ = json.NewEncoder(w).Encode(map[string]any{"aweb_url": serverURL, "registry_url": serverURL})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/namespaces/local/teams/eng":
 			_ = json.NewEncoder(w).Encode(map[string]any{"team_id": "eng:local", "domain": "local", "name": "eng", "team_did_key": teamDID})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/namespaces/local/teams/eng/certificates":
@@ -1992,7 +2012,7 @@ func TestTeamHumanAddProfileMaterializeFailureRollsBackCreatedHome(t *testing.T)
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-	}))
+	})
 	defer server.Close()
 	t.Setenv(libraryURLEnvVar, server.URL)
 	writeLocalTeamSignedRequestWorkspaceForTest(t, root, server.URL, "eng:local", "eng", memberDID, memberPriv)
@@ -2038,16 +2058,16 @@ func TestTeamHumanAddHostedProfileMaterializeFailureRequiresTeamKeyForHostedRoll
 	removeAuth := ""
 	removeCalls := 0
 	var server *httptest.Server
-	server = newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newLocalHTTPServerHandlerWithURL(t, func(serverURL string, w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/discovery":
-			_ = json.NewEncoder(w).Encode(map[string]any{"aweb_url": server.URL, "registry_url": server.URL})
+			_ = json.NewEncoder(w).Encode(map[string]any{"aweb_url": serverURL, "registry_url": serverURL})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/spawn/create-invite":
 			cert := requireCertificateAuthForTest(t, r)
 			if cert.Team != teamID {
 				t.Fatalf("create-invite cert team=%q want %q", cert.Team, teamID)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"invite_id": "invite-1", "token": "aw_inv_hosted_rollback_token", "server_url": server.URL})
+			_ = json.NewEncoder(w).Encode(map[string]any{"invite_id": "invite-1", "token": "aw_inv_hosted_rollback_token", "server_url": serverURL})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/spawn/accept-invite":
 			var req map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2065,7 +2085,7 @@ func TestTeamHumanAddHostedProfileMaterializeFailureRequiresTeamKeyForHostedRoll
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"team_id": "server-team-id", "team_slug": "default", "namespace": "rollback.aweb.ai",
-				"identity_id": "agent-developer", "alias": "developer", "server_url": server.URL,
+				"identity_id": "agent-developer", "alias": "developer", "server_url": serverURL,
 				"did": didKey, "custody": "self", "lifetime": "ephemeral", "access_mode": "open", "created": true,
 				"team_cert": encoded,
 			})
@@ -2090,7 +2110,7 @@ func TestTeamHumanAddHostedProfileMaterializeFailureRequiresTeamKeyForHostedRoll
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-	}))
+	})
 	defer server.Close()
 	t.Setenv("AWEB_URL", server.URL)
 	t.Setenv(libraryURLEnvVar, server.URL)
@@ -2140,12 +2160,12 @@ func TestTeamHumanAddHostedProfileRollbackFailureIsLoud(t *testing.T) {
 	}
 	justCreatedCertID := ""
 	var server *httptest.Server
-	server = newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newLocalHTTPServerHandlerWithURL(t, func(serverURL string, w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/discovery":
-			_ = json.NewEncoder(w).Encode(map[string]any{"aweb_url": server.URL, "registry_url": server.URL})
+			_ = json.NewEncoder(w).Encode(map[string]any{"aweb_url": serverURL, "registry_url": serverURL})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/spawn/create-invite":
-			_ = json.NewEncoder(w).Encode(map[string]any{"invite_id": "invite-1", "token": "aw_inv_hosted_rollback_fail_token", "server_url": server.URL})
+			_ = json.NewEncoder(w).Encode(map[string]any{"invite_id": "invite-1", "token": "aw_inv_hosted_rollback_fail_token", "server_url": serverURL})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/spawn/accept-invite":
 			var req map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2163,7 +2183,7 @@ func TestTeamHumanAddHostedProfileRollbackFailureIsLoud(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"team_id": "server-team-id", "team_slug": "default", "namespace": "rollback-fail.aweb.ai",
-				"identity_id": "agent-developer", "alias": "developer", "server_url": server.URL,
+				"identity_id": "agent-developer", "alias": "developer", "server_url": serverURL,
 				"did": didKey, "custody": "self", "lifetime": "ephemeral", "access_mode": "open", "created": true,
 				"team_cert": encoded,
 			})
@@ -2178,7 +2198,7 @@ func TestTeamHumanAddHostedProfileRollbackFailureIsLoud(t *testing.T) {
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-	}))
+	})
 	defer server.Close()
 	t.Setenv("AWEB_URL", server.URL)
 	t.Setenv(libraryURLEnvVar, server.URL)

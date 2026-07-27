@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -76,7 +75,7 @@ type doctorAwebProbeResult struct {
 }
 
 func (r *doctorRunner) runWorkspaceDoctorChecks() {
-	state := collectDoctorAwebState(r.workingDir)
+	state := collectDoctorAwebStateAt(r.workingDir, r.identityHome)
 	r.addServerConfiguredChecks(state, r.opts.Mode != doctorModeOnline)
 	r.addWorkspaceReadOnlyInvariant()
 	networkIDs := []string{
@@ -115,7 +114,7 @@ func (r *doctorRunner) runWorkspaceDoctorChecks() {
 }
 
 func (r *doctorRunner) runTeamDoctorChecks() {
-	state := collectDoctorAwebState(r.workingDir)
+	state := collectDoctorAwebStateAt(r.workingDir, r.identityHome)
 	networkIDs := []string{
 		doctorCheckTeamRolesRead,
 		doctorCheckTeamSelectedRoleMatches,
@@ -142,9 +141,13 @@ func (s *doctorAwebState) hasNoWorkspaceContext() bool {
 }
 
 func collectDoctorAwebState(workingDir string) *doctorAwebState {
+	return collectDoctorAwebStateAt(workingDir, "")
+}
+
+func collectDoctorAwebStateAt(workingDir, identityHome string) *doctorAwebState {
 	state := &doctorAwebState{
 		workingDir:    strings.TrimSpace(workingDir),
-		workspacePath: filepath.Join(workingDir, awconfig.DefaultWorktreeWorkspaceRelativePath()),
+		workspacePath: doctorIdentityStatePath(workingDir, identityHome, "workspace.yaml"),
 		certPath:      "",
 		signingKeyDID: "",
 		signingKeyErr: nil,
@@ -152,13 +155,13 @@ func collectDoctorAwebState(workingDir string) *doctorAwebState {
 		certErr:       nil,
 		urlErr:        nil,
 	}
-	workspace, workspacePath, err := loadDoctorWorkspaceFromDir(workingDir)
+	workspace, workspacePath, err := loadDoctorWorkspaceAt(workingDir, identityHome)
 	if err != nil {
 		state.workspaceErr = err
 	} else {
 		state.workspace = workspace
 		state.workspacePath = workspacePath
-		if teamState, err := awconfig.LoadTeamState(workingDir); err == nil {
+		if teamState, err := loadDoctorTeamStateAt(workingDir, identityHome); err == nil {
 			state.membership = awconfig.ActiveMembershipFor(workspace, teamState)
 		}
 		if safe, err := sanitizeLocalURLForOutput(workspace.AwebURL); err != nil {
@@ -168,7 +171,7 @@ func collectDoctorAwebState(workingDir string) *doctorAwebState {
 		}
 	}
 	if state.membership != nil {
-		state.certPath = resolveWorkspaceCertificatePath(workingDir, state.membership.CertPath)
+		state.certPath, _ = resolveIdentityStoredPath(workingDir, identityHome, state.membership.CertPath)
 		if strings.TrimSpace(state.certPath) == "" {
 			state.certErr = errors.New("missing certificate path")
 		} else if cert, err := awid.LoadTeamCertificate(state.certPath); err != nil {
@@ -177,7 +180,7 @@ func collectDoctorAwebState(workingDir string) *doctorAwebState {
 			state.cert = cert
 		}
 	}
-	signingKey, err := awid.LoadSigningKey(awconfig.WorktreeSigningKeyPath(workingDir))
+	signingKey, err := awid.LoadSigningKey(doctorIdentityStatePath(workingDir, identityHome, "signing.key"))
 	if err != nil {
 		state.signingKeyErr = err
 	} else {

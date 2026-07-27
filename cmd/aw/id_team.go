@@ -16,8 +16,10 @@ import (
 	"strings"
 	"time"
 
+	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/awconfig"
 	"github.com/awebai/aw/awid"
+	"github.com/awebai/aw/internal/pathpreflight"
 	"github.com/spf13/cobra"
 )
 
@@ -219,14 +221,16 @@ type acceptedTeamInvite struct {
 }
 
 type teamAcceptInviteOptions struct {
-	Name      string
-	Address   string
-	Scope     string
-	NoAddress bool
+	IdentityHome string
+	Name         string
+	Address      string
+	Scope        string
+	NoAddress    bool
 }
 
 type teamMemberEnrollmentResolveOptions struct {
 	WorkingDir        string
+	IdentityHome      string
 	TeamDomain        string
 	Name              string
 	Address           string
@@ -770,12 +774,24 @@ func loadTeamStateForInvite(workingDir string) (*awconfig.TeamState, string, err
 }
 
 func registryURLForTeamInvite(workingDir, domain, awebURL string) string {
+	return registryURLForTeamInviteAt(workingDir, "", domain, awebURL)
+}
+
+func registryURLForTeamInviteAt(workingDir, identityHome, domain, awebURL string) string {
 	if meta, err := awconfig.LoadControllerMeta(domain); err == nil && meta != nil {
 		if registryURL := strings.TrimSpace(meta.RegistryURL); registryURL != "" {
 			return registryURL
 		}
 	}
-	if identity, _, err := awconfig.LoadWorktreeIdentityFromDir(workingDir); err == nil && identity != nil {
+	var identity *awconfig.WorktreeIdentity
+	if strings.TrimSpace(identityHome) != "" {
+		if identityPath, err := awconfig.IdentityHomePath(awconfig.IdentityHome{Root: identityHome}, "identity.yaml"); err == nil {
+			identity, _ = awconfig.LoadWorktreeIdentityFrom(identityPath)
+		}
+	} else {
+		identity, _, _ = awconfig.LoadWorktreeIdentityFromDir(workingDir)
+	}
+	if identity != nil {
 		if registryURL := strings.TrimSpace(identity.RegistryURL); registryURL != "" {
 			return registryURL
 		}
@@ -805,8 +821,12 @@ func registryURLForTeamInvite(workingDir, domain, awebURL string) string {
 // and local namespaces have no hosted default and correctly resolve to "" when
 // no URL is on record, so they fail closed rather than assume our server.
 func awebURLForTeamInvite(workingDir, teamID string) string {
+	return awebURLForTeamInviteAt(workingDir, "", teamID)
+}
+
+func awebURLForTeamInviteAt(workingDir, identityHome, teamID string) string {
 	teamID = strings.TrimSpace(teamID)
-	if workspace, teamState, _, err := awconfig.LoadWorkspaceAndTeamState(workingDir); err == nil && workspace != nil {
+	if workspace, teamState, _, err := loadCurrentWorkspaceAndTeamState(workingDir, identityHome); err == nil && workspace != nil {
 		if awebURL := strings.TrimSpace(workspace.AwebURL); awebURL != "" {
 			if teamID == "" {
 				if awconfig.ActiveMembershipFor(workspace, teamState) != nil {
@@ -817,7 +837,14 @@ func awebURLForTeamInvite(workingDir, teamID string) string {
 			}
 		}
 	}
-	if teamState, err := awconfig.LoadTeamState(workingDir); err == nil && teamState != nil {
+	var teamState *awconfig.TeamState
+	var err error
+	if strings.TrimSpace(identityHome) != "" {
+		teamState, err = awconfig.LoadTeamStateFromIdentityHome(identityHome)
+	} else {
+		teamState, err = awconfig.LoadTeamState(workingDir)
+	}
+	if err == nil && teamState != nil {
 		membership := teamState.Membership(teamID)
 		if membership == nil && teamID == "" {
 			membership = teamState.ActiveMembership()
@@ -843,12 +870,20 @@ func runTeamAcceptInvite(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	home, err := identityHomeForDir(workingDir)
+	if err != nil {
+		return err
+	}
+	if home.External() && acceptScope != awid.IdentityModeGlobal {
+		return usageError("external identity home requires --global for team invite acceptance; local identity creation is not identity-home-aware")
+	}
 	accepted, err := acceptAndStoreTeamInvite(workingDir, args[0], teamAcceptInviteOptions{
-		Name:      teamAcceptAlias,
-		Address:   teamAcceptAddress,
-		Scope:     acceptScope,
-		NoAddress: teamAcceptNoAddress,
-	}, teamInviteStoreOptions{SetActive: true})
+		IdentityHome: externalIdentityHomeRoot(home),
+		Name:         teamAcceptAlias,
+		Address:      teamAcceptAddress,
+		Scope:        acceptScope,
+		NoAddress:    teamAcceptNoAddress,
+	}, teamInviteStoreOptions{IdentityHome: resolvedEncryptionKeyIdentityHome(home), SetActive: true})
 	if err != nil {
 		return err
 	}
@@ -883,14 +918,19 @@ func teamAcceptScopeFromGlobal(global bool) string {
 }
 
 type teamInviteStoreOptions struct {
+	IdentityHome    encryptionKeyIdentityHomeIntent
 	SetActive       bool
 	RejectDuplicate bool
 }
 
 func acceptAndStoreTeamInvite(workingDir, token string, opts teamAcceptInviteOptions, store teamInviteStoreOptions) (*acceptedTeamInvite, error) {
+	identityHomeRoot, _, err := store.IdentityHome.resolve()
+	if err != nil {
+		return nil, err
+	}
 	var teamState *awconfig.TeamState
 	if store.RejectDuplicate {
-		loaded, err := requireTeamStateForMembership(workingDir)
+		loaded, err := requireTeamStateForMembershipAt(workingDir, identityHomeRoot)
 		if err != nil {
 			if !os.IsNotExist(err) {
 				return nil, err
@@ -908,7 +948,7 @@ func acceptAndStoreTeamInvite(workingDir, token string, opts teamAcceptInviteOpt
 	}
 	// Join deliberately leaves the worktree binding for `aw init`; only the
 	// teams.yaml membership and the encryption key are recorded here.
-	if err := recordAcceptedTeamMembership(workingDir, accepted.Output, accepted.Certificate, accepted.RegistryURL, accepted.AwebURL, recordMembershipOptions{SetActive: store.SetActive}); err != nil {
+	if err := recordAcceptedTeamMembership(workingDir, accepted.Output, accepted.Certificate, accepted.RegistryURL, accepted.AwebURL, recordMembershipOptions{IdentityHome: store.IdentityHome, SetActive: store.SetActive}); err != nil {
 		if store.RejectDuplicate {
 			return nil, rollbackAddedTeamCertificate(workingDir, accepted, err)
 		}
@@ -922,16 +962,21 @@ func runTeamAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	home, err := identityHomeForDir(workingDir)
+	if err != nil {
+		return err
+	}
 	teamAddMemberAddress := strings.TrimSpace(teamAddAddress)
 	if teamAddMemberAddress == "" && !teamAcceptNoAddress {
 		_, teamAddMemberAddress = resolveIdentityFieldsForCert(workingDir)
 	}
 	accepted, err := acceptAndStoreTeamInvite(workingDir, args[0], teamAcceptInviteOptions{
-		Name:      teamAddAlias,
-		Address:   teamAddMemberAddress,
-		Scope:     awid.IdentityModeGlobal,
-		NoAddress: teamAcceptNoAddress,
-	}, teamInviteStoreOptions{SetActive: false, RejectDuplicate: true})
+		IdentityHome: externalIdentityHomeRoot(home),
+		Name:         teamAddAlias,
+		Address:      teamAddMemberAddress,
+		Scope:        awid.IdentityModeGlobal,
+		NoAddress:    teamAcceptNoAddress,
+	}, teamInviteStoreOptions{IdentityHome: resolvedEncryptionKeyIdentityHome(home), SetActive: false, RejectDuplicate: true})
 	if err != nil {
 		return err
 	}
@@ -949,7 +994,11 @@ func runTeamSwitch(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	teamState, err := requireTeamStateForMembership(workingDir)
+	home, err := identityHomeForDir(workingDir)
+	if err != nil {
+		return err
+	}
+	teamState, err := requireTeamStateForMembershipAt(workingDir, externalIdentityHomeRoot(home))
 	if err != nil {
 		return err
 	}
@@ -965,7 +1014,7 @@ func runTeamSwitch(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	teamState.ActiveTeam = teamID
-	if err := awconfig.SaveTeamState(workingDir, teamState); err != nil {
+	if err := saveCurrentTeamState(workingDir, externalIdentityHomeRoot(home), teamState); err != nil {
 		return err
 	}
 	printOutput(teamSwitchOutput{
@@ -980,7 +1029,11 @@ func runTeamList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	teamState, err := requireTeamStateForMembership(workingDir)
+	home, err := identityHomeForDir(workingDir)
+	if err != nil {
+		return err
+	}
+	teamState, err := requireTeamStateForMembershipAt(workingDir, externalIdentityHomeRoot(home))
 	if err != nil {
 		return err
 	}
@@ -992,7 +1045,7 @@ func runTeamList(cmd *cobra.Command, args []string) error {
 			Alias:  strings.TrimSpace(membership.Alias),
 			Active: strings.EqualFold(strings.TrimSpace(membership.TeamID), strings.TrimSpace(teamState.ActiveTeam)),
 		}
-		if cert, err := awconfig.LoadTeamCertificateForTeam(workingDir, membership.TeamID); err == nil && cert != nil {
+		if cert, err := loadTeamCertificateAt(workingDir, externalIdentityHomeRoot(home), membership.TeamID); err == nil && cert != nil {
 			item.IdentityScope = awid.NormalizeIdentityScope(firstNonEmpty(cert.IdentityScope, cert.Lifetime))
 			item.IssuedAt = strings.TrimSpace(cert.IssuedAt)
 		}
@@ -1134,7 +1187,12 @@ func runTeamLeave(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	teamState, err := requireTeamStateForMembership(workingDir)
+	home, err := identityHomeForDir(workingDir)
+	if err != nil {
+		return err
+	}
+	identityHome := externalIdentityHomeRoot(home)
+	teamState, err := requireTeamStateForMembershipAt(workingDir, identityHome)
 	if err != nil {
 		return err
 	}
@@ -1147,10 +1205,16 @@ func runTeamLeave(cmd *cobra.Command, args []string) error {
 	}
 
 	teamState.RemoveMembership(teamID)
-	if err := awconfig.SaveTeamState(workingDir, teamState); err != nil {
+	if err := saveCurrentTeamState(workingDir, identityHome, teamState); err != nil {
 		return err
 	}
 	certPath := awconfig.TeamCertificatePath(workingDir, teamID)
+	if strings.TrimSpace(identityHome) != "" {
+		certPath, err = awconfig.TeamCertificatePathFromIdentityHome(identityHome, teamID)
+		if err != nil {
+			return err
+		}
+	}
 	if err := os.Remove(certPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -1163,6 +1227,10 @@ func runTeamLeave(cmd *cobra.Command, args []string) error {
 }
 
 func createTeamInviteToken(domain, team, registryURL, awebURL string, ephemeral bool) (string, string, error) {
+	return createTeamInviteTokenWithOperation(domain, team, registryURL, awebURL, ephemeral, "")
+}
+
+func createTeamInviteTokenWithOperation(domain, team, registryURL, awebURL string, ephemeral bool, operationID string) (string, string, error) {
 	domain = awconfig.NormalizeDomain(domain)
 	team = strings.ToLower(strings.TrimSpace(team))
 	registryURL = strings.TrimSpace(registryURL)
@@ -1197,6 +1265,7 @@ func createTeamInviteToken(domain, team, registryURL, awebURL string, ephemeral 
 		Secret:      secret,
 		RegistryURL: registryURL,
 		AwebURL:     awebURL,
+		OperationID: operationID,
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := awconfig.SaveTeamInvite(invite); err != nil {
@@ -1210,10 +1279,21 @@ func createTeamInviteToken(domain, team, registryURL, awebURL string, ephemeral 
 }
 
 func createHostedTeamInviteToken(workingDir, teamID string, ephemeral bool) (string, string, error) {
+	return createHostedTeamInviteTokenAt(workingDir, "", teamID, ephemeral)
+}
+
+func createHostedTeamInviteTokenAt(workingDir, identityHome, teamID string, ephemeral bool) (string, string, error) {
 	if !ephemeral {
 		return "", "", usageError("--member-global is not supported for hosted team invites")
 	}
-	client, _, err := resolveClientSelectionForDirWithTeamOverride(workingDir, teamID)
+	var client *aweb.Client
+	var err error
+	if strings.TrimSpace(identityHome) != "" {
+		home := awconfig.IdentityHome{Root: identityHome, Source: awconfig.IdentityHomeFlag}
+		client, _, err = resolveClientSelectionAtIdentityHomeWithTeamOverride(workingDir, teamID, home)
+	} else {
+		client, _, err = resolveClientSelectionForDirWithTeamOverride(workingDir, teamID)
+	}
 	if err != nil {
 		return "", "", fmt.Errorf(
 			"no local team controller key for %s and cloud-hosted invite authority is unavailable: %w",
@@ -1259,7 +1339,7 @@ func acceptTeamInviteWithDetails(workingDir, token string, opts teamAcceptInvite
 	if opts.NoAddress && strings.TrimSpace(opts.Address) != "" {
 		return nil, usageError("--address and --no-address cannot be used together")
 	}
-	if err := ensureTeamAcceptScopeAllowed(workingDir, scope); err != nil {
+	if err := ensureTeamAcceptScopeAllowed(workingDir, opts.IdentityHome, scope); err != nil {
 		return nil, err
 	}
 
@@ -1296,6 +1376,7 @@ func acceptTeamInviteWithDetails(workingDir, token string, opts teamAcceptInvite
 
 	plan, err := resolveTeamMemberEnrollment(ctx, teamMemberEnrollmentResolveOptions{
 		WorkingDir:        workingDir,
+		IdentityHome:      opts.IdentityHome,
 		TeamDomain:        invite.Domain,
 		Name:              opts.Name,
 		Address:           opts.Address,
@@ -1344,7 +1425,7 @@ func acceptTeamInviteWithDetails(workingDir, token string, opts teamAcceptInvite
 		)
 	}
 
-	certPath, err := awconfig.SaveTeamCertificateForTeam(workingDir, teamID, cert)
+	certPath, err := saveAcceptedTeamCertificate(workingDir, opts.IdentityHome, teamID, cert)
 	if err != nil {
 		return nil, err
 	}
@@ -1428,7 +1509,7 @@ func acceptHostedTeamInviteWithDetails(workingDir, token string, opts teamAccept
 	if opts.NoAddress && strings.TrimSpace(opts.Address) != "" {
 		return nil, usageError("--address and --no-address cannot be used together")
 	}
-	if err := ensureTeamAcceptScopeAllowed(workingDir, scope); err != nil {
+	if err := ensureTeamAcceptScopeAllowed(workingDir, opts.IdentityHome, scope); err != nil {
 		return nil, err
 	}
 
@@ -1443,7 +1524,7 @@ func acceptHostedTeamInviteWithDetails(workingDir, token string, opts teamAccept
 		addressName = name
 	}
 	if alias == "" {
-		alias = resolveAliasFromIdentity(workingDir)
+		alias = resolveAliasFromIdentityAt(workingDir, opts.IdentityHome)
 	}
 	if alias == "" && addressName != "" {
 		alias = addressName
@@ -1462,7 +1543,7 @@ func acceptHostedTeamInviteWithDetails(workingDir, token string, opts teamAccept
 	var didKey string
 	stableID := ""
 	if scope == awid.IdentityModeGlobal {
-		identity, globalSigningKey, err := resolveGlobalIdentityForTeamAccept(workingDir)
+		identity, globalSigningKey, err := resolveGlobalIdentityForTeamAccept(workingDir, opts.IdentityHome)
 		if err != nil {
 			return nil, err
 		}
@@ -1474,7 +1555,7 @@ func acceptHostedTeamInviteWithDetails(workingDir, token string, opts teamAccept
 		// Persist the generated signing key to the home BEFORE calling AC, so a retry
 		// after AC has committed presents the SAME key and hits AC's idempotent
 		// re-mint instead of generating a new key (which AC 409s as a mismatch).
-		pub, signingKey, err = hostedAcceptSigningKey(workingDir)
+		pub, signingKey, err = hostedAcceptSigningKeyAt(workingDir, opts.IdentityHome)
 		if err != nil {
 			return nil, err
 		}
@@ -1560,16 +1641,22 @@ func acceptHostedTeamInviteWithDetails(workingDir, token string, opts teamAccept
 	if err != nil {
 		return nil, err
 	}
+	home, err := identityHomeForTarget(workingDir, opts.IdentityHome)
+	if err != nil {
+		return nil, err
+	}
 	if scope == awid.IdentityModeGlobal {
-		if err := persistLocalSigningKeyAndCertificate(workingDir, signingKey, cert); err != nil {
+		if err := persistLocalSigningKeyAndCertificateAt(workingDir, home.Root, signingKey, cert); err != nil {
 			return nil, err
 		}
-	} else if err := persistGuidedHostedState(workingDir, registryURL, signingKey, cert, didKey, stableID, memberAddress, false); err != nil {
+	} else if err := persistGuidedHostedState(workingDir, registryURL, signingKey, cert, didKey, stableID, memberAddress, false, home.Root); err != nil {
 		return nil, err
 	}
 	// Accept completed: clear the pending marker so the home is no longer in
 	// pending-accept state. (The completed-identity guard already protects it.)
-	_ = os.Remove(hostedAcceptPendingMarkerPath(workingDir))
+	if err := removeHostedAcceptPendingMarker(hostedAcceptPendingMarkerPath(workingDir, home.Root)); err != nil {
+		return nil, err
+	}
 
 	return &acceptedTeamInvite{
 		Output: &teamAcceptInviteOutput{
@@ -1590,16 +1677,32 @@ func acceptHostedTeamInviteWithDetails(workingDir, token string, opts teamAccept
 // key. A pending key with no completed identity/cert/workspace is reloaded (a
 // retry); an already-completed accept is refused rather than overwritten.
 func hostedAcceptSigningKey(workingDir string) (ed25519.PublicKey, ed25519.PrivateKey, error) {
+	return hostedAcceptSigningKeyAt(workingDir, "")
+}
+
+func hostedAcceptSigningKeyAt(workingDir, identityHome string) (ed25519.PublicKey, ed25519.PrivateKey, error) {
 	if err := ensureAwebRuntimeGitIgnored(workingDir); err != nil {
 		return nil, nil, err
 	}
-	keyPath := awconfig.WorktreeSigningKeyPath(workingDir)
-	markerPath := hostedAcceptPendingMarkerPath(workingDir)
+	home, err := identityHomeForTarget(workingDir, identityHome)
+	if err != nil {
+		return nil, nil, err
+	}
+	keyPath, err := awconfig.IdentityHomePath(home, "signing.key")
+	if err != nil {
+		return nil, nil, err
+	}
+	markerPath := hostedAcceptPendingMarkerPath(workingDir, home.Root)
 	if _, err := os.Stat(keyPath); err == nil {
-		completedPaths := []string{
-			filepath.Join(workingDir, awconfig.DefaultWorktreeIdentityRelativePath()),
-			filepath.Join(workingDir, awconfig.DefaultWorktreeWorkspaceRelativePath()),
+		identityPath, pathErr := awconfig.IdentityHomePath(home, "identity.yaml")
+		if pathErr != nil {
+			return nil, nil, pathErr
 		}
+		workspacePath, pathErr := awconfig.IdentityHomePath(home, "workspace.yaml")
+		if pathErr != nil {
+			return nil, nil, pathErr
+		}
+		completedPaths := []string{identityPath, workspacePath}
 		for _, path := range completedPaths {
 			if _, err := os.Stat(path); err == nil {
 				return nil, nil, usageError("refusing to overwrite existing %s", path)
@@ -1611,7 +1714,10 @@ func hostedAcceptSigningKey(workingDir string) (ed25519.PublicKey, ed25519.Priva
 		if markerErr != nil {
 			return nil, nil, markerErr
 		}
-		certsPath := awconfig.TeamCertificatesDir(workingDir)
+		certsPath := filepath.Join(home.Root, "team-certs")
+		if err := pathpreflight.PreflightDir(certsPath, "team certificate directory", pathpreflight.AllowTempAmbientSymlinkPrefix()); err != nil {
+			return nil, nil, err
+		}
 		if _, err := os.Stat(certsPath); err == nil {
 			// A previous hosted accept can fail after writing the certificate but
 			// before writing identity.yaml. The pending marker proves this is the
@@ -1642,17 +1748,28 @@ func hostedAcceptSigningKey(workingDir string) (ed25519.PublicKey, ed25519.Priva
 	if err := awid.SaveSigningKey(keyPath, signingKey); err != nil {
 		return nil, nil, fmt.Errorf("save pending hosted accept signing key: %w", err)
 	}
-	if err := os.WriteFile(markerPath, []byte("pending hosted accept\n"), 0o600); err != nil {
-		return nil, nil, fmt.Errorf("write pending hosted accept marker: %w", err)
+	if err := writeHostedAcceptPendingMarker(markerPath); err != nil {
+		return nil, nil, err
 	}
 	return pub, signingKey, nil
+}
+
+func identityHomeForTarget(workingDir, identityHome string) (awconfig.IdentityHome, error) {
+	if strings.TrimSpace(identityHome) != "" {
+		return awconfig.IdentityHome{Root: filepath.Clean(identityHome)}, nil
+	}
+	return identityHomeForDir(workingDir)
 }
 
 // hostedAcceptPendingMarkerPath is the marker written next to the signing key
 // while a hosted accept is pending, so a retry reuses the key while a stray
 // leftover key (no marker) is refused.
-func hostedAcceptPendingMarkerPath(workingDir string) string {
-	return filepath.Join(filepath.Dir(awconfig.WorktreeSigningKeyPath(workingDir)), "pending-hosted-accept")
+func hostedAcceptPendingMarkerPath(workingDir string, identityHomes ...string) string {
+	root := filepath.Join(filepath.Clean(workingDir), ".aw")
+	if len(identityHomes) > 0 && strings.TrimSpace(identityHomes[0]) != "" {
+		root = filepath.Clean(identityHomes[0])
+	}
+	return filepath.Join(root, "pending-hosted-accept")
 }
 
 func validateHostedTeamInviteAcceptResponse(resp *awid.SpawnAcceptInviteResponse, didKey, requestedAlias, expectedStableID, expectedAddress, expectedScope string, expectedNoAddress bool) (*awid.TeamCertificate, string, error) {
@@ -1757,7 +1874,34 @@ func revokeAcceptedTeamCertificate(accepted *acceptedTeamInvite) error {
 	return nil
 }
 
+func preflightHostedAcceptPendingMarker(markerPath string) error {
+	return pathpreflight.PreflightFile(markerPath, "hosted accept recovery marker", pathpreflight.AllowTempAmbientSymlinkPrefix())
+}
+
+func writeHostedAcceptPendingMarker(markerPath string) error {
+	if err := preflightHostedAcceptPendingMarker(markerPath); err != nil {
+		return err
+	}
+	if err := os.WriteFile(markerPath, []byte("pending hosted accept\n"), 0o600); err != nil {
+		return fmt.Errorf("write pending hosted accept marker: %w", err)
+	}
+	return nil
+}
+
+func removeHostedAcceptPendingMarker(markerPath string) error {
+	if err := preflightHostedAcceptPendingMarker(markerPath); err != nil {
+		return err
+	}
+	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func statHostedAcceptPendingMarker(markerPath, keyPath string) error {
+	if err := preflightHostedAcceptPendingMarker(markerPath); err != nil {
+		return err
+	}
 	if _, err := os.Stat(markerPath); err != nil {
 		if os.IsNotExist(err) {
 			return usageError(
@@ -1988,7 +2132,7 @@ func runTeamFetchCert(cmd *cobra.Command, args []string) error {
 			}, existingCert, "", "", false); err != nil {
 				return err
 			}
-			if err := ensureLocalIdentityEncryptionKeyForDir(workingDir); err != nil {
+			if err := ensureLocalIdentityEncryptionKeyForDir(workingDir, currentEncryptionKeyIdentityHome()); err != nil {
 				return err
 			}
 			printOutput(teamFetchCertOutput{
@@ -2049,7 +2193,7 @@ func runTeamFetchCert(cmd *cobra.Command, args []string) error {
 	}, cert, registryURL, "", false); err != nil {
 		return err
 	}
-	if err := ensureLocalIdentityEncryptionKeyForDir(workingDir); err != nil {
+	if err := ensureLocalIdentityEncryptionKeyForDir(workingDir, currentEncryptionKeyIdentityHome()); err != nil {
 		return err
 	}
 
@@ -2219,16 +2363,24 @@ func postHostedTeamRemoveMember(ctx context.Context, awebURL, apiKey, teamID str
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	resp, err := (&http.Client{Timeout: awid.APITimeout(), Transport: awid.NewAPITransport()}).Do(req)
+	resp, err := awid.DoNoRedirect(&http.Client{Timeout: awid.APITimeout(), Transport: awid.NewAPITransport()}, req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	responseLimit := int64(awid.MaxResponseSize)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		responseLimit = awid.MaxErrorResponseSize
+	}
+	responseBody, err := awid.ReadAllBounded(resp.Body, responseLimit)
+	if err != nil {
+		return nil, fmt.Errorf("read hosted remove-member response: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var detail struct {
 			Detail any `json:"detail"`
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&detail)
+		_ = json.Unmarshal(responseBody, &detail)
 		if detail.Detail != nil {
 			encoded, _ := json.Marshal(detail.Detail)
 			return nil, fmt.Errorf("hosted remove-member returned %d: %s", resp.StatusCode, strings.TrimSpace(string(encoded)))
@@ -2236,7 +2388,7 @@ func postHostedTeamRemoveMember(ctx context.Context, awebURL, apiKey, teamID str
 		return nil, fmt.Errorf("hosted remove-member returned %d", resp.StatusCode)
 	}
 	var out hostedTeamRemoveMemberResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(responseBody, &out); err != nil {
 		return nil, fmt.Errorf("decode hosted remove-member response: %w", err)
 	}
 	if strings.EqualFold(strings.TrimSpace(out.Status), "not_found") {
@@ -2529,16 +2681,24 @@ func postTeamRegister(ctx context.Context, endpoint string, body map[string]any,
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	resp, err := newTeamCloudHTTPClient().Do(req)
+	resp, err := awid.DoNoRedirect(newTeamCloudHTTPClient(), req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	responseLimit := int64(awid.MaxResponseSize)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		responseLimit = awid.MaxErrorResponseSize
+	}
+	responseBody, err := awid.ReadAllBounded(resp.Body, responseLimit)
+	if err != nil {
+		return fmt.Errorf("read service register response: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var detail struct {
 			Detail any `json:"detail"`
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&detail)
+		_ = json.Unmarshal(responseBody, &detail)
 		if detail.Detail != nil {
 			encoded, _ := json.Marshal(detail.Detail)
 			return fmt.Errorf("service register: http %d: %s", resp.StatusCode, strings.TrimSpace(string(encoded)))
@@ -2546,7 +2706,7 @@ func postTeamRegister(ctx context.Context, endpoint string, body map[string]any,
 		return fmt.Errorf("service register: http %d", resp.StatusCode)
 	}
 	if out != nil {
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		if err := json.Unmarshal(responseBody, out); err != nil {
 			return err
 		}
 	}
@@ -2752,16 +2912,24 @@ func postTeamCleanupCloud(ctx context.Context, awebURL string, body map[string]a
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	resp, err := newTeamCloudHTTPClient().Do(req)
+	resp, err := awid.DoNoRedirect(newTeamCloudHTTPClient(), req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	responseLimit := int64(awid.MaxResponseSize)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		responseLimit = awid.MaxErrorResponseSize
+	}
+	responseBody, err := awid.ReadAllBounded(resp.Body, responseLimit)
+	if err != nil {
+		return fmt.Errorf("read cloud cleanup response: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var detail struct {
 			Detail any `json:"detail"`
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&detail)
+		_ = json.Unmarshal(responseBody, &detail)
 		if detail.Detail != nil {
 			encoded, _ := json.Marshal(detail.Detail)
 			return fmt.Errorf("aweb: http %d: %s", resp.StatusCode, strings.TrimSpace(string(encoded)))
@@ -2769,7 +2937,7 @@ func postTeamCleanupCloud(ctx context.Context, awebURL string, body map[string]a
 		return fmt.Errorf("aweb: http %d", resp.StatusCode)
 	}
 	if out != nil {
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		if err := json.Unmarshal(responseBody, out); err != nil {
 			return err
 		}
 	}
@@ -2817,7 +2985,10 @@ func loadCurrentTeamCertificate(workingDir string) (*awid.TeamCertificate, strin
 		if selectedMembership == nil {
 			return nil, "", fmt.Errorf("teams state is missing selected team membership")
 		}
-		certPath := filepath.Join(workingDir, ".aw", filepath.FromSlash(strings.TrimSpace(selectedMembership.CertPath)))
+		certPath, err := awconfig.WorktreeStoredIdentityPath(workingDir, selectedMembership.CertPath)
+		if err != nil {
+			return nil, "", err
+		}
 		cert, err := awid.LoadTeamCertificate(certPath)
 		if err != nil {
 			return nil, "", fmt.Errorf("load active team certificate %s: %w", certPath, err)
@@ -2835,11 +3006,46 @@ func loadCurrentTeamCertificate(workingDir string) (*awid.TeamCertificate, strin
 	if len(stored) > 1 {
 		return nil, "", fmt.Errorf("multiple team certificates found under %s; set an active team first", awconfig.TeamCertificatesDir(workingDir))
 	}
-	return stored[0].Certificate, filepath.Join(workingDir, ".aw", filepath.FromSlash(stored[0].CertPath)), nil
+	certPath, err := awconfig.WorktreeStoredIdentityPath(workingDir, stored[0].CertPath)
+	if err != nil {
+		return nil, "", err
+	}
+	return stored[0].Certificate, certPath, nil
+}
+
+func saveCurrentTeamState(workingDir, identityHome string, state *awconfig.TeamState) error {
+	if strings.TrimSpace(identityHome) != "" {
+		return awconfig.SaveTeamStateToIdentityHome(identityHome, state)
+	}
+	return awconfig.SaveTeamState(workingDir, state)
+}
+
+func loadTeamCertificateAt(workingDir, identityHome, teamID string) (*awid.TeamCertificate, error) {
+	if strings.TrimSpace(identityHome) != "" {
+		return awconfig.LoadTeamCertificateForTeamFromIdentityHome(identityHome, teamID)
+	}
+	return awconfig.LoadTeamCertificateForTeam(workingDir, teamID)
+}
+
+func saveAcceptedTeamCertificate(workingDir, identityHome, teamID string, cert *awid.TeamCertificate) (string, error) {
+	if strings.TrimSpace(identityHome) != "" {
+		return awconfig.SaveTeamCertificateForTeamToIdentityHome(identityHome, teamID, cert)
+	}
+	return awconfig.SaveTeamCertificateForTeam(workingDir, teamID, cert)
 }
 
 func requireTeamStateForMembership(workingDir string) (*awconfig.TeamState, error) {
-	teamState, err := awconfig.LoadTeamState(workingDir)
+	return requireTeamStateForMembershipAt(workingDir, "")
+}
+
+func requireTeamStateForMembershipAt(workingDir, identityHome string) (*awconfig.TeamState, error) {
+	var teamState *awconfig.TeamState
+	var err error
+	if strings.TrimSpace(identityHome) != "" {
+		teamState, err = awconfig.LoadTeamStateFromIdentityHome(identityHome)
+	} else {
+		teamState, err = awconfig.LoadTeamState(workingDir)
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, usageError("current identity is missing .aw/teams.yaml; join a team first")
@@ -2852,7 +3058,9 @@ func requireTeamStateForMembership(workingDir string) (*awconfig.TeamState, erro
 func rollbackAddedTeamCertificate(workingDir string, accepted *acceptedTeamInvite, cause error) error {
 	revokeErr := revokeAcceptedTeamCertificate(accepted)
 	if accepted != nil && accepted.Output != nil && strings.TrimSpace(accepted.Output.CertPath) != "" {
-		_ = os.Remove(filepath.Join(workingDir, ".aw", filepath.FromSlash(strings.TrimSpace(accepted.Output.CertPath))))
+		if certPath, err := awconfig.WorktreeStoredIdentityPath(workingDir, accepted.Output.CertPath); err == nil {
+			_ = os.Remove(certPath)
+		}
 	}
 	if revokeErr != nil {
 		return fmt.Errorf("%w (rollback revoke failed: %v)", cause, revokeErr)
@@ -2866,6 +3074,7 @@ func rollbackAddedTeamCertificate(workingDir string, accepted *acceptedTeamInvit
 // agent is ready to run, while `aw team join`/`aw team accept-invite` leave it unset
 // and defer it to `aw init`.
 type recordMembershipOptions struct {
+	IdentityHome          encryptionKeyIdentityHomeIntent
 	SetActive             bool
 	WriteWorkspaceBinding bool
 }
@@ -2877,7 +3086,11 @@ type recordMembershipOptions struct {
 // certificate was obtained (local mint / hosted accept / cross-machine fetch) stays
 // with each caller; only these shared steps live here.
 func recordAcceptedTeamMembership(workingDir string, output *teamAcceptInviteOutput, cert *awid.TeamCertificate, registryURL, awebURL string, opts recordMembershipOptions) error {
-	if err := upsertAcceptedTeamMembershipState(workingDir, output, cert, registryURL, awebURL, opts.SetActive); err != nil {
+	identityHomeRoot, _, err := opts.IdentityHome.resolve()
+	if err != nil {
+		return err
+	}
+	if err := upsertAcceptedTeamMembershipState(workingDir, output, cert, registryURL, awebURL, opts.SetActive, identityHomeRoot); err != nil {
 		return err
 	}
 	if opts.WriteWorkspaceBinding {
@@ -2885,14 +3098,14 @@ func recordAcceptedTeamMembership(workingDir string, output *teamAcceptInviteOut
 			return err
 		}
 	}
-	return ensureLocalIdentityEncryptionKeyForDir(workingDir)
+	return ensureLocalIdentityEncryptionKeyForDir(workingDir, opts.IdentityHome)
 }
 
-func upsertAcceptedTeamMembershipState(workingDir string, output *teamAcceptInviteOutput, cert *awid.TeamCertificate, registryURL, awebURL string, setActive bool) error {
+func upsertAcceptedTeamMembershipState(workingDir string, output *teamAcceptInviteOutput, cert *awid.TeamCertificate, registryURL, awebURL string, setActive bool, identityHomes ...string) error {
 	if output == nil || cert == nil {
 		return fmt.Errorf("accepted team membership is required")
 	}
-	teamState, err := loadOptionalTeamState(workingDir)
+	teamState, err := loadOptionalTeamState(workingDir, identityHomes...)
 	if err != nil {
 		return err
 	}
@@ -2924,11 +3137,20 @@ func upsertAcceptedTeamMembershipState(workingDir string, output *teamAcceptInvi
 	if setActive || strings.TrimSpace(teamState.ActiveTeam) == "" {
 		teamState.ActiveTeam = strings.TrimSpace(output.TeamID)
 	}
+	if len(identityHomes) > 0 && strings.TrimSpace(identityHomes[0]) != "" {
+		return awconfig.SaveTeamStateToIdentityHome(identityHomes[0], teamState)
+	}
 	return awconfig.SaveTeamState(workingDir, teamState)
 }
 
-func loadOptionalTeamState(workingDir string) (*awconfig.TeamState, error) {
-	teamState, err := awconfig.LoadTeamState(workingDir)
+func loadOptionalTeamState(workingDir string, identityHomes ...string) (*awconfig.TeamState, error) {
+	var teamState *awconfig.TeamState
+	var err error
+	if len(identityHomes) > 0 && strings.TrimSpace(identityHomes[0]) != "" {
+		teamState, err = awconfig.LoadTeamStateFromIdentityHome(identityHomes[0])
+	} else {
+		teamState, err = awconfig.LoadTeamState(workingDir)
+	}
 	if err == nil {
 		return teamState, nil
 	}
@@ -3126,7 +3348,7 @@ func resolveTeamMemberEnrollment(ctx context.Context, opts teamMemberEnrollmentR
 	}
 	alias := strings.TrimSpace(opts.Name)
 	if alias == "" {
-		alias = resolveAliasFromIdentity(opts.WorkingDir)
+		alias = resolveAliasFromIdentityAt(opts.WorkingDir, opts.IdentityHome)
 	}
 	if alias == "" {
 		return teamMemberEnrollmentPlan{}, usageError("--name is required (no identity found to derive name from)")
@@ -3144,19 +3366,19 @@ func resolveTeamMemberEnrollment(ctx context.Context, opts teamMemberEnrollmentR
 		if opts.NoAddress {
 			return teamMemberEnrollmentPlan{}, usageError("--no-address requires --global")
 		}
-		teamState, err := loadOptionalTeamState(opts.WorkingDir)
+		teamState, err := loadOptionalTeamState(opts.WorkingDir, opts.IdentityHome)
 		if err != nil {
 			return teamMemberEnrollmentPlan{}, err
 		}
 		if teamState != nil && len(teamState.Memberships) > 0 {
 			return teamMemberEnrollmentPlan{}, usageError("local identities can only enroll in one team; use --first-agent-global/--global to reuse a global identity across teams, or use a fresh workspace for local")
 		}
-		if identity, err := awconfig.ResolveIdentity(opts.WorkingDir); err == nil && strings.TrimSpace(identity.IdentityScope) == awid.IdentityModeGlobal {
+		if identity, err := resolveTeamAcceptIdentity(opts.WorkingDir, opts.IdentityHome); err == nil && strings.TrimSpace(identity.IdentityScope) == awid.IdentityModeGlobal {
 			return teamMemberEnrollmentPlan{}, usageError("this workspace already has a global identity; use --global/--first-agent-global to reuse it, or use a fresh workspace for local")
 		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return teamMemberEnrollmentPlan{}, err
 		}
-		memberDIDKey, err := resolveOrGenerateMemberDIDKey(opts.WorkingDir, opts.AllowLocalMint)
+		memberDIDKey, err := resolveOrGenerateMemberDIDKeyAt(opts.WorkingDir, opts.IdentityHome, opts.AllowLocalMint)
 		if err != nil {
 			return teamMemberEnrollmentPlan{}, err
 		}
@@ -3165,7 +3387,7 @@ func resolveTeamMemberEnrollment(ctx context.Context, opts teamMemberEnrollmentR
 	}
 
 	plan.Lifetime = awid.LifetimePersistent
-	identity, signingKey, err := resolveGlobalIdentityForTeamAccept(opts.WorkingDir)
+	identity, signingKey, err := resolveGlobalIdentityForTeamAccept(opts.WorkingDir, opts.IdentityHome)
 	if err != nil {
 		return teamMemberEnrollmentPlan{}, err
 	}
@@ -3177,11 +3399,7 @@ func resolveTeamMemberEnrollment(ctx context.Context, opts teamMemberEnrollmentR
 		return teamMemberEnrollmentPlan{}, usageError("--address and --no-address cannot be used together")
 	}
 	if plan.MemberAddress != "" {
-		lookupSigningKey, err := loadOptionalWorktreeSigningKey(opts.WorkingDir)
-		if err != nil {
-			return teamMemberEnrollmentPlan{}, err
-		}
-		if err := validateMemberAddressForCertificate(ctx, opts.Registry, opts.RegistryURL, plan.MemberAddress, plan.MemberDIDAW, plan.MemberDIDKey, lookupSigningKey); err != nil {
+		if err := validateMemberAddressForCertificate(ctx, opts.Registry, opts.RegistryURL, plan.MemberAddress, plan.MemberDIDAW, plan.MemberDIDKey, signingKey); err != nil {
 			return teamMemberEnrollmentPlan{}, err
 		}
 	} else if !opts.NoAddress {
@@ -3215,15 +3433,15 @@ func resolveTeamMemberEnrollment(ctx context.Context, opts teamMemberEnrollmentR
 	return plan, nil
 }
 
-func ensureTeamAcceptScopeAllowed(workingDir, scope string) error {
-	teamState, err := loadOptionalTeamState(workingDir)
+func ensureTeamAcceptScopeAllowed(workingDir, identityHome, scope string) error {
+	teamState, err := loadOptionalTeamState(workingDir, identityHome)
 	if err != nil {
 		return err
 	}
 	if scope == awid.IdentityModeLocal && teamState != nil && len(teamState.Memberships) > 0 {
 		return usageError("local identities can only join one team; use --global to reuse a global identity across teams, or accept this local invite in a fresh workspace")
 	}
-	identity, err := awconfig.ResolveIdentity(workingDir)
+	identity, err := resolveTeamAcceptIdentity(workingDir, identityHome)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -3236,8 +3454,15 @@ func ensureTeamAcceptScopeAllowed(workingDir, scope string) error {
 	return nil
 }
 
-func resolveGlobalIdentityForTeamAccept(workingDir string) (*awconfig.ResolvedIdentity, ed25519.PrivateKey, error) {
-	identity, err := awconfig.ResolveIdentity(workingDir)
+func resolveTeamAcceptIdentity(workingDir, identityHome string) (*awconfig.ResolvedIdentity, error) {
+	if strings.TrimSpace(identityHome) != "" {
+		return awconfig.ResolveIdentityFromHome(workingDir, identityHome)
+	}
+	return awconfig.ResolveIdentity(workingDir)
+}
+
+func resolveGlobalIdentityForTeamAccept(workingDir, identityHome string) (*awconfig.ResolvedIdentity, ed25519.PrivateKey, error) {
+	identity, err := resolveTeamAcceptIdentity(workingDir, identityHome)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil, usageError("--global/--first-agent-global requires an existing global identity; run `aw id create` first")
@@ -3329,15 +3554,33 @@ func validateMemberAddressForCertificate(
 }
 
 func resolveOrGenerateMemberDIDKey(workingDir string, ephemeral bool) (string, error) {
-	// Try to load existing identity
-	identityPath := filepath.Join(workingDir, awconfig.DefaultWorktreeIdentityRelativePath())
+	return resolveOrGenerateMemberDIDKeyAt(workingDir, "", ephemeral)
+}
+
+func resolveOrGenerateMemberDIDKeyAt(workingDir, identityHome string, ephemeral bool) (string, error) {
+	// Try to load existing identity.
+	identityPath := awconfig.WorktreeIdentityPath(workingDir)
+	if strings.TrimSpace(identityHome) != "" {
+		path, err := awconfig.IdentityHomePath(awconfig.IdentityHome{Root: identityHome}, "identity.yaml")
+		if err != nil {
+			return "", err
+		}
+		identityPath = path
+	}
 	identity, err := awconfig.LoadWorktreeIdentityFrom(identityPath)
 	if err == nil && strings.TrimSpace(identity.DID) != "" {
 		return strings.TrimSpace(identity.DID), nil
 	}
 
-	// Try to load existing signing key
+	// Try to load existing signing key.
 	signingKeyPath := awconfig.WorktreeSigningKeyPath(workingDir)
+	if strings.TrimSpace(identityHome) != "" {
+		path, err := awconfig.IdentityHomePath(awconfig.IdentityHome{Root: identityHome}, "signing.key")
+		if err != nil {
+			return "", err
+		}
+		signingKeyPath = path
+	}
 	signingKey, err := awid.LoadSigningKey(signingKeyPath)
 	if err == nil {
 		return awid.ComputeDIDKey(signingKey.Public().(ed25519.PublicKey)), nil
@@ -3352,10 +3595,12 @@ func resolveOrGenerateMemberDIDKey(workingDir string, ephemeral bool) (string, e
 	if err != nil {
 		return "", err
 	}
-	if err := ensureAwebRuntimeGitIgnored(workingDir); err != nil {
-		return "", err
+	if strings.TrimSpace(identityHome) == "" {
+		if err := ensureAwebRuntimeGitIgnored(workingDir); err != nil {
+			return "", err
+		}
 	}
-	if err := awid.SaveSigningKey(signingKeyPath, priv); err != nil {
+	if err := awid.SaveSigningKeyExclusive(signingKeyPath, priv); err != nil {
 		return "", err
 	}
 	return awid.ComputeDIDKey(pub), nil
@@ -3364,7 +3609,7 @@ func resolveOrGenerateMemberDIDKey(workingDir string, ephemeral bool) (string, e
 // resolveIdentityFieldsForCert reads stable identity fields from .aw/identity.yaml.
 // Returns empty strings for local agents that have no identity.yaml.
 func resolveIdentityFieldsForCert(workingDir string) (didAW, address string) {
-	identityPath := filepath.Join(workingDir, awconfig.DefaultWorktreeIdentityRelativePath())
+	identityPath := awconfig.WorktreeIdentityPath(workingDir)
 	identity, err := awconfig.LoadWorktreeIdentityFrom(identityPath)
 	if err != nil {
 		return "", ""
@@ -3373,7 +3618,18 @@ func resolveIdentityFieldsForCert(workingDir string) (didAW, address string) {
 }
 
 func resolveAliasFromIdentity(workingDir string) string {
-	identityPath := filepath.Join(workingDir, awconfig.DefaultWorktreeIdentityRelativePath())
+	return resolveAliasFromIdentityAt(workingDir, "")
+}
+
+func resolveAliasFromIdentityAt(workingDir, identityHome string) string {
+	identityPath := awconfig.WorktreeIdentityPath(workingDir)
+	if strings.TrimSpace(identityHome) != "" {
+		path, err := awconfig.IdentityHomePath(awconfig.IdentityHome{Root: identityHome}, "identity.yaml")
+		if err != nil {
+			return ""
+		}
+		identityPath = path
+	}
 	identity, err := awconfig.LoadWorktreeIdentityFrom(identityPath)
 	if err != nil || strings.TrimSpace(identity.Address) == "" {
 		return ""

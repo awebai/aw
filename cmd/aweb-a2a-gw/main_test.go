@@ -56,6 +56,8 @@ func TestA2AGatewayBuildsFromWorkspaceConfigServesCardAndSendsTask(t *testing.T)
 				"did_aw":          recipientStableID,
 				"current_did_key": recipientDID,
 			})
+		case "/v1/messages/conversations/conv-1":
+			_ = json.NewEncoder(w).Encode(awid.InboxResponse{Messages: []awid.InboxMessage{}})
 		default:
 			t.Fatalf("unexpected aweb request %s %s", r.Method, r.URL.Path)
 		}
@@ -516,13 +518,17 @@ func TestA2AGatewayManagedACRefreshFailureKeepsLastGoodRoutes(t *testing.T) {
 func TestA2AGatewayManagedACRefreshExtendsAcceptWindowForStableRevision(t *testing.T) {
 	var posted map[string]any
 	acServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/a2a/gateway/bridge/a2a-gateway/messages" {
+		switch r.URL.Path {
+		case "/api/v1/a2a/gateway/bridge/a2a-gateway/messages":
+			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(awid.SendMessageResponse{MessageID: "msg-1", ConversationID: "conv-1", Status: "sent"})
+		case "/api/v1/a2a/gateway/bridge/a2a-gateway/conversations/conv-1":
+			_ = json.NewEncoder(w).Encode(awid.InboxResponse{Messages: []awid.InboxMessage{}})
+		default:
 			t.Fatalf("unexpected AC request %s %s", r.Method, r.URL.Path)
 		}
-		if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
-			t.Fatal(err)
-		}
-		_ = json.NewEncoder(w).Encode(awid.SendMessageResponse{MessageID: "msg-1", ConversationID: "conv-1", Status: "sent"})
 	}))
 	defer acServer.Close()
 
@@ -979,6 +985,36 @@ func TestGatewayBaseURLPrefersWorkspaceOverTeamMembership(t *testing.T) {
 				t.Fatalf("gatewayBaseURL()=%q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGatewayWorkspaceRootIgnoresAwIdentityHome(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayRoot := filepath.Join(root, "gateway")
+	externalIdentityHome := filepath.Join(root, "aw-principal")
+	if err := os.MkdirAll(externalIdentityHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(awconfig.IdentityHomeEnv, externalIdentityHome)
+	writeGatewayWorkspace(t, gatewayRoot, "https://gateway.example")
+	for _, path := range []string{
+		filepath.Join(gatewayRoot, ".aw", "workspace.yaml"),
+		filepath.Join(gatewayRoot, ".aw", "teams.yaml"),
+		filepath.Join(gatewayRoot, ".aw", "signing.key"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("gateway root missing %s: %v", path, err)
+		}
+	}
+	entries, err := os.ReadDir(externalIdentityHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("gateway contaminated aw principal root: %v", entries)
 	}
 }
 

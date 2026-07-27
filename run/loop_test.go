@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -383,6 +384,56 @@ func TestLoopLeavesWakePendingWhenProviderDeliveryFails(t *testing.T) {
 	}
 }
 
+func TestLoopInterruptedProviderDoesNotFinalizeDelivery(t *testing.T) {
+	loop := NewLoop(fakeProvider{event: &Event{Type: EventDone}}, &bytes.Buffer{})
+	controller := newFakeInputController()
+	loop.Control = controller
+	started := make(chan struct{})
+	loop.Runner = func(ctx context.Context, _ string, _ []string, _ func(string), _ any) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	finalized := false
+	loop.Dispatch = &fakeDispatcher{decisions: []DispatchDecision{{
+		Mission: "incoming chat",
+		AfterDelivery: func(context.Context) error {
+			finalized = true
+			return nil
+		},
+	}}}
+	go func() {
+		<-started
+		controller.events <- ControlEvent{Type: ControlStop}
+	}()
+
+	if err := loop.Run(context.Background(), LoopOptions{MaxRuns: 1}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if finalized {
+		t.Fatal("interrupted provider run finalized an unpresented wake")
+	}
+}
+
+func TestLoopPropagatesPostDeliveryFailure(t *testing.T) {
+	loop := NewLoop(fakeProvider{event: &Event{Type: EventDone}}, &bytes.Buffer{})
+	loop.Runner = func(_ context.Context, _ string, _ []string, onLine func(string), _ any) error {
+		onLine("ignored")
+		return nil
+	}
+	loop.Dispatch = &fakeDispatcher{decisions: []DispatchDecision{{
+		Mission: "incoming chat",
+		AfterDelivery: func(context.Context) error {
+			return errors.New("mark read failed")
+		},
+	}}}
+
+	err := loop.Run(context.Background(), LoopOptions{MaxRuns: 1})
+	if err == nil || !strings.Contains(err.Error(), "mark read failed") {
+		t.Fatalf("Run error=%v, want post-delivery failure", err)
+	}
+}
+
 func TestLoopExposesProviderInputWithPTY(t *testing.T) {
 	loop := NewLoop(fakeProvider{event: &Event{Type: EventDone}}, &bytes.Buffer{})
 	var sawStdinReady bool
@@ -712,9 +763,11 @@ func TestLoopBasePromptDoesNotAutoRerunWithoutWake(t *testing.T) {
 	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
 	loop.EventBus = bus
 	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
-	runCount := 0
+	// Atomic: Runner executes on the goroutine running loop.Run below, while the
+	// assertion reads this on the test goroutine (default-aajc.15).
+	var runCount atomic.Int64
 	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
-		runCount++
+		runCount.Add(1)
 		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
 		return nil
 	}
@@ -736,8 +789,8 @@ func TestLoopBasePromptDoesNotAutoRerunWithoutWake(t *testing.T) {
 	case <-time.After(150 * time.Millisecond):
 	}
 
-	if runCount != 1 {
-		t.Fatalf("expected exactly one run without wake events, got %d", runCount)
+	if got := runCount.Load(); got != 1 {
+		t.Fatalf("expected exactly one run without wake events, got %d", got)
 	}
 
 	cancel()
@@ -1274,9 +1327,11 @@ func TestLoopEventBusBasePromptWaitsForEvents(t *testing.T) {
 	loop := NewLoop(ClaudeProvider{}, &bytes.Buffer{})
 	loop.EventBus = bus
 	loop.Sleep = func(ctx context.Context, d time.Duration) error { return nil }
-	runCount := 0
+	// Atomic: Runner executes on the goroutine running loop.Run below, while the
+	// assertion reads this on the test goroutine (default-aajc.15).
+	var runCount atomic.Int64
 	loop.Runner = func(ctx context.Context, dir string, argv []string, onLine func(string), stderrSink any) error {
-		runCount++
+		runCount.Add(1)
 		onLine(`{"type":"result","duration_ms":1000,"session_id":"sess-42"}`)
 		return nil
 	}
@@ -1298,8 +1353,8 @@ func TestLoopEventBusBasePromptWaitsForEvents(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 
-	if runCount != 1 {
-		t.Fatalf("expected exactly one run without wake events, got %d", runCount)
+	if got := runCount.Load(); got != 1 {
+		t.Fatalf("expected exactly one run without wake events, got %d", got)
 	}
 
 	cancel()
@@ -2412,68 +2467,78 @@ func TestRealCommandRunnerPTYProvidesTTYAndAcceptsInput(t *testing.T) {
 		t.Skip("sh not available")
 	}
 
-	partialSeen := make(chan string, 1)
-	lineSeen := make(chan string, 1)
+	const prompt = "Allow? [y/N]"
+	outputSeen := make(chan string, 16)
 	done := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	go func() {
-		done <- RealCommandRunner(context.Background(), "", []string{
+		var providerStdin io.WriteCloser
+		var streamedPrompt strings.Builder
+		promptSignaled := false
+		done <- RealCommandRunner(ctx, "", []string{
 			"sh", "-c", "test -t 0 || exit 42; printf 'Allow? [y/N]'; read answer; printf '\\n%s\\n' \"$answer\"",
 		}, func(line string) {
-			select {
-			case lineSeen <- line:
-			default:
-			}
+			outputSeen <- line + "\n"
 		}, &commandOutputSinks{
 			usePTY: true,
 			ptyPartial: func(chunk string) {
-				select {
-				case partialSeen <- chunk:
-				default:
+				outputSeen <- chunk
+				if !promptSignaled {
+					streamedPrompt.WriteString(chunk)
+					if strings.Contains(streamedPrompt.String(), prompt) {
+						promptSignaled = true
+						_, _ = io.WriteString(providerStdin, "y\n")
+					}
 				}
 			},
 			stdinReady: func(w io.WriteCloser) {
-				go func() {
-					time.Sleep(100 * time.Millisecond)
-					_, _ = io.WriteString(w, "y\n")
-				}()
+				providerStdin = w
 			},
 		})
 	}()
 
-	select {
-	case got := <-partialSeen:
-		if got != "Allow? [y/N]" {
-			t.Fatalf("unexpected PTY partial %q", got)
+	var output strings.Builder
+	deadline := time.After(1 * time.Second)
+	for !strings.Contains(output.String(), prompt) {
+		select {
+		case chunk := <-outputSeen:
+			output.WriteString(chunk)
+		case <-deadline:
+			t.Fatalf("timed out waiting for PTY partial prompt; got %q", output.String())
 		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("timed out waiting for PTY partial prompt")
+	}
+	if output.String() != prompt {
+		t.Fatalf("unexpected PTY partial %q", output.String())
 	}
 
-	deadline := time.After(2 * time.Second)
+	deadline = time.After(2 * time.Second)
+	finished := false
+	for !finished {
+		select {
+		case chunk := <-outputSeen:
+			output.WriteString(chunk)
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("RealCommandRunner returned error: %v", err)
+			}
+			finished = true
+		case <-deadline:
+			t.Fatalf("timed out waiting for PTY runner to finish; output %q", output.String())
+		}
+	}
+
+drainOutput:
 	for {
 		select {
-		case got := <-lineSeen:
-			if got == "" {
-				continue
-			}
-			if got != "y" {
-				t.Fatalf("unexpected PTY stdout line %q", got)
-			}
-			goto ptyDone
-		case <-deadline:
-			t.Fatal("timed out waiting for PTY input round-trip")
+		case chunk := <-outputSeen:
+			output.WriteString(chunk)
+		default:
+			break drainOutput
 		}
 	}
-
-ptyDone:
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("RealCommandRunner returned error: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for PTY runner to finish")
+	if got := strings.ReplaceAll(output.String(), "\r", ""); !strings.Contains(got, "\ny\n") {
+		t.Fatalf("PTY input was not echoed by the provider: %q", got)
 	}
 }

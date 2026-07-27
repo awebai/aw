@@ -241,15 +241,17 @@ func (l *Loop) Run(ctx context.Context, opts LoopOptions) error {
 			return fmt.Errorf("prompt cannot be empty")
 		}
 		state.Run++
-		if err := l.runOnce(ctx, opts, state, fullPrompt, decision.ImagePaths, displayLines, decision.UserPrompt); err != nil {
-			if state.StopRequested && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		runErr := l.runOnce(ctx, opts, state, fullPrompt, decision.ImagePaths, displayLines, decision.UserPrompt)
+		interrupted := errors.Is(runErr, errRunInterrupted)
+		if runErr != nil && !interrupted {
+			if state.StopRequested && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
 				return nil
 			}
-			return err
+			return runErr
 		}
-		if decision.AfterDelivery != nil {
+		if !interrupted && decision.AfterDelivery != nil {
 			if err := decision.AfterDelivery(ctx); err != nil {
-				l.printf("info: post-delivery acknowledgement failed; source remains pending: %v\n", err)
+				return fmt.Errorf("post-delivery finalization failed: %w", err)
 			}
 		}
 		if state.ExitConfirmPending {
@@ -319,6 +321,8 @@ func (l *Loop) nextPrompt(ctx context.Context, opts LoopOptions, st *state) (Dis
 	}
 	return DispatchDecision{Mission: explicitMissionPrompt, WaitSeconds: opts.WaitSeconds}, nil
 }
+
+var errRunInterrupted = errors.New("provider run interrupted")
 
 func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt string, imagePaths []string, displayLines []DisplayLine, userPrompt string) error {
 	l.clearStatusLine()
@@ -417,6 +421,18 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 	defer cancel()
 
 	errCh := make(chan error, 1)
+	type providerOutput struct {
+		line  bool
+		label string
+		text  string
+	}
+	providerOutputCh := make(chan providerOutput)
+	sendProviderOutput := func(output providerOutput) {
+		select {
+		case providerOutputCh <- output:
+		case <-runCtx.Done():
+		}
+	}
 
 	var busInterrupts <-chan BusEvent
 	if l.EventBus != nil {
@@ -434,28 +450,34 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 			providerInput.SetWriter(w)
 		}
 		sinks.ptyPartial = func(chunk string) {
-			l.handleRawProviderChunk("provider", chunk, presenter)
+			sendProviderOutput(providerOutput{label: "provider", text: chunk})
 		}
 	} else {
 		sinks.stderrLine = func(line string) {
-			l.handleRawProviderChunk("provider stderr", line+"\n", presenter)
+			sendProviderOutput(providerOutput{label: "provider stderr", text: line + "\n"})
 		}
 		sinks.stderrPartial = func(chunk string) {
-			l.handleRawProviderChunk("provider stderr", chunk, presenter)
+			sendProviderOutput(providerOutput{label: "provider stderr", text: chunk})
 		}
 		sinks.stdoutPartial = func(chunk string) {
-			l.handleRawProviderChunk("provider stdout", chunk, presenter)
+			sendProviderOutput(providerOutput{label: "provider stdout", text: chunk})
 		}
 	}
 
 	go func() {
 		errCh <- l.Runner(runCtx, opts.WorkingDir, argv, func(line string) {
-			l.handleOutputLine(line, presenter, st, &observedSessionID, &agentText)
+			sendProviderOutput(providerOutput{line: true, text: line})
 		}, sinks)
 	}()
 
 	for {
 		select {
+		case output := <-providerOutputCh:
+			if output.line {
+				l.handleOutputLine(output.text, presenter, st, &observedSessionID, &agentText)
+			} else {
+				l.handleRawProviderChunk(output.label, output.text, presenter)
+			}
 		case err := <-errCh:
 			st.RunPhase = RunPhaseIdle
 			l.drainPendingControlEvents(st, true)
@@ -464,11 +486,14 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 				st.Paused = true
 				st.PauseAfterRun = true
 				st.RunInterrupted = false
-				return nil
+				return errRunInterrupted
 			}
 			st.RunInterrupted = false
 			if strings.TrimSpace(st.LastRunError) != "" {
 				return errors.New(st.LastRunError)
+			}
+			if err != nil {
+				return err
 			}
 			if followUpRun {
 				switch {
@@ -488,7 +513,7 @@ func (l *Loop) runOnce(ctx context.Context, opts LoopOptions, st *state, prompt 
 					return nil
 				}
 			}
-			return err
+			return nil
 		case event := <-l.controlEvents():
 			l.applyControlEvent(event, st, true, cancel)
 		case busEvt := <-busInterrupts:
@@ -1770,11 +1795,10 @@ func (l *Loop) markStatusDirty() {
 // single load yields a consistent snapshot; do not add a second atomic, because
 // two atomics give two consistent reads and one inconsistent LINE.
 //
-// This says nothing about the rendering path as a whole, which is NOT
-// single-owner: handleOutputLine renders from the provider output goroutine
-// while also mutating the shared state the formatters read. That ownership
-// violation is tracked as default-aaky; do not read the paragraph above as
-// evidence that rendering is otherwise safe.
+// The rendering path is single-owner: provider callbacks send immutable output
+// events to runOnce, and the main loop parses them, mutates state, and renders.
+// Background goroutines must signal or send values; they must never read the
+// main-loop state or call a status formatter directly.
 func (l *Loop) connState() ConnectionState {
 	if l.EventBus == nil {
 		return ConnDisconnected

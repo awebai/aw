@@ -37,6 +37,7 @@ func parseSignedEnvelopeMetadata(payload string) (signedEnvelopeMetadata, bool) 
 }
 
 const DefaultWait = 120 // Default wait timeout in seconds for replies
+const maxOpenUnreadMessages = 1000
 
 // maxStreamDeadline is the server-side SSE connection safety net.
 // The local waitTimer manages actual wait semantics; this just prevents
@@ -311,6 +312,9 @@ func decryptChatEvent(client *awid.Client, ev *Event) error {
 		return err
 	}
 	ev.Body = plain.Body
+	// Verified means the encrypted-envelope signature is valid, not that the
+	// signer owns the claimed address. The inbound caller must immediately pass
+	// this result through Client.NormalizeSenderTrust.
 	ev.VerificationStatus = awid.Verified
 	return nil
 }
@@ -940,38 +944,59 @@ func buildMessages(messages []awid.ChatMessage) []Event {
 	return events
 }
 
-func markReadBestEffort(ctx context.Context, client *awid.Client, sessionID, messageID string) bool {
-	if client == nil || sessionID == "" || strings.TrimSpace(messageID) == "" {
-		return false
+// markReadBestEffort acknowledges the presented messages, retrying once. It
+// reports whether the acknowledgement landed and, when it did not, why. A
+// caller that has nothing to acknowledge gets (false, nil): no attempt was made
+// and nothing failed. Returning the error is what lets a caller distinguish a
+// mark-read that failed from one that was never needed; discarding it made
+// every failure other than the unread-snapshot overflow invisible.
+func markReadBestEffort(ctx context.Context, client *awid.Client, sessionID string, messageIDs []string) (bool, error) {
+	if client == nil || sessionID == "" {
+		return false, nil
 	}
-	req := &awid.ChatMarkReadRequest{UpToMessageID: messageID}
+	presentedIDs := make([]string, 0, len(messageIDs))
+	for _, messageID := range messageIDs {
+		if messageID = strings.TrimSpace(messageID); messageID != "" {
+			presentedIDs = append(presentedIDs, messageID)
+		}
+	}
+	if len(presentedIDs) == 0 {
+		return false, nil
+	}
+	req := &awid.ChatMarkReadRequest{MessageIDs: presentedIDs}
 	if _, err := client.ChatMarkRead(ctx, sessionID, req); err == nil {
-		return true
+		return true, nil
+	} else if status, ok := awid.HTTPStatusCode(err); ok && status >= 400 && status < 500 {
+		// ChatMarkRead already performed the one compatibility fallback when
+		// eligible. Do not repeat malformed or rejected requests at this layer.
+		return false, fmt.Errorf("marking %d message(s) read: %w", len(presentedIDs), err)
 	}
 	timer := time.NewTimer(100 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return false
+		return false, fmt.Errorf("marking %d message(s) read: %w", len(presentedIDs), ctx.Err())
 	case <-timer.C:
 	}
-	_, err := client.ChatMarkRead(ctx, sessionID, req)
-	return err == nil
+	if _, err := client.ChatMarkRead(ctx, sessionID, req); err != nil {
+		return false, fmt.Errorf("marking %d message(s) read: %w", len(presentedIDs), err)
+	}
+	return true, nil
 }
 
-// markLastRead marks the last received message as read (best-effort).
-// This prevents the notify hook from showing messages that were already
-// delivered via SSE during send-and-wait or listen.
-func markLastRead(ctx context.Context, client *awid.Client, sessionID string, events []Event) {
-	if sessionID == "" {
-		return
-	}
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == "message" && events[i].MessageID != "" {
-			_ = markReadBestEffort(ctx, client, sessionID, events[i].MessageID)
-			return
+// markPresentedRead marks every received message presented by the wait result as
+// read (best-effort). This prevents the notify hook from showing messages that
+// were already delivered via SSE during send-and-wait or listen.
+func markPresentedRead(ctx context.Context, client *awid.Client, sessionID string, events []Event) {
+	messageIDs := make([]string, 0, len(events))
+	for _, event := range events {
+		if event.Type == "message" && event.MessageID != "" {
+			messageIDs = append(messageIDs, event.MessageID)
 		}
 	}
+	// Send and Listen stay best-effort: a failed acknowledgement must not fail
+	// the call, and the messages are simply re-presented next time.
+	_, _ = markReadBestEffort(ctx, client, sessionID, messageIDs)
 }
 
 // streamOpener opens an SSE stream for a chat session.
@@ -1314,7 +1339,7 @@ func sendCommon(ctx context.Context, client *awid.Client, openStream streamOpene
 		return nil, err
 	}
 
-	markLastRead(ctx, client, resp.SessionID, waitResult.Events)
+	markPresentedRead(ctx, client, resp.SessionID, waitResult.Events)
 
 	result.Status = waitResult.Status
 	result.Reply = waitResult.Reply
@@ -1339,7 +1364,7 @@ func Listen(ctx context.Context, client *awid.Client, targetAlias string, waitSe
 		return nil, err
 	}
 
-	markLastRead(ctx, client, sessionID, result.Events)
+	markPresentedRead(ctx, client, sessionID, result.Events)
 
 	result.TargetAgent = targetAlias
 	return result, nil
@@ -1355,10 +1380,13 @@ func Open(ctx context.Context, client *awid.Client, targetAlias string) (*OpenRe
 	messagesResp, err := client.ChatHistory(ctx, awid.ChatHistoryParams{
 		SessionID:  sessionID,
 		UnreadOnly: true,
-		Limit:      1000,
+		Limit:      maxOpenUnreadMessages + 1,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("getting unread messages: %w", err)
+	}
+	if len(messagesResp.Messages) > maxOpenUnreadMessages {
+		return nil, fmt.Errorf("more than %d unread messages; refusing to acknowledge an incomplete snapshot", maxOpenUnreadMessages)
 	}
 
 	result := &OpenResult{
@@ -1379,9 +1407,18 @@ func Open(ctx context.Context, client *awid.Client, targetAlias string) (*OpenRe
 		_ = SaveDeliveredIDs(ids)
 	}
 
-	lastMessageID := messagesResp.Messages[len(messagesResp.Messages)-1].MessageID
-	if markReadBestEffort(ctx, client, sessionID, lastMessageID) {
+	presentedIDs := make([]string, 0, len(messagesResp.Messages))
+	for _, message := range messagesResp.Messages {
+		presentedIDs = append(presentedIDs, message.MessageID)
+	}
+	// Open stays best-effort too - it still returns the messages it presented -
+	// but it reports a failed acknowledgement instead of silently presenting
+	// them as unmarked. This is separate from the overflow refusal above, which
+	// declines to acknowledge at all and returns an error.
+	if marked, err := markReadBestEffort(ctx, client, sessionID, presentedIDs); marked {
 		result.MarkedRead = len(messagesResp.Messages)
+	} else if err != nil {
+		result.MarkReadError = err.Error()
 	}
 	if len(result.Messages) == 0 {
 		result.UnreadWasEmpty = true

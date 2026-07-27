@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/awebai/aw/awconfig"
 	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/internal/blueprint"
 	"gopkg.in/yaml.v3"
@@ -326,8 +327,14 @@ func applyLocalBlueprintProfileToHome(homeDir string, selector libraryProfileSel
 	return materialized, materialized.FilesWritten, nil
 }
 
-func configureMaterializedAgentHome(homeDir string) error {
-	if result := InjectAgentDocs(homeDir); result != nil && len(result.Errors) > 0 {
+func configureMaterializedAgentHome(homeDir string, identityHomes ...awconfig.IdentityHome) error {
+	var docsResult *injectDocsResult
+	if len(identityHomes) > 0 {
+		docsResult = InjectAgentDocsAtIdentityHome(homeDir, identityHomes[0])
+	} else {
+		docsResult = InjectAgentDocs(homeDir)
+	}
+	if result := docsResult; result != nil && len(result.Errors) > 0 {
 		return fmt.Errorf("inject aw coordination docs: %s", strings.Join(result.Errors, "; "))
 	}
 	if result := SetupChannelMCP(homeDir, false); result != nil && result.Error != nil {
@@ -419,17 +426,21 @@ func fetchPublicLibraryProfile(ctx context.Context, selector libraryProfileSelec
 	if err != nil {
 		return nil, err
 	}
-	resp, err := (&http.Client{Timeout: awid.APITimeout(), Transport: awid.NewAPITransport()}).Do(req)
+	resp, err := awid.DoNoRedirect(&http.Client{Timeout: awid.APITimeout(), Transport: awid.NewAPITransport()}, req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("GET %s returned %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("GET %s returned %d: %s", endpoint, resp.StatusCode, awid.SanitizeErrorText(string(body)))
+	}
+	responseBody, err := awid.ReadAllBounded(resp.Body, awid.MaxResponseSize)
+	if err != nil {
+		return nil, fmt.Errorf("read library get-profile response: %w", err)
 	}
 	var out libraryProfileDetailResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(responseBody, &out); err != nil {
 		return nil, fmt.Errorf("decode library get-profile response: %w", err)
 	}
 	if err := validateLibraryProfileDetailResponse(&out); err != nil {

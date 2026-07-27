@@ -281,7 +281,7 @@ func runTeamHumanReplaceKey(cmd *cobra.Command, args []string) (runErr error) {
 		output.CertificatePath = filepath.ToSlash(filepath.Join(homeDir, ".aw", filepath.FromSlash(certPath)))
 		output.SigningKeyPath = filepath.ToSlash(generatedKeyPath)
 		encryptionCtx, encryptionCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		encryptionOutput, encryptionErr := setupOrRotateIdentityEncryptionKeyForDir(encryptionCtx, homeDir, false)
+		encryptionOutput, encryptionErr := setupOrRotateIdentityEncryptionKeyForDir(encryptionCtx, homeDir, false, explicitEncryptionKeyIdentityHome(awconfig.WorktreeIdentityHome(homeDir)))
 		encryptionCancel()
 		if encryptionErr != nil {
 			return fmt.Errorf("replace-key partial state: roster row and audit were updated, old certificate was revoked, and replacement signing key/certificate %s were installed, but the E2E encryption-key assertion was not refreshed: %w; from %s run `aw id encryption-key setup`", newCertificate.CertificateID, encryptionErr, homeDir)
@@ -448,7 +448,7 @@ func postLocalIdentityKeyReplacementOnce(ctx context.Context, serviceURL, alias 
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "DIDKey "+awid.ComputeDIDKey(teamKey.Public().(ed25519.PublicKey))+" "+signature)
 	req.Header.Set("X-AWEB-Timestamp", timestamp)
-	resp, err := (&http.Client{Timeout: awid.APITimeout()}).Do(req)
+	resp, err := awid.DoNoRedirect(&http.Client{Timeout: awid.APITimeout()}, req)
 	if err != nil {
 		return nil, &replacementRosterOutcomeUnknownError{err: err}
 	}

@@ -211,8 +211,13 @@ type Client struct {
 	resolver                IdentityResolver // optional; resolves recipient DID for to_did binding
 	pinStore                *PinStore        // optional; TOFU pin store for sender identity verification
 	pinStorePath            string           // disk path for persisting pin store
-	metaCache               sync.Map         // address → *agentMeta; cached resolver results
-	latestClientVersion     atomic.Value     // last seen X-Latest-Client-Version header (string)
+	pinStorePersistMu       sync.Mutex
+	pinStoreBaseline        []byte
+	pinStoreBaselineErr     error
+	pinStorePersister       func(path string, expectedYAML, desiredYAML []byte) error
+	pinMigrationObserver    func(PinMigrationDecline)
+	metaCache               sync.Map     // address → *agentMeta; cached resolver results
+	latestClientVersion     atomic.Value // last seen X-Latest-Client-Version header (string)
 }
 
 // New creates a new client.
@@ -415,11 +420,75 @@ func (c *Client) ResolveIdentity(ctx context.Context, identifier string) (*Resol
 	return c.resolver.Resolve(ctx, identifier)
 }
 
+// PinMigrationOutcome names why an upgrade-on-first-sight migration was
+// declined. The action is the same in every case — both pins are kept — but the
+// operator situations differ: a same-identity decline is expected, a conflict is
+// a different identity holding the stable id, and an unclassifiable one is
+// repairable by recording the occupant's did:key.
+type PinMigrationOutcome string
+
+const (
+	PinMigrationSameIdentity   PinMigrationOutcome = "same_identity"
+	PinMigrationConflict       PinMigrationOutcome = "conflict"
+	PinMigrationUnclassifiable PinMigrationOutcome = "unclassifiable"
+)
+
+// PinMigrationDecline reports a migration that did not happen.
+type PinMigrationDecline struct {
+	Outcome     PinMigrationOutcome
+	StableID    string
+	Address     string
+	OccupantDID string
+	IncomingDID string
+}
+
+// SetPinMigrationObserver registers a callback invoked when a stable-id
+// migration is declined because the stable-id key already holds another pin.
+func (c *Client) SetPinMigrationObserver(observe func(PinMigrationDecline)) {
+	c.pinMigrationObserver = observe
+}
+
+// reportPinMigrationDecline classifies a declined migration by whether the
+// occupant of the stable-id key can be shown to be the same identity. An
+// occupant with no recorded did:key cannot be classified either way, and an
+// absent field must never be read as proof of sameness.
+func (c *Client) reportPinMigrationDecline(occupant *Pin, incomingDID, stableID, address string) {
+	if c.pinMigrationObserver == nil {
+		return
+	}
+	outcome := PinMigrationConflict
+	switch {
+	case strings.TrimSpace(occupant.DIDKey) == "":
+		outcome = PinMigrationUnclassifiable
+	case occupant.DIDKey == incomingDID:
+		outcome = PinMigrationSameIdentity
+	}
+	c.pinMigrationObserver(PinMigrationDecline{
+		Outcome:     outcome,
+		StableID:    stableID,
+		Address:     address,
+		OccupantDID: occupant.DIDKey,
+		IncomingDID: incomingDID,
+	})
+}
+
 // SetPinStore sets the TOFU pin store for sender identity verification.
 // If path is non-empty, the store is persisted to disk after updates.
 func (c *Client) SetPinStore(ps *PinStore, path string) {
 	c.pinStore = ps
 	c.pinStorePath = path
+	c.pinStoreBaseline = nil
+	c.pinStoreBaselineErr = nil
+	if ps != nil {
+		c.pinStoreBaseline, c.pinStoreBaselineErr = ps.Encode()
+	}
+}
+
+// SetPinStorePersister installs the cross-process compare-and-set writer used by
+// aw. The callback must lock, reload, verify expectedYAML, and refuse a stale
+// mutation before writing desiredYAML.
+func (c *Client) SetPinStorePersister(persist func(path string, expectedYAML, desiredYAML []byte) error) {
+	c.pinStorePersister = persist
 }
 
 // LatestClientVersion returns the most recent X-Latest-Client-Version header
@@ -534,7 +603,17 @@ func (c *Client) NormalizeSenderTrust(ctx context.Context, status VerificationSt
 	status = c.checkTOFUPinWithMeta(ctx, status, strings.TrimSpace(rawAddress), trustAddress, fromDID, fromStableID, ra, repl, meta, registryConfirmedCurrentKey)
 	// Persist after the pin exists: on first contact the pin is created by the
 	// check above, so recording the checkpoint earlier would be dropped.
-	c.persistVerifiedHeadCheckpoint(fromStableID, verifiedHead)
+	// An advanced anti-rollback checkpoint that is not durable would let the next
+	// process accept a log head we have already moved past (default-aajc.8), so a
+	// failure to commit it must not be reported as verified.
+	if err := c.persistVerifiedHeadCheckpoint(fromStableID, verifiedHead); err != nil {
+		if c.pinStore != nil {
+			c.pinStore.undurable.Store(true)
+		}
+		if status == Verified || status == VerifiedCustodial {
+			status = VerificationStale
+		}
+	}
 	_, _, localTeamReference := splitTeamMemberReference(trustAddress)
 	if status == IdentityMismatch && !recipientBindingMismatch && localTeamReference && strings.TrimSpace(fromDID) != "" && !strings.HasPrefix(strings.TrimSpace(fromStableID), "did:aw:") {
 		status = c.reconcileLocalSenderMismatch(ctx, strings.TrimSpace(rawAddress), trustAddress, fromDID)
@@ -567,7 +646,9 @@ func (c *Client) reconcileLocalSenderMismatch(ctx context.Context, rawAddress, t
 		}
 		c.pinStore.mu.Unlock()
 		if removed {
-			c.savePinStore()
+			// A removal that does not persist leaves the old pin on disk, so the
+			// next process is stricter, not laxer. Not a continuity claim.
+			_ = c.savePinStore()
 		}
 	}
 	return VerificationStale
@@ -663,7 +744,8 @@ func (c *Client) checkTOFUPinWithMeta(ctx context.Context, status VerificationSt
 		}
 		c.pinStore.mu.Unlock()
 		if removed {
-			c.savePinStore()
+			// As above: an unpersisted removal fails safe (the pin survives).
+			_ = c.savePinStore()
 		}
 		return status
 	}
@@ -683,10 +765,21 @@ func (c *Client) checkTOFUPinWithMeta(ctx context.Context, status VerificationSt
 		// and the did:key matches, migrate to stable_id pin before the check.
 		if existingDID, ok := c.pinStore.Addresses[trustAddress]; ok && existingDID == fromDID {
 			if existingPin, hasDIDPin := c.pinStore.Pins[fromDID]; hasDIDPin {
-				delete(c.pinStore.Pins, fromDID)
-				existingPin.StableID = fromStableID
-				c.pinStore.Pins[fromStableID] = existingPin
-				c.pinStore.Addresses[trustAddress] = fromStableID
+				// A stable id is one key and a pin carries one address, so an
+				// identity already pinned at another address cannot also move
+				// onto that key here. Migrating anyway would overwrite the pin
+				// holding the other address and produce a store ParsePinStore
+				// refuses, so keep both pins and stay on the did:key for this
+				// address. The occupant decides only what gets reported.
+				if occupant, occupied := c.pinStore.Pins[fromStableID]; occupied && occupant != existingPin {
+					pinKey = fromDID
+					c.reportPinMigrationDecline(occupant, fromDID, fromStableID, trustAddress)
+				} else {
+					delete(c.pinStore.Pins, fromDID)
+					existingPin.StableID = fromStableID
+					c.pinStore.Pins[fromStableID] = existingPin
+					c.pinStore.Addresses[trustAddress] = fromStableID
+				}
 			}
 		}
 	}
@@ -699,7 +792,7 @@ func (c *Client) checkTOFUPinWithMeta(ctx context.Context, status VerificationSt
 			c.pinStore.Pins[pinKey].StableID = fromStableID
 			c.pinStore.Pins[pinKey].DIDKey = fromDID
 		}
-		c.savePinStore()
+		status = c.commitContinuity(status)
 	case PinOK:
 		if fromStableID != "" {
 			if pin, ok := c.pinStore.Pins[pinKey]; ok && strings.TrimSpace(pin.DIDKey) != "" && pin.DIDKey != fromDID {
@@ -711,8 +804,7 @@ func (c *Client) checkTOFUPinWithMeta(ctx context.Context, status VerificationSt
 					c.pinStore.StorePin(pinKey, trustAddress, "", "")
 					c.pinStore.Pins[pinKey].StableID = fromStableID
 					c.pinStore.Pins[pinKey].DIDKey = fromDID
-					c.savePinStore()
-					return status
+					return c.commitContinuity(status)
 				}
 				if (ra == nil || !c.verifyRotationAnnouncement(ra, fromDID, pin.DIDKey)) &&
 					(repl == nil || !c.verifyReplacementAnnouncement(ctx, trustAddress, repl, fromDID, pin.DIDKey)) {
@@ -725,7 +817,7 @@ func (c *Client) checkTOFUPinWithMeta(ctx context.Context, status VerificationSt
 			c.pinStore.Pins[pinKey].StableID = fromStableID
 			c.pinStore.Pins[pinKey].DIDKey = fromDID
 		}
-		c.savePinStore()
+		status = c.commitRefresh(status)
 	case PinMismatch:
 		pinnedKey := c.pinStore.Addresses[trustAddress]
 		// A verified DID log proves did:aw -> did:key. It proves NOTHING about
@@ -741,8 +833,7 @@ func (c *Client) checkTOFUPinWithMeta(ctx context.Context, status VerificationSt
 				if strings.TrimSpace(pin.DIDKey) != "" && pin.DIDKey == fromDID {
 					c.pinStore.StorePin(pinnedKey, trustAddress, "", "")
 					c.pinStore.Pins[pinnedKey].StableID = fromStableID
-					c.savePinStore()
-					return status
+					return c.commitContinuity(status)
 				}
 				if strings.TrimSpace(pin.DIDKey) != "" &&
 					((ra != nil && c.verifyRotationAnnouncement(ra, fromDID, pin.DIDKey)) ||
@@ -750,8 +841,7 @@ func (c *Client) checkTOFUPinWithMeta(ctx context.Context, status VerificationSt
 					c.pinStore.StorePin(pinnedKey, trustAddress, "", "")
 					c.pinStore.Pins[pinnedKey].StableID = fromStableID
 					c.pinStore.Pins[pinnedKey].DIDKey = fromDID
-					c.savePinStore()
-					return status
+					return c.commitContinuity(status)
 				}
 			}
 		}
@@ -763,8 +853,7 @@ func (c *Client) checkTOFUPinWithMeta(ctx context.Context, status VerificationSt
 				c.pinStore.Pins[pinKey].StableID = fromStableID
 				c.pinStore.Pins[pinKey].DIDKey = fromDID
 			}
-			c.savePinStore()
-			return status
+			return c.commitContinuity(status)
 		}
 		return IdentityMismatch
 	}
@@ -827,12 +916,70 @@ func (c *Client) verifyReplacementAnnouncement(ctx context.Context, address stri
 	return err == nil && ok
 }
 
-func (c *Client) savePinStore() {
-	if c.pinStorePath != "" {
-		// Best effort: atomic write via temp+rename. A failed save means
-		// the next process loads a stale store and may re-pin.
-		_ = c.pinStore.Save(c.pinStorePath)
+// savePinStore commits the trust database. Atomic write via temp+rename.
+// Callers that established or rotated a continuity record MUST NOT report the
+// message verified when this fails — see commitContinuity.
+func (c *Client) savePinStore() error {
+	if c.pinStorePath == "" {
+		return nil
 	}
+	if c.pinStorePersister == nil {
+		return c.pinStore.Save(c.pinStorePath)
+	}
+
+	c.pinStorePersistMu.Lock()
+	defer c.pinStorePersistMu.Unlock()
+	if c.pinStoreBaselineErr != nil {
+		return fmt.Errorf("encode pin-store precondition: %w", c.pinStoreBaselineErr)
+	}
+	desired, err := c.pinStore.Encode()
+	if err != nil {
+		return fmt.Errorf("encode desired pin store: %w", err)
+	}
+	if err := c.pinStorePersister(c.pinStorePath, c.pinStoreBaseline, desired); err != nil {
+		return err
+	}
+	c.pinStoreBaseline = append(c.pinStoreBaseline[:0], desired...)
+	return nil
+}
+
+// commitContinuity persists a newly established or rotated pin and downgrades
+// the status when it cannot be made durable. A pin that never reaches disk is
+// not continuity: the next process sees no pin, treats the sender as first
+// contact, and trusts whoever answers to that address. Reporting "verified" for
+// a record we failed to keep would be a claim we cannot honour (default-aajc.9).
+//
+// This applies to records that are new or changed. A save that only loses a
+// last_seen refresh leaves the durable pin intact and is deliberately not
+// downgraded, so a full disk cannot make every already-pinned sender unverifiable.
+func (c *Client) commitContinuity(status VerificationStatus) VerificationStatus {
+	if err := c.savePinStore(); err != nil {
+		c.pinStore.undurable.Store(true)
+		return VerificationStale
+	}
+	c.pinStore.undurable.Store(false)
+	return status
+}
+
+// commitRefresh persists a change that is NOT itself a continuity claim — a
+// last_seen touch on a pin that already matched. Normally a failure here is an
+// availability problem and the status stands, because the durable pin is
+// unchanged.
+//
+// It stops standing once a continuity commit has already failed. The mutated pin
+// is still in memory, so the next message from that sender takes this path and
+// would be reported verified against a record that is not on disk at all. While
+// the store is undurable we retry and keep the sender unverified until it lands.
+func (c *Client) commitRefresh(status VerificationStatus) VerificationStatus {
+	if !c.pinStore.undurable.Load() {
+		_ = c.savePinStore()
+		return status
+	}
+	if err := c.savePinStore(); err != nil {
+		return VerificationStale
+	}
+	c.pinStore.undurable.Store(false)
+	return status
 }
 
 // checkRecipientBinding downgrades a Verified status to IdentityMismatch
@@ -963,13 +1110,12 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, in any,
 	}
 	defer resp.Body.Close()
 
-	limited := io.LimitReader(resp.Body, MaxResponseSize)
-	data, err := io.ReadAll(limited)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &APIError{StatusCode: resp.StatusCode, Body: ReadErrorExcerpt(resp.Body), RequestID: resp.Header.Get("X-Request-ID")}
+	}
+	data, err := ReadAllBounded(resp.Body, MaxResponseSize)
 	if err != nil {
 		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{StatusCode: resp.StatusCode, Body: string(data), RequestID: resp.Header.Get("X-Request-ID")}
 	}
 	if out == nil {
 		return nil
@@ -1048,7 +1194,7 @@ func (c *Client) DoRawWithHeaders(ctx context.Context, method, path, accept stri
 			return nil, err
 		}
 		traceHTTPClientRequest(req, bodyBytes)
-		resp, err := c.httpClient.Do(req)
+		resp, err := DoNoRedirectWithTimeout(c.httpClient, req, APITimeout())
 		if err != nil {
 			decorated := decorateTimeoutError(method, err)
 			if shouldRetryAPITransportError(ctx, method, path, bodyBytes, attempt, err) {
@@ -1060,6 +1206,7 @@ func (c *Client) DoRawWithHeaders(ctx context.Context, method, path, accept stri
 			return nil, decorated
 		}
 		if err := traceHTTPClientResponse(resp); err != nil {
+			_ = resp.Body.Close()
 			return nil, err
 		}
 		if v := resp.Header.Get("X-Latest-Client-Version"); v != "" {
@@ -1192,9 +1339,14 @@ func traceHTTPClientResponse(resp *http.Response) error {
 		fmt.Fprintln(os.Stderr, "AW TRACE response body:")
 		return nil
 	}
-	data, err := io.ReadAll(resp.Body)
+	originalBody := resp.Body
+	data, err := ReadAllBounded(originalBody, MaxResponseSize)
 	if err != nil {
 		return err
+	}
+	if err := originalBody.Close(); err != nil {
+		resp.Body = http.NoBody
+		return fmt.Errorf("close traced HTTP response body: %w", err)
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(data))
 	fmt.Fprintf(os.Stderr, "AW TRACE response body: %s\n", string(data))
@@ -1307,12 +1459,12 @@ func (c *Client) seedVerifiedHeadFromPin(stableID string) {
 // persistVerifiedHeadCheckpoint records the verified head with the pin so the
 // anchor survives a restart. It only ever advances: a lower sequence is ignored,
 // so a stale response cannot weaken the checkpoint.
-func (c *Client) persistVerifiedHeadCheckpoint(stableID string, head *VerifiedLogHead) {
+func (c *Client) persistVerifiedHeadCheckpoint(stableID string, head *VerifiedLogHead) error {
 	if c.pinStore == nil {
-		return
+		return nil
 	}
 	if head == nil || head.Seq < 1 || strings.TrimSpace(head.EntryHash) == "" {
-		return
+		return nil
 	}
 	c.pinStore.mu.Lock()
 	pin, ok := c.pinStore.Pins[stableID]
@@ -1324,6 +1476,7 @@ func (c *Client) persistVerifiedHeadCheckpoint(stableID string, head *VerifiedLo
 	}
 	c.pinStore.mu.Unlock()
 	if changed {
-		c.savePinStore()
+		return c.savePinStore()
 	}
+	return nil
 }

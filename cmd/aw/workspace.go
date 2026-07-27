@@ -132,7 +132,11 @@ func runWorkspaceStatus(cmd *cobra.Command, args []string) error {
 	loadDotenvBestEffort()
 
 	workingDir, _ := os.Getwd()
-	client, sel, err := resolveClientSelectionForDir(workingDir)
+	home, err := identityHomeForDir(workingDir)
+	if err != nil {
+		return err
+	}
+	client, sel, err := resolveClientSelectionAtIdentityHome(workingDir, home)
 	if err != nil {
 		return err
 	}
@@ -144,7 +148,7 @@ func runWorkspaceStatus(cmd *cobra.Command, args []string) error {
 		return usageError("selected account has no identity; run 'aw init' first")
 	}
 
-	state, teamState, _, err := awconfig.LoadWorkspaceAndTeamState(workingDir)
+	state, teamState, _, err := loadCurrentWorkspaceAndTeamState(workingDir, externalIdentityHomeRoot(home))
 	if err != nil {
 		if !(state == nil && os.IsNotExist(err)) {
 			return fmt.Errorf("load workspace state: %w", err)
@@ -236,10 +240,20 @@ func runWorkspaceStatus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func loadCurrentWorkspaceAndTeamState(workingDir, identityHome string) (*awconfig.WorktreeWorkspace, *awconfig.TeamState, string, error) {
+	if strings.TrimSpace(identityHome) != "" {
+		return awconfig.LoadWorkspaceAndTeamStateFromIdentityHome(identityHome)
+	}
+	return awconfig.LoadWorkspaceAndTeamState(workingDir)
+}
+
 func runWorkspaceDelete(cmd *cobra.Command, args []string) error {
 	loadDotenvBestEffort()
 
 	workingDir, _ := os.Getwd()
+	if err := refuseExternalIdentityCleanup(workingDir, "aw workspace delete"); err != nil {
+		return err
+	}
 	client, _, err := resolveClientSelectionForDir(workingDir)
 	if err != nil {
 		return err
@@ -316,7 +330,11 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	client, _, err := resolveClientSelectionForDir(workingDir)
+	home, err := identityHomeForDir(workingDir)
+	if err != nil {
+		return err
+	}
+	client, _, err := resolveClientSelectionAtIdentityHome(workingDir, home)
 	if err != nil {
 		return err
 	}
@@ -334,7 +352,8 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 		return usageError("invalid role: use 1-2 words (letters/numbers) with hyphens/underscores allowed; max 50 chars")
 	}
 
-	state, teamState, _, err := awconfig.LoadWorkspaceAndTeamState(workingDir)
+	sourceIdentityHome := externalIdentityHomeRoot(home)
+	state, teamState, _, err := loadCurrentWorkspaceAndTeamState(workingDir, sourceIdentityHome)
 	if err != nil {
 		return fmt.Errorf("load workspace binding: %w", err)
 	}
@@ -434,7 +453,7 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 	if hasTeamKey {
 		_, err = addWorktreeViaLocalTeamKey(
 			worktreePath, root, branchName, branchCreated,
-			teamID, teamDomain, teamName, sourceServerURL, workingDir,
+			teamID, teamDomain, teamName, sourceServerURL, workingDir, sourceIdentityHome,
 			alias, role, state,
 		)
 	} else if strings.TrimSpace(state.APIKey) != "" {
@@ -444,7 +463,7 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 		)
 	} else {
 		_, err = addWorktreeViaPrimaryInvite(
-			workingDir, worktreePath, root, branchName, branchCreated,
+			workingDir, sourceIdentityHome, worktreePath, root, branchName, branchCreated,
 			sourceServerURL, alias, role, state,
 		)
 	}
@@ -468,10 +487,10 @@ func runWorkspaceAddWorktree(cmd *cobra.Command, args []string) error {
 
 func addWorktreeViaLocalTeamKey(
 	worktreePath, root, branchName string, branchCreated bool,
-	teamID, teamDomain, teamName, sourceServerURL, workingDir string,
+	teamID, teamDomain, teamName, sourceServerURL, workingDir, sourceIdentityHome string,
 	alias, role string, state *awconfig.WorktreeWorkspace,
 ) (connectOutput, error) {
-	registryURL, err := resolveWorkspaceTeamRegistryURL(workingDir, sourceServerURL, teamDomain)
+	registryURL, err := resolveWorkspaceTeamRegistryURLAt(workingDir, sourceIdentityHome, sourceServerURL, teamDomain)
 	if err != nil {
 		cleanupWorkspaceWorktree(root, worktreePath, branchName, branchCreated)
 		return connectOutput{}, err
@@ -482,7 +501,11 @@ func addWorktreeViaLocalTeamKey(
 		cleanupWorkspaceWorktree(root, worktreePath, branchName, branchCreated)
 		return connectOutput{}, fmt.Errorf("create local team invite for %s: %w", teamID, err)
 	}
-	acceptedInvite, err := acceptTeamInviteWithDetails(worktreePath, inviteToken, teamAcceptInviteOptions{Name: alias, Scope: awid.IdentityModeLocal})
+	acceptedInvite, err := acceptTeamInviteWithDetails(worktreePath, inviteToken, teamAcceptInviteOptions{
+		IdentityHome: filepath.Join(filepath.Clean(worktreePath), ".aw"),
+		Name:         alias,
+		Scope:        awid.IdentityModeLocal,
+	})
 	if err != nil {
 		cleanupWorkspaceWorktree(root, worktreePath, branchName, branchCreated)
 		return connectOutput{}, fmt.Errorf("accept team invite in new worktree: %w", err)
@@ -537,14 +560,15 @@ func addWorktreeViaCloudBootstrap(
 
 	fmt.Fprintln(os.Stderr, "Requesting certificate from cloud...")
 	result, err := runAPIKeyBootstrapInit(apiKeyInitRequest{
-		WorkingDir: worktreePath,
-		AwebURL:    awebURL,
-		APIKey:     apiKey,
-		Alias:      alias,
-		Role:       role,
-		HumanName:  strings.TrimSpace(state.HumanName),
-		AgentType:  strings.TrimSpace(state.AgentType),
-		Persistent: false,
+		WorkingDir:   worktreePath,
+		IdentityHome: filepath.Join(filepath.Clean(worktreePath), ".aw"),
+		AwebURL:      awebURL,
+		APIKey:       apiKey,
+		Alias:        alias,
+		Role:         role,
+		HumanName:    strings.TrimSpace(state.HumanName),
+		AgentType:    strings.TrimSpace(state.AgentType),
+		Persistent:   false,
 	})
 	if err != nil {
 		cleanupWorkspaceWorktree(root, worktreePath, branchName, branchCreated)
@@ -603,7 +627,7 @@ func migrateLegacyWorkspaceToMultiTeam(workingDir, workspacePath string) (worksp
 	if err != nil {
 		return workspaceMigrateMultiTeamOutput{}, err
 	}
-	legacyCertPath := filepath.Join(workingDir, ".aw", "team-cert.pem")
+	legacyCertPath := filepath.Join(awconfig.WorktreeIdentityHome(workingDir), "team-cert.pem")
 	cert, err := awid.LoadTeamCertificate(legacyCertPath)
 	if err != nil {
 		return workspaceMigrateMultiTeamOutput{}, fmt.Errorf("load legacy team certificate %s: %w", legacyCertPath, err)
@@ -939,6 +963,10 @@ func fetchWorkspaceTeamAliases(client *aweb.Client, workspaceID string) (map[str
 }
 
 func resolveWorkspaceTeamRegistryURL(workingDir, awebURL, teamDomain string) (string, error) {
+	return resolveWorkspaceTeamRegistryURLAt(workingDir, "", awebURL, teamDomain)
+}
+
+func resolveWorkspaceTeamRegistryURLAt(workingDir, identityHome, awebURL, teamDomain string) (string, error) {
 	meta, err := awconfig.LoadControllerMeta(teamDomain)
 	if err == nil && meta != nil {
 		if registryURL := strings.TrimSpace(meta.RegistryURL); registryURL != "" {
@@ -948,7 +976,13 @@ func resolveWorkspaceTeamRegistryURL(workingDir, awebURL, teamDomain string) (st
 	if err != nil && !os.IsNotExist(err) {
 		return "", fmt.Errorf("load controller metadata for %s: %w", teamDomain, err)
 	}
-	if teamState, err := awconfig.LoadTeamState(workingDir); err == nil && teamState != nil {
+	var teamState *awconfig.TeamState
+	if strings.TrimSpace(identityHome) != "" {
+		teamState, err = awconfig.LoadTeamStateFromIdentityHome(identityHome)
+	} else {
+		teamState, err = awconfig.LoadTeamState(workingDir)
+	}
+	if err == nil && teamState != nil {
 		for _, membership := range teamState.Memberships {
 			membershipDomain, _, parseErr := awid.ParseTeamID(strings.TrimSpace(membership.TeamID))
 			if parseErr != nil {
@@ -963,7 +997,17 @@ func resolveWorkspaceTeamRegistryURL(workingDir, awebURL, teamDomain string) (st
 	} else if err != nil && !os.IsNotExist(err) {
 		return "", fmt.Errorf("load team state: %w", err)
 	}
-	if identity, _, err := awconfig.LoadWorktreeIdentityFromDir(workingDir); err == nil && identity != nil {
+	var identity *awconfig.WorktreeIdentity
+	if strings.TrimSpace(identityHome) != "" {
+		identityPath, pathErr := awconfig.IdentityHomePath(awconfig.IdentityHome{Root: identityHome}, "identity.yaml")
+		if pathErr != nil {
+			return "", pathErr
+		}
+		identity, err = awconfig.LoadWorktreeIdentityFrom(identityPath)
+	} else {
+		identity, _, err = awconfig.LoadWorktreeIdentityFromDir(workingDir)
+	}
+	if err == nil && identity != nil {
 		if registryURL := strings.TrimSpace(identity.RegistryURL); registryURL != "" {
 			return registryURL, nil
 		}
