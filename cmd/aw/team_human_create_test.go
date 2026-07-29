@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -240,6 +241,92 @@ func TestSetupTeamAddedAgentWorktreeCreatesIsolatedBranchAndGitignore(t *testing
 	}
 }
 
+func TestSetupTeamAddedAgentWorktreeRollsBackNewRegistrationAfterLaterFailure(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepoWithOriginAndCommit(t, repo, "https://github.com/acme/repo.git")
+	home := filepath.Join(repo, "agents", "instances", "retry")
+	rollback, err := captureAgentHomeRollback(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".aw", "profile"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profilePath := filepath.Join(home, ".aw", "profile", "profile.yaml")
+	if err := os.WriteFile(profilePath, []byte("id: retry\nworks_on_main: [\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan := teamHumanAddedAgent{Name: "retry", HomeDir: home}
+	setupErr := setupTeamAddedAgentWorktree(repo, plan, "")
+	if setupErr == nil || !strings.Contains(setupErr.Error(), "parse "+profilePath) {
+		t.Fatalf("post-worktree setup error=%v", setupErr)
+	}
+	if err := rollback.Rollback(); err != nil {
+		t.Fatalf("home rollback: %v", err)
+	}
+	if _, err := os.Lstat(home); !os.IsNotExist(err) {
+		t.Fatalf("failed home remains: %v", err)
+	}
+	worktreeDir := filepath.Join(home, "worktree")
+	worktreeList, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("list worktrees: %v: %s", err, worktreeList)
+	}
+	if strings.Contains(string(worktreeList), canonicalTeamUpPath(worktreeDir)) {
+		t.Fatalf("failed worktree remains registered:\n%s", worktreeList)
+	}
+	if exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", "refs/heads/retry").Run() == nil {
+		t.Fatal("branch created solely for failed setup remains")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(profilePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profilePath, []byte("id: retry\nworks_on_main: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := setupTeamAddedAgentWorktree(repo, plan, ""); err != nil {
+		t.Fatalf("same-name worktree retry: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, ".git")); err != nil {
+		t.Fatalf("retry worktree missing: %v", err)
+	}
+}
+
+func TestSetupTeamAddedAgentWorktreePreservesPreExistingRegistrationOnLaterFailure(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepoWithOriginAndCommit(t, repo, "https://github.com/acme/repo.git")
+	home := filepath.Join(repo, "agents", "instances", "existing")
+	profilePath := filepath.Join(home, ".aw", "profile", "profile.yaml")
+	if err := os.MkdirAll(filepath.Dir(profilePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profilePath, []byte("id: existing\nworks_on_main: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan := teamHumanAddedAgent{Name: "existing", HomeDir: home}
+	if err := setupTeamAddedAgentWorktree(repo, plan, ""); err != nil {
+		t.Fatalf("initial setup: %v", err)
+	}
+	if err := os.WriteFile(profilePath, []byte("id: existing\nworks_on_main: [\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := setupTeamAddedAgentWorktree(repo, plan, ""); err == nil || !strings.Contains(err.Error(), "parse "+profilePath) {
+		t.Fatalf("later setup error=%v", err)
+	}
+	worktreeDir := filepath.Join(home, "worktree")
+	if _, err := os.Stat(filepath.Join(worktreeDir, ".git")); err != nil {
+		t.Fatalf("pre-existing worktree was removed: %v", err)
+	}
+	worktreeList, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("list worktrees: %v: %s", err, worktreeList)
+	}
+	if !strings.Contains(string(worktreeList), canonicalTeamUpPath(worktreeDir)) {
+		t.Fatalf("pre-existing worktree registration was removed:\n%s", worktreeList)
+	}
+}
+
 func TestSetupTeamAddedAgentWorktreeUsesSeparateWorkDir(t *testing.T) {
 	workRepo := t.TempDir()
 	initGitRepoWithOriginAndCommit(t, workRepo, "https://github.com/acme/work.git")
@@ -358,11 +445,49 @@ func TestStartTeamAddedAgentUsesTeamUpLaunchPrimitives(t *testing.T) {
 		return nil
 	}
 	plan := teamHumanAddedAgent{Name: "developer", HomeDir: home}
-	if err := startTeamAddedAgent(&cobra.Command{}, plan, "aw-team", false); err != nil {
+	if err := startTeamAddedAgent(&cobra.Command{}, plan, teamUpSessionSelection{Session: "aw-team"}, false); err != nil {
 		t.Fatalf("startTeamAddedAgent: %v", err)
 	}
 	if len(calls) != 1 || !strings.Contains(calls[0], "new-session -d -s aw-team -n developer") || !strings.Contains(calls[0], "exec 'pi' '--approve'") {
 		t.Fatalf("tmux calls=%v", calls)
+	}
+}
+
+func TestStartTeamAddedAgentPreservesCallerTmuxContext(t *testing.T) {
+	resetTeamUpDetectorsForTest(t)
+	resetTeamUpTmuxForTest(t)
+	logPath := installFakeTmuxForEnvTest(t)
+	withFakePiOnPath(t)
+	withFakePiExtensionRunner(t, func(args ...string) ([]byte, error) {
+		return []byte("User packages:\n  npm:@awebai/pi\n"), nil
+	})
+	callerTMUX := "/tmp/aary5-caller,123,0"
+	overrideTmpdir := filepath.Join(t.TempDir(), "override-socket")
+	t.Setenv(tmuxEnv, callerTMUX)
+	t.Setenv(tmuxTmpdirEnv, overrideTmpdir)
+	t.Setenv(teamUpTmuxTmpdirEnv, filepath.Join(t.TempDir(), "configured-socket"))
+
+	home := writeMaterializedAgentForTeamUp(t, t.TempDir(), "developer", "pi")
+	plan := teamHumanAddedAgent{Name: "developer", HomeDir: home}
+	selection := teamUpSessionSelection{Session: "aary5.caller", TmuxContext: teamUpCallerTmuxContext}
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := startTeamAddedAgent(cmd, plan, selection, false); err != nil {
+		t.Fatalf("startTeamAddedAgent: %v", err)
+	}
+
+	log := readFakeTmuxEnvLog(t, logPath)
+	if !strings.Contains(log, "args=new-window -t aary5.caller: -n developer") {
+		t.Fatalf("caller session target not preserved:\n%s", log)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(log), "\n") {
+		if !strings.HasPrefix(line, "TMUX_TMPDIR="+overrideTmpdir+" TMUX="+callerTMUX+" ") {
+			t.Fatalf("add --start invocation left caller tmux context:\n%s", log)
+		}
+	}
+	if !strings.Contains(out.String(), "tmux session \"aary5.caller\"") {
+		t.Fatalf("start output does not name exact caller session: %q", out.String())
 	}
 }
 
@@ -378,7 +503,7 @@ func TestStartTeamAddedAgentSkipsWhenHomeAlreadyRunning(t *testing.T) {
 		return nil
 	}
 	plan := teamHumanAddedAgent{Name: "developer", HomeDir: home}
-	if err := startTeamAddedAgent(&cobra.Command{}, plan, "aw-team", false); err != nil {
+	if err := startTeamAddedAgent(&cobra.Command{}, plan, teamUpSessionSelection{Session: "aw-team"}, false); err != nil {
 		t.Fatalf("startTeamAddedAgent: %v", err)
 	}
 }
@@ -1188,13 +1313,26 @@ func TestTeamHumanAddWithoutTeamContextGuidesToConnectNotInviteFlags(t *testing.
 	}
 }
 
-func TestTeamHumanAddAPIKeyNoActiveTeamBootstrapsAndMaterializesProfile(t *testing.T) {
+func TestTeamHumanAddAPIKeyNoActiveTeamBootstrapsMaterializesAndStartsInCallerTmux(t *testing.T) {
 	resetTeamHumanCreateGlobals(t)
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
 	t.Setenv("HOME", home)
 	t.Setenv("AW_CONFIG_PATH", "")
 	t.Setenv("AWEB_API_KEY", "aw_sk_owner")
+	callerTMUX := "/tmp/aary5-add-caller,123,0"
+	overrideTmpdir := filepath.Join(t.TempDir(), "override-socket")
+	configuredTmpdir := filepath.Join(t.TempDir(), "configured-socket")
+	t.Setenv(tmuxEnv, callerTMUX)
+	t.Setenv(tmuxTmpdirEnv, overrideTmpdir)
+	t.Setenv(teamUpTmuxTmpdirEnv, configuredTmpdir)
+	tmuxLogPath := installFakeTmuxForEnvTest(t)
+	withFakePiOnPath(t)
+	withFakePiExtensionRunner(t, func(args ...string) ([]byte, error) {
+		return []byte("User packages:\n  npm:@awebai/pi\n"), nil
+	})
+	teamHumanAddStart = true
+	teamHumanAddNoAttach = true
 	externalIdentityHome := filepath.Join(root, "external-principal")
 	if err := os.MkdirAll(externalIdentityHome, 0o700); err != nil {
 		t.Fatal(err)
@@ -1265,7 +1403,10 @@ func TestTeamHumanAddAPIKeyNoActiveTeamBootstrapsAndMaterializesProfile(t *testi
 	t.Setenv("AWEB_URL", server.URL+"/api")
 	t.Setenv(libraryURLEnvVar, server.URL)
 
-	if err := runTeamHumanAdd(nil, []string{"developer@aweb.engineering/coordinator=pi"}); err != nil {
+	var launchOutput bytes.Buffer
+	launchCmd := &cobra.Command{}
+	launchCmd.SetOut(&launchOutput)
+	if err := runTeamHumanAdd(launchCmd, []string{"developer@aweb.engineering/coordinator=pi"}); err != nil {
 		t.Fatalf("runTeamHumanAdd: %v", err)
 	}
 	if initCalls != 1 || connectCalls != 1 {
@@ -1273,6 +1414,18 @@ func TestTeamHumanAddAPIKeyNoActiveTeamBootstrapsAndMaterializesProfile(t *testi
 	}
 	if initBody["alias"] != "developer" || initBody["identity_scope"] != awid.IdentityModeLocal {
 		t.Fatalf("workspace init body=%v", initBody)
+	}
+	tmuxLog := readFakeTmuxEnvLog(t, tmuxLogPath)
+	if !strings.Contains(tmuxLog, "args=display-message -p #S") || !strings.Contains(tmuxLog, "args=new-window -t ok: -n developer") {
+		t.Fatalf("add --start did not resolve and launch in caller tmux session:\n%s", tmuxLog)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(tmuxLog), "\n") {
+		if !strings.HasPrefix(line, "TMUX_TMPDIR="+overrideTmpdir+" TMUX="+callerTMUX+" ") {
+			t.Fatalf("add --start left caller tmux context for configured tmpdir %q:\n%s", configuredTmpdir, tmuxLog)
+		}
+	}
+	if !strings.Contains(launchOutput.String(), "tmux session \"ok\"") {
+		t.Fatalf("add --start output does not name resolved caller session: %q", launchOutput.String())
 	}
 	agentHome := filepath.Join(root, "agents", "instances", "developer")
 	if _, err := os.Stat(filepath.Join(agentHome, ".aw", "profile", "ref.json")); err != nil {
@@ -1736,8 +1889,8 @@ func TestTeamHumanCreateBYOTFirstAgentGlobalWithoutAuthorityFailsBeforeRegister(
 	teamHumanCreateFirstGlobal = true
 
 	err := runTeamHumanCreate(nil, []string{"Ops"})
-	if err == nil || !strings.Contains(err.Error(), "requires namespace controller authority") || !strings.Contains(err.Error(), "aw id create") {
-		t.Fatalf("error=%v", err)
+	if err == nil || !strings.Contains(err.Error(), "--first-agent-global with --byot requires namespace controller authority") || !strings.Contains(err.Error(), "aw id create") {
+		t.Fatalf("create-specific authority error=%v", err)
 	}
 	if calledRegistry {
 		t.Fatal("registry called despite fail-closed --byot without namespace authority")
@@ -1747,6 +1900,18 @@ func TestTeamHumanCreateBYOTFirstAgentGlobalWithoutAuthorityFailsBeforeRegister(
 	}
 	if _, statErr := os.Lstat(filepath.Join(root, ".aw", "teams.yaml")); !os.IsNotExist(statErr) {
 		t.Fatalf("team state created despite fail-closed --byot without namespace authority: %v", statErr)
+	}
+}
+
+func TestTeamHumanAddGlobalIdentityFallbackDoesNotNameCreateFlags(t *testing.T) {
+	resetTeamHumanCreateGlobals(t)
+	t.Setenv("HOME", t.TempDir())
+	err := bootstrapTeamCreateGlobalIdentity(t.TempDir(), "aw-coord", "missing-controller.invalid", "https://api.awid.ai", false)
+	if err == nil || !strings.Contains(err.Error(), "global identity creation requires namespace controller authority") || !strings.Contains(err.Error(), "--api-key") {
+		t.Fatalf("add fallback error=%v", err)
+	}
+	if strings.Contains(err.Error(), "--first-agent-global") || strings.Contains(err.Error(), "--byot") {
+		t.Fatalf("add fallback names create-only flags: %v", err)
 	}
 }
 

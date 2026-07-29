@@ -78,8 +78,8 @@ func init() {
 
 	idRequestCmd.Flags().StringVar(&idRequestSign, "sign", "", "JSON object describing the signed payload fields")
 	idRequestCmd.Flags().StringVar(&idRequestSignFile, "sign-file", "", "Read the JSON sign payload from a file")
-	idRequestCmd.Flags().StringVar(&idRequestBody, "body", "", "Request body to send")
-	idRequestCmd.Flags().StringVar(&idRequestBodyFile, "body-file", "", "Read the request body from a file")
+	idRequestCmd.Flags().StringVar(&idRequestBody, "body", "", shellExpandedInlineHelp("Request body to send", "--body-file"))
+	idRequestCmd.Flags().StringVar(&idRequestBodyFile, "body-file", "", safeFileInputHelp("request body"))
 	idRequestCmd.Flags().StringArrayVar(&idRequestHeaders, "header", nil, "Additional header in 'Name: Value' form")
 	idRequestCmd.Flags().BoolVar(&idRequestTeamAuth, "team-auth", false, "Attach the active team certificate and sign a team-bound request payload")
 	idRequestCmd.Flags().BoolVar(&idRequestRaw, "raw", false, "Print only the upstream response body")
@@ -165,6 +165,7 @@ func executeSignedIDRequest(method string, parsedURL *url.URL, identity *localSi
 		return nil, err
 	}
 	req.Header = headers.Clone()
+	awid.TraceHTTPRequest(req, bodyBytes)
 
 	client := &http.Client{
 		Timeout:   awid.APITimeout(),
@@ -178,6 +179,9 @@ func executeSignedIDRequest(method string, parsedURL *url.URL, identity *localSi
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if err := awid.TraceHTTPResponse(resp); err != nil {
+		return nil, err
+	}
 
 	responseBody, err := readAllBounded(resp.Body, maxResponseBytes)
 	if err != nil {

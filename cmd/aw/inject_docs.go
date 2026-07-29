@@ -9,17 +9,18 @@ import (
 	"time"
 
 	"github.com/awebai/aw/awconfig"
+	"github.com/awebai/aw/internal/agentdocs"
 )
 
 const (
-	awDocsMarkerStart = "<!-- AWEB:START -->"
-	awDocsMarkerEnd   = "<!-- AWEB:END -->"
+	awDocsMarkerStart = agentdocs.MarkerStart
+	awDocsMarkerEnd   = agentdocs.MarkerEnd
 )
 
 type injectDocsResult struct {
-	Created  []string
-	Injected []string
-	Errors   []string
+	Created  []string `json:"created,omitempty"`
+	Injected []string `json:"injected,omitempty"`
+	Errors   []string `json:"errors,omitempty"`
 }
 
 func InjectAgentDocs(repoRoot string) *injectDocsResult {
@@ -45,9 +46,23 @@ func InjectAgentDocsAtIdentityHome(repoRoot string, identityHome awconfig.Identi
 }
 
 func InjectProvidedAgentDocs(repoRoot, body string) *injectDocsResult {
+	return writeProvidedAgentDocs(repoRoot, body, false)
+}
+
+func UpdateProvidedAgentDocs(repoRoot, body string) *injectDocsResult {
+	return writeProvidedAgentDocs(repoRoot, body, true)
+}
+
+func writeProvidedAgentDocs(repoRoot, body string, existingMarkedOnly bool) *injectDocsResult {
 	result := &injectDocsResult{}
+	canonicalRoot, err := canonicalAgentDocsTargetRoot(repoRoot)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("target directory: %v", err))
+		return result
+	}
 	candidates := []string{"CLAUDE.md", "AGENTS.md"}
 	processed := map[string]bool{}
+	foundCandidate := false
 	injectedDocs := renderInjectedDocs(body)
 
 	for _, name := range candidates {
@@ -60,14 +75,12 @@ func InjectProvidedAgentDocs(repoRoot, body string) *injectDocsResult {
 			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
+		foundCandidate = true
 
-		resolved := path
-		if info.Mode()&os.ModeSymlink != 0 {
-			resolved, err = filepath.EvalSymlinks(path)
-			if err != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", name, err))
-				continue
-			}
+		resolved, err := resolveAgentDocsCandidate(canonicalRoot, path, name)
+		if err != nil {
+			result.Errors = append(result.Errors, err.Error())
+			continue
 		}
 		if processed[resolved] {
 			continue
@@ -77,6 +90,9 @@ func InjectProvidedAgentDocs(repoRoot, body string) *injectDocsResult {
 		content, err := os.ReadFile(resolved)
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", name, err))
+			continue
+		}
+		if existingMarkedOnly && !agentdocs.HasSingleMarkedBlock(string(content)) {
 			continue
 		}
 		mode := info.Mode().Perm()
@@ -93,7 +109,7 @@ func InjectProvidedAgentDocs(repoRoot, body string) *injectDocsResult {
 		result.Injected = append(result.Injected, name)
 	}
 
-	if len(processed) == 0 {
+	if !foundCandidate && !existingMarkedOnly {
 		path := filepath.Join(repoRoot, "AGENTS.md")
 		if err := os.WriteFile(path, []byte(renderAgentsTemplate(body)), 0o644); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("AGENTS.md: %v", err))
@@ -117,6 +133,71 @@ func InjectProvidedAgentDocs(repoRoot, body string) *injectDocsResult {
 	return result
 }
 
+func canonicalAgentDocsTargetRoot(repoRoot string) (string, error) {
+	absolute, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(absolute)
+}
+
+func resolveAgentDocsCandidate(canonicalRoot, candidate, name string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", name, err)
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", name, err)
+	}
+	rel, err := filepath.Rel(canonicalRoot, resolved)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", name, err)
+	}
+	if rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		requestedRoot, absErr := filepath.Abs(filepath.Dir(candidate))
+		if absErr != nil {
+			requestedRoot = filepath.Dir(candidate)
+		}
+		return "", fmt.Errorf("%s resolves outside requested directory %s: %s", name, requestedRoot, resolved)
+	}
+	return resolved, nil
+}
+
+func hasSingleMarkedAgentDocs(repoRoot string) (bool, error) {
+	canonicalRoot, err := canonicalAgentDocsTargetRoot(repoRoot)
+	if err != nil {
+		return false, fmt.Errorf("target directory: %w", err)
+	}
+	processed := map[string]bool{}
+	for _, name := range []string{"CLAUDE.md", "AGENTS.md"} {
+		path := filepath.Join(repoRoot, name)
+		_, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("%s: %w", name, err)
+		}
+		resolved, err := resolveAgentDocsCandidate(canonicalRoot, path, name)
+		if err != nil {
+			return false, err
+		}
+		if processed[resolved] {
+			continue
+		}
+		processed[resolved] = true
+		content, err := os.ReadFile(resolved)
+		if err != nil {
+			return false, fmt.Errorf("%s: %w", name, err)
+		}
+		if agentdocs.HasSingleMarkedBlock(string(content)) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func loadTeamInstructionsBody(workingDir string) (string, error) {
 	client, _, err := resolveClientSelectionForDir(workingDir)
 	if err != nil {
@@ -134,11 +215,7 @@ func loadTeamInstructionsBody(workingDir string) (string, error) {
 }
 
 func renderInjectedDocs(body string) string {
-	body = strings.TrimSpace(body)
-	if body == "" {
-		return awDocsMarkerStart + "\n" + awDocsMarkerEnd + "\n"
-	}
-	return awDocsMarkerStart + "\n" + body + "\n" + awDocsMarkerEnd + "\n"
+	return agentdocs.Render(body)
 }
 
 func renderAgentsTemplate(body string) string {
@@ -146,22 +223,7 @@ func renderAgentsTemplate(body string) string {
 }
 
 func removeInjectedDocs(content string) string {
-	start := strings.Index(content, awDocsMarkerStart)
-	end := strings.Index(content, awDocsMarkerEnd)
-	if start == -1 || end == -1 || end < start {
-		return content
-	}
-	end += len(awDocsMarkerEnd)
-	before := strings.TrimRight(content[:start], "\n")
-	after := strings.TrimLeft(content[end:], "\n")
-	switch {
-	case before == "":
-		return after
-	case after == "":
-		return before
-	default:
-		return before + "\n\n" + after
-	}
+	return agentdocs.RemoveAll(content)
 }
 
 func printInjectDocsResult(result *injectDocsResult) {
