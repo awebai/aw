@@ -1,6 +1,7 @@
 package conformance_test
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"embed"
@@ -50,10 +51,7 @@ type messageFields struct {
 }
 
 func TestMessageSigningVectors(t *testing.T) {
-	data, err := vectorsFS.ReadFile("vectors/message-signing-v1.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := readRootVector(t, "message-signing-v1.json")
 	var vectors []messageSigningVector
 	if err := json.Unmarshal(data, &vectors); err != nil {
 		t.Fatal(err)
@@ -142,6 +140,10 @@ func TestTeamAuthEnvelopeV2Vectors(t *testing.T) {
 	data, err := vectorsFS.ReadFile("vectors/team-auth-envelope-v2.json")
 	if err != nil {
 		t.Fatal(err)
+	}
+	canonicalData := readRootVector(t, "team-auth-envelope-v2.json")
+	if !bytes.Equal(data, canonicalData) {
+		t.Fatal("embedded team-auth-envelope-v2 vector differs from canonical docs/vectors copy")
 	}
 	var vectors teamAuthEnvelopeVectors
 	if err := json.Unmarshal(data, &vectors); err != nil {
@@ -630,14 +632,11 @@ type stableIDVector struct {
 	SeedHex      string `json:"seed_hex"`
 	DIDKey       string `json:"did_key"`
 	PublicKeyHex string `json:"public_key_hex"`
-	StableIDAW   string `json:"stable_id_aw"`
+	StableID     string `json:"stable_id"`
 }
 
 func TestStableIDVectors(t *testing.T) {
-	data, err := vectorsFS.ReadFile("vectors/stable-id-v1.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := readRootVector(t, "stable-id-v1.json")
 	var vectors []stableIDVector
 	if err := json.Unmarshal(data, &vectors); err != nil {
 		t.Fatal(err)
@@ -656,8 +655,8 @@ func TestStableIDVectors(t *testing.T) {
 			}
 
 			gotAW := awid.ComputeStableID(pub)
-			if gotAW != v.StableIDAW {
-				t.Errorf("ComputeStableID: got %s, want %s", gotAW, v.StableIDAW)
+			if gotAW != v.StableID {
+				t.Errorf("ComputeStableID: got %s, want %s", gotAW, v.StableID)
 			}
 		})
 	}
@@ -1624,10 +1623,7 @@ type rotationLink struct {
 }
 
 func TestRotationAnnouncementVectors(t *testing.T) {
-	data, err := vectorsFS.ReadFile("vectors/rotation-announcements-v1.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := readRootVector(t, "rotation-announcements-v1.json")
 	var vectors []rotationVector
 	if err := json.Unmarshal(data, &vectors); err != nil {
 		t.Fatal(err)

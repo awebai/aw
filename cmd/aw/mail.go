@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -528,8 +530,10 @@ var mailSendCmd = &cobra.Command{
 			printJSON(resp)
 		} else if targetKind == "conversation" {
 			fmt.Printf("Sent mail in conversation %s (message_id=%s)\n", targetValue, resp.MessageID)
+			fmt.Print(mailSendBoundaryNotice())
 		} else {
 			fmt.Printf("Sent mail to %s (message_id=%s)\n", targetValue, resp.MessageID)
+			fmt.Print(mailSendBoundaryNotice())
 		}
 		return nil
 	},
@@ -646,9 +650,32 @@ var mailReplyCmd = &cobra.Command{
 			printJSON(resp)
 		} else {
 			fmt.Printf("Sent mail in conversation %s (message_id=%s)\n", conversationID, resp.MessageID)
+			fmt.Print(mailSendBoundaryNotice())
 		}
 		return nil
 	},
+}
+
+// mailSendBoundaryNotice states what a successful send does and does not
+// establish. Exit 0 means the server accepted the message; a sender reading
+// only the id line reasonably infers more than that.
+//
+// The three things it excludes are excluded for two different reasons, and the
+// distinction is why this is worded as a limit rather than a warning:
+//
+//	delivery, presentation   known somewhere, but never reported back to a sender
+//	the trust verdict        NOT KNOWABLE HERE AT ALL. It is computed per recipient
+//	                         against a pin store on that recipient's machine, so the
+//	                         same message is "verified" for one peer and
+//	                         "identity_mismatch" for another. There is no single
+//	                         status a sender could be told (aweb-aauz).
+//
+// Deliberately carries no alarm word: at send time nothing is known to be wrong,
+// and an alert would imply a detected problem we have not detected.
+func mailSendBoundaryNotice() string {
+	return "  The server accepted this message. Acceptance is not delivery and not presentation\n" +
+		"  to the recipient - neither is reported back to a sender. It is also not a trust\n" +
+		"  verdict: that is computed per recipient, against a pin store on their machine.\n"
 }
 
 // resolveMailBody returns the message body, sourcing it from --body or
@@ -718,6 +745,25 @@ func resolveMailTarget() (string, string, error) {
 	return "address", awid.NormalizeHostedHandleAddress(mailSendToAddress), nil
 }
 
+type e2eeDecryptionUnavailableError struct {
+	statePath string
+	reason    string
+}
+
+func (e *e2eeDecryptionUnavailableError) Error() string {
+	return fmt.Sprintf("E2E decryption unavailable: %s at %s", e.reason, e.statePath)
+}
+
+func configureClientE2EEForRead(cmd *cobra.Command, ctx context.Context, c *aweb.Client, sel *awconfig.Selection) error {
+	err := configureClientE2EE(ctx, c, sel, false)
+	var unavailable *e2eeDecryptionUnavailableError
+	if errors.As(err, &unavailable) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", unavailable)
+		return nil
+	}
+	return err
+}
+
 func configureClientE2EE(ctx context.Context, c *aweb.Client, sel *awconfig.Selection, required bool) error {
 	if c == nil || c.Client == nil || sel == nil {
 		return usageError("E2E messaging requires an initialized self-custodial workspace")
@@ -739,7 +785,7 @@ func configureClientE2EE(ctx context.Context, c *aweb.Client, sel *awconfig.Sele
 	if err != nil {
 		if os.IsNotExist(err) {
 			if !required {
-				return nil
+				return &e2eeDecryptionUnavailableError{statePath: statePath, reason: "no encryption key state found"}
 			}
 			return usageError("E2E messaging requires a local encryption key; upgrade aw and run `aw id encryption-key setup`, or pass --plaintext only for explicit server-readable messaging")
 		}
@@ -748,7 +794,7 @@ func configureClientE2EE(ctx context.Context, c *aweb.Client, sel *awconfig.Sele
 	record := state.ActiveRecord()
 	if record == nil {
 		if !required {
-			return nil
+			return &e2eeDecryptionUnavailableError{statePath: statePath, reason: "no active encryption key in state"}
 		}
 		return usageError("E2E messaging requires an active local encryption key; upgrade aw and run `aw id encryption-key setup`, or pass --plaintext only for explicit server-readable messaging")
 	}
@@ -829,11 +875,32 @@ func e2eeAssertionIdentityForSelection(sel *awconfig.Selection) *awconfig.Resolv
 var (
 	mailInboxShowAll bool
 	mailInboxLimit   int
+	mailInboxCursor  string
 )
+
+func presentAndAcknowledgeMailInbox(
+	ctx context.Context,
+	writer io.Writer,
+	client *aweb.Client,
+	resp *awid.InboxResponse,
+) error {
+	if err := writeOutput(writer, resp, formatMailInbox); err != nil {
+		return fmt.Errorf("present mail inbox: %w", err)
+	}
+	// Acknowledgements remain best effort, but cannot precede presentation.
+	for _, msg := range resp.Messages {
+		if msg.ReadAt == nil && msg.MessageID != "" {
+			_, _ = client.AckMessage(ctx, msg.MessageID)
+		}
+	}
+	return nil
+}
 
 var mailInboxCmd = &cobra.Command{
 	Use:   "inbox",
 	Short: "List inbox messages (unread only by default)",
+	Long: "List inbox messages, newest first and unread only by default. Messages shown by this command are acknowledged as read.\n\n" +
+		"The response is one bounded page. Text output reports when more messages exist and prints a continuation command; JSON output carries has_more and next_cursor. Pass the returned value to --cursor to continue without overlap.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -842,21 +909,19 @@ var mailInboxCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := configureClientE2EE(ctx, c, sel, false); err != nil {
+		if err := configureClientE2EEForRead(cmd, ctx, c, sel); err != nil {
 			return err
 		}
 		resp, err := c.Inbox(ctx, awid.InboxParams{
 			UnreadOnly: !mailInboxShowAll,
 			Limit:      mailInboxLimit,
+			Cursor:     mailInboxCursor,
 		})
 		if err != nil {
 			return err
 		}
-		// Mark all unread messages as read — seeing them means they're read.
-		for _, msg := range resp.Messages {
-			if msg.ReadAt == nil && msg.MessageID != "" {
-				_, _ = c.AckMessage(ctx, msg.MessageID)
-			}
+		if err := presentAndAcknowledgeMailInbox(ctx, cmd.OutOrStdout(), c, resp); err != nil {
+			return err
 		}
 		logsDir := defaultLogsDir()
 		for _, msg := range resp.Messages {
@@ -907,7 +972,6 @@ var mailInboxCmd = &cobra.Command{
 				Text:           msg.Body,
 			})
 		}
-		printOutput(resp, formatMailInbox)
 		return nil
 	},
 }
@@ -956,7 +1020,24 @@ var mailAckCmd = &cobra.Command{
 
 var mailShowCmd = &cobra.Command{
 	Use:   "show",
-	Short: "Show a mail conversation",
+	Short: "Show a mail conversation or exact message",
+	// Which end the conversation window takes belongs in the help rather than only
+	// in the output, because a reader deciding whether this command can answer "did
+	// I miss something recent" needs it BEFORE they run it and believe the result.
+	Long: "Show mail by conversation or exact message ID.\n\n" +
+		"With --message-id, one unique message is selected. The conversation-window " +
+		"direction and 500-message ceiling below do not apply.\n\n" +
+		"With --conversation-id, --limit caps how many messages are returned and defaults " +
+		"to 200. The messages returned are the OLDEST ones, so on a conversation longer " +
+		"than the limit the newest messages are the ones missing - which is the opposite " +
+		"of what someone checking for recent mail expects.\n\n" +
+		"aw mail inbox windows from the other end and has a different default and ceiling. " +
+		"Do not carry an expectation from one command to the other.\n\n" +
+		"To read a whole conversation, pass --limit above its length and check the " +
+		"returned count. If it equals the limit, there may be more; raise it and re-run, up to " +
+		"500. At the 500-message ceiling, an exact full window cannot establish completeness. " +
+		"The conversation endpoint rejects higher limits and has no paging flag, so a " +
+		"conversation longer than 500 messages cannot be returned whole by this command.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		conversationID := strings.TrimSpace(mailShowConversationID)
 		messageID := strings.TrimSpace(mailShowMessageID)
@@ -981,16 +1062,12 @@ var mailShowCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := configureClientE2EE(ctx, c, sel, false); err != nil {
+		if err := configureClientE2EEForRead(cmd, ctx, c, sel); err != nil {
 			return err
 		}
 		var resp *awid.InboxResponse
 		if messageID != "" {
-			resp, err = c.Inbox(ctx, awid.InboxParams{
-				UnreadOnly: false,
-				Limit:      mailShowLimit,
-				MessageID:  messageID,
-			})
+			resp, err = c.Message(ctx, messageID)
 		} else {
 			resp, err = c.MailConversation(ctx, conversationID, mailShowLimit)
 		}
@@ -1000,7 +1077,21 @@ var mailShowCmd = &cobra.Command{
 			}
 			return networkError(err, messageID)
 		}
-		printOutput(resp, formatMailConversation)
+		// The text formatter carries this notice inline. JSON output must stay a
+		// clean parseable document, so it goes to stderr - where a human still sees
+		// it and a consumer reading stdout is unaffected. Without this, the
+		// machine-readable path is the one surface that reports a partial read as a
+		// whole one with nothing anywhere to say otherwise.
+		if jsonFlag && conversationID != "" {
+			if notice := mailWindowNotice(len(resp.Messages), mailShowLimit); notice != "" {
+				fmt.Fprintln(os.Stderr, strings.TrimSpace(notice))
+			}
+		}
+		formatter := formatMailExactMessage
+		if conversationID != "" {
+			formatter = formatMailConversation
+		}
+		printOutput(resp, formatter)
 		return nil
 	},
 }
@@ -1020,7 +1111,8 @@ func init() {
 	_ = mailSendCmd.Flags().MarkHidden("legacy-plaintext")
 
 	mailInboxCmd.Flags().BoolVar(&mailInboxShowAll, "show-all", false, "Show all messages including already-read")
-	mailInboxCmd.Flags().IntVar(&mailInboxLimit, "limit", 50, "Max messages")
+	mailInboxCmd.Flags().IntVar(&mailInboxLimit, "limit", 50, "Max messages per page")
+	mailInboxCmd.Flags().StringVar(&mailInboxCursor, "cursor", "", "Continue from next_cursor in a previous inbox response")
 	mailReplyCmd.Flags().StringVar(&mailReplySubject, "subject", "", "Subject")
 	mailReplyCmd.Flags().StringVar(&mailReplyBody, "body", "", shellExpandedInlineHelp("Body", "--body-file"))
 	mailReplyCmd.Flags().StringVar(&mailReplyBodyFile, "body-file", "", safeFileInputHelp("message body"))
@@ -1031,7 +1123,7 @@ func init() {
 	_ = mailReplyCmd.Flags().MarkHidden("legacy-plaintext")
 	mailShowCmd.Flags().StringVar(&mailShowConversationID, "conversation-id", "", "Mail conversation to inspect")
 	mailShowCmd.Flags().StringVar(&mailShowMessageID, "message-id", "", "Legacy mail message to inspect")
-	mailShowCmd.Flags().IntVar(&mailShowLimit, "limit", 200, "Max messages")
+	mailShowCmd.Flags().IntVar(&mailShowLimit, "limit", 200, "For --conversation-id, max messages from the OLDEST end; exact --message-id reads are not windowed")
 
 	mailCmd.AddCommand(mailSendCmd, mailReplyCmd, mailInboxCmd, mailShowCmd, mailAckCmd)
 	rootCmd.AddCommand(mailCmd)

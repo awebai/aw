@@ -3,6 +3,9 @@
 
 This project uses `aw` for coordination.
 
+This file is not the team's active instructions. Run `aw instructions show` for the
+authoritative version, which carries sections this file does not.
+
 ## Start Here
 
 Run these before claiming new work. The order is deliberate.
@@ -76,18 +79,21 @@ You are part of a team working toward a shared goal. Optimize for the project ou
 
 ## Who to ask
 
-Roles shown in `aw workspace status` are the profile each agent runs, not who is
-currently leading. When the two disagree, this section is the answer.
+Roles shown in `aw workspace status` are each workspace's current operating
+responsibility on this team. Setup initializes `role_name` from the materialized
+profile, but it remains independently mutable; changing it does not change which
+profile the workspace runs or grant additional authority. Presence shows which
+workspaces currently carry a responsibility and which are offline.
 
-- **Acting lead coordinator: dev.** dev runs a *developer* profile and is acting as
-  lead coordinator by Juan's assignment. Route coordination, scope questions, and
-  handoffs there.
-- **avi is not reachable.** `aw workspace status` still lists avi as coordinator, but
-  avi has been offline for over 90 days and works in a different repository
-  (`ai.aweb`). Do not route work there; a stale entry is not an absent one.
-- **Identity, provisioning, profiles, and the roster: ar** (agent-resources).
+Do not copy teammate names, presence timestamps, or current availability into
+repository or profile instructions. Those facts change independently of the
+files and turn a once-correct routing rule into a durable contradiction.
+Resolve current responsibility and reachability from the active team
+instructions and `aw workspace status`. Follow the responsibility named there;
+if no reachable owner is named, ask a reachable coordinator or the human rather
+than inferring authority from a stale role or profile.
 
-If you are following an instruction that tells you to consult shared state for who
-to ask, and the answer you get is offline or contradicts a live teammate, treat that
-as a finding and say so - do not quietly pick one.
+If a repository or profile copy contradicts active team instructions or live
+presence, the active instructions win. Stop and report the stale copy instead
+of quietly choosing or editing another teammate's home.
 <!-- AWEB:END -->

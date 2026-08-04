@@ -53,6 +53,7 @@ var (
 	teamHumanExtendAPIKey      string
 	teamHumanExtendTeamID      string
 	teamHumanRemoveTeamID      string
+	teamHumanAgentStatusTeamID string
 	teamHumanRemoveRegistryURL string
 	teamHumanRemoveAwebURL     string
 	teamHumanRemoveAPIKey      string
@@ -111,8 +112,9 @@ var teamHumanJoinCmd = &cobra.Command{
 	Short: "Join a team from an invite token",
 	Long: "Join a team from an invite token.\n\n" +
 		"Run this in a clean target directory. It refuses to overwrite an existing\n" +
-		".aw identity/key. After joining, run `aw init` if the output says the\n" +
-		"workspace still needs to be connected to the service.",
+		".aw identity/key. Join installs identity and membership state but does not create\n" +
+		"`.aw/workspace.yaml` or report service-connection state. After joining, always\n" +
+		"run `aw workspace connect --service <service-url>` before checks or messaging.",
 	Args: cobra.ExactArgs(1),
 	RunE: runTeamAcceptInvite,
 }
@@ -139,11 +141,50 @@ var teamHumanLeaveCmd = &cobra.Command{
 
 var teamHumanRemoveAgentCmd = &cobra.Command{
 	Use:   "remove-agent <member-address>",
-	Short: "Remove an agent from a team",
-	Long: "Remove an agent from a team.\n\n" +
-		"This everyday verb maps to the identity/certificate revocation primitive.\n" +
+	Short: "Retire an agent: release its claims, then revoke its certificate",
+	Long: "Retire an agent from a team across the stores that hold its state.\n\n" +
+		"It first deletes the agent's workspace record, which releases the task claims\n" +
+		"held under it, and only then revokes its certificate. That order matters: an\n" +
+		"agent can release its own claims until its certificate is revoked, and the\n" +
+		"hosted removal deletes the same workspace record without releasing anything.\n\n" +
+		"If the claims cannot be released the command stops before revoking and says\n" +
+		"which store changed and which did not, rather than leaving an agent with no\n" +
+		"credential and claims nobody can clear. To revoke access immediately and\n" +
+		"accept that outcome, use `aw id team remove-member`.\n\n" +
 		"Customer-controlled teams revoke with the local team controller key; hosted\n" +
-		"aweb.ai teams call the cloud-mediated controller revoke endpoint.",
+		"aweb.ai teams call the cloud-mediated controller revoke endpoint.\n\n" +
+		"STATUS VALUES. These are a contract; branch on them rather than on the prose.\n" +
+		"Each says what its evidence supports, and the second column is the part that\n" +
+		"matters, because the defect this command was built to remove was a status word\n" +
+		"asserting more than the service had established.\n\n" +
+		"  status (whole retirement)\n" +
+		"    retired           every store reached the state retirement wants, and each\n" +
+		"                      one established it. Exit 0.\n" +
+		"    reported_retired  every store reached that state, but the certificate part\n" +
+		"                      rests on a service reporting a no-op. It does NOT mean no\n" +
+		"                      certificate exists. Exit 0. Confirm with agent-status.\n" +
+		"    incomplete        a store did not reach that state; the per-store results\n" +
+		"                      say which. Exit non-zero.\n\n" +
+		"  certificate_result\n" +
+		"    revoked                     this call revoked a certificate.\n" +
+		"    already_revoked             the registry stated the certificate exists and\n" +
+		"                                was already revoked. Only a registry says this;\n" +
+		"                                it is never inferred from an absence.\n" +
+		"    reported_nothing_to_revoke  the service reported it had nothing to revoke.\n" +
+		"                                This says NOTHING about whether a certificate\n" +
+		"                                exists: the hosted service answers from its own\n" +
+		"                                membership records and may never consult the\n" +
+		"                                registry, so a member holding a live certificate\n" +
+		"                                with no hosted record is reported this way.\n\n" +
+		"  per-store result: changed, unchanged, blocked, failed, not_attempted.\n" +
+		"    changed and unchanged are terminal; the other three are not.\n\n" +
+		"  claims_released is null when the server did not report a count, which is what\n" +
+		"    a server older than that field does. Null is not zero.\n\n" +
+		"Exit status answers one question only: did the request reach the service and get\n" +
+		"an answer. It never carries a claim about certificate state. So on a\n" +
+		"customer-controlled team, retiring a name that no longer resolves is an error\n" +
+		"rather than a no-op, because that answer is indistinguishable from a request\n" +
+		"that never arrived - while a registry saying already-revoked is success.",
 	Args: cobra.ExactArgs(1),
 	RunE: runTeamHumanRemoveAgent,
 }
@@ -220,6 +261,9 @@ func init() {
 	teamHumanCmd.AddCommand(teamHumanListCmd)
 	teamHumanCmd.AddCommand(teamHumanSwitchCmd)
 	teamHumanCmd.AddCommand(teamHumanLeaveCmd)
+	teamHumanAgentStatusCmd.Flags().StringVar(&teamHumanAgentStatusTeamID, "team-id", "", "Canonical team id (<name>:<namespace>) to read from (defaults to active team)")
+	teamHumanCmd.AddCommand(teamHumanAgentStatusCmd)
+
 	teamHumanRemoveAgentCmd.Flags().StringVar(&teamHumanRemoveTeamID, "team-id", "", "Canonical team id (<name>:<namespace>) to remove from (defaults to active team)")
 	teamHumanRemoveAgentCmd.Flags().StringVar(&teamHumanRemoveRegistryURL, "registry", "", "Registry origin override")
 	teamHumanRemoveAgentCmd.Flags().StringVar(&teamHumanRemoveAwebURL, "aweb-url", "", "Hosted aweb API URL override for cloud-mediated removal")
@@ -387,6 +431,9 @@ type teamHumanCreateOutput struct {
 	NoLibrary    bool   `json:"no_library"`
 	NoProfile    bool   `json:"no_profile"`
 	IdentityOnly bool   `json:"identity_only"`
+	// ProfileSource states where the materialized profile came from, built from
+	// teamProfileSource.Describe.
+	ProfileSource string `json:"profile_source,omitempty"`
 }
 
 type teamHumanCreateFoundingResult struct {
@@ -610,8 +657,29 @@ func finishTeamHumanCreateFounding(result teamHumanCreateFoundingResult, rosterS
 			if err := configureMaterializedAgentHome(result.HomeDir); err != nil {
 				return err
 			}
-		} else if _, _, err := applyPublicLibraryProfileToHomeAndConfigure(result.HomeDir, *result.Selector, true); err != nil {
-			return err
+			if result.HumanOutput != nil {
+				result.HumanOutput.ProfileSource = "local blueprint directory " + strings.TrimSpace(result.LocalBlueprintDir)
+			}
+		} else {
+			// The founding home already carries the team credential by this point, so
+			// it is what authorizes the shelf read.
+			source, err := resolveTeamProfileSource(result.HomeDir, *result.Selector)
+			if err != nil {
+				return err
+			}
+			if _, _, err := applyTeamLibraryProfileToHome(result.HomeDir, *result.Selector, &source, true); err != nil {
+				return err
+			}
+			// Configure explicitly rather than through the AndConfigure wrapper: the two
+			// materialize sites call it with DIFFERENT arguments - the roster path passes
+			// a target identity home, this one does not - and folding that into one helper
+			// would hide the asymmetry behind a parameter that exists only to carry it.
+			if err := configureMaterializedAgentHome(result.HomeDir); err != nil {
+				return err
+			}
+			if result.HumanOutput != nil {
+				result.HumanOutput.ProfileSource = source.Describe(*result.Selector)
+			}
 		}
 		if result.HumanOutput != nil {
 			result.HumanOutput.ProfileMode = "library"
@@ -1000,7 +1068,28 @@ func formatTeamHumanCreate(v any) string {
 		fmt.Fprintf(&b, "Agent home: %s\n", out.HomeDir)
 	}
 	if out.ProfileMode == "library" {
-		b.WriteString("Library profile adopted and materialized.\n")
+		// Name the source rather than asserting a bare success: "adopted and
+		// materialized" is true of a team's own shelf profile and of the stock catalog
+		// copy alike, so on its own it cannot tell a reader which one landed.
+		//
+		// The word "Library" is dropped because a local blueprint directory is not a
+		// Library profile, and where it IS one the source already names which catalog -
+		// so the word carries no information where it is true and a false claim where
+		// it is not.
+		if src := strings.TrimSpace(out.ProfileSource); src != "" {
+			fmt.Fprintf(&b, "Profile materialized from %s\n", src)
+		} else {
+			// Unreachable today: every materialize branch sets a source. But nothing in
+			// the type system forbids the unset state - it took enumerating all the call
+			// sites to establish even the current-tense version - so this is reachable by
+			// the next branch that forgets, which is precisely how this defect arose.
+			//
+			// Deleting the branch and printing a plausible sentence fail the same way, in
+			// opposite directions: one goes silent, the other repeats the original false
+			// claim. So it says only what is known to be true - a profile was materialized
+			// - and announces the missing part rather than papering over it.
+			b.WriteString("BUG: a profile was materialized but no source was recorded, so this command cannot say where it came from.\n")
+		}
 	} else {
 		b.WriteString("No Library profile was adopted; no profile home was materialized.\n")
 	}
@@ -1031,6 +1120,12 @@ type teamHumanAddedAgent struct {
 	ProfileMode       string                  `json:"profile_mode"`
 	Profile           *libraryProfileSelector `json:"-"`
 	LocalBlueprintDir string                  `json:"-"`
+	// Source is resolved in preflight and carried to materialization, so the bytes
+	// that were inspected are the bytes that land. Nil until the preflight runs.
+	Source *teamProfileSource `json:"-"`
+	// ProfileSource states where this agent's profile came from, built from
+	// Source.Describe so the reported line and the resolution cannot drift apart.
+	ProfileSource string `json:"profile_source,omitempty"`
 	Scope             string                  `json:"scope,omitempty"`
 	Alias             string                  `json:"alias,omitempty"`
 	TeamID            string                  `json:"team_id,omitempty"`
@@ -1399,6 +1494,13 @@ func runTeamHumanAddWithOptions(cmd *cobra.Command, args []string, opts teamHuma
 	if err := preflightTeamHumanAddRosterAuthority(inviteAnchorDir, plans, apiKeyBootstrapMode, opts); err != nil {
 		return err
 	}
+	// Resolve where each profile comes from before any home is created, so a shelf
+	// that cannot be read fails the roster rather than half-building it from stock
+	// bytes. Authorized from the anchor, which holds the team credential - the target
+	// homes do not exist until the loop below.
+	if err := resolveTeamProfileSourcesForPlans(inviteAnchorDir, plans); err != nil {
+		return err
+	}
 	noLibrary, noProfile := teamHumanAddProfileModes(plans)
 	createdTeamID := ""
 	reportRosterFailure := func(failedIndex int, failure error) error {
@@ -1481,7 +1583,7 @@ func runTeamHumanAddWithOptions(cmd *cobra.Command, args []string, opts teamHuma
 				if _, _, err := applyLocalBlueprintProfileToHome(plans[i].HomeDir, *plans[i].Profile, plans[i].LocalBlueprintDir, true); err != nil {
 					return reportRosterFailure(i, rollbackOnErr(err))
 				}
-			} else if _, _, err := applyPublicLibraryProfileToHome(plans[i].HomeDir, *plans[i].Profile, true); err != nil {
+			} else if _, _, err := applyTeamLibraryProfileToHome(plans[i].HomeDir, *plans[i].Profile, plans[i].Source, true); err != nil {
 				return reportRosterFailure(i, rollbackOnErr(err))
 			}
 			if !plans[i].Connected {
@@ -2269,11 +2371,15 @@ func formatTeamHumanAdd(v any) string {
 	}
 	for _, agent := range out.Agents {
 		fmt.Fprintf(&b, "- %s: %s\n", agent.Name, agent.HomeDir)
+		// Per agent, because a roster can draw different roles from different sources -
+		// one role on the team's shelf, another only in the public catalog - and a
+		// single summary line at the end cannot say which was which.
+		if src := strings.TrimSpace(agent.ProfileSource); src != "" {
+			fmt.Fprintf(&b, "    profile from %s\n", src)
+		}
 	}
 	if out.NoLibrary {
 		b.WriteString("No Library profile was adopted; no profile home was materialized.\n")
-	} else {
-		b.WriteString("Library profile(s) adopted and materialized.\n")
 	}
 	return b.String()
 }
@@ -2341,7 +2447,90 @@ func runTeamHumanRemoveAgent(cmd *cobra.Command, args []string) error {
 	teamRemoveRegistryURL = teamHumanRemoveRegistryURL
 	teamRemoveAwebURL = teamHumanRemoveAwebURL
 	teamRemoveAPIKey = teamHumanRemoveAPIKey
-	return runTeamRemoveMember(cmd, nil)
+
+	_, alias, err := parseAddress(teamRemoveMember)
+	if err != nil {
+		return err
+	}
+
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	client, _, err := resolveClientSelectionForDir(workingDir)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Establish WHICH principal this is about before anything is written.
+	//
+	// Only a customer-controlled team can: the registry resolve says which member
+	// the alias belongs to, so a typed namespace that names someone else is caught
+	// before the first mutation. A hosted team has no read that can answer it at
+	// all - see aweb-aaum.9 - so the retirement proceeds on the alias and says so
+	// in its result rather than refusing a verification it cannot perform. Nothing
+	// printed asserts more than the evidence supports, which is the property; a
+	// refusal is one way to honour it and an accurate disclosure is the other.
+	var verified *verifiedMember
+	if !isAwebHostedNamespace(domain) {
+		registry, regErr := newConfiguredRegistryClient(nil, "")
+		if regErr != nil {
+			return regErr
+		}
+		verified, err = verifyRetirementTarget(
+			ctx, client, registry, resolveTeamRemoveRegistryURL(registry),
+			domain, name, teamRemoveMember, alias,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	out := retireTeamAgent(ctx, client, teamID, teamRemoveMember, alias, verified != nil, func(ctx context.Context) (certificateStoreResult, error) {
+		return revokeTeamCertificate(ctx, domain, name, teamID, teamRemoveMember, verified)
+	})
+	printOutput(out, formatTeamRemoveAgent)
+	if !retirementSucceeded(out.Status) {
+		return &cliError{code: 1, msg: fmt.Sprintf("%s is not fully retired; see the per-store results above", teamRemoveMember)}
+	}
+	return nil
+}
+
+// revokeTeamCertificate revokes the member's certificate through whichever
+// authority owns the namespace.
+func revokeTeamCertificate(ctx context.Context, domain, team, teamID, memberAddress string, verified *verifiedMember) (certificateStoreResult, error) {
+	if isAwebHostedNamespace(domain) {
+		return revokeHostedTeamCertificate(ctx, teamID, memberAddress, "")
+	}
+
+	teamKey, err := awconfig.LoadTeamKey(domain, team)
+	if err != nil {
+		return certificateStoreResult{}, fmt.Errorf("load team key for %s: %w", teamID, err)
+	}
+	registry, err := newConfiguredRegistryClient(nil, "")
+	if err != nil {
+		return certificateStoreResult{}, err
+	}
+	registryURL := resolveTeamRemoveRegistryURL(registry)
+
+	// No lookup here. The member was resolved and verified once, before anything
+	// was written, and its certificate id was carried forward - see verifiedMember.
+	if verified == nil {
+		return certificateStoreResult{}, fmt.Errorf("refusing to revoke on %s without an established member", teamID)
+	}
+	result, err := revokeRegistryTeamCertificate(
+		ctx, registry, registryURL, domain, team, verified.CertificateID, teamKey,
+	)
+	if err != nil {
+		return certificateStoreResult{}, err
+	}
+	// Report the address the registry returned for the certificate that was
+	// revoked, not the string that was typed.
+	result.MemberAddress = verified.MemberAddress
+	return result, nil
 }
 
 func activeTeamIDForHumanTeamCommand() (string, error) {

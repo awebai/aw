@@ -155,17 +155,40 @@ func TestAwebOwnedStartupGuidanceHasSingleCanonicalOrder(t *testing.T) {
 		return string(body)
 	}
 
-	canonical := read("skills/aweb-coordination/SKILL.md")
-	previous := -1
-	for _, command := range []string{"aw workspace status", "aw mail inbox", "aw chat pending", "aw work ready"} {
-		position := strings.Index(canonical, command)
-		if position <= previous {
-			t.Fatalf("canonical startup command %q missing or out of order", command)
+	assertStartupOrder := func(source, guidance string) {
+		t.Helper()
+		previous := -1
+		for _, command := range []string{"aw workspace status", "aw mail inbox", "aw chat pending", "aw work ready"} {
+			position := strings.Index(guidance, command)
+			if position <= previous {
+				t.Fatalf("%s startup command %q missing or out of order", source, command)
+			}
+			previous = position
 		}
-		previous = position
 	}
+
+	canonical := read("skills/aweb-coordination/SKILL.md")
+	assertStartupOrder("canonical skill", canonical)
 	if !strings.Contains(strings.Join(strings.Fields(canonical), " "), "Read waiting mail and chat before claiming work") {
 		t.Fatal("canonical startup loop must state why message checks precede work claims")
+	}
+
+	standaloneGuide := read("docs/agent-guide.md")
+	assertStartupOrder("standalone agent guide", standaloneGuide)
+	standaloneGuidance := strings.Join(strings.Fields(standaloneGuide), " ")
+	for _, want := range []string{
+		"Active team instructions govern startup ordering when present.",
+		"optional `aweb-coordination` skill may provide the same ordering when installed",
+		"otherwise the standard commands below stand on their own",
+		"Neither the skill nor a Library/profile service is required for messaging.",
+		"Mail and waiting chat come before new work because another agent may already be blocked on you.",
+	} {
+		if !strings.Contains(standaloneGuidance, want) {
+			t.Errorf("standalone agent guide missing startup contract %q", want)
+		}
+	}
+	if strings.Contains(standaloneGuidance, "canonical start-of-session loop in the `aweb-coordination` skill") {
+		t.Error("standalone agent guide must not require the optional coordination skill")
 	}
 
 	for _, rel := range []string{
@@ -181,7 +204,6 @@ func TestAwebOwnedStartupGuidanceHasSingleCanonicalOrder(t *testing.T) {
 		"agents/souls/consultant/AGENTS.md",
 		"agents/souls/coordinator/AGENTS.md",
 		"agents/souls/developer/AGENTS.md",
-		"docs/agent-guide.md",
 		"docs/configuration.md",
 		"docs/coordination.md",
 		"docs/start-working.md",
@@ -212,6 +234,104 @@ func TestAwebOwnedStartupGuidanceHasSingleCanonicalOrder(t *testing.T) {
 	}
 	if strings.Contains(teamCopy, "This order is canonical") {
 		t.Error("team-instructions convenience copy independently claims canonicality")
+	}
+}
+
+func TestRepositoryInstructionCopiesDoNotFreezeLiveRoster(t *testing.T) {
+	root := cmdMonorepoRootForTest(t)
+	for _, relative := range []string{"AGENTS.md", "agents/instructions.md", "cli/go/AGENTS.md"} {
+		body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		guidance := strings.Join(strings.Fields(string(body)), " ")
+		for _, want := range []string{
+			"Do not copy teammate names, presence timestamps, or current availability into repository or profile instructions.",
+			"Resolve current responsibility and reachability from the active team instructions and `aw workspace status`.",
+		} {
+			if !strings.Contains(guidance, want) {
+				t.Errorf("%s missing durable roster-precedence guidance %q", relative, want)
+			}
+		}
+		for _, stale := range []string{"dev is live", "dev is not reachable", "avi is not reachable", "last seen 2026-"} {
+			if strings.Contains(strings.ToLower(guidance), stale) {
+				t.Errorf("%s freezes mutable roster claim %q", relative, stale)
+			}
+		}
+	}
+}
+
+func TestSelfHostingGuideUsesTheCurrentExistingDirectoryLocalIdentityPath(t *testing.T) {
+	if workspaceConnectCmd.Flags().Lookup("service") == nil {
+		t.Fatal("workspace connect no longer accepts the documented --service flag")
+	}
+	if idVerifyCmd.Use != "verify <did_aw>" {
+		t.Fatalf("id verify command shape changed to %q", idVerifyCmd.Use)
+	}
+
+	body, err := os.ReadFile(filepath.Join(cmdMonorepoRootForTest(t), "docs", "self-hosting-guide.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guidance := strings.Join(strings.Fields(string(body)), " ")
+	for _, want := range []string{
+		"a local self-custodial identity for `default:local`",
+		"Run the join command from a second existing agent directory",
+		"aw team join <invite-token> --name bob",
+		"aw workspace connect --service http://localhost:8000",
+		"aw id verify <did:aw>",
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Errorf("self-hosting guide missing current local path %q", want)
+		}
+	}
+	for _, stale := range []string{
+		"a global identity in the local test namespace",
+		"aw workspace add-worktree",
+	} {
+		if strings.Contains(guidance, stale) {
+			t.Errorf("self-hosting guide retains stale setup path %q", stale)
+		}
+	}
+}
+
+func TestPublicTeamJoinGuidanceRequiresExplicitServiceConnection(t *testing.T) {
+	joinHelp := strings.Join(strings.Fields(teamHumanJoinCmd.Long), " ")
+	if !strings.Contains(joinHelp, "does not create `.aw/workspace.yaml`") ||
+		!strings.Contains(joinHelp, "aw workspace connect --service <service-url>") {
+		t.Fatalf("team join help does not state the unconditional service-connection contract:\n%s", teamHumanJoinCmd.Long)
+	}
+
+	formatted := formatTeamAcceptInvite(teamAcceptInviteOutput{
+		Status: "accepted", TeamID: "default:example.com", Alias: "bob", CertPath: ".aw/team-certs/default_example.com.json",
+	})
+	if strings.Contains(strings.ToLower(formatted), "connect") || strings.Contains(strings.ToLower(formatted), "workspace") {
+		t.Fatalf("team join output unexpectedly claims workspace connection state:\n%s", formatted)
+	}
+
+	root := cmdMonorepoRootForTest(t)
+	required := map[string][]string{
+		"README.md":                  {"aw workspace connect --service https://app.aweb.ai/api"},
+		"docs/cli-tutorial.md":       {"aw workspace connect --service https://app.aweb.ai/api", "aw workspace connect --service \"$AWEB_URL\""},
+		"docs/identity-guide.md":     {"aw workspace connect --service https://app.aweb.ai/api", "aw workspace connect --service <service-url>"},
+		"docs/self-hosting-guide.md": {"aw workspace connect --service http://localhost:8000"},
+	}
+	for relative, commands := range required {
+		body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		for _, command := range commands {
+			if !strings.Contains(text, command) {
+				t.Errorf("%s omits required post-join command %q", relative, command)
+			}
+		}
+		for _, conditional := range []string{"if its output says", "if the join output says", "if the output says", "may already connect", "follow the join output"} {
+			if strings.Contains(strings.ToLower(text), conditional) {
+				t.Errorf("%s conditions required connection on impossible join output %q", relative, conditional)
+			}
+		}
 	}
 }
 

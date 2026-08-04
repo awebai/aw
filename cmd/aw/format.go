@@ -146,21 +146,92 @@ func formatMailInbox(v any) string {
 		tags := formatVerificationTag(msg.VerificationStatus) + formatContactTag(msg.IsContact)
 		sb.WriteString(fmt.Sprintf("- %s%s%s: %s\n", preferredIdentityDisplayLabel(msg.FromAlias, msg.FromAddress, msg.FromStableID, msg.FromDID, ""), subj, tags, msg.Body))
 	}
+	if resp.HasMore {
+		sb.WriteString("\nMore messages are not shown on this page.\n")
+		if cursor := strings.TrimSpace(resp.NextCursor); cursor != "" {
+			sb.WriteString("Continue with: aw mail inbox")
+			for _, selection := range []struct {
+				name  string
+				value string
+			}{
+				{name: "team", value: teamFlag},
+				{name: "identity-home", value: identityHomeFlag},
+				{name: "server-name", value: serverFlag},
+			} {
+				if value := strings.TrimSpace(selection.value); value != "" {
+					sb.WriteString(" --" + selection.name + " " + teamUpShellQuoteIfNeeded(value))
+				}
+			}
+			if mailInboxShowAll {
+				sb.WriteString(" --show-all")
+			}
+			if mailInboxLimit != 50 {
+				sb.WriteString(fmt.Sprintf(" --limit %d", mailInboxLimit))
+			}
+			sb.WriteString(" --cursor " + teamUpShellQuoteIfNeeded(cursor) + "\n")
+		}
+	}
 	return sb.String()
+}
+
+// mailWindowNotice reports that a listing filled its limit exactly, and is empty
+// otherwise.
+//
+// The response carries no total and no has_more, so the CLI cannot say "200 of 282".
+// Asking for N and receiving N is the only evidence available, and it is one-sided:
+// it cannot distinguish a conversation of exactly N from a longer one, so it warns on
+// a complete conversation whose size happens to equal the limit. That direction is the
+// safe one - it over-warns rather than reporting a partial read as whole, which is the
+// defect being fixed (aweb-aayg).
+//
+// Which END is named because the remedy depends on it. `aw mail show` takes the OLDEST
+// messages, so a reader looking for something recent on a long thread gets a listing
+// that is complete-looking, ordered, and missing precisely what they came for.
+// `aw mail inbox` windows from the other end - do not carry an intuition between them.
+func mailWindowNotice(returned, limit int) string {
+	if limit <= 0 || returned < limit {
+		return ""
+	}
+	if limit < 500 {
+		return fmt.Sprintf(
+			"  NOTE: this is the OLDEST %d, which is all --limit allowed. There may be more, and any newer\n"+
+				"  messages are not shown. Re-run with a higher --limit (up to 500) to find out. A conversation\n"+
+				"  longer than 500 cannot be returned whole by this command because there is no pagination.",
+			limit,
+		)
+	}
+	return fmt.Sprintf(
+		"  NOTE: this is the OLDEST %d, which is all --limit allowed. There may be more, and any newer\n"+
+			"  messages are not shown. Completeness cannot be established at the server's 500-message\n"+
+			"  ceiling; there is no pagination, so a longer conversation cannot be returned whole.",
+		limit,
+	)
 }
 
 func formatMailConversation(v any) string {
 	resp := v.(*awid.InboxResponse)
+	return formatMailShowResponse(resp, mailWindowNotice(len(resp.Messages), mailShowLimit))
+}
+
+func formatMailExactMessage(v any) string {
+	return formatMailShowResponse(v.(*awid.InboxResponse), "")
+}
+
+func formatMailShowResponse(resp *awid.InboxResponse, notice string) string {
 	if len(resp.Messages) == 0 {
 		return "No messages.\n"
 	}
 	var sb strings.Builder
 	conversationID := strings.TrimSpace(resp.Messages[0].ConversationID)
 	if conversationID != "" {
-		sb.WriteString(fmt.Sprintf("Mail conversation %s (%d messages):\n\n", conversationID, len(resp.Messages)))
+		sb.WriteString(fmt.Sprintf("Mail conversation %s (%d messages):\n", conversationID, len(resp.Messages)))
 	} else {
-		sb.WriteString(fmt.Sprintf("Mail conversation (%d messages):\n\n", len(resp.Messages)))
+		sb.WriteString(fmt.Sprintf("Mail conversation (%d messages):\n", len(resp.Messages)))
 	}
+	if notice != "" {
+		sb.WriteString(notice + "\n")
+	}
+	sb.WriteString("\n")
 	for _, msg := range resp.Messages {
 		subj := strings.TrimSpace(msg.Subject)
 		if subj != "" {

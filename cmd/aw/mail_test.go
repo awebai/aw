@@ -4,15 +4,18 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/awconfig"
 	"github.com/awebai/aw/awid"
 )
@@ -327,6 +330,220 @@ func TestE2EEAssertionIdentityUsesExternalIdentityHome(t *testing.T) {
 	}
 }
 
+func TestAwMailInboxAcknowledgesUnreadPageBeforeCursorContinuation(t *testing.T) {
+	t.Parallel()
+
+	messageIDs := []string{
+		"00000000-0000-4000-8000-000000000001",
+		"00000000-0000-4000-8000-000000000002",
+		"00000000-0000-4000-8000-000000000003",
+	}
+	acked := map[string]bool{}
+	pageFetches := 0
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/messages/inbox":
+			pageFetches++
+			cursor := r.URL.Query().Get("cursor")
+			if pageFetches == 1 {
+				if cursor != "" {
+					t.Fatalf("first page cursor=%q", cursor)
+				}
+				_ = json.NewEncoder(w).Encode(awid.InboxResponse{
+					Messages: []awid.InboxMessage{
+						{MessageID: messageIDs[0], FromAlias: "alice", Body: "first-page-a", CreatedAt: "2026-07-31T12:00:02Z"},
+						{MessageID: messageIDs[1], FromAlias: "alice", Body: "first-page-b", CreatedAt: "2026-07-31T12:00:01Z"},
+					},
+					HasMore:    true,
+					NextCursor: "cursor-token",
+				})
+				return
+			}
+			if cursor != "cursor-token" {
+				t.Fatalf("continuation cursor=%q", cursor)
+			}
+			if !acked[messageIDs[0]] || !acked[messageIDs[1]] {
+				t.Fatalf("continuation fetched before visible page was acknowledged: %+v", acked)
+			}
+			_ = json.NewEncoder(w).Encode(awid.InboxResponse{
+				Messages: []awid.InboxMessage{{
+					MessageID: messageIDs[2],
+					FromAlias: "alice",
+					Body:      "second-page",
+					CreatedAt: "2026-07-31T12:00:00Z",
+				}},
+			})
+		case strings.HasPrefix(r.URL.Path, "/v1/messages/") && strings.HasSuffix(r.URL.Path, "/ack"):
+			messageID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/messages/"), "/ack")
+			if !slices.Contains(messageIDs, messageID) {
+				t.Fatalf("unexpected ack message id %q", messageID)
+			}
+			acked[messageID] = true
+			_ = json.NewEncoder(w).Encode(awid.AckResponse{MessageID: messageID, AcknowledgedAt: "2026-07-31T12:01:00Z"})
+		case r.URL.Path == "/v1/agents/heartbeat":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "aw")
+	buildAwBinary(t, ctx, bin)
+	writeDefaultWorkspaceBindingForTest(t, tmp, server.URL)
+
+	runInbox := func(args ...string) string {
+		run := exec.CommandContext(ctx, bin, append([]string{"mail", "inbox"}, args...)...)
+		run.Env = testCommandEnv(tmp)
+		run.Dir = tmp
+		out, err := run.CombinedOutput()
+		if err != nil {
+			t.Fatalf("mail inbox %v failed: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+
+	firstOutput := runInbox("--limit", "2")
+	if !strings.Contains(firstOutput, "first-page-a") || !strings.Contains(firstOutput, "first-page-b") ||
+		strings.Contains(firstOutput, "second-page") || !strings.Contains(firstOutput, "--cursor cursor-token") {
+		t.Fatalf("first page output is incomplete or overlaps continuation:\n%s", firstOutput)
+	}
+	if !acked[messageIDs[0]] || !acked[messageIDs[1]] || acked[messageIDs[2]] {
+		t.Fatalf("first page read state=%+v", acked)
+	}
+
+	secondOutput := runInbox("--limit", "2", "--cursor", "cursor-token")
+	if strings.Contains(secondOutput, "first-page") || !strings.Contains(secondOutput, "second-page") {
+		t.Fatalf("second page overlapped or omitted content:\n%s", secondOutput)
+	}
+	if pageFetches != 2 || !acked[messageIDs[0]] || !acked[messageIDs[1]] || !acked[messageIDs[2]] {
+		t.Fatalf("final fetch/read state: fetches=%d acked=%+v", pageFetches, acked)
+	}
+}
+
+type mailPresentationErrorWriter struct{}
+
+func (mailPresentationErrorWriter) Write([]byte) (int, error) {
+	return 0, errors.New("closed presentation writer")
+}
+
+func TestPresentAndAcknowledgeMailInboxDoesNotAcknowledgeFailedOutput(t *testing.T) {
+	previousJSON := jsonFlag
+	t.Cleanup(func() { jsonFlag = previousJSON })
+
+	messageID := "00000000-0000-4000-8000-000000000004"
+	acked := false
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages/"+messageID+"/ack" {
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+		acked = true
+		_ = json.NewEncoder(w).Encode(awid.AckResponse{MessageID: messageID})
+	}))
+	client, err := aweb.New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := &awid.InboxResponse{Messages: []awid.InboxMessage{{
+		MessageID: messageID,
+		FromAlias: "alice",
+		Body:      "must remain unread",
+	}}}
+
+	for _, tc := range []struct {
+		name string
+		json bool
+	}{
+		{name: "text"},
+		{name: "json", json: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jsonFlag = tc.json
+			acked = false
+			err := presentAndAcknowledgeMailInbox(
+				context.Background(),
+				mailPresentationErrorWriter{},
+				client,
+				resp,
+			)
+			if err == nil || !strings.Contains(err.Error(), "closed presentation writer") {
+				t.Fatalf("presentation error=%v", err)
+			}
+			if acked {
+				t.Fatal("mail was acknowledged after its presentation writer failed")
+			}
+		})
+	}
+}
+
+func TestAwMailInboxDoesNotAcknowledgeWhenPresentationFails(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "text"},
+		{name: "json", args: []string{"--json"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			messageID := "00000000-0000-4000-8000-000000000004"
+			acked := false
+			server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/v1/messages/inbox":
+					_ = json.NewEncoder(w).Encode(awid.InboxResponse{Messages: []awid.InboxMessage{{
+						MessageID: messageID,
+						FromAlias: "alice",
+						Body:      "must remain unread",
+						CreatedAt: "2026-07-31T12:00:00Z",
+					}}})
+				case r.URL.Path == "/v1/messages/"+messageID+"/ack":
+					acked = true
+					_ = json.NewEncoder(w).Encode(awid.AckResponse{MessageID: messageID, AcknowledgedAt: "2026-07-31T12:01:00Z"})
+				case r.URL.Path == "/v1/agents/heartbeat":
+					w.WriteHeader(http.StatusOK)
+				default:
+					t.Fatalf("unexpected path=%s", r.URL.Path)
+				}
+			}))
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			tmp := t.TempDir()
+			bin := filepath.Join(tmp, "aw")
+			buildAwBinary(t, ctx, bin)
+			writeDefaultWorkspaceBindingForTest(t, tmp, server.URL)
+
+			readEnd, writeEnd, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := readEnd.Close(); err != nil {
+				t.Fatal(err)
+			}
+			runArgs := append([]string{"mail", "inbox"}, tc.args...)
+			run := exec.CommandContext(ctx, bin, runArgs...)
+			run.Env = testCommandEnv(tmp)
+			run.Dir = tmp
+			run.Stdout = writeEnd
+			var stderr strings.Builder
+			run.Stderr = &stderr
+			runErr := run.Run()
+			_ = writeEnd.Close()
+
+			if runErr == nil {
+				t.Fatalf("mail inbox reported success after its presentation write failed; stderr=%s", stderr.String())
+			}
+			if acked {
+				t.Fatal("mail was acknowledged before the failed presentation write")
+			}
+		})
+	}
+}
+
 func TestAwMailSendBodyFilePreservesBackticksOnTheWire(t *testing.T) {
 	t.Parallel()
 
@@ -513,6 +730,11 @@ func TestAwMailSendConversationIDSignsPayloadWithRediscoveredRecipient(t *testin
 	if !strings.Contains(string(out), "Sent mail in conversation "+conversationID) {
 		t.Fatalf("unexpected output:\n%s", string(out))
 	}
+	// aweb-aauz: the id line alone reads as delivered-and-verified. The boundary
+	// notice must reach real command output, not merely exist as a string.
+	if !strings.Contains(string(out), "Acceptance is not delivery") {
+		t.Fatalf("send output omits the boundary notice, so exit 0 still reads as delivery:\n%s", string(out))
+	}
 	if got.ConversationID != conversationID {
 		t.Fatalf("conversation_id=%q, want %q", got.ConversationID, conversationID)
 	}
@@ -540,6 +762,21 @@ func TestAwMailSendConversationIDSignsPayloadWithRediscoveredRecipient(t *testin
 	}
 	if got, _ := signed["to_did"].(string); got != "" {
 		t.Fatalf("signed continuation should leave unresolved to_did empty for stored did:aw route: %+v", signed)
+	}
+
+	// aweb-aauz: --json must stay machine-clean on THIS path. A status line in JSON
+	// breaks every downstream parser, and the failure is silent. Asserted per path
+	// because a single --json check would inherit the one-of-three reachability
+	// coverage this file just fixed - the same defect one layer up.
+	runJSON := exec.CommandContext(ctx, bin, "mail", "send", "--plaintext", "--conversation-id", conversationID, "--subject", "Re", "--body", "reply", "--json")
+	runJSON.Env = append(testCommandEnv(tmp), "AWEB_URL="+server.URL)
+	runJSON.Dir = tmp
+	jsonOut, jsonErr := runJSON.CombinedOutput()
+	if jsonErr != nil {
+		t.Fatalf("conversation --json run failed: %v\n%s", jsonErr, string(jsonOut))
+	}
+	if strings.Contains(string(jsonOut), "Acceptance is not delivery") {
+		t.Fatalf("conversation --json output carries the boundary notice, breaking parsers:\n%s", string(jsonOut))
 	}
 }
 
@@ -985,6 +1222,11 @@ func TestAwMailSendAliasToSelfSkipsConversationDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run failed: %v\n%s", err, string(out))
 	}
+	// aweb-aauz site 2: the --to path prints a different success line, so it needs
+	// its own reachability proof. Removing this wiring left the suite green.
+	if !strings.Contains(string(out), "Acceptance is not delivery") {
+		t.Fatalf("--to path omits the boundary notice:\n%s", string(out))
+	}
 	if !strings.Contains(string(out), "Sent mail to gsk") {
 		t.Fatalf("unexpected output:\n%s", string(out))
 	}
@@ -1000,6 +1242,21 @@ func TestAwMailSendAliasToSelfSkipsConversationDiscovery(t *testing.T) {
 	}
 	if signed["conversation_id"] != got.ConversationID {
 		t.Fatalf("signed conversation_id=%v, want %s", signed["conversation_id"], got.ConversationID)
+	}
+
+	// aweb-aauz: --json must stay machine-clean on THIS path. A status line in JSON
+	// breaks every downstream parser, and the failure is silent. Asserted per path
+	// because a single --json check would inherit the one-of-three reachability
+	// coverage this file just fixed - the same defect one layer up.
+	runJSON := exec.CommandContext(ctx, bin, "mail", "send", "--plaintext", "--to", "gsk", "--subject", "self", "--body", "hello from integration test", "--json")
+	runJSON.Env = append(testCommandEnv(tmp), "AWEB_URL="+server.URL)
+	runJSON.Dir = tmp
+	jsonOut, jsonErr := runJSON.CombinedOutput()
+	if jsonErr != nil {
+		t.Fatalf("to-address --json run failed: %v\n%s", jsonErr, string(jsonOut))
+	}
+	if strings.Contains(string(jsonOut), "Acceptance is not delivery") {
+		t.Fatalf("to-address --json output carries the boundary notice, breaking parsers:\n%s", string(jsonOut))
 	}
 }
 
@@ -1101,6 +1358,10 @@ func TestAwMailReplyUsesMessageConversation(t *testing.T) {
 	if !strings.Contains(string(out), "Sent mail in conversation "+conversationID) {
 		t.Fatalf("unexpected output:\n%s", string(out))
 	}
+	// aweb-aauz site 3: mail reply is a separate command with its own output path.
+	if !strings.Contains(string(out), "Acceptance is not delivery") {
+		t.Fatalf("reply path omits the boundary notice:\n%s", string(out))
+	}
 	if got.ConversationID != conversationID || got.Body != "reply" {
 		t.Fatalf("unexpected body: %+v", got)
 	}
@@ -1122,6 +1383,21 @@ func TestAwMailReplyUsesMessageConversation(t *testing.T) {
 	}
 	if signed["to"] != "did:aw:bob" || signed["to_stable_id"] != "did:aw:bob" {
 		t.Fatalf("signed reply did not bind rediscovered participant identity: %+v", signed)
+	}
+
+	// aweb-aauz: --json must stay machine-clean on THIS path. A status line in JSON
+	// breaks every downstream parser, and the failure is silent. Asserted per path
+	// because a single --json check would inherit the one-of-three reachability
+	// coverage this file just fixed - the same defect one layer up.
+	runJSON := exec.CommandContext(ctx, bin, "mail", "reply", "--plaintext", "msg-in", "--body", "reply", "--json")
+	runJSON.Env = append(testCommandEnv(tmp), "AWEB_URL="+server.URL)
+	runJSON.Dir = tmp
+	jsonOut, jsonErr := runJSON.CombinedOutput()
+	if jsonErr != nil {
+		t.Fatalf("reply --json run failed: %v\n%s", jsonErr, string(jsonOut))
+	}
+	if strings.Contains(string(jsonOut), "Acceptance is not delivery") {
+		t.Fatalf("reply --json output carries the boundary notice, breaking parsers:\n%s", string(jsonOut))
 	}
 }
 
@@ -1378,29 +1654,22 @@ func TestAwMailShowLegacyConversationHintAndMessageIDFetch(t *testing.T) {
 	did := awid.ComputeDIDKey(pub)
 	stableID := stableIDFromDidForTest(t, did)
 	messageID := "88888888-8888-4888-8888-888888888888"
-	var sawMessageIDQuery bool
+	var sawExactMessageRead bool
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/messages/conversations/" + messageID:
 			http.Error(w, `{"detail":"This is a legacy mail without a conversation; use --message-id"}`, http.StatusNotFound)
-		case "/v1/messages/inbox":
-			if r.URL.Query().Get("message_id") != messageID {
-				t.Fatalf("message_id query=%q, want %q", r.URL.Query().Get("message_id"), messageID)
-			}
-			sawMessageIDQuery = true
-			_ = json.NewEncoder(w).Encode(awid.InboxResponse{
-				Messages: []awid.InboxMessage{
-					{
-						MessageID: messageID,
-						FromAlias: "athena",
-						ToAlias:   "grace",
-						Subject:   "legacy",
-						Body:      "old mail",
-						Priority:  awid.PriorityNormal,
-						CreatedAt: "2026-05-02T00:00:00Z",
-					},
-				},
+		case "/v1/messages/" + messageID:
+			sawExactMessageRead = true
+			_ = json.NewEncoder(w).Encode(awid.InboxMessage{
+				MessageID: messageID,
+				FromAlias: "athena",
+				ToAlias:   "grace",
+				Subject:   "legacy",
+				Body:      "old mail",
+				Priority:  awid.PriorityNormal,
+				CreatedAt: "2026-05-02T00:00:00Z",
 			})
 		case "/v1/agents/heartbeat":
 			w.WriteHeader(http.StatusOK)
@@ -1444,8 +1713,8 @@ func TestAwMailShowLegacyConversationHintAndMessageIDFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("message-id show failed: %v\n%s", err, string(out))
 	}
-	if !sawMessageIDQuery {
-		t.Fatal("mail show --message-id did not query inbox by message_id")
+	if !sawExactMessageRead {
+		t.Fatal("mail show --message-id did not use the participant-visible exact route")
 	}
 	if !strings.Contains(string(out), "old mail") {
 		t.Fatalf("message-id output missing mail body:\n%s", string(out))
@@ -1597,5 +1866,39 @@ func TestMailAndChatDefaultPlaintextAndE2EEOptInFailsClosed(t *testing.T) {
 				t.Fatalf("expected explicit E2E recipient-key error, got:\n%s", string(out))
 			}
 		})
+	}
+}
+
+// The send path reports that the server accepted a message. It cannot report
+// delivery, presentation, or any recipient's trust verdict: the first two are
+// not returned to a sender, and the third is computed per-recipient-machine
+// against a local pin store the sender cannot see (aweb-aauz).
+//
+// So the notice is a statement of LIMITS, not a warning. At send time nothing
+// is known to be wrong, and an alert would imply knowledge we do not have.
+func TestMailSendBoundaryNoticeStatesWhatAcceptanceDoesNotEstablish(t *testing.T) {
+	notice := mailSendBoundaryNotice()
+
+	if strings.TrimSpace(notice) == "" {
+		t.Fatal("boundary notice is empty; acceptance by the server would read as delivery")
+	}
+
+	// Each clause the sender must not infer from exit 0.
+	for _, want := range []string{"deliver", "present", "trust"} {
+		if !strings.Contains(strings.ToLower(notice), want) {
+			t.Errorf("notice does not mention %q, so a reader cannot tell that acceptance excludes it:\n%s", want, notice)
+		}
+	}
+
+	// It must attribute what IS established to the server, or "accepted" is unanchored.
+	if !strings.Contains(strings.ToLower(notice), "server") {
+		t.Errorf("notice does not say WHO accepted the message:\n%s", notice)
+	}
+
+	// A statement of limits, not an alert. Alarm words imply a detected problem.
+	for _, banned := range []string{"warning", "error", "failed", "problem"} {
+		if strings.Contains(strings.ToLower(notice), banned) {
+			t.Errorf("notice uses alarm word %q; at send time nothing is known to be wrong:\n%s", banned, notice)
+		}
 	}
 }
