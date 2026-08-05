@@ -20,6 +20,19 @@ sha256() {
 }
 
 case "${1:-}" in
+  --require-publishable)
+    # Only a stage-only artifact may continue to publication. A verify-only
+    # run stages real bytes for inspection, and its artifact must never
+    # become publishable evidence.
+    manifest="${2:?manifest path required}"
+    mode="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("mode",""))' "$manifest")"
+    if [[ "$mode" == "stage-only" ]]; then
+      echo "PUBLISHABLE: manifest mode is stage-only"
+    else
+      echo "REFUSE: manifest mode is ${mode:-absent}; only stage-only artifacts publish" >&2
+      exit 1
+    fi
+    ;;
   --check-adopt)
     staged="${2:?staged file required}"
     observed="${3:?observed file required}"

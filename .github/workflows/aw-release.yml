@@ -8,12 +8,18 @@ name: aw Release
 #   stage-only            build once from an exact source SHA under a
 #                         runner-local unpushed tag, inspect everything,
 #                         upload the staged set. No remote writes.
-#   publish-continuation  download a prior stage's exact bytes, re-verify,
-#                         then create tag/release/npm from those bytes.
-#                         Already-published items are adopted only on byte
-#                         identity; any mismatch refuses. Idempotent.
+#   publish-continuation  download a prior stage-only run's exact bytes,
+#                         re-verify, then create tag/release/npm from those
+#                         bytes. Already-published items are adopted only on
+#                         byte identity; any mismatch refuses. Idempotent.
 #   verify-only           exercise stage + inspect for an already-released
-#                         tag. Publish steps are skipped. No remote writes.
+#                         tag. Its artifact records mode verify-only and can
+#                         never continue to publication. No remote writes.
+#
+# Two checkouts per job: the workspace root is the TOOLING checkout (this
+# workflow's own ref - the scripts reviewed with this file), and source/ is
+# the EXACT SOURCE checkout being staged or published. Inputs reach shell
+# only through validated environment values.
 
 on:
   workflow_dispatch:
@@ -36,11 +42,11 @@ on:
         description: 'publish-continuation: artifact id from the stage-only run'
         required: false
       stage_zip_digest:
-        description: 'publish-continuation: expected sha256 of the artifact zip'
+        description: 'publish-continuation: expected artifact digest, sha256:<64 hex>'
         required: false
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: aw-release-lane
@@ -51,46 +57,60 @@ jobs:
     name: Stage and inspect
     if: inputs.mode == 'stage-only' || inputs.mode == 'verify-only'
     runs-on: ubuntu-latest
+    env:
+      MODE: ${{ inputs.mode }}
+      VERSION: ${{ inputs.version }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout tooling (this workflow's ref)
+        uses: actions/checkout@v4
+
+      - name: Validate input literals
+        run: bash .github/scripts/validate-inputs.sh --sha "$SOURCE_SHA" --version "$VERSION"
+
+      - name: Checkout exact source
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ inputs.source_sha }}
+          path: source
 
       - name: Guards
+        working-directory: source
         run: |
           set -euo pipefail
-          git merge-base --is-ancestor "${{ inputs.source_sha }}" origin/main \
-            || { echo "REFUSE: source ${{ inputs.source_sha }} is not an ancestor of origin/main" >&2; exit 1; }
-          remote_tag="$(git ls-remote origin "refs/tags/v${{ inputs.version }}" | awk '{print $1}')"
-          if [[ "${{ inputs.mode }}" == "stage-only" ]]; then
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main \
+            || { echo "REFUSE: source $SOURCE_SHA is not an ancestor of origin/main" >&2; exit 1; }
+          remote_tag="$(git ls-remote origin "refs/tags/v$VERSION" | awk '{print $1}')"
+          if [[ "$MODE" == "stage-only" ]]; then
             [[ -z "$remote_tag" ]] \
-              || { echo "REFUSE: tag v${{ inputs.version }} already exists remotely at $remote_tag" >&2; exit 1; }
+              || { echo "REFUSE: tag v$VERSION already exists remotely at $remote_tag" >&2; exit 1; }
             for pkg in aw aw-linux-x64 aw-linux-arm64 aw-darwin-x64 aw-darwin-arm64 aw-windows-x64 aw-windows-arm64; do
-              if npm view "@awebai/${pkg}@${{ inputs.version }}" version >/dev/null 2>&1; then
-                echo "REFUSE: @awebai/${pkg}@${{ inputs.version }} already exists on npm" >&2; exit 1
+              if npm view "@awebai/${pkg}@${VERSION}" version >/dev/null 2>&1; then
+                echo "REFUSE: @awebai/${pkg}@${VERSION} already exists on npm" >&2; exit 1
               fi
             done
             # Runner-local ephemeral tag: remote absence is proven above and
             # nothing pushes it. It exists so the build stamps the exact
             # candidate module version.
-            git tag "v${{ inputs.version }}"
+            git tag "v$VERSION"
           else
-            deref="$(git rev-parse "v${{ inputs.version }}^{}" 2>/dev/null || true)"
-            [[ "$deref" == "${{ inputs.source_sha }}" ]] \
-              || { echo "REFUSE: verify-only requires tag v${{ inputs.version }} at exactly ${{ inputs.source_sha }}, found ${deref:-absent}" >&2; exit 1; }
+            deref="$(git rev-parse "v$VERSION^{}" 2>/dev/null || true)"
+            [[ "$deref" == "$SOURCE_SHA" ]] \
+              || { echo "REFUSE: verify-only requires tag v$VERSION at exactly $SOURCE_SHA, found ${deref:-absent}" >&2; exit 1; }
           fi
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
+          go-version-file: source/go.mod
+          cache-dependency-path: source/go.sum
 
       - name: Build once (no publish)
         uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
           args: release --clean --skip=publish,announce
+          workdir: source
         env:
           GORELEASER_CURRENT_TAG: v${{ inputs.version }}
 
@@ -98,9 +118,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p staging/dist staging/npm
-          cp dist/aw_${{ inputs.version }}_*.tar.gz dist/aw_${{ inputs.version }}_*.zip dist/checksums.txt staging/dist/
+          cp source/dist/aw_${VERSION}_*.tar.gz source/dist/aw_${VERSION}_*.zip \
+             source/dist/checksums.txt staging/dist/
           bash .github/scripts/stage-npm.sh \
-            --dist staging/dist --out staging/npm --version "${{ inputs.version }}"
+            --dist staging/dist --out staging/npm --version "$VERSION" \
+            --source-root source
           python3 - <<'PY'
           import hashlib, json, os
           files = {}
@@ -112,10 +134,12 @@ jobs:
               json.dumps(files, sort_keys=True).encode()
           ).hexdigest()
           manifest = {
-              "mode": "stage-only",
-              "tag": "v${{ inputs.version }}",
-              "candidate_version": "${{ inputs.version }}",
-              "source_sha": "${{ inputs.source_sha }}",
+              # The ACTUAL mode: a verify-only artifact must never look
+              # publishable, and continuation requires mode stage-only.
+              "mode": os.environ["MODE"],
+              "tag": "v" + os.environ["VERSION"],
+              "candidate_version": os.environ["VERSION"],
+              "source_sha": os.environ["SOURCE_SHA"],
               "files": files,
               "canonical_set_digest": canonical,
           }
@@ -128,43 +152,72 @@ jobs:
         run: |
           bash .github/scripts/inspect-staged.sh \
             --dist staging/dist --npm staging/npm --manifest staging/manifest.json \
-            --source-sha "${{ inputs.source_sha }}" --version "${{ inputs.version }}"
+            --source-sha "$SOURCE_SHA" --version "$VERSION"
 
       - name: Upload staged artifact
         id: upload
         uses: actions/upload-artifact@v4
         with:
-          name: aw-staged-v${{ inputs.version }}-${{ inputs.source_sha }}
+          name: aw-staged-${{ inputs.mode }}-v${{ inputs.version }}-${{ inputs.source_sha }}
           path: staging/
           if-no-files-found: error
 
       - name: Staged identity
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
         run: |
           {
-            echo "## Staged: v${{ inputs.version }} at ${{ inputs.source_sha }}"
-            echo "- mode: ${{ inputs.mode }}"
+            echo "## Staged (${MODE}): v${VERSION} at ${SOURCE_SHA}"
             echo "- stage_run_id: ${{ github.run_id }}"
-            echo "- stage_artifact_id: ${{ steps.upload.outputs.artifact-id }}"
-            echo "- artifact digest (API-computed): ${{ steps.upload.outputs.artifact-digest }}"
-            echo "- continuation: dispatch mode=publish-continuation with the three values above"
+            echo "- stage_artifact_id: ${ARTIFACT_ID}"
+            echo "- stage_zip_digest (sha256:<hex>, API-computed): ${ARTIFACT_DIGEST}"
+            if [[ "$MODE" == "stage-only" ]]; then
+              echo "- continuation: dispatch mode=publish-continuation with the three values above"
+            else
+              echo "- verify-only evidence: NOT publishable; continuation refuses this artifact"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   publish:
     name: Publish continuation
     if: inputs.mode == 'publish-continuation'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
     env:
+      MODE: ${{ inputs.mode }}
+      VERSION: ${{ inputs.version }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      STAGE_RUN_ID: ${{ inputs.stage_run_id }}
+      STAGE_ARTIFACT_ID: ${{ inputs.stage_artifact_id }}
+      STAGE_ZIP_DIGEST: ${{ inputs.stage_zip_digest }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout tooling (this workflow's ref)
+        uses: actions/checkout@v4
+
+      - name: Validate input literals
+        run: |
+          set -euo pipefail
+          [[ -n "$STAGE_RUN_ID" && -n "$STAGE_ARTIFACT_ID" && -n "$STAGE_ZIP_DIGEST" ]] \
+            || { echo "REFUSE: publish-continuation requires stage_run_id, stage_artifact_id, stage_zip_digest" >&2; exit 1; }
+          bash .github/scripts/validate-inputs.sh \
+            --sha "$SOURCE_SHA" --version "$VERSION" --digest "$STAGE_ZIP_DIGEST" \
+            --run-id "$STAGE_RUN_ID" --artifact-id "$STAGE_ARTIFACT_ID"
+
+      - name: Checkout exact source
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ inputs.source_sha }}
+          path: source
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
+          go-version-file: source/go.mod
+          cache-dependency-path: source/go.sum
 
       - uses: actions/setup-node@v4
         with:
@@ -174,61 +227,67 @@ jobs:
       - name: Fetch staged bytes with provenance
         run: |
           set -euo pipefail
-          [[ -n "${{ inputs.stage_run_id }}" && -n "${{ inputs.stage_artifact_id }}" && -n "${{ inputs.stage_zip_digest }}" ]] \
-            || { echo "REFUSE: publish-continuation requires stage_run_id, stage_artifact_id, stage_zip_digest" >&2; exit 1; }
-          meta="$(gh api "repos/${{ github.repository }}/actions/artifacts/${{ inputs.stage_artifact_id }}")"
-          [[ "$(jq -r .workflow_run.id <<<"$meta")" == "${{ inputs.stage_run_id }}" ]] \
-            || { echo "REFUSE: artifact does not belong to run ${{ inputs.stage_run_id }}" >&2; exit 1; }
+          meta="$(gh api "repos/${{ github.repository }}/actions/artifacts/${STAGE_ARTIFACT_ID}")"
+          [[ "$(jq -r .workflow_run.id <<<"$meta")" == "$STAGE_RUN_ID" ]] \
+            || { echo "REFUSE: artifact does not belong to run $STAGE_RUN_ID" >&2; exit 1; }
           [[ "$(jq -r .expired <<<"$meta")" == "false" ]] \
             || { echo "REFUSE: staged artifact is expired; re-stage, never rebuild here" >&2; exit 1; }
           api_digest="$(jq -r .digest <<<"$meta")"
-          run="$(gh api "repos/${{ github.repository }}/actions/runs/${{ inputs.stage_run_id }}")"
+          [[ "$api_digest" == "$STAGE_ZIP_DIGEST" ]] \
+            || { echo "REFUSE: API-recorded digest $api_digest does not equal declared $STAGE_ZIP_DIGEST" >&2; exit 1; }
+          run="$(gh api "repos/${{ github.repository }}/actions/runs/${STAGE_RUN_ID}")"
           [[ "$(jq -r .path <<<"$run")" == ".github/workflows/aw-release.yml" ]] \
             || { echo "REFUSE: staging run used a different workflow" >&2; exit 1; }
           [[ "$(jq -r .conclusion <<<"$run")" == "success" ]] \
             || { echo "REFUSE: staging run did not succeed" >&2; exit 1; }
           [[ "$(jq -r .head_repository.full_name <<<"$run")" == "${{ github.repository }}" ]] \
             || { echo "REFUSE: staging run came from a fork" >&2; exit 1; }
-          gh api "repos/${{ github.repository }}/actions/artifacts/${{ inputs.stage_artifact_id }}/zip" > staged.zip
-          zip_digest="$(sha256sum staged.zip | awk '{print $1}')"
-          [[ "$zip_digest" == "${{ inputs.stage_zip_digest }}" ]] \
-            || { echo "REFUSE: zip digest $zip_digest does not equal declared ${{ inputs.stage_zip_digest }}" >&2; exit 1; }
-          [[ "$api_digest" == "sha256:$zip_digest" ]] \
-            || { echo "REFUSE: zip digest $zip_digest does not equal API-recorded $api_digest" >&2; exit 1; }
+          gh api "repos/${{ github.repository }}/actions/artifacts/${STAGE_ARTIFACT_ID}/zip" > staged.zip
+          zip_digest="sha256:$(sha256sum staged.zip | awk '{print $1}')"
+          [[ "$zip_digest" == "$STAGE_ZIP_DIGEST" ]] \
+            || { echo "REFUSE: downloaded zip digest $zip_digest does not equal declared $STAGE_ZIP_DIGEST" >&2; exit 1; }
           mkdir staging && unzip -q staged.zip -d staging
 
       - name: Re-verify staged bytes
         run: |
           set -euo pipefail
-          jq -e '.mode == "stage-only"' staging/manifest.json >/dev/null \
-            || { echo "REFUSE: staged manifest mode is not stage-only" >&2; exit 1; }
+          bash .github/scripts/continue-publish.sh --require-publishable staging/manifest.json
           bash .github/scripts/inspect-staged.sh \
             --dist staging/dist --npm staging/npm --manifest staging/manifest.json \
-            --source-sha "${{ inputs.source_sha }}" --version "${{ inputs.version }}"
+            --source-sha "$SOURCE_SHA" --version "$VERSION"
 
       - name: Tag - create at exact source, or adopt identical
+        working-directory: source
         run: |
           set -euo pipefail
-          remote_tag="$(git ls-remote origin "refs/tags/v${{ inputs.version }}" | awk '{print $1}')"
+          remote_tag="$(git ls-remote origin "refs/tags/v$VERSION" | awk '{print $1}')"
           if [[ -z "$remote_tag" ]]; then
-            git tag "v${{ inputs.version }}" "${{ inputs.source_sha }}"
-            git push origin "refs/tags/v${{ inputs.version }}"
-            echo "created tag v${{ inputs.version }} at ${{ inputs.source_sha }}"
+            git tag "v$VERSION" "$SOURCE_SHA"
+            git push origin "refs/tags/v$VERSION"
+            echo "created tag v$VERSION at $SOURCE_SHA"
           else
-            deref="$(git rev-parse "v${{ inputs.version }}^{}" 2>/dev/null || echo "$remote_tag")"
-            [[ "$deref" == "${{ inputs.source_sha }}" ]] \
-              || { echo "REFUSE: tag v${{ inputs.version }} exists at $deref, not ${{ inputs.source_sha }}" >&2; exit 1; }
-            echo "adopted existing tag v${{ inputs.version }}"
+            git fetch origin "refs/tags/v$VERSION:refs/tags/v$VERSION" 2>/dev/null || true
+            deref="$(git rev-parse "v$VERSION^{}" 2>/dev/null || echo "$remote_tag")"
+            [[ "$deref" == "$SOURCE_SHA" ]] \
+              || { echo "REFUSE: tag v$VERSION exists at $deref, not $SOURCE_SHA" >&2; exit 1; }
+            echo "adopted existing tag v$VERSION"
           fi
 
       - name: GitHub release - upload missing exact bytes, adopt identical
         run: |
           set -euo pipefail
-          tag="v${{ inputs.version }}"
+          tag="v$VERSION"
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" --verify-tag --title "$tag" --notes "aw $tag" staging/dist/*
             echo "created release $tag with 7 assets"
           else
+            # The complete asset set must remain exactly the staged seven;
+            # an unexpected extra asset refuses before anything is touched.
+            gh release view "$tag" --json assets -q '.assets[].name' | sort > observed-names
+            (cd staging/dist && ls) | sort > expected-names
+            extra="$(comm -13 expected-names observed-names)"
+            [[ -z "$extra" ]] \
+              || { echo "REFUSE: release $tag carries unexpected assets:" "$extra" >&2; exit 1; }
             mkdir -p observed
             for f in staging/dist/*; do
               name="$(basename "$f")"
@@ -248,20 +307,20 @@ jobs:
           set -euo pipefail
           mkdir -p observed-npm
           for pkg in aw-linux-x64 aw-linux-arm64 aw-darwin-x64 aw-darwin-arm64 aw-windows-x64 aw-windows-arm64 aw; do
-            staged="staging/npm/awebai-${pkg}-${{ inputs.version }}.tgz"
-            if tarball="$(npm view "@awebai/${pkg}@${{ inputs.version }}" dist.tarball 2>/dev/null)" && [[ -n "$tarball" ]]; then
+            staged="staging/npm/awebai-${pkg}-${VERSION}.tgz"
+            if tarball="$(npm view "@awebai/${pkg}@${VERSION}" dist.tarball 2>/dev/null)" && [[ -n "$tarball" ]]; then
               curl -fsSL -o "observed-npm/${pkg}.tgz" "$tarball"
               bash .github/scripts/continue-publish.sh --check-adopt "$staged" "observed-npm/${pkg}.tgz"
             else
               npm publish "$staged" --access public
-              echo "published @awebai/${pkg}@${{ inputs.version }}"
+              echo "published @awebai/${pkg}@${VERSION}"
             fi
           done
 
       - name: Verify published state equals staged bytes
         run: |
           set -euo pipefail
-          tag="v${{ inputs.version }}"
+          tag="v$VERSION"
           mkdir -p verify/release verify/npm
           for f in staging/dist/*; do
             name="$(basename "$f")"
@@ -269,9 +328,9 @@ jobs:
             bash .github/scripts/continue-publish.sh --check-adopt "$f" "verify/release/$name"
           done
           for pkg in aw-linux-x64 aw-linux-arm64 aw-darwin-x64 aw-darwin-arm64 aw-windows-x64 aw-windows-arm64 aw; do
-            tarball="$(npm view "@awebai/${pkg}@${{ inputs.version }}" dist.tarball)"
+            tarball="$(npm view "@awebai/${pkg}@${VERSION}" dist.tarball)"
             curl -fsSL -o "verify/npm/${pkg}.tgz" "$tarball"
             bash .github/scripts/continue-publish.sh --check-adopt \
-              "staging/npm/awebai-${pkg}-${{ inputs.version }}.tgz" "verify/npm/${pkg}.tgz"
+              "staging/npm/awebai-${pkg}-${VERSION}.tgz" "verify/npm/${pkg}.tgz"
           done
           echo "published state is byte-identical to the staged set" >> "$GITHUB_STEP_SUMMARY"

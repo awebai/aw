@@ -51,6 +51,19 @@ PY
 [[ "$M_VER" == "$VERSION" ]] \
   || fail "manifest candidate_version $M_VER does not equal declared version $VERSION"
 
+# ── canonical set digest is the digest of the files map ─────────────
+python3 - "$MANIFEST" <<'PY'
+import hashlib, json, sys
+m = json.load(open(sys.argv[1]))
+recomputed = hashlib.sha256(
+    json.dumps(m.get("files", {}), sort_keys=True).encode()
+).hexdigest()
+declared = m.get("canonical_set_digest")
+if declared != recomputed:
+    sys.exit(f"REFUSE: canonical set digest {declared} does not equal the "
+             f"recomputed digest of the files map {recomputed}")
+PY
+
 # ── exact file set and per-file digests ─────────────────────────────
 expected_files() { python3 -c 'import json,sys; [print(k) for k in sorted(json.load(open(sys.argv[1]))["files"])]' "$MANIFEST"; }
 manifest_digest() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["files"][sys.argv[2]])' "$MANIFEST" "$1"; }

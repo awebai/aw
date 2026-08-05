@@ -77,7 +77,7 @@ done
 
 # ── stage the seven npm tgz from the staged archives ────────────────
 tgz="$tmp/tgz"
-"$SCRIPT_DIR/stage-npm.sh" --dist "$dist" --out "$tgz" --version "$VERSION" >/dev/null \
+"$SCRIPT_DIR/stage-npm.sh" --dist "$dist" --out "$tgz" --version "$VERSION" --source-root "$REPO_ROOT" >/dev/null \
   || fail "stage-npm.sh refused a coherent staged set"
 ok "stage-npm produced 7 tgz from staged archives"
 
@@ -194,6 +194,9 @@ with open(path) as f:
     m = json.load(f)
 with open(tgz, "rb") as f:
     m["files"][os.path.basename(tgz)] = hashlib.sha256(f.read()).hexdigest()
+m["canonical_set_digest"] = hashlib.sha256(
+    json.dumps(m["files"], sort_keys=True).encode()
+).hexdigest()
 with open(path, "w") as f:
     json.dump(m, f)
 PY
@@ -217,11 +220,69 @@ with open(path) as f:
     m = json.load(f)
 with open(cks, "rb") as f:
     m["files"]["checksums.txt"] = hashlib.sha256(f.read()).hexdigest()
+m["canonical_set_digest"] = hashlib.sha256(
+    json.dumps(m["files"], sort_keys=True).encode()
+).hexdigest()
 with open(path, "w") as f:
     json.dump(m, f)
 PY
 expect_refusal "checksums.txt mismatch" "checksums.txt" \
   "$tmp/mut/dist" "$tmp/mut/tgz" "$tmp/mut/manifest.json" "$SOURCE_SHA" "$VERSION"
+
+# ── red: canonical set digest mismatch ──────────────────────────────
+clone_set
+python3 - "$tmp/mut/manifest.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    m = json.load(f)
+m["canonical_set_digest"] = "0" * 64
+with open(path, "w") as f:
+    json.dump(m, f)
+PY
+expect_refusal "canonical set digest mismatch" "canonical" \
+  "$tmp/mut/dist" "$tmp/mut/tgz" "$tmp/mut/manifest.json" "$SOURCE_SHA" "$VERSION"
+
+# ── publishability: stage-only manifests publish, others never ──────
+"$SCRIPT_DIR/continue-publish.sh" --require-publishable "$manifest" \
+  || fail "a stage-only manifest was refused publication"
+ok "stage-only manifest is publishable"
+clone_set
+python3 - "$tmp/mut/manifest.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    m = json.load(f)
+m["mode"] = "verify-only"
+with open(path, "w") as f:
+    json.dump(m, f)
+PY
+if "$SCRIPT_DIR/continue-publish.sh" --require-publishable "$tmp/mut/manifest.json" 2>/dev/null; then
+  fail "a verify-only manifest was accepted for publication"
+fi
+ok "verify-only manifest refused for publication"
+
+# ── input literals: well-formed accepted, malformed refused ─────────
+"$SCRIPT_DIR/validate-inputs.sh" \
+  --sha "$SOURCE_SHA" --version "$VERSION" \
+  --digest "sha256:$(sha256 "$manifest")" --run-id 12345 --artifact-id 678 \
+  || fail "well-formed input literals were refused"
+ok "well-formed input literals accepted"
+for bad in \
+  "--sha not-a-sha" \
+  "--sha ${SOURCE_SHA:0:39}" \
+  "--version 1.2" \
+  "--version v1.2.3" \
+  "--digest $(sha256 "$manifest")" \
+  "--digest sha256:short" \
+  "--run-id 12x45" \
+  "--artifact-id ''"; do
+  # shellcheck disable=SC2086
+  if "$SCRIPT_DIR/validate-inputs.sh" $bad 2>/dev/null; then
+    fail "malformed input accepted: $bad"
+  fi
+done
+ok "malformed input literals refused (8 forms)"
 
 # ── adoption: exact bytes adopt, different bytes refuse ─────────────
 staged_file="$dist/aw_${VERSION}_linux_amd64.tar.gz"

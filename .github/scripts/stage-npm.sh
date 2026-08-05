@@ -4,29 +4,32 @@
 # Inputs are the staged goreleaser archives; outputs are the exact tgz files
 # that publication ships. Nothing here talks to a registry.
 #
-#   stage-npm.sh --dist <dir-with-6-archives> --out <tgz-dir> --version <X.Y.Z>
+#   stage-npm.sh --dist <dir-with-6-archives> --out <tgz-dir> --version <X.Y.Z> \
+#                --source-root <checkout-of-the-exact-source>
 #
-# The npm/ package sources are copied to a working area, binaries are
-# extracted from the staged archives, versions are set, and npm pack runs
-# once per package. The source npm/ tree is never modified.
+# The npm/ package sources come from the EXACT SOURCE checkout (they are
+# versioned with the source being released, not with the tooling running
+# this script), are copied to a working area, binaries are extracted from
+# the staged archives, versions are set, and npm pack runs once per
+# package. The source npm/ tree is never modified.
 
 set -euo pipefail
 
-DIST='' OUT='' VERSION=''
+DIST='' OUT='' VERSION='' SOURCE_ROOT=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dist) DIST="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --version) VERSION="$2"; shift 2 ;;
+    --source-root) SOURCE_ROOT="$2"; shift 2 ;;
     *) echo "stage-npm: unknown argument $1" >&2; exit 2 ;;
   esac
 done
-[[ -n "$DIST" && -n "$OUT" && -n "$VERSION" ]] \
-  || { echo "stage-npm: --dist, --out and --version are required" >&2; exit 2; }
+[[ -n "$DIST" && -n "$OUT" && -n "$VERSION" && -n "$SOURCE_ROOT" ]] \
+  || { echo "stage-npm: --dist, --out, --version and --source-root are required" >&2; exit 2; }
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-NPM_SRC="$REPO_ROOT/npm"
+NPM_SRC="$SOURCE_ROOT/npm"
+[[ -d "$NPM_SRC" ]] || { echo "stage-npm: $NPM_SRC does not exist in the source root" >&2; exit 1; }
 
 # platform -> npm package dir : archive extension : binary names
 PLATFORMS=(
