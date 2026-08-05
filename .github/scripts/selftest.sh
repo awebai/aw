@@ -81,6 +81,22 @@ tgz="$tmp/tgz"
   || fail "stage-npm.sh refused a coherent staged set"
 ok "stage-npm produced 7 tgz from staged archives"
 
+# ── relative --out resolves against the CALLER's cwd ────────────────
+# The verify-only dispatch failed because a relative pack destination was
+# resolved inside the script's per-package temp cwd. The workflow-shaped
+# invocation: a relative --out from a caller cwd must land all seven tgz
+# in the caller-relative destination.
+caller="$tmp/caller"
+mkdir -p "$caller"
+(cd "$caller" && "$SCRIPT_DIR/stage-npm.sh" \
+  --dist "$dist" --out staging/npm --version "$VERSION" \
+  --source-root "$REPO_ROOT" >/dev/null) \
+  || fail "stage-npm refused a relative --out from a caller cwd"
+rel_count="$(ls "$caller/staging/npm"/*.tgz 2>/dev/null | wc -l | tr -d ' ')"
+[[ "$rel_count" == "7" ]] \
+  || fail "relative --out produced $rel_count tgz in the caller-relative destination, expected 7"
+ok "relative --out lands all 7 tgz in the caller-relative destination"
+
 # ── manifest over the 14 payload files ──────────────────────────────
 manifest="$tmp/manifest.json"
 python3 - "$dist" "$tgz" "$manifest" "$VERSION" "$SOURCE_SHA" <<'PY'

@@ -44,6 +44,9 @@ PLATFORMS=(
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$OUT"
+# Absolutize before any per-package subshell changes directory: npm pack
+# resolves a relative destination against its cwd, not the caller's.
+OUT="$(cd "$OUT" && pwd)"
 
 set_version() {
   # Set package version (and, for the main package, pin every
