@@ -81,6 +81,20 @@ tgz="$tmp/tgz"
   || fail "stage-npm.sh refused a coherent staged set"
 ok "stage-npm produced 7 tgz from staged archives"
 
+# ── module-version matcher: real tab-delimited form, no grep regex ──
+# The second verify-only dispatch failed because an ERE \t matched under
+# BSD grep but not GNU grep. The matcher is fixed-string; feed it the
+# real trailing-tab form directly.
+real_line=$'\tmod\tgithub.com/awebai/aw\tv1.34.3\t'
+printf '%s\n' "$real_line" | "$SCRIPT_DIR/inspect-staged.sh" --match-module-version 1.34.3 \
+  || fail "matcher refused the real tab-delimited module line"
+ok "matcher accepts the real tab-delimited module line"
+if out="$(printf '%s\n' "$real_line" | "$SCRIPT_DIR/inspect-staged.sh" --match-module-version 9.9.9 2>&1)"; then
+  fail "matcher accepted a wrong expected version"
+fi
+grep -q "found: " <<<"$out" || fail "matcher refusal does not print the found line: $out"
+ok "matcher refuses wrong version and prints the found mod line"
+
 # ── relative --out resolves against the CALLER's cwd ────────────────
 # The verify-only dispatch failed because a relative pack destination was
 # resolved inside the script's per-package temp cwd. The workflow-shaped

@@ -18,6 +18,22 @@
 
 set -euo pipefail
 
+# Matching helper, exposed for the selftest: reads `go version -m` output on
+# stdin and succeeds iff the main-module line carries exactly the expected
+# version. Fixed-string tab-delimited match (the check-cli-release-vcs-stamps
+# form) - no regex, so BSD and GNU grep behave identically.
+if [[ "${1:-}" == "--match-module-version" ]]; then
+  expected="${2:?expected version required}"
+  info="$(cat)"
+  if grep -Fq $'\tmod\tgithub.com/awebai/aw\t'"v${expected}"$'\t' <<<"$info"; then
+    exit 0
+  fi
+  found="$(grep -F $'\tmod\tgithub.com/awebai/aw\t' <<<"$info" | head -1)"
+  printf 'REFUSE: wrong module version, expected v%s; found: %s\n' \
+    "$expected" "${found:-absent}" >&2
+  exit 1
+fi
+
 DIST='' NPM='' MANIFEST='' SOURCE_SHA='' VERSION=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -122,8 +138,9 @@ for archive in "${archives[@]}"; do
     bin="$name"; [[ "$platform" == windows_* ]] && bin="$name.exe"
     [[ -f "$extract/$bin" ]] || fail "$archive lacks binary $bin"
     info="$(go version -m "$extract/$bin")"
-    grep -Eq $'\tmod\tgithub.com/awebai/aw\tv'"$VERSION"'(\t|$)' <<<"$info" \
-      || fail "$archive $bin stamps the wrong module version, expected v$VERSION"
+    if ! err="$("${BASH_SOURCE[0]}" --match-module-version "$VERSION" <<<"$info" 2>&1)"; then
+      fail "$archive $bin: ${err#REFUSE: }"
+    fi
     grep -Fq $'\tbuild\tvcs.revision='"$SOURCE_SHA" <<<"$info" \
       || fail "$archive $bin stamps the wrong source revision, expected $SOURCE_SHA"
     grep -Fq $'\tbuild\tvcs.modified=false' <<<"$info" \
