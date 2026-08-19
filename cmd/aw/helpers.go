@@ -410,7 +410,16 @@ func resolveIdentityMessagingClientSelectionForDir(workingDir string) (*aweb.Cli
 		configuredSel.Alias = ""
 		sel = &configuredSel
 	}
-	if err := configureResolvedClient(c, &configuredSel, baseURL); err != nil {
+	// Message reads stay identity-authenticated, but sender verification needs
+	// the certificate-authenticated roster: TeamRosterResolver refuses a client
+	// without a team certificate, and that refusal is reported as
+	// verification_stale for every current-team sender (aweb-abfc). When this
+	// workspace holds a certificate, use it for roster reads only.
+	rosterClient := c
+	if certClient, certErr := resolveCertificateClient(&configuredSel, baseURL); certErr == nil && certClient != nil {
+		rosterClient = certClient
+	}
+	if err := configureResolvedClientWithRoster(c, rosterClient, &configuredSel, baseURL); err != nil {
 		return nil, nil, err
 	}
 
@@ -581,13 +590,22 @@ func resolveLiveTeamMemberAliasTarget(ctx context.Context, sel *awconfig.Selecti
 			return liveTeamMemberAliasTarget{}, false, err
 		}
 	}
-	member, err := registry.ResolveTeamMember(ctx, strings.TrimSpace(registry.DefaultRegistryURL), domain, team, targetAlias)
-	if err != nil {
+	// The selection's own signing key is the member credential for this team,
+	// which is what lets the roster read keep working after the team goes
+	// private. Best-effort: with no usable key the read goes out unsigned,
+	// exactly as before.
+	signers := teamReadSignersForKeyPath(sel.SigningKey, domain, team)
+	var member *awid.TeamMemberReference
+	if _, err := readSignedTeamState(signers, func(key ed25519.PrivateKey) error {
+		var resolveErr error
+		member, resolveErr = registry.ResolveTeamMember(ctx, strings.TrimSpace(registry.DefaultRegistryURL), domain, team, targetAlias, key)
+		return resolveErr
+	}); err != nil {
 		var registryErr *awid.RegistryError
 		if errors.As(err, &registryErr) && registryErr.StatusCode == http.StatusNotFound {
 			return liveTeamMemberAliasTarget{}, false, nil
 		}
-		return liveTeamMemberAliasTarget{}, false, err
+		return liveTeamMemberAliasTarget{}, false, friendlyTeamReadError(err, strings.TrimSpace(sel.TeamID), len(signers) > 0)
 	}
 	return liveTeamMemberAliasTarget{
 		Alias:   strings.TrimSpace(member.Alias),
@@ -643,8 +661,22 @@ func resolveCertificateClient(sel *awconfig.Selection, baseURL string) (*aweb.Cl
 }
 
 func configureResolvedClient(c *aweb.Client, sel *awconfig.Selection, baseURL string) error {
+	return configureResolvedClientWithRoster(c, c, sel, baseURL)
+}
+
+// configureResolvedClientWithRoster wires c's resolver chain, using rosterClient
+// for the team-roster resolver. The roster resolver requires certificate
+// authentication, so an identity-auth client that has a team certificate
+// available must pass a certificate-authenticated client here: with c itself as
+// the roster client, every verified message from a current-team member is
+// downgraded to verification_stale because the mandatory fresh roster
+// re-resolution cannot authenticate (aweb-abfc).
+func configureResolvedClientWithRoster(c, rosterClient *aweb.Client, sel *awconfig.Selection, baseURL string) error {
 	if c == nil || sel == nil {
 		return nil
+	}
+	if rosterClient == nil {
+		rosterClient = c
 	}
 	c.SetAddress(selectionAddress(sel))
 	e2eeAddress := ""
@@ -681,7 +713,7 @@ func configureResolvedClient(c *aweb.Client, sel *awconfig.Selection, baseURL st
 		DIDKey:   &awid.DIDKeyResolver{},
 		Registry: registry,
 		Pin:      &awid.PinResolver{Store: ps},
-		Team:     &awid.TeamRosterResolver{Client: c.Client, TeamID: sel.TeamID},
+		Team:     &awid.TeamRosterResolver{Client: rosterClient.Client, TeamID: sel.TeamID},
 	})
 
 	configureBaseURLFallback(c, sel, baseURL)
