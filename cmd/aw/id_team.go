@@ -34,16 +34,20 @@ type teamCreateOutput struct {
 }
 
 type teamInviteOutput struct {
-	Status   string `json:"status"`
-	InviteID string `json:"invite_id"`
-	Token    string `json:"token"`
+	Status        string `json:"status"`
+	InviteID      string `json:"invite_id"`
+	Token         string `json:"token"`
+	PorcelainJoin bool   `json:"-"`
 }
 
 type teamAcceptInviteOutput struct {
-	Status   string `json:"status"`
-	TeamID   string `json:"team_id"`
-	Alias    string `json:"alias"`
-	CertPath string `json:"cert_path"`
+	Status         string `json:"status"`
+	TeamID         string `json:"team_id"`
+	Alias          string `json:"alias"`
+	CertPath       string `json:"cert_path"`
+	Connected      *bool  `json:"connected,omitempty"`
+	AwebURL        string `json:"aweb_url,omitempty"`
+	ConnectCommand string `json:"connect_command,omitempty"`
 }
 
 type teamAddMemberOutput struct {
@@ -226,6 +230,7 @@ type teamAcceptInviteOptions struct {
 	Address      string
 	Scope        string
 	NoAddress    bool
+	AwebURL      string
 }
 
 type teamMemberEnrollmentResolveOptions struct {
@@ -655,6 +660,17 @@ func runTeamCreate(cmd *cobra.Command, args []string) error {
 }
 
 func runTeamInvite(cmd *cobra.Command, args []string) error {
+	return runTeamInviteWithOutput(cmd, args, false)
+}
+
+func runTeamHumanInvite(cmd *cobra.Command, args []string) error {
+	if err := applyHumanTeamIDToInvite(teamHumanInviteTeamID); err != nil {
+		return err
+	}
+	return runTeamInviteWithOutput(cmd, args, true)
+}
+
+func runTeamInviteWithOutput(cmd *cobra.Command, args []string, porcelainJoin bool) error {
 	workingDir, err := os.Getwd()
 	if err != nil {
 		return err
@@ -691,11 +707,11 @@ func runTeamInvite(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
-
 	printOutput(teamInviteOutput{
-		Status:   "created",
-		InviteID: inviteID,
-		Token:    token,
+		Status:        "created",
+		InviteID:      inviteID,
+		Token:         token,
+		PorcelainJoin: porcelainJoin,
 	}, formatTeamInvite)
 	return nil
 }
@@ -861,6 +877,14 @@ func awebURLForTeamInviteAt(workingDir, identityHome, teamID string) string {
 }
 
 func runTeamAcceptInvite(cmd *cobra.Command, args []string) error {
+	return runTeamAcceptInviteWithConnect(cmd, args, false)
+}
+
+func runTeamHumanJoin(cmd *cobra.Command, args []string) error {
+	return runTeamAcceptInviteWithConnect(cmd, args, true)
+}
+
+func runTeamAcceptInviteWithConnect(cmd *cobra.Command, args []string, connectWorkspace bool) error {
 	workingDir, err := os.Getwd()
 	if err != nil {
 		return err
@@ -876,15 +900,57 @@ func runTeamAcceptInvite(cmd *cobra.Command, args []string) error {
 	if home.External() && acceptScope != awid.IdentityModeGlobal {
 		return usageError("external identity home requires --global for team invite acceptance; local identity creation is not identity-home-aware")
 	}
-	accepted, err := acceptAndStoreTeamInvite(workingDir, args[0], teamAcceptInviteOptions{
+	rawToken, inviteAwebURL, err := decodeJoinToken(args[0])
+	if err != nil {
+		return err
+	}
+	accepted, err := acceptAndStoreTeamInvite(workingDir, rawToken, teamAcceptInviteOptions{
 		IdentityHome: externalIdentityHomeRoot(home),
 		Name:         teamAcceptAlias,
 		Address:      teamAcceptAddress,
 		Scope:        acceptScope,
 		NoAddress:    teamAcceptNoAddress,
+		AwebURL:      inviteAwebURL,
 	}, teamInviteStoreOptions{IdentityHome: resolvedEncryptionKeyIdentityHome(home), SetActive: true})
 	if err != nil {
 		return err
+	}
+	if connectWorkspace {
+		connectURL := firstNonEmpty(inviteAwebURL, accepted.AwebURL)
+		if connectURL == "" {
+			connectURL = awebURLForTeamInviteAt(workingDir, externalIdentityHomeRoot(home), accepted.Output.TeamID)
+		}
+		if teamHumanJoinNoConnect {
+			connected := false
+			accepted.Output.Connected = &connected
+			if normalized, normalizeErr := validateInviteAwebURL(connectURL); normalizeErr == nil {
+				accepted.Output.AwebURL = normalized
+				accepted.Output.ConnectCommand = workspaceConnectCommand(normalized)
+			}
+			printOutput(*accepted.Output, formatTeamAcceptInvite)
+			return nil
+		}
+		if connectURL == "" {
+			return usageError("team membership was installed, but this legacy invite does not identify its aweb service; run `%s` after choosing the service", workspaceConnectCommand("<url>"))
+		}
+		connectURL, err = validateInviteAwebURL(connectURL)
+		if err != nil {
+			return fmt.Errorf("team membership was installed, but its aweb service URL is invalid: %w", err)
+		}
+		accepted.Output.AwebURL = connectURL
+		accepted.Output.ConnectCommand = workspaceConnectCommand(connectURL)
+		connected, connectErr := initCertificateConnectWithOptions(workingDir, connectURL, certificateConnectOptions{
+			IdentityHome: home.Root,
+		})
+		if connectErr != nil {
+			return fmt.Errorf("team membership was installed, but workspace connection failed: %w\nRun `%s` to retry without reusing the invite", connectErr, accepted.Output.ConnectCommand)
+		}
+		connectionComplete := true
+		accepted.Output.Connected = &connectionComplete
+		accepted.Output.ConnectCommand = ""
+		if strings.TrimSpace(connected.Alias) != "" {
+			accepted.Output.Alias = strings.TrimSpace(connected.Alias)
+		}
 	}
 	printOutput(*accepted.Output, formatTeamAcceptInvite)
 	return nil
@@ -1572,7 +1638,8 @@ func acceptHostedTeamInviteWithDetails(workingDir, token string, opts teamAccept
 		}
 		didKey = awid.ComputeDIDKey(pub)
 	}
-	awebURL := awebURLOrDefault(resolveInitAwebURLOverride())
+	awebURL := firstNonEmpty(opts.AwebURL, resolveInitAwebURLOverride())
+	awebURL = awebURLOrDefault(awebURL)
 	awebURL, err = normalizeAwebBaseURL(awebURL)
 	if err != nil {
 		return nil, err

@@ -2,7 +2,7 @@
 
 // Full self-hosted team-create-with-profile flow against the real stack
 // (default-aabq.21). This is the flow aabq.3 had to scope around (Wall 2): on a
-// self-hosted stack, `aw team create --profile` materialized homes but then
+// self-hosted stack, `aw team admin create --profile` materialized homes but then
 // aborted in the configure step (InjectAgentDocs) with aweb 403 "agent not
 // connected", because roster members were given an awid certificate but never
 // connected to the aweb server. With the aabq.21 fix (members connect to the
@@ -27,7 +27,7 @@ import (
 )
 
 // TestRealStackTeamCreateRosterMaterializesAndConnects regresses aabq.21: a
-// self-hosted `aw team create` adopting two profiles materializes both homes -
+// self-hosted `aw team admin create` adopting two profiles materializes both homes -
 // which only completes if each roster member is connected to the aweb server
 // before its coordination-docs are injected.
 func TestRealStackTeamCreateRosterMaterializesAndConnects(t *testing.T) {
@@ -67,23 +67,23 @@ func TestRealStackTeamCreateRosterMaterializesAndConnects(t *testing.T) {
 		t.Fatalf("bootstrap BYOT namespace controller failed: %v\noutput:\n%s", err, out)
 	}
 
-	cmd := exec.Command(bin, "team", "create", "eng", "--byot", "--namespace", namespace, "--registry", awidURL(),
+	cmd := exec.Command(bin, "team", "admin", "create", "eng", "--byot", "--namespace", namespace, "--registry", awidURL(),
 		"--profile", seededBlueprintRef+"/coordinator=claude-code",
 		"--profile", seededBlueprintRef+"/reviewer=pi")
 	cmd.Dir = repo
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("aw team create --profile roster failed: %v\noutput:\n%s", err, out)
+		t.Fatalf("aw team admin create --profile roster failed: %v\noutput:\n%s", err, out)
 	}
 
-	// Profile-only team add uses --blueprint + --library-url directly (no plugin)
+	// Profile-only team admin add uses --blueprint + --library-url directly (no plugin)
 	// and proves provider selection is a client-side URL, not shelf state.
-	addCmd := exec.Command(bin, "team", "add", "developer@developer", "--blueprint", seededBlueprintRef, "--library-url", libraryURL(), "--runtime", "local-shell")
+	addCmd := exec.Command(bin, "team", "admin", "add", "developer@developer", "--blueprint", seededBlueprintRef, "--library-url", libraryURL(), "--runtime", "local-shell")
 	addCmd.Dir = repo
 	addCmd.Env = env
 	if out, err := addCmd.CombinedOutput(); err != nil {
-		t.Fatalf("aw team add profile-only from public catalog failed: %v\noutput:\n%s", err, out)
+		t.Fatalf("aw team admin add profile-only from public catalog failed: %v\noutput:\n%s", err, out)
 	}
 
 	// Homes materialize under agents/instances/<profile_ref or name>.
@@ -151,7 +151,7 @@ func TestRealStackTeamCreateRosterMaterializesAndConnects(t *testing.T) {
 	}
 
 	// A forced local-key replacement must operate on the real home produced by
-	// team add. Local homes intentionally have no identity.yaml; losing
+	// team admin add. Local homes intentionally have no identity.yaml; losing
 	// signing.key must not make the recovery flow depend on a fixture-only file.
 	developerHome := filepath.Join(repo, "agents", "instances", "developer")
 	oldIdentityCmd := exec.Command(bin, "--json", "id", "show")
@@ -187,7 +187,7 @@ func TestRealStackTeamCreateRosterMaterializesAndConnects(t *testing.T) {
 		t.Fatalf("simulate lost developer signing key: %v", err)
 	}
 
-	replaceCmd := exec.Command(bin, "--json", "team", "replace-key", "developer",
+	replaceCmd := exec.Command(bin, "--json", "team", "admin", "replace-key", "developer",
 		"--old-did-key", oldIdentity.DIDKey,
 		"--home", developerHome,
 		"--generate-new-key",

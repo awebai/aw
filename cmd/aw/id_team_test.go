@@ -40,18 +40,21 @@ func resetTeamAcceptInviteGlobals(t *testing.T) {
 	oldLocal := teamAcceptLocal
 	oldGlobal := teamAcceptGlobal
 	oldNoAddress := teamAcceptNoAddress
+	oldNoConnect := teamHumanJoinNoConnect
 	t.Cleanup(func() {
 		teamAcceptAlias = oldAlias
 		teamAcceptAddress = oldAddress
 		teamAcceptLocal = oldLocal
 		teamAcceptGlobal = oldGlobal
 		teamAcceptNoAddress = oldNoAddress
+		teamHumanJoinNoConnect = oldNoConnect
 	})
 	teamAcceptAlias = ""
 	teamAcceptAddress = ""
 	teamAcceptLocal = false
 	teamAcceptGlobal = false
 	teamAcceptNoAddress = false
+	teamHumanJoinNoConnect = false
 }
 
 // writeControllerKeyForTest writes a controller key to the test HOME's AWID state directory.
@@ -1475,11 +1478,12 @@ func TestTeamInviteAndAcceptInviteFlow(t *testing.T) {
 	}
 }
 
-func TestTeamInviteDefaultsToActiveTeamAndLocal(t *testing.T) {
+func TestTeamInviteJoinConnectsWorkspaceByDefault(t *testing.T) {
 	t.Parallel()
 
 	var registeredCert map[string]any
 	var connectCalls int
+	var failConnect atomic.Bool
 	var server *httptest.Server
 	server = newLocalHTTPServerHandlerWithURL(t, func(serverURL string, w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -1496,6 +1500,10 @@ func TestTeamInviteDefaultsToActiveTeamAndLocal(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/connect":
 			connectCalls++
+			if failConnect.Load() {
+				http.Error(w, "connection unavailable", http.StatusServiceUnavailable)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"team_id":      "backend:acme.com",
 				"alias":        "bob",
@@ -1560,7 +1568,7 @@ func TestTeamInviteDefaultsToActiveTeamAndLocal(t *testing.T) {
 		CreatedAt:     "2026-05-16T00:00:00Z",
 	})
 
-	runInvite := exec.CommandContext(ctx, bin, "id", "team", "invite")
+	runInvite := exec.CommandContext(ctx, bin, "team", "invite", "--team-id", "backend:acme.com")
 	runInvite.Env = testCommandEnv(home)
 	runInvite.Dir = inviterDir
 	inviteOut, err := runInvite.CombinedOutput()
@@ -1574,16 +1582,16 @@ func TestTeamInviteDefaultsToActiveTeamAndLocal(t *testing.T) {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) >= 6 && fields[1] == "aw" && fields[4] == "accept-invite" {
-			token = fields[5]
+		if len(fields) >= 5 && fields[1] == "aw" && fields[2] == "team" && fields[3] == "join" {
+			token = fields[4]
 		}
 	}
 	if token == "" {
 		t.Fatalf("invite output did not include accept command with token:\n%s", string(inviteOut))
 	}
 
-	runAccept := exec.CommandContext(ctx, bin, "id", "team", "accept-invite", token, "--name", "bob", "--json")
-	runAccept.Env = testCommandEnv(home)
+	runAccept := exec.CommandContext(ctx, bin, "team", "join", token, "--name", "bob", "--json")
+	runAccept.Env = append(testCommandEnv(home), "AWEB_URL=https://ambient-must-not-win.example")
 	runAccept.Dir = acceptDir
 	acceptOut, err := runAccept.CombinedOutput()
 	if err != nil {
@@ -1598,6 +1606,9 @@ func TestTeamInviteDefaultsToActiveTeamAndLocal(t *testing.T) {
 	}
 	if acceptGot["alias"] != "bob" {
 		t.Fatalf("alias=%v", acceptGot["alias"])
+	}
+	if acceptGot["connected"] != true || acceptGot["aweb_url"] != server.URL {
+		t.Fatalf("join did not report its completed connection: %v", acceptGot)
 	}
 
 	cert, err := awid.LoadTeamCertificate(awconfig.TeamCertificatePath(acceptDir, "backend:acme.com"))
@@ -1630,13 +1641,6 @@ func TestTeamInviteDefaultsToActiveTeamAndLocal(t *testing.T) {
 		t.Fatalf("membership aweb_url=%q want %q", membership.AwebURL, server.URL)
 	}
 
-	runInit := exec.CommandContext(ctx, bin, "init")
-	runInit.Env = testCommandEnv(home)
-	runInit.Dir = acceptDir
-	initOut, err := runInit.CombinedOutput()
-	if err != nil {
-		t.Fatalf("init after accept-invite failed: %v\n%s", err, string(initOut))
-	}
 	if connectCalls != 1 {
 		t.Fatalf("connect calls=%d", connectCalls)
 	}
@@ -1647,12 +1651,140 @@ func TestTeamInviteDefaultsToActiveTeamAndLocal(t *testing.T) {
 	if workspace.AwebURL != server.URL {
 		t.Fatalf("workspace aweb_url=%q want %q", workspace.AwebURL, server.URL)
 	}
-	agentsDoc, err := os.ReadFile(filepath.Join(acceptDir, "AGENTS.md"))
-	if err != nil {
-		t.Fatalf("expected aw init to create AGENTS.md by default: %v\n%s", err, string(initOut))
+	reconnect := exec.CommandContext(ctx, bin, "workspace", "connect", "--service", server.URL, "--json")
+	reconnect.Env = testCommandEnv(home)
+	reconnect.Dir = acceptDir
+	if reconnectOut, err := reconnect.CombinedOutput(); err != nil {
+		t.Fatalf("explicit connection retry did not converge: %v\n%s", err, string(reconnectOut))
 	}
-	if !strings.Contains(string(agentsDoc), awDocsMarkerStart) || !strings.Contains(string(agentsDoc), "Use aw mail inbox and aw chat pending.") {
-		t.Fatalf("AGENTS.md missing marked aw instructions:\n%s", string(agentsDoc))
+	if connectCalls != 2 {
+		t.Fatalf("connection retry calls=%d", connectCalls)
+	}
+	identityOnlyDir := filepath.Join(home, "charlie")
+	if err := os.MkdirAll(identityOnlyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runSecondInvite := exec.CommandContext(ctx, bin, "team", "invite", "--team-id", "backend:acme.com", "--json")
+	runSecondInvite.Env = testCommandEnv(home)
+	runSecondInvite.Dir = inviterDir
+	secondInviteOut, err := runSecondInvite.CombinedOutput()
+	if err != nil {
+		t.Fatalf("second team invite failed: %v\n%s", err, string(secondInviteOut))
+	}
+	var secondInvite map[string]any
+	if err := json.Unmarshal(extractJSON(t, secondInviteOut), &secondInvite); err != nil {
+		t.Fatalf("decode second invite: %v\n%s", err, string(secondInviteOut))
+	}
+	secondToken, _ := secondInvite["token"].(string)
+	if secondToken == "" {
+		t.Fatal("second invite token is empty")
+	}
+	runIdentityOnlyJoin := exec.CommandContext(ctx, bin, "team", "join", secondToken, "--name", "charlie", "--no-connect", "--json")
+	runIdentityOnlyJoin.Env = testCommandEnv(home)
+	runIdentityOnlyJoin.Dir = identityOnlyDir
+	identityOnlyOut, err := runIdentityOnlyJoin.CombinedOutput()
+	if err != nil {
+		t.Fatalf("identity-only join failed: %v\n%s", err, string(identityOnlyOut))
+	}
+	var identityOnly map[string]any
+	if err := json.Unmarshal(extractJSON(t, identityOnlyOut), &identityOnly); err != nil {
+		t.Fatalf("decode identity-only join: %v\n%s", err, string(identityOnlyOut))
+	}
+	wantConnect := "aw workspace connect --service " + server.URL
+	if identityOnly["connect_command"] != wantConnect || identityOnly["aweb_url"] != server.URL {
+		t.Fatalf("identity-only join recovery=%v want command %q and URL %q", identityOnly, wantConnect, server.URL)
+	}
+	if identityOnly["connected"] != false {
+		t.Fatalf("identity-only join did not truthfully report connected=false: %v", identityOnly)
+	}
+	if _, err := os.Stat(filepath.Join(identityOnlyDir, ".aw", "workspace.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("--no-connect wrote workspace.yaml: %v", err)
+	}
+	if connectCalls != 2 {
+		t.Fatalf("--no-connect changed connect calls to %d", connectCalls)
+	}
+
+	legacyDir := filepath.Join(home, "legacy")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacyInvite := &awconfig.TeamInvite{
+		InviteID:      "legacy-no-a",
+		Domain:        "acme.com",
+		TeamName:      "backend",
+		IdentityScope: awid.IdentityModeLocal,
+		Secret:        "legacy-secret",
+		RegistryURL:   server.URL,
+		CreatedAt:     "2026-08-22T00:00:00Z",
+	}
+	writeTeamInviteForTest(t, home, legacyInvite)
+	legacyToken, err := awconfig.EncodeInviteToken(legacyInvite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLegacyJoin := exec.CommandContext(ctx, bin, "team", "join", legacyToken, "--name", "legacy", "--no-connect", "--json")
+	runLegacyJoin.Env = testCommandEnv(home)
+	runLegacyJoin.Dir = legacyDir
+	legacyJoinOut, err := runLegacyJoin.CombinedOutput()
+	if err != nil {
+		t.Fatalf("legacy membership-only join failed: %v\n%s", err, string(legacyJoinOut))
+	}
+	var legacyJoined map[string]any
+	if err := json.Unmarshal(extractJSON(t, legacyJoinOut), &legacyJoined); err != nil {
+		t.Fatalf("decode legacy membership-only join: %v\n%s", err, string(legacyJoinOut))
+	}
+	if legacyJoined["connected"] != false {
+		t.Fatalf("legacy membership-only join did not report connected=false: %v", legacyJoined)
+	}
+	if _, present := legacyJoined["aweb_url"]; present {
+		t.Fatalf("legacy membership-only join invented an aweb URL: %v", legacyJoined)
+	}
+	if _, err := awid.LoadTeamCertificate(awconfig.TeamCertificatePath(legacyDir, "backend:acme.com")); err != nil {
+		t.Fatalf("legacy membership-only join did not install membership: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(legacyDir, ".aw", "workspace.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("legacy membership-only join wrote workspace.yaml: %v", err)
+	}
+	if connectCalls != 2 {
+		t.Fatalf("legacy --no-connect changed connect calls to %d", connectCalls)
+	}
+
+	failedConnectDir := filepath.Join(home, "dana")
+	if err := os.MkdirAll(failedConnectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runThirdInvite := exec.CommandContext(ctx, bin, "team", "invite", "--team-id", "backend:acme.com", "--json")
+	runThirdInvite.Env = testCommandEnv(home)
+	runThirdInvite.Dir = inviterDir
+	thirdInviteOut, err := runThirdInvite.CombinedOutput()
+	if err != nil {
+		t.Fatalf("third team invite failed: %v\n%s", err, string(thirdInviteOut))
+	}
+	var thirdInvite map[string]any
+	if err := json.Unmarshal(extractJSON(t, thirdInviteOut), &thirdInvite); err != nil {
+		t.Fatalf("decode third invite: %v\n%s", err, string(thirdInviteOut))
+	}
+	thirdToken, _ := thirdInvite["token"].(string)
+	if thirdToken == "" {
+		t.Fatal("third invite token is empty")
+	}
+	failConnect.Store(true)
+	runFailedConnect := exec.CommandContext(ctx, bin, "team", "join", thirdToken, "--name", "dana")
+	runFailedConnect.Env = testCommandEnv(home)
+	runFailedConnect.Dir = failedConnectDir
+	failedConnectOut, err := runFailedConnect.CombinedOutput()
+	if err == nil {
+		t.Fatalf("join unexpectedly succeeded when connection failed:\n%s", string(failedConnectOut))
+	}
+	wantRecovery := "Run `aw workspace connect --service " + server.URL + "` to retry without reusing the invite"
+	if !strings.Contains(string(failedConnectOut), wantRecovery) {
+		t.Fatalf("failed join omitted exact recovery command %q:\n%s", wantRecovery, string(failedConnectOut))
+	}
+	if _, err := awid.LoadTeamCertificate(awconfig.TeamCertificatePath(failedConnectDir, "backend:acme.com")); err != nil {
+		t.Fatalf("connection failure did not preserve installed membership: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(failedConnectDir, ".aw", "workspace.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("failed connection wrote workspace.yaml: %v", err)
 	}
 }
 
@@ -1666,6 +1798,8 @@ func TestTeamInviteHostedUsesCloudAuthorityWithoutLocalTeamKey(t *testing.T) {
 	var createAuthHadCert bool
 	var acceptVerifiedDID bool
 	var connectCalls int
+	var createCalls int
+	issuedTokens := map[string]bool{}
 	_, hostedTeamKey, err := awid.GenerateKeypair()
 	if err != nil {
 		t.Fatal(err)
@@ -1680,9 +1814,12 @@ func TestTeamInviteHostedUsesCloudAuthorityWithoutLocalTeamKey(t *testing.T) {
 				t.Fatalf("create invite cert team=%q want %q", cert.Team, teamID)
 			}
 			createAuthHadCert = true
+			createCalls++
+			issuedToken := hostedJoinTokenForTest(t, fmt.Sprintf("aw_inv_hosted_test_token_%d", createCalls), serverURL)
+			issuedTokens[issuedToken] = true
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"invite_id":      "invite-hosted-1",
-				"token":          "aw_inv_hosted_test_token",
+				"invite_id":      fmt.Sprintf("invite-hosted-%d", createCalls),
+				"token":          issuedToken,
 				"token_prefix":   "hosted_t",
 				"access_mode":    "open",
 				"max_uses":       1,
@@ -1696,6 +1833,10 @@ func TestTeamInviteHostedUsesCloudAuthorityWithoutLocalTeamKey(t *testing.T) {
 			var req map[string]any
 			if err := json.Unmarshal(body, &req); err != nil {
 				t.Fatal(err)
+			}
+			redeemedToken, _ := req["token"].(string)
+			if !issuedTokens[redeemedToken] {
+				t.Fatalf("accept did not submit a server-issued full token unchanged: %q", redeemedToken)
 			}
 			didKey, _ := req["did"].(string)
 			if didKey == "" {
@@ -1775,10 +1916,14 @@ func TestTeamInviteHostedUsesCloudAuthorityWithoutLocalTeamKey(t *testing.T) {
 	home := t.TempDir()
 	inviterDir := filepath.Join(home, "alice")
 	acceptDir := filepath.Join(home, "bob")
+	joinedDir := filepath.Join(home, "new-client")
 	if err := os.MkdirAll(inviterDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(acceptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(joinedDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(home, "aw")
@@ -1806,14 +1951,15 @@ func TestTeamInviteHostedUsesCloudAuthorityWithoutLocalTeamKey(t *testing.T) {
 	if err := json.Unmarshal(extractJSON(t, inviteOut), &inviteGot); err != nil {
 		t.Fatalf("invalid invite json: %v\n%s", err, string(inviteOut))
 	}
-	if inviteGot["token"] != "aw_inv_hosted_test_token" {
-		t.Fatalf("token=%v", inviteGot["token"])
+	issuedToken, _ := inviteGot["token"].(string)
+	if !strings.HasPrefix(issuedToken, hostedJoinTokenPrefix) {
+		t.Fatalf("server did not issue a self-describing hosted token: %v", inviteGot["token"])
 	}
 	if !createAuthHadCert {
 		t.Fatal("hosted create-invite did not use certificate auth")
 	}
 
-	runAccept := exec.CommandContext(ctx, bin, "id", "team", "accept-invite", "aw_inv_hosted_test_token", "--name", "bob", "--json")
+	runAccept := exec.CommandContext(ctx, bin, "id", "team", "accept-invite", issuedToken, "--name", "bob", "--json")
 	runAccept.Env = append(testCommandEnv(home), "AWEB_URL="+server.URL)
 	runAccept.Dir = acceptDir
 	acceptOut, err := runAccept.CombinedOutput()
@@ -1857,6 +2003,39 @@ func TestTeamInviteHostedUsesCloudAuthorityWithoutLocalTeamKey(t *testing.T) {
 		t.Fatalf("accept-invite should not create workspace.yaml before aw init, stat err=%v", err)
 	}
 
+	runHumanInvite := exec.CommandContext(ctx, bin, "team", "invite", "--team-id", teamID, "--json")
+	runHumanInvite.Env = testCommandEnv(home)
+	runHumanInvite.Dir = inviterDir
+	humanInviteOut, err := runHumanInvite.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hosted human invite failed: %v\n%s", err, string(humanInviteOut))
+	}
+	var humanInvite map[string]any
+	if err := json.Unmarshal(extractJSON(t, humanInviteOut), &humanInvite); err != nil {
+		t.Fatalf("decode hosted human invite: %v\n%s", err, string(humanInviteOut))
+	}
+	humanToken, _ := humanInvite["token"].(string)
+	if !issuedTokens[humanToken] {
+		t.Fatalf("human invite did not expose the exact server-issued token: %q", humanToken)
+	}
+	runHumanJoin := exec.CommandContext(ctx, bin, "team", "join", humanToken, "--name", "bob", "--json")
+	runHumanJoin.Env = append(testCommandEnv(home), "AWEB_URL=https://ambient-must-not-win.example")
+	runHumanJoin.Dir = joinedDir
+	humanJoinOut, err := runHumanJoin.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hosted human join failed: %v\n%s", err, string(humanJoinOut))
+	}
+	var humanJoined map[string]any
+	if err := json.Unmarshal(extractJSON(t, humanJoinOut), &humanJoined); err != nil {
+		t.Fatalf("decode hosted human join: %v\n%s", err, string(humanJoinOut))
+	}
+	if humanJoined["connected"] != true || humanJoined["aweb_url"] != server.URL {
+		t.Fatalf("hosted human join did not use the embedded service URL: %v", humanJoined)
+	}
+	if connectCalls != 1 {
+		t.Fatalf("hosted human join connect calls=%d", connectCalls)
+	}
+
 	runInit := exec.CommandContext(ctx, bin, "init")
 	runInit.Env = testCommandEnv(home)
 	runInit.Dir = acceptDir
@@ -1864,7 +2043,7 @@ func TestTeamInviteHostedUsesCloudAuthorityWithoutLocalTeamKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init after hosted accept-invite failed: %v\n%s", err, string(initOut))
 	}
-	if connectCalls != 1 {
+	if connectCalls != 2 {
 		t.Fatalf("connect calls=%d", connectCalls)
 	}
 	workspace, err := awconfig.LoadWorktreeWorkspaceFrom(filepath.Join(acceptDir, ".aw", "workspace.yaml"))
