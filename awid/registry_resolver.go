@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -80,6 +82,7 @@ type RegistryResolver struct {
 	DNSResolver         TXTResolver
 	Now                 func() time.Time
 	fallbackRegistryURL string
+	identityDomain      string
 	mu                  sync.Mutex
 	registryCache       map[string]cachedValue[DomainAuthority]
 	addressCache        map[string]cachedValue[*registryAddressCacheValue]
@@ -108,17 +111,53 @@ func NewRegistryResolver(httpClient *http.Client, dnsResolver TXTResolver) *Regi
 }
 
 func (r *RegistryResolver) SetFallbackRegistryURL(raw string) error {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		r.fallbackRegistryURL = ""
-		return nil
-	}
-	canonical, err := canonicalRegistryServerOrigin(raw)
+	canonical, err := canonicalFallbackRegistryURL(raw)
 	if err != nil {
 		return err
 	}
-	r.fallbackRegistryURL = canonical
+	r.setRegistryPolicy(canonical, "")
 	return nil
+}
+
+// SetIdentityRegistryURL configures the registry pinned for the identity's own
+// domain while allowing address resolution to discover foreign registries.
+func (r *RegistryResolver) SetIdentityRegistryURL(raw, ownDomain string) error {
+	canonical, err := canonicalFallbackRegistryURL(raw)
+	if err != nil {
+		return err
+	}
+	if canonical == "" {
+		r.setRegistryPolicy("", "")
+		return nil
+	}
+	ownDomain = canonicalizeDomain(ownDomain)
+	if ownDomain == "" {
+		return fmt.Errorf("identity domain is required with an identity registry URL")
+	}
+	r.setRegistryPolicy(canonical, ownDomain)
+	return nil
+}
+
+func (r *RegistryResolver) setRegistryPolicy(fallbackRegistryURL, identityDomain string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.fallbackRegistryURL == fallbackRegistryURL && r.identityDomain == identityDomain {
+		return
+	}
+	r.fallbackRegistryURL = fallbackRegistryURL
+	r.identityDomain = identityDomain
+	clear(r.registryCache)
+	clear(r.addressCache)
+	clear(r.memberCache)
+	clear(r.keyCache)
+}
+
+func canonicalFallbackRegistryURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	return canonicalRegistryServerOrigin(raw)
 }
 
 func (r *RegistryResolver) Resolve(ctx context.Context, identifier string) (*ResolvedIdentity, error) {
@@ -571,21 +610,25 @@ func (r *RegistryResolver) DiscoverRegistry(ctx context.Context, domain string) 
 
 func (r *RegistryResolver) discoverAuthority(ctx context.Context, domain string) (DomainAuthority, error) {
 	domain = canonicalizeDomain(domain)
-	if strings.TrimSpace(r.fallbackRegistryURL) != "" {
-		return DomainAuthority{RegistryURL: r.fallbackRegistryURL}, nil
+	fallback := strings.TrimSpace(r.fallbackRegistryURL)
+	if fallback != "" && (r.identityDomain == "" || domain == r.identityDomain) {
+		return DomainAuthority{RegistryURL: fallback}, nil
 	}
 	if cached, ok := r.loadRegistryCache(domain); ok {
 		return cached, nil
 	}
 	authority, err := DiscoverAuthoritativeRegistry(ctx, r.DNSResolver, domain)
 	if err != nil {
+		if fallback != "" && isDNSFallbackFailure(err) {
+			return DomainAuthority{RegistryURL: fallback}, nil
+		}
 		return DomainAuthority{}, err
+	}
+	if strings.TrimSpace(authority.ControllerDID) == "" && fallback != "" {
+		authority.RegistryURL = fallback
 	}
 	if strings.TrimSpace(authority.RegistryURL) == "" {
 		authority.RegistryURL = DefaultAWIDRegistryURL
-	}
-	if r.fallbackRegistryURL != "" {
-		authority.RegistryURL = r.fallbackRegistryURL
 	}
 	r.storeRegistryCache(domain, authority, registryDiscoveryTTL)
 	return authority, nil
@@ -687,6 +730,20 @@ func (r *RegistryResolver) loadRegistryCache(domain string) (DomainAuthority, bo
 		return DomainAuthority{}, false
 	}
 	return entry.value, true
+}
+
+func isDNSFallbackFailure(err error) bool {
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) {
+		return false
+	}
+	if dnsErr.IsTimeout || dnsErr.IsTemporary {
+		return true
+	}
+	detail := strings.ToLower(strings.TrimSpace(dnsErr.Err))
+	return strings.Contains(detail, "connection refused") ||
+		strings.Contains(detail, "network is unreachable") ||
+		strings.Contains(detail, "no route to host")
 }
 
 func (r *RegistryResolver) storeRegistryCache(domain string, authority DomainAuthority, ttl time.Duration) {
