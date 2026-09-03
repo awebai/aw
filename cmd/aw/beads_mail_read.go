@@ -125,8 +125,9 @@ func beadsMailSenderLabel(m beadsMailAddressMap, msg *awid.InboxMessage) string 
 func beadsMailReadClient(cmd *cobra.Command, ctx context.Context) (*aweb.Client, *awconfig.Selection, beadsMailAddressMap, error) {
 	c, sel, err := resolveMailMessagingClientSelection()
 	if err != nil {
-		return nil, nil, beadsMailAddressMap{}, err
+		return nil, nil, beadsMailAddressMap{}, beadsMailClientError(err)
 	}
+	beadsMailIdentifyTransport(c)
 	if err := configureClientE2EEForRead(cmd, ctx, c, sel); err != nil {
 		return nil, nil, beadsMailAddressMap{}, err
 	}
@@ -152,7 +153,7 @@ func beadsMailPrintMessage(m beadsMailAddressMap, msg *awid.InboxMessage) {
 	}
 	fmt.Printf("Priority: %s\n", priority)
 	if env != nil && env.Type != "" {
-		fmt.Printf("Type: %s\n", env.Type)
+		fmt.Printf("Type: %s\n", sanitizeBeadsMailDisplay(env.Type))
 	}
 	if env != nil && env.Pinned {
 		fmt.Println("Pinned: true")
@@ -295,7 +296,7 @@ for a look that changes nothing.`,
 		beadsMailLogReceived(sel, msg)
 		if msg.ReadAt == nil {
 			if _, ackErr := c.AckMessage(ctx, messageID); ackErr != nil {
-				debugLog("ack beads mail read %s: %v", messageID, ackErr)
+				return fmt.Errorf("message displayed, but it could not be marked read: %w", ackErr)
 			}
 		}
 		return nil
@@ -416,9 +417,11 @@ var beadsMailMarkReadCmd = &cobra.Command{
 			}
 		}
 		acked := 0
+		failed := 0
 		for _, id := range ids {
 			if _, err := c.AckMessage(ctx, id); err != nil {
 				debugLog("ack beads mail %s: %v", id, err)
+				failed++
 				continue
 			}
 			acked++
@@ -426,6 +429,9 @@ var beadsMailMarkReadCmd = &cobra.Command{
 		fmt.Printf("marked %d message(s) read\n", acked)
 		if capped {
 			fmt.Println("More unread mail remains beyond this pass; run 'bd mail mark-read --all' again.")
+		}
+		if failed > 0 {
+			return fmt.Errorf("failed to mark %d message(s) read; they remain unread", failed)
 		}
 		return nil
 	},

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -103,8 +104,19 @@ cryptographically verified identity.`,
 		if err != nil {
 			return err
 		}
+		if beadsMailSendSelf && strings.TrimSpace(beadsMailSendReplyTo) != "" {
+			// A continuation delivers to the conversation's counterparty; a
+			// self-named continuation would make the disclosure line lie
+			// (the involves-check cannot catch it: the sender is always a
+			// participant of any message they can read).
+			return usageError("--self and --reply-to cannot be combined: a continuation goes to the conversation's counterparty, not to yourself")
+		}
 		if strings.TrimSpace(beadsMailSendSubject) == "" {
 			return usageError("-s/--subject is required")
+		}
+		mailType := strings.TrimSpace(beadsMailSendType)
+		if !beadsMailSupportedType(mailType) {
+			return usageError("--type must be one of: task, scavenge, notification, reply")
 		}
 		body, err := beadsMailResolveBody(cmd, beadsMailSendBody, beadsMailSendBodyAlias, beadsMailSendStdin, "")
 		if err != nil {
@@ -154,8 +166,9 @@ cryptographically verified identity.`,
 			c, sel, err = resolveMailMessagingClientSelection()
 		}
 		if err != nil {
-			return err
+			return beadsMailClientError(err)
 		}
+		beadsMailIdentifyTransport(c)
 		if beadsMailSendSelf {
 			target, err = beadsMailSelfTarget(sel)
 			if err != nil {
@@ -164,8 +177,8 @@ cryptographically verified identity.`,
 		}
 
 		env := beadsMailEnvelope{}
-		if beadsMailSendType != "" && beadsMailSendType != "notification" {
-			env.Type = beadsMailSendType
+		if mailType != "notification" {
+			env.Type = mailType
 		}
 		if beadsPriority != 2 {
 			p := beadsPriority
@@ -194,9 +207,23 @@ cryptographically verified identity.`,
 			if conversationID == "" {
 				return fmt.Errorf("--reply-to message %s is legacy mail without a conversation", replyTo)
 			}
+			// The recipient argument stays a CHECK, not a routing input: a
+			// continuation routes by conversation (the server requires the
+			// signed recipient to match the conversation's, so the client's
+			// rediscovery must fill it — found live 2026-09-01), and the
+			// named recipient must actually be that conversation's
+			// counterparty or the disclosure line would lie. The check only
+			// refuses an actual mismatch: a message whose identity fields
+			// are all empty (key rotation can blank the derived
+			// address/stable-id) cannot be verified and proceeds — reply is
+			// always the recipient-free escape hatch either way.
+			if known, matches := beadsMailReplyToTargetMatches(source, sel, target.Value); known && !matches {
+				return usageError("--reply-to message %s is a conversation with %s, not with %s; drop --reply-to or name that correspondent", replyTo, sanitizeBeadsMailDisplay(beadsMailCounterpartyLabel(source, sel)), sanitizeBeadsMailDisplay(target.Value))
+			}
 			req.ConversationID = conversationID
+		} else {
+			applyMailRecipientTarget(req, target.Kind, target.Value)
 		}
-		applyMailRecipientTarget(req, target.Kind, target.Value)
 
 		var resp *awid.SendMessageResponse
 		if beadsMailUsesCertSend(target.Kind, req.ConversationID) {
@@ -204,13 +231,20 @@ cryptographically verified identity.`,
 		} else {
 			resp, err = c.SendMessageByIdentity(ctx, req)
 		}
+		if err != nil && req.ConversationID == "" {
+			resp, err = beadsMailRetryAsContinuation(ctx, c, target, req, err)
+		}
 		if err != nil {
 			return networkError(err, target.Value)
 		}
 
 		beadsMailAppendSendLogs(sel, resp, target.Value, beadsMailSendSubject, body)
 		fmt.Printf("sent %s (message_id=%s conversation_id=%s)\n", beadsMailResolutionNote(target), resp.MessageID, resp.ConversationID)
-		beadsMailRecordBead(sel, addressMap, beadsMailSendSubject, body, resp, strings.TrimSpace(beadsMailSendReplyTo), env)
+		if mapErr != nil {
+			beadsMailRecordGap("could not read the beads mail configuration: " + mapErr.Error())
+		} else {
+			beadsMailRecordBead(sel, addressMap, beadsMailSendSubject, body, resp, strings.TrimSpace(beadsMailSendReplyTo), env)
+		}
 		return nil
 	},
 }
@@ -219,6 +253,7 @@ var (
 	beadsMailReplySubject   string
 	beadsMailReplyBody      string
 	beadsMailReplyBodyAlias string
+	beadsMailReplyStdin     bool
 )
 
 var beadsMailReplyCmd = &cobra.Command{
@@ -239,7 +274,7 @@ var beadsMailReplyCmd = &cobra.Command{
 		if len(args) == 2 {
 			positional = args[1]
 		}
-		body, err := beadsMailResolveBody(cmd, beadsMailReplyBody, beadsMailReplyBodyAlias, false, positional)
+		body, err := beadsMailResolveBody(cmd, beadsMailReplyBody, beadsMailReplyBodyAlias, beadsMailReplyStdin, positional)
 		if err != nil {
 			return err
 		}
@@ -248,8 +283,9 @@ var beadsMailReplyCmd = &cobra.Command{
 		defer cancel()
 		c, sel, err := resolveMailMessagingClientSelection()
 		if err != nil {
-			return err
+			return beadsMailClientError(err)
 		}
+		beadsMailIdentifyTransport(c)
 		source, err := beadsMailSourceMessage(ctx, c, messageID)
 		if err != nil {
 			return err
@@ -281,14 +317,16 @@ var beadsMailReplyCmd = &cobra.Command{
 			return err
 		}
 		if _, ackErr := c.AckMessage(ctx, messageID); ackErr != nil {
-			debugLog("ack replied beads mail %s: %v", messageID, ackErr)
+			fmt.Fprintf(os.Stderr, "note: reply was sent, but the source message could not be marked read: %s\n", sanitizeBeadsMailDisplay(ackErr.Error()))
 		}
 		beadsMailAppendSendLogs(sel, resp, conversationID, subject, body)
 		fmt.Printf("replied (message_id=%s conversation_id=%s)\n", resp.MessageID, resp.ConversationID)
-		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-			if addressMap, mapErr := loadBeadsMailAddressMap(cwd); mapErr == nil {
-				beadsMailRecordBead(sel, addressMap, subject, body, resp, messageID, beadsMailEnvelope{})
-			}
+		if cwd, cwdErr := os.Getwd(); cwdErr != nil {
+			beadsMailRecordGap("could not locate the beads repository: " + cwdErr.Error())
+		} else if addressMap, mapErr := loadBeadsMailAddressMap(cwd); mapErr != nil {
+			beadsMailRecordGap("could not read the beads mail configuration: " + mapErr.Error())
+		} else {
+			beadsMailRecordBead(sel, addressMap, subject, body, resp, messageID, beadsMailEnvelope{})
 		}
 		return nil
 	},
@@ -301,6 +339,108 @@ var beadsMailReplyCmd = &cobra.Command{
 // team-local alias.
 func beadsMailUsesCertSend(kind, conversationID string) bool {
 	return kind == "alias" && strings.TrimSpace(conversationID) == ""
+}
+
+func beadsMailSupportedType(value string) bool {
+	switch value {
+	case "task", "scavenge", "notification", "reply":
+		return true
+	default:
+		return false
+	}
+}
+
+func beadsMailMessageSideIdentifiers(alias, address, did, stableID string) []string {
+	var identifiers []string
+	for _, candidate := range []string{address, alias, did, stableID} {
+		if value := strings.TrimSpace(candidate); value != "" {
+			identifiers = append(identifiers, value)
+		}
+	}
+	return identifiers
+}
+
+func beadsMailSelectionIdentifiers(sel *awconfig.Selection) []string {
+	if sel == nil {
+		return nil
+	}
+	return beadsMailMessageSideIdentifiers(sel.Alias, selectionAddress(sel), sel.DID, sel.StableID)
+}
+
+func beadsMailIdentifiersOverlap(left, right []string) bool {
+	for _, value := range left {
+		if beadsMailValueAmong(value, right) {
+			return true
+		}
+	}
+	return false
+}
+
+// beadsMailCounterpartyIdentifiers identifies the side of the source message
+// that is not this workspace. If old or rotated message data cannot identify
+// the local side, all non-empty participants remain the conservative fallback;
+// an entirely blank legacy row is unverifiable and deliberately fails open.
+func beadsMailCounterpartyIdentifiers(msg *awid.InboxMessage, sel *awconfig.Selection) ([]string, bool) {
+	if msg == nil {
+		return nil, false
+	}
+	from := beadsMailMessageSideIdentifiers(msg.FromAlias, msg.FromAddress, msg.FromDID, msg.FromStableID)
+	to := beadsMailMessageSideIdentifiers(msg.ToAlias, msg.ToAddress, msg.ToDID, msg.ToStableID)
+	all := append(append([]string{}, from...), to...)
+	if len(all) == 0 {
+		return nil, false
+	}
+	self := beadsMailSelectionIdentifiers(sel)
+	fromIsSelf := beadsMailIdentifiersOverlap(from, self)
+	toIsSelf := beadsMailIdentifiersOverlap(to, self)
+	switch {
+	case fromIsSelf && !toIsSelf:
+		return to, true
+	case toIsSelf && !fromIsSelf:
+		return from, true
+	case fromIsSelf && toIsSelf:
+		return nil, true
+	default:
+		return all, true
+	}
+}
+
+func beadsMailReplyToTargetMatches(msg *awid.InboxMessage, sel *awconfig.Selection, target string) (known, matches bool) {
+	participants, known := beadsMailCounterpartyIdentifiers(msg, sel)
+	if !known {
+		return false, true
+	}
+	// A conversation continuation always routes to the other side. Naming
+	// ourselves through an address, alias, or DID would make the disclosure
+	// line lie even though our identity is naturally one of the participants.
+	if beadsMailValueAmong(target, beadsMailSelectionIdentifiers(sel)) {
+		return true, false
+	}
+	return true, beadsMailValueAmong(target, participants)
+}
+
+func beadsMailValueAmong(value string, candidates []string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, candidate := range candidates {
+		if strings.EqualFold(candidate, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func beadsMailCounterpartyLabel(msg *awid.InboxMessage, sel *awconfig.Selection) string {
+	if participants, known := beadsMailCounterpartyIdentifiers(msg, sel); known {
+		for _, candidate := range participants {
+			if strings.TrimSpace(candidate) != "" {
+				return strings.TrimSpace(candidate)
+			}
+		}
+	}
+	return "an unidentified correspondent"
 }
 
 func beadsMailSendRecipientArg(args []string) (string, error) {
@@ -371,15 +511,52 @@ func beadsMailResolveBody(cmd *cobra.Command, body, bodyAlias string, fromStdin 
 	return value, nil
 }
 
+// beadsMailSourceMessage fetches one exact message. It uses the exact-read
+// endpoint, which is visible to sender OR recipient — the recipient-scoped
+// inbox lookup cannot see your own sent mail, which broke
+// `send --reply-to <own-message>` in the first live exchange (2026-09-01).
 func beadsMailSourceMessage(ctx context.Context, c *aweb.Client, messageID string) (*awid.InboxMessage, error) {
-	inbox, err := c.Inbox(ctx, awid.InboxParams{UnreadOnly: false, Limit: 1, MessageID: messageID})
+	resp, err := c.Message(ctx, messageID)
 	if err != nil {
 		return nil, networkError(err, messageID)
 	}
-	if len(inbox.Messages) == 0 {
+	if resp == nil || len(resp.Messages) == 0 {
 		return nil, fmt.Errorf("mail message not found: %s", messageID)
 	}
-	return &inbox.Messages[0], nil
+	return &resp.Messages[0], nil
+}
+
+// beadsMailRetryAsContinuation handles the server refusing a fresh
+// conversation because the pair already has an active one (HTTP 409, found
+// live 2026-09-01). Continuation is server-directed, not opportunistic: the
+// delegate still sends fresh first, and only when the server names the
+// conflict does it look up the pair's unique active conversation and resend
+// into it (design record §8 amendment).
+func beadsMailRetryAsContinuation(ctx context.Context, c *aweb.Client, target beadsMailTarget, req *awid.SendMessageRequest, sendErr error) (*awid.SendMessageResponse, error) {
+	if code, ok := awid.HTTPStatusCode(sendErr); !ok || code != http.StatusConflict {
+		return nil, sendErr
+	}
+	var conversation mailConversationTarget
+	var err error
+	switch target.Kind {
+	case "address", "did":
+		conversation, err = findUniqueMailConversationForTarget(ctx, c, target.Kind, target.Value)
+	case "alias":
+		if agent, found, findErr := clientAgentForAlias(ctx, c, target.Value); findErr == nil && found {
+			conversation, err = findUniqueMailConversationForAgent(ctx, c, agent)
+		}
+	}
+	if err != nil || conversation.conversationID == "" {
+		return nil, sendErr
+	}
+	fmt.Fprintf(os.Stderr, "note: continuing the existing conversation with %s (the server keeps one active conversation per pair)\n", sanitizeBeadsMailDisplay(target.Value))
+	continuation := &awid.SendMessageRequest{
+		ConversationID: conversation.conversationID,
+		Subject:        req.Subject,
+		Body:           req.Body,
+		Priority:       req.Priority,
+	}
+	return c.SendMessageByIdentity(ctx, continuation)
 }
 
 func beadsMailAppendSendLogs(sel *awconfig.Selection, resp *awid.SendMessageResponse, to, subject, body string) {
@@ -429,8 +606,8 @@ func init() {
 	flags.BoolVarP(&beadsMailSendNotify, "notify", "n", false, "Bump priority to high so the recipient wakes")
 	flags.BoolVar(&beadsMailSendNoNotify, "no-notify", false, "No-op at priority <= normal (idle wake anyway); cannot silence high/urgent")
 	flags.BoolVar(&beadsMailSendPinned, "pinned", false, "Carried in the beads-mail envelope; no delivery behavior")
-	flags.BoolVar(&beadsMailSendWisp, "wisp", true, "Mark ephemeral (beads default); meaningful once dual-write lands")
-	flags.BoolVar(&beadsMailSendPermanent, "permanent", false, "Mark not ephemeral; meaningful once dual-write lands")
+	flags.BoolVar(&beadsMailSendWisp, "wisp", true, "Use the beads ephemeral default")
+	flags.BoolVar(&beadsMailSendPermanent, "permanent", false, "Carry ephemeral=false metadata; v1 does not promote the underlying message bead")
 	beadsMailSendCmd.MarkFlagsMutuallyExclusive("notify", "no-notify")
 	beadsMailSendCmd.MarkFlagsMutuallyExclusive("wisp", "permanent")
 
@@ -438,4 +615,5 @@ func init() {
 	replyFlags.StringVarP(&beadsMailReplySubject, "subject", "s", "", "Override reply subject (default: Re: <original>)")
 	replyFlags.StringVarP(&beadsMailReplyBody, "message", "m", "", "Reply message body")
 	replyFlags.StringVar(&beadsMailReplyBodyAlias, "body", "", "Alias for --message")
+	replyFlags.BoolVar(&beadsMailReplyStdin, "stdin", false, "Read the reply body from stdin (delegate extension; gt reply lacks it, but shell-unsafe bodies need it)")
 }
