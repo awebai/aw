@@ -273,19 +273,8 @@ func Execute() {
 }
 
 func activateIdentityHomeForPluginDispatch(args []string) (func(), error) {
-	explicit := ""
-	for i := 0; i < len(args); i++ {
-		arg := strings.TrimSpace(args[i])
-		if strings.HasPrefix(arg, "--identity-home=") {
-			explicit = strings.TrimSpace(strings.TrimPrefix(arg, "--identity-home="))
-			continue
-		}
-		if arg == "--identity-home" && i+1 < len(args) {
-			explicit = strings.TrimSpace(args[i+1])
-			i++
-		}
-	}
 	previous, existed := os.LookupEnv(awconfig.IdentityHomeEnv)
+	explicit := identityHomeForPluginDispatch(args)
 	home, err := awconfig.ResolveIdentityHome("", explicit)
 	if err != nil {
 		return func() {}, err
@@ -302,6 +291,66 @@ func activateIdentityHomeForPluginDispatch(args []string) (func(), error) {
 			_ = os.Unsetenv(awconfig.IdentityHomeEnv)
 		}
 	}, nil
+}
+
+// identityHomeForPluginDispatch reads the root --identity-home out of argv
+// before cobra parses anything, so a plugin — which never reaches cobra — still
+// runs under the attached principal.
+//
+// It stops at the first bare token that names a built-in command, and that stop
+// is the point of this function rather than an optimisation. The scan is
+// textual, so without it *any* subcommand's own --identity-home is read as the
+// principal selector. `aw wake register --identity-home <the instance's own
+// identity home>` is exactly that shape: the flag is the instance's, not the
+// principal's, and running it through ResolveIdentityHome applies the
+// principal path preflight to it — which refuses a home reached through a
+// symlinked parent and exits non-zero before the command runs at all. The OATS
+// spawn hook reads that exit as a failed spawn.
+//
+// Stopping at a built-in loses nothing, with one exception worth naming.
+// Normally cobra parses the root-level flag itself once it owns the leaf
+// command's flag set, in either position, so the scan is redundant there. A
+// command with DisableFlagParsing never has its inherited flags parsed by
+// cobra at all, in either position, so for those the scan was the only
+// mechanism and a trailing --identity-home now reaches nothing. Today that set
+// is only the beads-mail stub verbs, whose RunE returns a static usage error
+// without touching identity, so the exception has no live consequence — but it
+// is an exception, not an absence of one.
+//
+// A plugin name is not a built-in, so scanning continues past it and a
+// plugin's trailing --identity-home keeps the behaviour it has always had.
+//
+// The built-in set is reservedRootCommandNames() — the same set plugin dispatch
+// refuses to let a plugin shadow, and the same set the reserved-app-ids
+// artifact publishes. Sharing it is deliberate: two textual argv scanners over
+// one flag set would otherwise be free to disagree about what counts as a
+// command, and only one of them would get updated.
+func identityHomeForPluginDispatch(args []string) string {
+	builtins := reservedRootCommandNames()
+	explicit := ""
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		switch {
+		case strings.HasPrefix(arg, "--identity-home="):
+			explicit = strings.TrimSpace(strings.TrimPrefix(arg, "--identity-home="))
+			continue
+		case arg == "--identity-home" && i+1 < len(args):
+			explicit = strings.TrimSpace(args[i+1])
+			i++
+			continue
+		case arg == "--server-name" && i+1 < len(args):
+			// Skip its value so a server named after a command is not mistaken
+			// for one.
+			i++
+			continue
+		case strings.HasPrefix(arg, "-"):
+			continue
+		}
+		if builtins[arg] {
+			break
+		}
+	}
+	return explicit
 }
 
 func argsContainTraceFlag(args []string) bool {
