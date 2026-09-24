@@ -228,7 +228,7 @@ func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRe
 		return nil, errors.New("aweb: request is required")
 	}
 	payload := *req
-	if c.signingKey != nil && strings.TrimSpace(payload.SessionID) == "" {
+	if c.canAttachPlainMessageSignature() && strings.TrimSpace(payload.SessionID) == "" {
 		sessionID, err := GenerateUUID4()
 		if err != nil {
 			return nil, err
@@ -258,7 +258,7 @@ func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRe
 		to = strings.Join(targets, ",")
 	}
 	from := c.address
-	if c.signingKey != nil {
+	if c.canAttachPlainMessageSignature() {
 		if len(payload.ToAddresses) > 0 {
 			targets := append([]string(nil), payload.ToAddresses...)
 			sort.Strings(targets)
@@ -286,7 +286,7 @@ func (c *Client) ChatCreateSession(ctx context.Context, req *ChatCreateSessionRe
 	if err != nil {
 		return nil, err
 	}
-	if c.signingKey != nil {
+	if c.canAttachPlainMessageSignature() {
 		payload.FromDID = sf.FromDID
 		payload.Signature = sf.Signature
 		payload.Timestamp = sf.Timestamp
@@ -308,8 +308,14 @@ func (c *Client) prepareE2EEChatCreate(ctx context.Context, payload *ChatCreateS
 	if c.signingKey == nil || strings.TrimSpace(c.did) == "" {
 		return errors.New("E2E messaging requires a local self-custodial signing key")
 	}
-	if c.e2eeEncryptionKey == nil {
-		return errors.New("E2E messaging requires a local encryption key; upgrade aw and run `aw id encryption-key setup`, or pass --plaintext only for explicit server-readable messaging")
+	custody := c.e2eeCustody()
+	if custody == nil {
+		if !c.canSignMessages() {
+			return errors.New("E2E messaging requires the subject identity signing key; identity grants cannot sign encrypted message envelopes")
+		}
+		if c.e2eeEncryptionKey == nil {
+			return errors.New("E2E messaging requires a local encryption key; upgrade aw and run `aw id encryption-key setup`, or pass --plaintext only for explicit server-readable messaging")
+		}
 	}
 	recipients, err := c.e2eeChatRecipients(ctx, payload.ToAliases, payload.ToDIDs, payload.ToAddresses)
 	if err != nil {
@@ -331,6 +337,22 @@ func (c *Client) prepareE2EEChatCreate(ctx context.Context, payload *ChatCreateS
 		payload.SessionID = sessionID
 	}
 	now := time.Now().UTC().Truncate(time.Second)
+	if custody != nil {
+		envelope, err := c.createCustodyE2EEEnvelope(ctx, custody, "chat", "", payload.Message, messageID, sessionID, payload.ReplyTo, recipients, "", "")
+		if err != nil {
+			return err
+		}
+		payload.MessageID = envelope.MessageID
+		payload.Timestamp = envelope.CreatedAt
+		payload.FromDID = envelope.From.DID
+		payload.ContentMode = ContentModeEncryptedV2
+		payload.MessageVersion = E2EEMessageVersion
+		payload.Encrypted = envelope
+		payload.Message = ""
+		payload.Signature = ""
+		payload.SignedPayload = ""
+		return nil
+	}
 	envelope, err := EncryptE2EEChat(E2EEEncryptMessageParams{
 		Sender: E2EESenderKey{
 			Address:       c.e2eeAddress(),
@@ -369,8 +391,14 @@ func (c *Client) prepareE2EEChatSend(ctx context.Context, sessionID string, payl
 	if c.signingKey == nil || strings.TrimSpace(c.did) == "" {
 		return errors.New("E2E messaging requires a local self-custodial signing key")
 	}
-	if c.e2eeEncryptionKey == nil {
-		return errors.New("E2E messaging requires a local encryption key; upgrade aw and run `aw id encryption-key setup`, or pass --plaintext only for explicit server-readable messaging")
+	custody := c.e2eeCustody()
+	if custody == nil {
+		if !c.canSignMessages() {
+			return errors.New("E2E messaging requires the subject identity signing key; identity grants cannot sign encrypted message envelopes")
+		}
+		if c.e2eeEncryptionKey == nil {
+			return errors.New("E2E messaging requires a local encryption key; upgrade aw and run `aw id encryption-key setup`, or pass --plaintext only for explicit server-readable messaging")
+		}
 	}
 	recipients, err := c.e2eeChatRecipientsForSession(ctx, sessionID)
 	if err != nil {
@@ -384,6 +412,22 @@ func (c *Client) prepareE2EEChatSend(ctx context.Context, sessionID string, payl
 		messageID = strings.TrimSpace(payload.MessageID)
 	}
 	now := time.Now().UTC().Truncate(time.Second)
+	if custody != nil {
+		envelope, err := c.createCustodyE2EEEnvelope(ctx, custody, "chat", "", payload.Body, messageID, strings.TrimSpace(sessionID), payload.ReplyTo, recipients, "", "")
+		if err != nil {
+			return err
+		}
+		payload.MessageID = envelope.MessageID
+		payload.Timestamp = envelope.CreatedAt
+		payload.FromDID = envelope.From.DID
+		payload.ContentMode = ContentModeEncryptedV2
+		payload.MessageVersion = E2EEMessageVersion
+		payload.Encrypted = envelope
+		payload.Body = ""
+		payload.Signature = ""
+		payload.SignedPayload = ""
+		return nil
+	}
 	envelope, err := EncryptE2EEChat(E2EEEncryptMessageParams{
 		Sender: E2EESenderKey{
 			Address:       c.e2eeAddress(),
@@ -638,7 +682,7 @@ func (c *Client) ChatPending(ctx context.Context) (*ChatPendingResponse, error) 
 			if item.LastEncrypted == nil {
 				return nil, errors.New("encrypted chat pending response is missing encrypted envelope")
 			}
-			plain, err := c.DecryptE2EEEnvelope(item.LastEncrypted)
+			plain, err := c.DecryptE2EEEnvelopeWithContext(ctx, item.LastEncrypted)
 			if err != nil {
 				return nil, err
 			}
@@ -709,7 +753,7 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 			if m.Encrypted == nil {
 				return nil, errors.New("encrypted chat response is missing encrypted envelope")
 			}
-			plain, err := c.DecryptE2EEEnvelope(m.Encrypted)
+			plain, err := c.DecryptE2EEEnvelopeWithContext(ctx, m.Encrypted)
 			if err != nil {
 				return nil, err
 			}
@@ -864,7 +908,16 @@ func (c *Client) ChatStream(ctx context.Context, sessionID string, deadline time
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
-	if c.teamCertHeader != "" && c.signingKey != nil {
+	if c.grantID != "" && c.signingKey != nil {
+		timestamp := time.Now().UTC().Format(time.RFC3339)
+		credential, err := SignIdentityGrantCredential(c.signingKey, http.MethodGet, req.URL, c.grantID, nil, timestamp)
+		if err != nil {
+			return nil, err
+		}
+		for key := range credential.Headers {
+			req.Header.Set(key, credential.Headers.Get(key))
+		}
+	} else if c.teamCertHeader != "" && c.signingKey != nil {
 		// Certificate auth: same DIDKey + cert headers as regular requests.
 		timestamp := time.Now().UTC().Format(time.RFC3339)
 		signPayload := certAuthSignPayload(c.teamID, timestamp, nil)
@@ -942,7 +995,7 @@ func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *Cha
 	to := ""
 	from := c.address
 	targetIsAddress := false
-	if c.signingKey != nil {
+	if c.canAttachPlainMessageSignature() {
 		if toAddr, err := c.toAddressForSession(ctx, sessionID, false); err == nil {
 			to = toAddr
 		}
@@ -969,7 +1022,7 @@ func (c *Client) ChatSendMessage(ctx context.Context, sessionID string, req *Cha
 	if err != nil {
 		return nil, err
 	}
-	if c.signingKey != nil {
+	if c.canAttachPlainMessageSignature() {
 		payload.FromDID = sf.FromDID
 		payload.Signature = sf.Signature
 		payload.Timestamp = sf.Timestamp

@@ -4,11 +4,15 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +25,8 @@ func resetGrantCommandGlobals(t *testing.T) {
 	t.Helper()
 	reset := func() {
 		grantMintScopes = nil
+		grantMintBundles = nil
+		grantMintAppTools = nil
 		grantMintTTL = 8 * time.Hour
 		grantMintLabel = ""
 		grantMintOut = ""
@@ -69,6 +75,25 @@ func writeGrantHomeForTest(t *testing.T, root, awebURL string) (ed25519.PublicKe
 		t.Fatal(err)
 	}
 	return pub, state
+}
+
+func TestParseGrantScopesExpandsNormalAgentBundle(t *testing.T) {
+	scopes, err := parseGrantScopesWithBundles([]string{"mail.read", "contacts.read"}, []string{"normal-agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"mail.read", "mail.send", "chat.read", "chat.send", "events.read", "coord.read", "coord.write", "presence.write", "contacts.read", "contacts.write"}
+	if len(scopes) != len(want) {
+		t.Fatalf("scopes=%v, want %v", scopes, want)
+	}
+	for i := range want {
+		if scopes[i] != want[i] {
+			t.Fatalf("scopes=%v, want %v", scopes, want)
+		}
+	}
+	if _, err := parseGrantScopesWithBundles(nil, []string{"unknown"}); err == nil || !strings.Contains(err.Error(), "unknown grant scope bundle") {
+		t.Fatalf("unknown bundle err=%v", err)
+	}
 }
 
 func TestRunGrantMintWritesGrantHome(t *testing.T) {
@@ -204,6 +229,93 @@ func TestRunGrantMintRefusesNonEmptyOut(t *testing.T) {
 	}
 }
 
+func TestGrantHomeCustodySocketSignsPlainMail(t *testing.T) {
+	resetGrantCommandGlobals(t)
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+	setGrantTestEnv(t, tmp)
+
+	_, residentKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	residentDID := awid.ComputeDIDKey(residentKey.Public().(ed25519.PublicKey))
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"message_id": got["message_id"], "status": "delivered", "delivered_at": "2026-09-24T00:00:00Z"})
+	}))
+	t.Cleanup(server.Close)
+
+	grantHome := filepath.Join(tmp, ".aw")
+	_, grant := writeGrantHomeForTest(t, grantHome, server.URL)
+	grant.Subject.DIDKey = residentDID
+	socketID, err := awid.GenerateUUID4()
+	if err != nil {
+		t.Fatal(err)
+	}
+	custodyRunDir := filepath.Join("/tmp", "aw-custody-"+socketID[:8])
+	_ = os.RemoveAll(custodyRunDir)
+	t.Cleanup(func() { _ = os.RemoveAll(custodyRunDir) })
+	grant.Custody.SocketPath = filepath.Join(custodyRunDir, "custody.sock")
+	if err := awconfig.SaveGrantHomeTo(awconfig.GrantHomeStatePath(grantHome), grant); err != nil {
+		t.Fatal(err)
+	}
+	sessionKey, err := awid.LoadSigningKey(awconfig.GrantHomeSigningKeyPath(grantHome))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionDID := awid.ComputeDIDKey(sessionKey.Public().(ed25519.PublicKey))
+	svc := &custodyService{
+		socketPath: grant.Custody.SocketPath,
+		identity:   &awconfig.ResolvedIdentity{DID: residentDID, StableID: grant.Subject.DIDAW, Address: grant.Subject.Address, Handle: grant.Subject.Alias},
+		signingKey: residentKey,
+		now:        time.Now,
+		replay:     map[string]string{},
+		replayAt:   map[string]time.Time{},
+		results:    map[string]any{},
+		grantStatus: func(ctx context.Context, grantID string) (custodyGrantStatus, error) {
+			return custodyGrantStatus{Active: true, Status: "active", EffectiveStatus: "active", TeamID: grant.TeamID, GrantDIDKey: sessionDID, Scopes: grant.Scopes, ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errc := make(chan error, 1)
+	go func() { errc <- svc.serve(ctx) }()
+	for i := 0; i < 50; i++ {
+		if _, err := os.Stat(grant.Custody.SocketPath); err == nil {
+			break
+		}
+		select {
+		case err := <-errc:
+			t.Fatalf("custody service exited before creating socket: %v", err)
+		default:
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	client, _, err := resolveClientSelectionForDir(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.SendMessage(context.Background(), &awid.SendMessageRequest{ToAlias: "bob", Subject: "hi", Body: "body"}); err != nil {
+		t.Fatal(err)
+	}
+	if got["from_did"] != residentDID {
+		t.Fatalf("from_did=%v want resident %s", got["from_did"], residentDID)
+	}
+	if got["signature"] == "" || got["signed_payload"] == "" {
+		t.Fatalf("message not signed through custody: %#v", got)
+	}
+}
+
 func TestGrantHomeResolvesToGrantClient(t *testing.T) {
 	resetGrantCommandGlobals(t)
 	tmp := t.TempDir()
@@ -272,5 +384,196 @@ func TestRootAuthorityCommandsRefuseGrantHome(t *testing.T) {
 	// families (aw id team ..., aw id request ...): it must refuse too.
 	if _, err := resolveSelectionForDir(tmp); err == nil || !strings.Contains(err.Error(), "this is a grant home") {
 		t.Fatalf("selection error=%v, want grant-home refusal", err)
+	}
+}
+
+func TestGrantCommandsUseExternalIdentityHomeWithRealBinary(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	principalPub, principalKey, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shadowPub, shadowKey, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	principalDID := awid.ComputeDIDKey(principalPub)
+	shadowDID := awid.ComputeDIDKey(shadowPub)
+
+	var requestMu sync.Mutex
+	var signedRequests []messagingSignedRequest
+	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if r.Header.Get("Authorization") != "" {
+			requestMu.Lock()
+			signedRequests = append(signedRequests, messagingSignedRequest{
+				authorization: r.Header.Get("Authorization"),
+				timestamp:     r.Header.Get("X-AWEB-Timestamp"),
+				method:        r.Method,
+				path:          r.URL.Path,
+				body:          body,
+			})
+			requestMu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/identity-grants":
+			_ = json.NewEncoder(w).Encode(map[string]any{"grants": []any{map[string]any{
+				"grant_id": "grant-9", "team_id": "runtime:aweb.test", "subject_alias": "principal",
+				"subject_did_aw": "did:aw:principal", "grant_did_key": "did:key:zGrant", "scopes": []string{"mail.read"},
+				"status": "active", "issued_at": "2026-08-12T00:00:00Z", "expires_at": "2026-08-12T01:00:00Z",
+			}}})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/identity-grants":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"grant_id": "grant-9", "team_id": "runtime:aweb.test", "subject_alias": "principal",
+				"subject_did_aw": "did:aw:principal", "grant_did_key": "did:key:zGrant", "scopes": []string{"mail.read"},
+				"issued_at": "2026-08-12T00:00:00Z", "expires_at": "2026-08-12T01:00:00Z",
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/identity-grants/grant-9/revoke":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected grant request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	var shadowRequests atomic.Int32
+	shadowServer := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		shadowRequests.Add(1)
+		http.Error(w, "shadow instance identity must not receive grant command traffic", http.StatusInternalServerError)
+	}))
+
+	principalRoot := filepath.Join(root, "principal")
+	writeMessagingPrincipalForTest(t, principalRoot, server.URL, "principal", principalDID, principalKey)
+	identityHome := filepath.Join(principalRoot, ".aw")
+	bin := filepath.Join(root, "aw")
+	buildAwBinary(t, ctx, bin)
+
+	run := func(t *testing.T, source, dir string, args ...string) string {
+		t.Helper()
+		env := append(testCommandEnv(filepath.Join(root, "user-home")), awconfig.IdentityHomeEnv+"=", "AW_NO_UPDATE_CHECK=1")
+		cmdArgs := append([]string(nil), args...)
+		if source == "flag" {
+			cmdArgs = append([]string{"--identity-home", identityHome}, cmdArgs...)
+		} else {
+			env = append(env, awconfig.IdentityHomeEnv+"="+identityHome)
+		}
+		cmd := exec.CommandContext(ctx, bin, cmdArgs...)
+		cmd.Dir = dir
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("aw %s failed: %v\n%s", strings.Join(cmdArgs, " "), err, out)
+		}
+		return string(out)
+	}
+
+	for _, source := range []string{"flag", "environment"} {
+		t.Run(source+"/empty-instance-list", func(t *testing.T) {
+			instance := filepath.Join(root, "empty", source)
+			if err := os.MkdirAll(instance, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			out := run(t, source, instance, "id", "grant", "list", "--json")
+			if !strings.Contains(out, "grant-9") {
+				t.Fatalf("list output missing grant: %s", out)
+			}
+			for _, command := range [][]string{
+				{"id", "grant", "--team", "runtime:aweb.test", "list", "--json"},
+				{"id", "grant", "list", "--team", "runtime:aweb.test", "--json"},
+			} {
+				out := run(t, source, instance, command...)
+				if !strings.Contains(out, "grant-9") {
+					t.Fatalf("team-selected grant list output missing grant for %v: %s", command, out)
+				}
+			}
+			if _, err := os.Lstat(filepath.Join(instance, ".aw")); !os.IsNotExist(err) {
+				t.Fatalf("grant list touched empty instance identity state: %v", err)
+			}
+		})
+		t.Run(source+"/shadow-instance-all-verbs", func(t *testing.T) {
+			instance := filepath.Join(root, "shadow", source)
+			writeMessagingPrincipalForTest(t, instance, shadowServer.URL, "shadow", shadowDID, shadowKey)
+			outDir := filepath.Join(root, "minted", source)
+			for _, command := range [][]string{
+				{"id", "grant", "list", "--json"},
+				{"id", "grant", "show", "grant-9", "--json"},
+				{"id", "grant", "mint", "--scope", "mail.read", "--ttl", "1h", "--out", outDir, "--json"},
+				{"id", "grant", "revoke", "grant-9", "--json"},
+			} {
+				run(t, source, instance, command...)
+			}
+			if !awconfig.IsGrantHome(outDir) {
+				t.Fatalf("mint did not write grant home to explicit --out: %s", outDir)
+			}
+		})
+	}
+
+	if got := shadowRequests.Load(); got != 0 {
+		t.Fatalf("shadow instance received %d grant command requests", got)
+	}
+	requestMu.Lock()
+	requests := append([]messagingSignedRequest(nil), signedRequests...)
+	requestMu.Unlock()
+	verifyMessagingRequestsForTest(t, requests, principalPub, shadowPub, principalDID, shadowDID)
+}
+
+func TestGrantHomeConflictingTeamFailsExplicitlyInRealBinary(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "aw")
+	buildAwBinary(t, ctx, bin)
+	grantHome := filepath.Join(root, "grant-home")
+	writeGrantHomeForTest(t, grantHome, "https://app.aweb.ai")
+	instance := filepath.Join(root, "instance")
+	if err := os.MkdirAll(instance, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(ctx, bin, "--identity-home", grantHome, "--team", "ops:acme.com", "mail", "inbox")
+	cmd.Dir = instance
+	cmd.Env = append(testCommandEnv(filepath.Join(root, "user-home")), awconfig.IdentityHomeEnv+"=", "AW_NO_UPDATE_CHECK=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "grant home is bound to team backend:acme.com; --team ops:acme.com conflicts") {
+		t.Fatalf("grant-home conflicting --team error=%v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "https://app.aweb.ai") {
+		t.Fatalf("conflicting --team should fail before using grant server URL:\n%s", out)
+	}
+}
+
+func TestGrantCommandsWithGrantIdentityHomeRefuseRootAuthorityInRealBinary(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "aw")
+	buildAwBinary(t, ctx, bin)
+	grantHome := filepath.Join(root, "grant-home")
+	writeGrantHomeForTest(t, grantHome, "https://app.aweb.ai")
+	instance := filepath.Join(root, "instance")
+	if err := os.MkdirAll(instance, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(ctx, bin, "--identity-home", grantHome, "id", "grant", "list")
+	cmd.Dir = instance
+	cmd.Env = append(testCommandEnv(filepath.Join(root, "user-home")), awconfig.IdentityHomeEnv+"=", "AW_NO_UPDATE_CHECK=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "this is a grant home; run from the identity's own .aw home") {
+		t.Fatalf("grant-home root authority command error=%v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "not yet identity-home-aware") {
+		t.Fatalf("grant-home command stopped at policy gate instead of root-authority refusal:\n%s", out)
 	}
 }

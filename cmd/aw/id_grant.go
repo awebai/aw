@@ -21,16 +21,27 @@ var grantCmd = &cobra.Command{
 }
 
 var (
-	grantMintScopes []string
-	grantMintTTL    time.Duration
-	grantMintLabel  string
-	grantMintOut    string
+	grantMintScopes   []string
+	grantMintBundles  []string
+	grantMintAppTools []string
+	grantMintTTL      time.Duration
+	grantMintLabel    string
+	grantMintOut      string
 )
 
 const (
 	identityGrantMinTTL = 60 * time.Second
 	identityGrantMaxTTL = 2592000 * time.Second
 )
+
+var grantScopeBundles = map[string][]string{
+	"normal-agent": {
+		"mail.read", "mail.send",
+		"chat.read", "chat.send",
+		"events.read", "coord.read", "coord.write", "presence.write",
+		"contacts.read", "contacts.write",
+	},
+}
 
 // errGrantHomeRootAuthority is returned when a command that needs the
 // identity's root authority runs against a grant home.
@@ -81,6 +92,9 @@ func resolveGrantClientSelection(workingDir string, home awconfig.IdentityHome) 
 	if err != nil {
 		return nil, nil, err
 	}
+	if requestedTeam := strings.TrimSpace(teamFlag); requestedTeam != "" && requestedTeam != strings.TrimSpace(grant.TeamID) {
+		return nil, nil, usageError("grant home is bound to team %s; --team %s conflicts", strings.TrimSpace(grant.TeamID), requestedTeam)
+	}
 	if expires, ok := parseTimeBestEffort(grant.ExpiresAt); ok && time.Now().After(expires) {
 		return nil, nil, fmt.Errorf("identity grant %s expired at %s; mint a new grant from the identity's own .aw home", grant.GrantID, grant.ExpiresAt)
 	}
@@ -118,6 +132,10 @@ func resolveGrantClientSelection(workingDir string, home awconfig.IdentityHome) 
 	if err != nil {
 		return nil, nil, err
 	}
+	c.SetGrantSubject(sel.TeamID, sel.StableID, sel.DID, sel.Address, sel.Alias)
+	if socketPath := strings.TrimSpace(grant.Custody.SocketPath); socketPath != "" {
+		c.SetPlainMessageSigner(&awid.UnixCustodyClient{SocketPath: socketPath})
+	}
 	if err := configureResolvedClient(c, sel, baseURL); err != nil {
 		return nil, nil, err
 	}
@@ -127,23 +145,45 @@ func resolveGrantClientSelection(workingDir string, home awconfig.IdentityHome) 
 }
 
 func parseGrantScopes(values []string) ([]string, error) {
-	scopes := make([]string, 0, len(values))
-	seen := make(map[string]struct{}, len(values))
+	return parseGrantScopesWithBundles(values, nil)
+}
+
+func parseGrantScopesWithBundles(values []string, bundles []string) ([]string, error) {
+	scopes := make([]string, 0, len(values)+len(bundles))
+	seen := make(map[string]struct{}, len(values)+len(bundles))
+	add := func(scope string) {
+		scope = strings.TrimSpace(scope)
+		if scope == "" {
+			return
+		}
+		if _, ok := seen[scope]; ok {
+			return
+		}
+		seen[scope] = struct{}{}
+		scopes = append(scopes, scope)
+	}
+	for _, bundleValue := range bundles {
+		for _, bundle := range strings.Split(bundleValue, ",") {
+			bundle = strings.TrimSpace(bundle)
+			if bundle == "" {
+				continue
+			}
+			bundleScopes, ok := grantScopeBundles[bundle]
+			if !ok {
+				return nil, usageError("unknown grant scope bundle %q (known: normal-agent)", bundle)
+			}
+			for _, scope := range bundleScopes {
+				add(scope)
+			}
+		}
+	}
 	for _, value := range values {
 		for _, scope := range strings.Split(value, ",") {
-			scope = strings.TrimSpace(scope)
-			if scope == "" {
-				continue
-			}
-			if _, ok := seen[scope]; ok {
-				continue
-			}
-			seen[scope] = struct{}{}
-			scopes = append(scopes, scope)
+			add(scope)
 		}
 	}
 	if len(scopes) == 0 {
-		return nil, usageError("--scope is required (e.g. --scope mail.read,mail.send)")
+		return nil, usageError("--scope or --bundle is required (e.g. --bundle normal-agent or --scope mail.read,mail.send)")
 	}
 	return scopes, nil
 }
@@ -186,7 +226,7 @@ func runGrantMint(cmd *cobra.Command, _ []string) error {
 	if err := requireGrantAuthorityHome(); err != nil {
 		return err
 	}
-	scopes, err := parseGrantScopes(grantMintScopes)
+	scopes, err := parseGrantScopesWithBundles(grantMintScopes, grantMintBundles)
 	if err != nil {
 		return err
 	}
@@ -200,6 +240,22 @@ func runGrantMint(cmd *cobra.Command, _ []string) error {
 	client, sel, err := resolveClientSelection()
 	if err != nil {
 		return err
+	}
+	appSpecs, err := parseGrantAppToolSpecs(grantMintAppTools)
+	if err != nil {
+		return err
+	}
+	appSnapshots, err := buildGrantAppSnapshots(appSpecs, grantAppDeniedOrigins(sel.BaseURL, sel.RegistryURL))
+	if err != nil {
+		return err
+	}
+	residentHome := ""
+	if len(appSnapshots) > 0 {
+		home, err := identityHomeForDir(mustGetwd())
+		if err != nil {
+			return err
+		}
+		residentHome = home.Root
 	}
 
 	pub, sessionKey, err := awid.GenerateKeypair()
@@ -218,6 +274,23 @@ func runGrantMint(cmd *cobra.Command, _ []string) error {
 	})
 	if err != nil {
 		return err
+	}
+
+	if len(appSnapshots) > 0 {
+		snap := &grantAppToolsSnapshot{
+			Version: grantAppToolsSnapshotVersion,
+			GrantID: strings.TrimSpace(view.GrantID),
+			TeamID:  firstNonEmpty(strings.TrimSpace(view.TeamID), strings.TrimSpace(sel.TeamID)),
+			Apps:    appSnapshots,
+		}
+		if err := saveGrantAppToolsSnapshot(residentHome, snap); err != nil {
+			revokeCtx, revokeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer revokeCancel()
+			if revokeErr := client.RevokeIdentityGrant(revokeCtx, snap.GrantID); revokeErr != nil {
+				return fmt.Errorf("record app tool policy for grant %s: %w (revoking the grant also failed: %v; revoke it manually)", snap.GrantID, err, revokeErr)
+			}
+			return fmt.Errorf("record app tool policy for grant %s: %w (grant revoked)", snap.GrantID, err)
+		}
 	}
 
 	grantedScopes := view.Scopes
@@ -382,7 +455,9 @@ func init() {
 		Short: "Mint a session grant and write a self-contained grant home",
 		RunE:  runGrantMint,
 	}
-	mintCmd.Flags().StringArrayVar(&grantMintScopes, "scope", nil, "Grant scope, repeatable or comma-separated (mail.read, mail.send, chat.read, chat.send)")
+	mintCmd.Flags().StringArrayVar(&grantMintScopes, "scope", nil, "Grant scope, repeatable or comma-separated (mail.read, mail.send, chat.read, chat.send, events.read, coord.read, coord.write, presence.write, contacts.read, contacts.write)")
+	mintCmd.Flags().StringArrayVar(&grantMintBundles, "bundle", nil, "Grant scope bundle, repeatable or comma-separated (normal-agent)")
+	mintCmd.Flags().StringArrayVar(&grantMintAppTools, "app-tool", nil, "Installed app tool the grant may call, as app:verb; repeatable or comma-separated. Each signed tool must be named; the definition is snapshotted at mint")
 	mintCmd.Flags().DurationVar(&grantMintTTL, "ttl", 8*time.Hour, "Grant duration before expiry (60s to 720h)")
 	mintCmd.Flags().StringVar(&grantMintLabel, "label", "", "Optional label for the grant")
 	mintCmd.Flags().StringVar(&grantMintOut, "out", "", "Directory to write the grant home (created fresh; a non-empty directory is refused)")
@@ -403,6 +478,7 @@ func init() {
 		Args:  cobra.ExactArgs(1),
 		RunE:  runGrantShow,
 	}
+	bindTeamSelector(grantCmd)
 	grantCmd.AddCommand(mintCmd, listCmd, revokeCmd, showCmd)
 	identityCmd.AddCommand(grantCmd)
 }

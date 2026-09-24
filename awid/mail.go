@@ -93,7 +93,7 @@ func (c *Client) sendMessage(ctx context.Context, req *SendMessageRequest, ident
 			strings.TrimSpace(payload.ToAddress) != ""
 	}
 	initialConversationID := strings.TrimSpace(payload.ConversationID)
-	if c.signingKey != nil && initialConversationID == "" && hasRecipient {
+	if c.canAttachPlainMessageSignature() && initialConversationID == "" && hasRecipient {
 		conversationID, err := GenerateUUID4()
 		if err != nil {
 			return nil, err
@@ -126,7 +126,7 @@ func (c *Client) sendMessage(ctx context.Context, req *SendMessageRequest, ident
 		return &out, nil
 	}
 	from := c.address
-	if c.signingKey != nil {
+	if c.canAttachPlainMessageSignature() {
 		from = c.signedPayloadFrom(identityTarget, payload.ToAlias != "" && !strings.Contains(payload.ToAlias, "/"))
 	}
 	sf, err := c.signEnvelope(ctx, &MessageEnvelope{
@@ -145,7 +145,7 @@ func (c *Client) sendMessage(ctx context.Context, req *SendMessageRequest, ident
 	if err != nil {
 		return nil, err
 	}
-	if c.signingKey != nil {
+	if c.canAttachPlainMessageSignature() {
 		payload.FromDID = sf.FromDID
 		payload.ToDID = sf.ToDID
 		payload.ToStableID = sf.ToStableID
@@ -169,8 +169,14 @@ func (c *Client) prepareE2EEMail(ctx context.Context, payload *SendMessageReques
 	if c.signingKey == nil || strings.TrimSpace(c.did) == "" {
 		return errors.New("E2E messaging requires a local self-custodial signing key")
 	}
-	if c.e2eeEncryptionKey == nil {
-		return errors.New("E2E messaging requires a local encryption key; upgrade aw and run `aw id encryption-key setup`, or pass --plaintext only for explicit server-readable messaging")
+	custody := c.e2eeCustody()
+	if custody == nil {
+		if !c.canSignMessages() {
+			return errors.New("E2E messaging requires the subject identity signing key; identity grants cannot sign encrypted message envelopes")
+		}
+		if c.e2eeEncryptionKey == nil {
+			return errors.New("E2E messaging requires a local encryption key; upgrade aw and run `aw id encryption-key setup`, or pass --plaintext only for explicit server-readable messaging")
+		}
 	}
 	recipient, err := c.e2eeMailRecipient(ctx, payload)
 	if err != nil {
@@ -196,6 +202,55 @@ func (c *Client) prepareE2EEMail(ctx context.Context, payload *SendMessageReques
 		return errors.New("E2E mail requires a conversation_id or explicit recipient")
 	}
 	fromAddress := c.e2eeAddress()
+	if custody != nil {
+		audience, err := c.custodyAudience(ctx)
+		if err != nil {
+			return err
+		}
+		req := &E2EEEnvelopeCreateRequest{
+			Version:             1,
+			Operation:           "create_e2ee_envelope",
+			GrantID:             strings.TrimSpace(c.grantID),
+			SessionDIDKey:       strings.TrimSpace(c.did),
+			TeamID:              firstNonEmptyString(c.custodySubject.TeamID, c.teamID),
+			SubjectDIDAW:        firstNonEmptyString(c.custodySubject.DIDAW, c.stableID),
+			SubjectDIDKey:       strings.TrimSpace(c.custodySubject.DIDKey),
+			Audience:            audience,
+			Kind:                "mail",
+			Subject:             payload.Subject,
+			Body:                payload.Body,
+			MessageID:           messageID,
+			ConversationID:      conversationID,
+			Recipients:          []E2EERecipientKey{recipient},
+			DeliveryOrigin:      recipient.DeliveryOrigin,
+			ObservedInboundMode: recipient.InboundMode,
+		}
+		if err := SignE2EECreateCustodyProof(c.signingKey, req); err != nil {
+			return err
+		}
+		out, err := custody.CreateE2EEEnvelope(ctx, req)
+		if err != nil {
+			return err
+		}
+		if out == nil || out.EncryptedEnvelope == nil {
+			return errors.New("custody returned no encrypted envelope")
+		}
+		envelope := out.EncryptedEnvelope
+		payload.MessageID = envelope.MessageID
+		payload.Timestamp = envelope.CreatedAt
+		payload.FromDID = envelope.From.DID
+		payload.ToDID = envelope.Routing.ToDID
+		payload.ToStableID = envelope.Routing.ToStableID
+		payload.ConversationID = envelope.ConversationID
+		payload.ContentMode = ContentModeEncryptedV2
+		payload.MessageVersion = E2EEMessageVersion
+		payload.Encrypted = envelope
+		payload.Subject = ""
+		payload.Body = ""
+		payload.Signature = ""
+		payload.SignedPayload = ""
+		return nil
+	}
 	envelope, err := EncryptE2EEMail(E2EEEncryptMailParams{
 		Sender: E2EESenderKey{
 			Address:       fromAddress,
@@ -626,7 +681,7 @@ func (c *Client) normalizeInboxResponse(ctx context.Context, out *InboxResponse)
 			if m.Encrypted == nil {
 				return nil, errors.New("encrypted mail response is missing encrypted envelope")
 			}
-			plain, err := c.DecryptE2EEEnvelope(m.Encrypted)
+			plain, err := c.DecryptE2EEEnvelopeWithContext(ctx, m.Encrypted)
 			if err != nil {
 				return nil, err
 			}

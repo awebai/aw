@@ -132,7 +132,16 @@ func (c *Client) EventStream(ctx context.Context, deadline time.Time) (*AgentEve
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
-	if c.teamCertHeader != "" && c.signingKey != nil {
+	if c.grantID != "" && c.signingKey != nil {
+		timestamp := time.Now().UTC().Format(time.RFC3339)
+		credential, err := SignIdentityGrantCredential(c.signingKey, http.MethodGet, req.URL, c.grantID, nil, timestamp)
+		if err != nil {
+			return nil, err
+		}
+		for key := range credential.Headers {
+			req.Header.Set(key, credential.Headers.Get(key))
+		}
+	} else if c.teamCertHeader != "" && c.signingKey != nil {
 		timestamp := time.Now().UTC().Format(time.RFC3339)
 		sigPayload := certAuthSignPayload(c.teamID, timestamp, nil)
 		sig := ed25519.Sign(c.signingKey, sigPayload)
@@ -170,6 +179,18 @@ func parseAgentEvent(eventName, data string) (AgentEvent, bool, error) {
 	data = strings.TrimSpace(data)
 	if eventName == "" {
 		return AgentEvent{}, false, nil
+	}
+
+	if isGrantTerminalAgentEvent(eventName) {
+		var payload struct {
+			Detail string `json:"detail"`
+		}
+		_ = json.Unmarshal([]byte(data), &payload)
+		detail := strings.TrimSpace(payload.Detail)
+		if detail == "" {
+			detail = eventName
+		}
+		return AgentEvent{}, false, fmt.Errorf("agent event stream closed: %s", detail)
 	}
 
 	raw := json.RawMessage(data)
@@ -356,6 +377,15 @@ func parseAgentEvent(eventName, data string) (AgentEvent, bool, error) {
 
 	default:
 		return AgentEvent{}, false, nil
+	}
+}
+
+func isGrantTerminalAgentEvent(eventName string) bool {
+	switch strings.TrimSpace(eventName) {
+	case "grant_expired", "grant_revoked", "grant_subject_inactive", "grant_issuer_revoked":
+		return true
+	default:
+		return false
 	}
 }
 
