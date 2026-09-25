@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/awconfig"
 	"github.com/awebai/aw/run"
 	"github.com/awebai/aw/wake"
@@ -89,6 +90,8 @@ var wakeRunCmd = &cobra.Command{
 			MaxStreams: wakeMaxStreams,
 			Coalesce:   millis(wakeCoalesceMS),
 			RateLimit:  millis(wakeRateLimitMS),
+			Version:    version,
+			Commit:     daemonCommitForStatus(),
 			Log:        wakeLogger(),
 		})
 		if err != nil {
@@ -240,6 +243,8 @@ var wakeStatusCmd = &cobra.Command{
 		case callErr != nil:
 			return callErr
 		}
+		// Only the daemon's own report counts; an older daemon stays unknown.
+		status.ClassifyDaemonVersion()
 		printOutput(status, formatWakeStatus)
 		return nil
 	},
@@ -327,7 +332,13 @@ func wakeStreamOpener(identityHome string) (run.EventStreamOpener, error) {
 	if strings.TrimSpace(workingDir) == "" {
 		workingDir = filepath.Dir(identityHome)
 	}
-	client, _, err := resolveClientSelectionAtIdentityHome(workingDir, home)
+	var client *aweb.Client
+	var err error
+	if awconfig.IsGrantHome(home.Root) {
+		client, _, err = resolveGrantClientSelection(workingDir, home)
+	} else {
+		client, _, err = resolveClientSelectionAtIdentityHome(workingDir, home)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +366,14 @@ func formatWakeStatus(v any) string {
 	var b strings.Builder
 	daemon := "not running"
 	if status.DaemonRunning {
-		daemon = fmt.Sprintf("running (pid %d)", status.DaemonPID)
+		daemonVersion := "version unknown: the daemon predates version reporting"
+		if status.DaemonVersion != "" {
+			daemonVersion = "aw " + status.DaemonVersion
+			if status.DaemonCommit != "" {
+				daemonVersion += " @ " + status.DaemonCommit
+			}
+		}
+		daemon = fmt.Sprintf("running (pid %d, %s)", status.DaemonPID, daemonVersion)
 	}
 	fmt.Fprintf(&b, "wake broker: %s\n", daemon)
 	fmt.Fprintf(&b, "  state dir:   %s\n", status.StateDir)
@@ -439,4 +457,13 @@ func init() {
 
 	wakeCmd.AddCommand(wakeRunCmd, wakeRegisterCmd, wakeDeregisterCmd, wakeStatusCmd, wakePauseCmd, wakeResumeCmd)
 	rootCmd.AddCommand(wakeCmd)
+}
+
+// daemonCommitForStatus is the build commit reported by a running daemon, or
+// empty when the binary carries none.
+func daemonCommitForStatus() string {
+	if strings.TrimSpace(commit) == "" || commit == "none" {
+		return ""
+	}
+	return commit
 }
