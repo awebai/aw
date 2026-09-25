@@ -18,7 +18,7 @@ type instanceRunner struct {
 
 	mu       sync.Mutex
 	state    InstanceState
-	admitted bool
+	admitted map[string]bool
 	// nextProbe throttles inspects for an instance with nothing pending, so a
 	// hundred idle instances do not exec `oats` fifty times a second.
 	nextProbe time.Time
@@ -41,11 +41,12 @@ type hintOffer struct {
 
 func newInstanceRunner(b *Broker, reg Registration, state InstanceState) *instanceRunner {
 	return &instanceRunner{
-		broker: b,
-		reg:    reg,
-		state:  state,
-		hints:  make(chan hintOffer, 256),
-		done:   make(chan struct{}),
+		broker:   b,
+		reg:      reg,
+		state:    state,
+		admitted: map[string]bool{},
+		hints:    make(chan hintOffer, 256),
+		done:     make(chan struct{}),
 	}
 }
 
@@ -54,6 +55,42 @@ func (r *instanceRunner) start(ctx context.Context) {
 		ctx, r.cancel = context.WithCancel(ctx)
 		go r.run(ctx)
 	})
+}
+
+func (r *instanceRunner) updateRegistration(reg Registration) {
+	r.mu.Lock()
+	r.reg = reg
+	if r.admitted == nil {
+		r.admitted = map[string]bool{}
+	}
+	needed := map[string]struct{}{}
+	for _, binding := range reg.ReceiveBindings() {
+		needed[binding.IdentityHome] = struct{}{}
+	}
+	for identityHome := range r.admitted {
+		if _, ok := needed[identityHome]; !ok {
+			delete(r.admitted, identityHome)
+		}
+	}
+	r.mu.Unlock()
+}
+
+func (r *instanceRunner) registrationSnapshot() Registration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reg.clone()
+}
+
+func (r *instanceRunner) home() string {
+	return r.registrationSnapshot().Home
+}
+
+func (r *instanceRunner) receiveBindings() []ReceiveIdentity {
+	return r.registrationSnapshot().ReceiveBindings()
+}
+
+func (r *instanceRunner) bindingForIdentityHome(identityHome string) (ReceiveIdentity, bool) {
+	return r.registrationSnapshot().BindingForIdentityHome(identityHome)
 }
 
 // stop is safe to call more than once, and safe to call on a runner that was
@@ -124,7 +161,7 @@ func (r *instanceRunner) absorb(offer hintOffer) {
 	r.mu.Unlock()
 
 	if evicted > 0 {
-		r.broker.cfg.Log("hints evicted home=%s evicted=%d cap=%d pending=%d", r.reg.Home, evicted, r.broker.cfg.HintCap, pending)
+		r.broker.cfg.Log("hints evicted home=%s evicted=%d cap=%d pending=%d", r.home(), evicted, r.broker.cfg.HintCap, pending)
 	}
 	if added && !offer.hint.Transient {
 		r.persist()
@@ -141,21 +178,35 @@ func (r *instanceRunner) setPaused(paused bool, source string) {
 		if paused {
 			verb = "paused"
 		}
-		r.broker.cfg.Log("%s home=%s source=%s", verb, r.reg.Home, source)
+		r.broker.cfg.Log("%s home=%s source=%s", verb, r.home(), source)
 	}
 	r.persist()
 }
 
-func (r *instanceRunner) setStreamAdmitted(admitted bool) {
+func (r *instanceRunner) setStreamAdmitted(identityHome string, admitted bool) {
 	r.mu.Lock()
-	r.admitted = admitted
+	if r.admitted == nil {
+		r.admitted = map[string]bool{}
+	}
+	r.admitted[identityHome] = admitted
 	r.mu.Unlock()
 }
 
-func (r *instanceRunner) streamAdmitted() bool {
+func (r *instanceRunner) streamAdmitted(identityHome string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.admitted
+	return r.admitted[identityHome]
+}
+
+func (r *instanceRunner) allStreamsAdmitted() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, binding := range r.reg.ReceiveBindings() {
+		if !r.admitted[binding.IdentityHome] {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *instanceRunner) persist() {
@@ -166,7 +217,7 @@ func (r *instanceRunner) persist() {
 	state.Pending = pending
 	r.mu.Unlock()
 	if err := r.broker.cfg.Store.SaveInstance(state); err != nil {
-		r.broker.cfg.Log("state write failed home=%s err=%v", r.reg.Home, err)
+		r.broker.cfg.Log("state write failed home=%s err=%v", r.home(), err)
 	}
 }
 
@@ -174,6 +225,8 @@ func (r *instanceRunner) persist() {
 func (r *instanceRunner) evaluate(ctx context.Context) {
 	cfg := r.broker.cfg
 	now := cfg.Now()
+	reg := r.registrationSnapshot()
+	home := reg.Home
 
 	r.mu.Lock()
 	state := r.state
@@ -187,7 +240,7 @@ func (r *instanceRunner) evaluate(ctx context.Context) {
 	// A registration that never reached a confirmed live inspect is dropped at
 	// the pending expiry, with one log line. It deletes no server messages.
 	if !state.ConfirmedLive() {
-		if elapsed := now.Sub(r.reg.RegisteredAt); r.reg.RegisteredAt.After(time.Time{}) && elapsed >= cfg.PendingExpiry {
+		if elapsed := now.Sub(reg.RegisteredAt); reg.RegisteredAt.After(time.Time{}) && elapsed >= cfg.PendingExpiry {
 			r.broker.dropExpired(r, elapsed)
 			return
 		}
@@ -205,7 +258,7 @@ func (r *instanceRunner) evaluate(ctx context.Context) {
 		return
 	}
 
-	inspection, err := cfg.Session.Inspect(ctx, r.reg.Home)
+	inspection, err := cfg.Session.Inspect(ctx, home)
 
 	r.mu.Lock()
 	r.state.LastInspectAt = now
@@ -224,7 +277,7 @@ func (r *instanceRunner) evaluate(ctx context.Context) {
 		// After confirmation, an unanswerable backend is retried and reported.
 		// It is never treated as an absent instance, because that would mark a
 		// live agent inactive and stop its wakes (§6).
-		cfg.Log("inspect failed home=%s code=%s err=%v", r.reg.Home, orDash(session.ErrorCode(err)), err)
+		cfg.Log("inspect failed home=%s code=%s err=%v", home, orDash(session.ErrorCode(err)), err)
 		return
 	}
 	r.state.LastError = ""
@@ -241,7 +294,7 @@ func (r *instanceRunner) evaluate(ctx context.Context) {
 	r.mu.Unlock()
 
 	if firstPresence {
-		cfg.Log("present home=%s backend=%s state=%s", r.reg.Home, orDash(inspection.Backend), orDash(inspection.RawState))
+		cfg.Log("present home=%s backend=%s state=%s", home, orDash(inspection.Backend), orDash(inspection.RawState))
 	}
 
 	action := ActionFor(leadingIntent(pending), inspection.State, confirmed)
@@ -258,7 +311,7 @@ func (r *instanceRunner) evaluate(ctx context.Context) {
 		r.state.Inactive = true
 		r.mu.Unlock()
 		r.persist()
-		cfg.Log("inactive home=%s state=%s (registration kept; removal belongs to the retire hook)", r.reg.Home, orDash(inspection.RawState))
+		cfg.Log("inactive home=%s state=%s (registration kept; removal belongs to the retire hook)", home, orDash(inspection.RawState))
 		return
 	case ActionWaitPending, ActionDefer:
 		r.persist()
@@ -285,7 +338,7 @@ func (r *instanceRunner) evaluate(ctx context.Context) {
 	}
 
 	text := Compose(pending)
-	inputErr := cfg.Session.Input(ctx, r.reg.Home, text)
+	inputErr := cfg.Session.Input(ctx, home, text)
 
 	r.mu.Lock()
 	r.state.LastAttemptAt = now
@@ -303,11 +356,11 @@ func (r *instanceRunner) evaluate(ctx context.Context) {
 		// `oats session input` refused, or the backend was unreachable:
 		// nothing was typed, the hints stay pending, and the registration is
 		// reconciled on the next inspect (§6).
-		cfg.Log("submit failed home=%s hints=%d code=%s err=%v", r.reg.Home, len(pending), orDash(session.ErrorCode(inputErr)), inputErr)
+		cfg.Log("submit failed home=%s hints=%d code=%s err=%v", home, len(pending), orDash(session.ErrorCode(inputErr)), inputErr)
 		return
 	}
 	cfg.Log("submitted home=%s hints=%d state=%s (delivery only; nothing was acknowledged and nothing is marked presented)",
-		r.reg.Home, len(pending), orDash(inspection.RawState))
+		home, len(pending), orDash(inspection.RawState))
 }
 
 func oldestHintAt(hints []Hint) time.Time {
@@ -364,22 +417,42 @@ func (r *instanceRunner) snapshot() InstanceStatus {
 	case r.state.ConfirmedLive():
 		phase = PhaseActive
 	}
+	receive := []ReceiveIdentityStatus{}
+	allAdmitted := true
+	for _, binding := range r.reg.ReceiveBindings() {
+		admitted := r.admitted[binding.IdentityHome]
+		if !admitted {
+			allAdmitted = false
+		}
+		receive = append(receive, ReceiveIdentityStatus{
+			IdentityHome:   binding.IdentityHome,
+			TeamID:         binding.TeamID,
+			Label:          binding.Label,
+			DeliveryOwner:  binding.DeliveryOwner,
+			EventClasses:   append([]string(nil), binding.EventClasses...),
+			Controls:       binding.Controls,
+			StreamAdmitted: admitted,
+		})
+	}
 	return InstanceStatus{
-		Home:           r.reg.Home,
-		IdentityHome:   r.reg.IdentityHome,
-		Backend:        r.reg.Backend,
-		Delivery:       r.reg.Delivery,
-		RegisteredAt:   r.reg.RegisteredAt,
-		Phase:          phase,
-		Paused:         r.state.Paused,
-		PendingHints:   len(r.state.Pending),
-		Evicted:        r.state.Evicted,
-		LastInspectAt:  r.state.LastInspectAt,
-		LastAttemptAt:  r.state.LastAttemptAt,
-		LastSubmitAt:   r.state.LastSubmitAt,
-		LastState:      r.state.LastState,
-		LastError:      r.state.LastError,
-		UnreadCount:    r.state.UnreadCount,
-		StreamAdmitted: r.admitted,
+		Home:                r.reg.Home,
+		IdentityHome:        r.reg.IdentityHome,
+		RuntimeDelivery:     r.reg.RuntimeDelivery,
+		PrimaryIdentityHome: r.reg.PrimaryIdentityHome,
+		ReceiveIdentities:   receive,
+		Backend:             r.reg.Backend,
+		Delivery:            r.reg.Delivery,
+		RegisteredAt:        r.reg.RegisteredAt,
+		Phase:               phase,
+		Paused:              r.state.Paused,
+		PendingHints:        len(r.state.Pending),
+		Evicted:             r.state.Evicted,
+		LastInspectAt:       r.state.LastInspectAt,
+		LastAttemptAt:       r.state.LastAttemptAt,
+		LastSubmitAt:        r.state.LastSubmitAt,
+		LastState:           r.state.LastState,
+		LastError:           r.state.LastError,
+		UnreadCount:         r.state.UnreadCount,
+		StreamAdmitted:      allAdmitted,
 	}
 }
