@@ -90,15 +90,16 @@ var wakeRunCmd = &cobra.Command{
 		defer func() { _ = lock.Release() }()
 
 		broker, err := wake.NewBroker(wake.Config{
-			Store:      store,
-			Session:    &session.ExecClient{Bin: strings.TrimSpace(wakeOatsBin)},
-			OpenStream: wakeStreamOpener,
-			MaxStreams: wakeMaxStreams,
-			Coalesce:   millis(wakeCoalesceMS),
-			RateLimit:  millis(wakeRateLimitMS),
-			Version:    version,
-			Commit:     daemonCommitForStatus(),
-			Log:        wakeLogger(),
+			Store:       store,
+			Session:     &session.ExecClient{Bin: strings.TrimSpace(wakeOatsBin)},
+			ChannelCore: wake.NewChannelCoreRunner(store),
+			OpenStream:  wakeStreamOpener,
+			MaxStreams:  wakeMaxStreams,
+			Coalesce:    millis(wakeCoalesceMS),
+			RateLimit:   millis(wakeRateLimitMS),
+			Version:     version,
+			Commit:      daemonCommitForStatus(),
+			Log:         wakeLogger(),
 		})
 		if err != nil {
 			return err
@@ -384,7 +385,7 @@ func wakeStore() (*wake.Store, error) {
 // path every other identity-home-aware command uses. The broker needs
 // stream-read authority and nothing else — it never opens a message, so it
 // never needs decryption material for any identity.
-func wakeStreamOpener(identityHome string) (run.EventStreamOpener, error) {
+func wakeStreamOpener(identityHome, teamID string) (run.EventStreamOpener, error) {
 	identityHome = strings.TrimSpace(identityHome)
 	if identityHome == "" || !filepath.IsAbs(identityHome) {
 		return nil, fmt.Errorf("identity home must be an absolute path, got %q", identityHome)
@@ -397,14 +398,32 @@ func wakeStreamOpener(identityHome string) (run.EventStreamOpener, error) {
 	var client *aweb.Client
 	var err error
 	if awconfig.IsGrantHome(home.Root) {
+		if err := validateGrantHomeTeam(home.Root, teamID); err != nil {
+			return nil, err
+		}
 		client, _, err = resolveGrantClientSelection(workingDir, home)
 	} else {
-		client, _, err = resolveClientSelectionAtIdentityHome(workingDir, home)
+		client, _, err = resolveClientSelectionAtIdentityHomeWithTeamOverride(workingDir, teamID, home)
 	}
 	if err != nil {
 		return nil, err
 	}
 	return run.NewEventStreamOpener(client.Client), nil
+}
+
+func validateGrantHomeTeam(identityHome, teamID string) error {
+	grant, err := awconfig.LoadGrantHome(identityHome)
+	if err != nil {
+		return err
+	}
+	want := strings.TrimSpace(teamID)
+	if want == "" {
+		return nil
+	}
+	if got := strings.TrimSpace(grant.TeamID); got != want {
+		return fmt.Errorf("grant home is bound to team %s; requested team %s conflicts", got, want)
+	}
+	return nil
 }
 
 func wakeLogger() func(string, ...any) {
@@ -467,7 +486,7 @@ func formatWakeStatus(v any) string {
 	b.WriteString("\nInstances:\n")
 	for _, inst := range status.Instances {
 		fmt.Fprintf(&b, "  %s\n", inst.Home)
-		fmt.Fprintf(&b, "    phase=%s pending_hints=%d evicted=%d paused=%t\n", inst.Phase, inst.PendingHints, inst.Evicted, inst.Paused)
+		fmt.Fprintf(&b, "    phase=%s evicted=%d paused=%t\n", inst.Phase, inst.Evicted, inst.Paused)
 		fmt.Fprintf(&b, "    identity_home=%s backend=%s runtime_delivery=%s primary_identity_home=%s\n",
 			dashIfEmpty(inst.IdentityHome), dashIfEmpty(inst.Backend), dashIfEmpty(inst.RuntimeDelivery), dashIfEmpty(inst.PrimaryIdentityHome))
 		for _, recv := range inst.ReceiveIdentities {
@@ -490,10 +509,23 @@ func formatWakeStatus(v any) string {
 			}
 			b.WriteString(line + "\n")
 		}
-		fmt.Fprintf(&b, "    last_state=%s last_inspect=%s last_attempt=%s last_submit=%s\n",
-			dashIfEmpty(inst.LastState), stampOrDash(inst.LastInspectAt), stampOrDash(inst.LastAttemptAt), stampOrDash(inst.LastSubmitAt))
+		fmt.Fprintf(&b, "    last_state=%s last_inspect=%s\n",
+			dashIfEmpty(inst.LastState), stampOrDash(inst.LastInspectAt))
+		if strings.TrimSpace(inst.ConflictHome) != "" {
+			fmt.Fprintf(&b, "    conflict=%s\n", inst.ConflictHome)
+		}
 		if inst.UnreadCount > 0 {
 			fmt.Fprintf(&b, "    unread=%d\n", inst.UnreadCount)
+		}
+		if strings.TrimSpace(inst.ChannelCore.NodePath) != "" || strings.TrimSpace(inst.ChannelCore.LastError) != "" || inst.ChannelCore.RestartCount > 0 {
+			fmt.Fprintf(&b, "    channel_core node=%s bundle=%s last_success=%s\n",
+				dashIfEmpty(inst.ChannelCore.NodePath), dashIfEmpty(inst.ChannelCore.BundlePath), stampOrDash(inst.ChannelCore.LastSuccessAt))
+			if inst.ChannelCore.RestartCount > 0 || strings.TrimSpace(inst.ChannelCore.LastExit) != "" {
+				fmt.Fprintf(&b, "    channel_core_restarts=%d last_exit=%s\n", inst.ChannelCore.RestartCount, dashIfEmpty(inst.ChannelCore.LastExit))
+			}
+			if strings.TrimSpace(inst.ChannelCore.LastError) != "" {
+				fmt.Fprintf(&b, "    channel_core_error=%s\n", inst.ChannelCore.LastError)
+			}
 		}
 		if strings.TrimSpace(inst.LastError) != "" {
 			fmt.Fprintf(&b, "    last_error=%s\n", inst.LastError)

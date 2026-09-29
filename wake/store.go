@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // DeliverySession is the legacy value the spawn hook records alongside the
@@ -34,9 +36,6 @@ const (
 	EventClassMail           = "mail"
 	EventClassChat           = "chat"
 )
-
-// DefaultHintCap bounds the pending hint store per instance (§4).
-const DefaultHintCap = 512
 
 // Store is the on-disk state directory:
 //
@@ -195,9 +194,14 @@ func (r Registration) normalized() (Registration, error) {
 			return Registration{}, err
 		}
 		r.IdentityHome = identityHome
+		teamID, err := effectiveTeamID(identityHome, "")
+		if err != nil {
+			return Registration{}, err
+		}
 		r.RuntimeDelivery = RuntimeDeliveryExternalSession
 		r.ReceiveIdentities = []ReceiveIdentity{{
 			IdentityHome:  identityHome,
+			TeamID:        teamID,
 			DeliveryOwner: ReceiveOwnerSessionHints,
 			Controls:      true,
 		}}
@@ -239,14 +243,21 @@ func (r Registration) normalized() (Registration, error) {
 			return Registration{}, err
 		}
 		binding.IdentityHome = identityHome
-		if _, ok := seen[identityHome]; ok {
-			return Registration{}, fmt.Errorf("duplicate receive identity_home %s", identityHome)
+		binding.TeamID, err = effectiveTeamID(identityHome, binding.TeamID)
+		if err != nil {
+			return Registration{}, err
 		}
-		seen[identityHome] = struct{}{}
+		key, err := bindingKey(identityHome, binding.TeamID)
+		if err != nil {
+			return Registration{}, err
+		}
+		if _, ok := seen[key]; ok {
+			return Registration{}, fmt.Errorf("duplicate receive binding identity_home=%s team=%s", identityHome, binding.TeamID)
+		}
+		seen[key] = struct{}{}
 		if runtime != RuntimeDeliveryExternalSession && primary != "" && identityHome == primary {
 			return Registration{}, fmt.Errorf("receive identity_home %s overlaps native primary identity_home", identityHome)
 		}
-		binding.TeamID = strings.TrimSpace(binding.TeamID)
 		binding.Label = strings.TrimSpace(binding.Label)
 		owner := strings.ToLower(strings.TrimSpace(binding.DeliveryOwner))
 		if owner == "" {
@@ -282,6 +293,62 @@ func (r Registration) normalized() (Registration, error) {
 		r.IdentityHome = r.ReceiveIdentities[0].IdentityHome
 	}
 	return r, nil
+}
+
+type teamStateYAML struct {
+	ActiveTeam string `yaml:"active_team"`
+}
+
+type grantStateYAML struct {
+	TeamID string `yaml:"team_id"`
+}
+
+func effectiveTeamID(identityHome, teamID string) (string, error) {
+	teamID = strings.TrimSpace(teamID)
+	if teamID != "" {
+		return teamID, nil
+	}
+	if data, err := os.ReadFile(filepath.Join(identityHome, "grant.yaml")); err == nil {
+		var grant grantStateYAML
+		if err := yaml.Unmarshal(data, &grant); err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(grant.TeamID), nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(identityHome, "teams.yaml"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	var state teamStateYAML
+	if err := yaml.Unmarshal(data, &state); err != nil {
+		return "", err
+	}
+	teamID = strings.TrimSpace(state.ActiveTeam)
+	if teamID == "" {
+		return "", nil
+	}
+	return teamID, nil
+}
+
+func bindingKey(identityHome, teamID string) (string, error) {
+	team, err := effectiveTeamID(identityHome, teamID)
+	if err != nil {
+		return "", err
+	}
+	return identityHome + "\x00" + team, nil
+}
+
+func splitBindingKey(key string) (string, string) {
+	parts := strings.SplitN(key, "\x00", 2)
+	if len(parts) != 2 {
+		return key, ""
+	}
+	return parts[0], parts[1]
 }
 
 func canonicalReadableIdentityHome(raw, label string) (string, error) {
@@ -372,6 +439,20 @@ func (r Registration) BindingForIdentityHome(identityHome string) (ReceiveIdenti
 	return ReceiveIdentity{}, false
 }
 
+func (r Registration) hasBinding(want ReceiveIdentity) bool {
+	wantKey, err := bindingKey(want.IdentityHome, want.TeamID)
+	if err != nil {
+		return false
+	}
+	for _, binding := range r.ReceiveBindings() {
+		gotKey, err := bindingKey(binding.IdentityHome, binding.TeamID)
+		if err == nil && gotKey == wantKey {
+			return true
+		}
+	}
+	return false
+}
+
 func (b ReceiveIdentity) label() string {
 	if strings.TrimSpace(b.Label) != "" {
 		return strings.TrimSpace(b.Label)
@@ -382,7 +463,10 @@ func (b ReceiveIdentity) label() string {
 	return strings.TrimSpace(b.IdentityHome)
 }
 
-func (b ReceiveIdentity) allowsKind(kind Kind) bool {
+func (b ReceiveIdentity) allowsEventClass(class string) bool {
+	if class == "" {
+		return false
+	}
 	if b.Controls {
 		return true
 	}
@@ -390,14 +474,7 @@ func (b ReceiveIdentity) allowsKind(kind Kind) bool {
 	if len(classes) == 0 {
 		classes = []string{EventClassMail, EventClassChat}
 	}
-	switch kind {
-	case KindMail:
-		return containsString(classes, EventClassMail)
-	case KindChat:
-		return containsString(classes, EventClassChat)
-	default:
-		return false
-	}
+	return containsString(classes, class)
 }
 
 func containsString(values []string, value string) bool {
@@ -409,73 +486,25 @@ func containsString(values []string, value string) bool {
 	return false
 }
 
-// InstanceState is the durable per-instance state: what the broker has tried,
-// never what it believes arrived.
+// InstanceState is the durable per-instance state Go owns: registration
+// lifecycle, pause/inactive state, error/status metadata, and child admission
+// evictions. Legacy `pending` hint arrays from older stores are accepted on
+// load and dropped; they are never replayed or composed by Go.
 type InstanceState struct {
-	Home           string    `json:"home"`
-	Pending        []Hint    `json:"pending"`
-	Evicted        int       `json:"evicted"`
-	Paused         bool      `json:"paused"`
-	FirstPresentAt time.Time `json:"first_present_at,omitempty"`
-	Inactive       bool      `json:"inactive,omitempty"`
-	LastInspectAt  time.Time `json:"last_inspect_at,omitempty"`
-	LastAttemptAt  time.Time `json:"last_attempt_at,omitempty"`
-	LastSubmitAt   time.Time `json:"last_submit_at,omitempty"`
-	LastState      string    `json:"last_state,omitempty"`
-	LastError      string    `json:"last_error,omitempty"`
-	UnreadCount    int       `json:"unread_count,omitempty"`
+	Home           string            `json:"home"`
+	LegacyPending  []json.RawMessage `json:"pending,omitempty"`
+	Evicted        int               `json:"evicted"`
+	Paused         bool              `json:"paused"`
+	FirstPresentAt time.Time         `json:"first_present_at,omitempty"`
+	Inactive       bool              `json:"inactive,omitempty"`
+	LastInspectAt  time.Time         `json:"last_inspect_at,omitempty"`
+	LastState      string            `json:"last_state,omitempty"`
+	LastError      string            `json:"last_error,omitempty"`
+	UnreadCount    int               `json:"unread_count,omitempty"`
 }
 
-// ConfirmedLive reports whether one live inspect has been seen.
+// ConfirmedLive reports whether the child has reported one live terminal observation.
 func (s InstanceState) ConfirmedLive() bool { return !s.FirstPresentAt.IsZero() }
-
-// AddHint inserts a hint into the pending set, collapsing a hint already
-// pending under the same key. It returns whether the set changed.
-//
-// Eviction is oldest-first and counted, because the note requires a backlog and
-// every eviction to be visible in status rather than silent (§4).
-func (s *InstanceState) AddHint(h Hint, cap int) bool {
-	if h.Kind == KindReconnect {
-		return false
-	}
-	if cap <= 0 {
-		cap = DefaultHintCap
-	}
-	key := h.DedupeKey()
-	for i := range s.Pending {
-		if s.Pending[i].DedupeKey() == key {
-			// Already pending: keep the earliest arrival so the coalescing
-			// window is measured from when the item first appeared, but adopt
-			// the latest count metadata and any sender-waiting escalation.
-			s.Pending[i].UnreadCount = h.UnreadCount
-			if h.SenderWaiting {
-				s.Pending[i].SenderWaiting = true
-				s.Pending[i].Intent = IntentSteer
-			}
-			return false
-		}
-	}
-	s.Pending = append(s.Pending, h)
-	for len(s.Pending) > cap {
-		s.Pending = s.Pending[1:]
-		s.Evicted++
-	}
-	return true
-}
-
-// DurablePending returns the pending hints that survive a restart. Transient
-// control signals are excluded: an at-most-once signal that was lost across an
-// SSE gap is reported, not replayed (§4).
-func (s InstanceState) DurablePending() []Hint {
-	out := make([]Hint, 0, len(s.Pending))
-	for _, h := range s.Pending {
-		if h.Transient || h.Kind == KindReconnect {
-			continue
-		}
-		out = append(out, h)
-	}
-	return out
-}
 
 // SaveRegistration writes one registration atomically. It canonicalizes the
 // instance home but deliberately does not trust or validate the rest of the
@@ -568,7 +597,7 @@ func (s *Store) ListRegistrations() ([]Registration, error) {
 	return out, nil
 }
 
-// SaveInstance writes per-instance state atomically, dropping transient hints.
+// SaveInstance writes per-instance state atomically, dropping legacy hints.
 func (s *Store) SaveInstance(state InstanceState) error {
 	canonical, err := CanonicalHome(state.Home)
 	if err != nil {
@@ -576,7 +605,7 @@ func (s *Store) SaveInstance(state InstanceState) error {
 	}
 	persisted := state
 	persisted.Home = canonical
-	persisted.Pending = state.DurablePending()
+	persisted.LegacyPending = nil
 	return writeJSONAtomic(s.instancePath(HomeKey(canonical)), persisted)
 }
 
@@ -595,7 +624,10 @@ func (s *Store) LoadInstance(home string) (InstanceState, error) {
 		return InstanceState{Home: canonical}, nil
 	}
 	state.Home = canonical
-	state.Pending = state.DurablePending()
+	if len(state.LegacyPending) > 0 {
+		state.Evicted += len(state.LegacyPending)
+		state.LegacyPending = nil
+	}
 	return state, nil
 }
 

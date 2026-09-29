@@ -30,7 +30,7 @@ func TestControlSocketDrivesTheRunningDaemon(t *testing.T) {
 		Store:      store,
 		Session:    oats,
 		Log:        logs.log,
-		OpenStream: func(string) (run.EventStreamOpener, error) { return nil, errors.New("no stream in this test") },
+		OpenStream: func(string, string) (run.EventStreamOpener, error) { return nil, errors.New("no stream in this test") },
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -129,7 +129,7 @@ func TestFallbackFilesAreReconciledByTheDaemon(t *testing.T) {
 		Store:      store,
 		Session:    oats,
 		Log:        logs.log,
-		OpenStream: func(string) (run.EventStreamOpener, error) { return nil, errors.New("no stream in this test") },
+		OpenStream: func(string, string) (run.EventStreamOpener, error) { return nil, errors.New("no stream in this test") },
 	})
 
 	waitFor(t, "the daemon to reconcile the fallback file", func() bool {
@@ -166,7 +166,6 @@ func TestStatusFromStoreAnswersWithTheDaemonDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := InstanceState{Home: home, Paused: true, Evicted: 7, LastState: "working"}
-	state.AddHint(Hint{Kind: KindMail, MessageID: "m1", At: at(0)}, DefaultHintCap)
 	if err := store.SaveInstance(state); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +181,7 @@ func TestStatusFromStoreAnswersWithTheDaemonDown(t *testing.T) {
 		t.Fatalf("instances=%#v", status.Instances)
 	}
 	got := status.Instances[0]
-	if got.Phase != PhasePending || !got.Paused || got.PendingHints != 1 || got.Evicted != 7 {
+	if got.Phase != PhasePending || !got.Paused || got.Evicted != 7 {
 		t.Fatalf("status lost per-home state: %#v", got)
 	}
 }

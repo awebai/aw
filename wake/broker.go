@@ -55,13 +55,14 @@ const (
 
 // Config configures a Broker.
 type Config struct {
-	Store   *Store
-	Session session.Client
+	Store       *Store
+	Session     session.Client
+	ChannelCore *ChannelCoreRunner
 
 	// OpenStream builds the event stream source for one identity home. It is
 	// injected so the broker can be tested with no server and no credentials,
 	// and so credential resolution stays in cmd/aw where it already lives.
-	OpenStream func(identityHome string) (run.EventStreamOpener, error)
+	OpenStream func(identityHome, teamID string) (run.EventStreamOpener, error)
 
 	MaxStreams    int
 	Coalesce      time.Duration
@@ -70,7 +71,6 @@ type Config struct {
 	IdleProbe     time.Duration
 	PendingExpiry time.Duration
 	Reconcile     time.Duration
-	HintCap       int
 	StreamTTL     time.Duration
 	BackoffMin    time.Duration
 	BackoffMax    time.Duration
@@ -105,9 +105,6 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Reconcile <= 0 {
 		c.Reconcile = DefaultReconcile
-	}
-	if c.HintCap <= 0 {
-		c.HintCap = DefaultHintCap
 	}
 	if c.Now == nil {
 		c.Now = func() time.Time { return time.Now().UTC() }
@@ -249,6 +246,7 @@ func (b *Broker) reconcileLocked() {
 	}
 
 	seen := map[string]struct{}{}
+	bindingOwners := map[string]string{}
 	for _, reg := range registrations {
 		canonical, err := CanonicalHome(reg.Home)
 		if err != nil {
@@ -265,18 +263,41 @@ func (b *Broker) reconcileLocked() {
 		}
 		key := HomeKey(canonical)
 		seen[key] = struct{}{}
+		conflictHome := ""
+		for _, binding := range reg.ReceiveBindings() {
+			bindingKey, err := bindingKey(binding.IdentityHome, binding.TeamID)
+			if err != nil {
+				b.cfg.Log("registration binding skipped home=%s identity_home=%s err=%v", reg.Home, binding.IdentityHome, err)
+				continue
+			}
+			if owner := bindingOwners[bindingKey]; owner != "" && owner != reg.Home {
+				conflictHome = owner
+				break
+			}
+		}
 
 		b.mu.Lock()
 		runner, running := b.instances[key]
 		b.mu.Unlock()
 		if running {
-			runner.updateRegistration(reg)
-			for _, binding := range reg.ReceiveBindings() {
-				runner.setStreamAdmitted(binding.IdentityHome, b.ensureStream(binding.IdentityHome))
+			pending := runner.updateRegistration(reg)
+			runner.setConflictHome(conflictHome)
+			if conflictHome == "" && !pending {
+				b.admitRunnerStreams(runner)
 			}
+		} else {
+			runner = b.startInstance(reg, conflictHome)
+		}
+		if conflictHome != "" {
+			b.cfg.Log("registration conflict home=%s winner=%s", reg.Home, conflictHome)
 			continue
 		}
-		b.startInstance(reg)
+		for _, binding := range reg.ReceiveBindings() {
+			bindingKey, err := bindingKey(binding.IdentityHome, binding.TeamID)
+			if err == nil {
+				bindingOwners[bindingKey] = reg.Home
+			}
+		}
 	}
 
 	b.mu.Lock()
@@ -295,7 +316,7 @@ func (b *Broker) reconcileLocked() {
 	b.pruneStreamsLocked()
 }
 
-func (b *Broker) startInstance(reg Registration) {
+func (b *Broker) startInstance(reg Registration, conflictHome string) *instanceRunner {
 	state, err := b.cfg.Store.LoadInstance(reg.Home)
 	if err != nil {
 		b.cfg.Log("state unreadable home=%s err=%v", reg.Home, err)
@@ -304,23 +325,33 @@ func (b *Broker) startInstance(reg Registration) {
 	state.Home = reg.Home
 
 	runner := newInstanceRunner(b, reg, state)
+	runner.setConflictHome(conflictHome)
 	b.mu.Lock()
 	b.instances[HomeKey(reg.Home)] = runner
 	b.mu.Unlock()
 
 	bindings := reg.ReceiveBindings()
 	admittedCount := 0
-	for _, binding := range bindings {
-		admitted := b.ensureStream(binding.IdentityHome)
-		runner.setStreamAdmitted(binding.IdentityHome, admitted)
-		if admitted {
-			admittedCount++
+	if conflictHome == "" {
+		for _, binding := range bindings {
+			admitted := b.ensureStream(binding)
+			runner.setStreamAdmitted(binding, admitted)
+			if admitted {
+				admittedCount++
+			}
 		}
 	}
-	b.cfg.Log("registered home=%s identity_home=%s receive_identities=%d backend=%s delivery=%s runtime_delivery=%s pending_hints=%d streams_admitted=%d",
-		reg.Home, reg.IdentityHome, len(bindings), orDash(reg.Backend), reg.Delivery, orDash(reg.RuntimeDelivery), len(state.Pending), admittedCount)
+	b.cfg.Log("registered home=%s identity_home=%s receive_identities=%d backend=%s delivery=%s runtime_delivery=%s streams_admitted=%d",
+		reg.Home, reg.IdentityHome, len(bindings), orDash(reg.Backend), reg.Delivery, orDash(reg.RuntimeDelivery), admittedCount)
 	if ctx := b.runningContext(); ctx != nil {
 		runner.start(ctx)
+	}
+	return runner
+}
+
+func (b *Broker) admitRunnerStreams(runner *instanceRunner) {
+	for _, binding := range runner.receiveBindings() {
+		runner.setStreamAdmitted(binding, b.ensureStream(binding))
 	}
 }
 
@@ -340,20 +371,21 @@ func orDash(s string) string {
 
 // ensureStream opens the identity's stream if it is not already open and the
 // stream bound allows it. It reports whether the identity has a stream.
-func (b *Broker) ensureStream(identityHome string) bool {
-	identityHome = strings.TrimSpace(identityHome)
-	if identityHome == "" {
+func (b *Broker) ensureStream(binding ReceiveIdentity) bool {
+	key, err := bindingKey(binding.IdentityHome, binding.TeamID)
+	if err != nil || strings.TrimSpace(binding.IdentityHome) == "" {
 		return false
 	}
+	teamID, _ := effectiveTeamID(binding.IdentityHome, binding.TeamID)
 	b.mu.Lock()
-	if _, ok := b.streams[identityHome]; ok {
+	if _, ok := b.streams[key]; ok {
 		b.mu.Unlock()
 		return true
 	}
 	if len(b.streams) >= b.cfg.MaxStreams {
-		b.overBound[identityHome] = struct{}{}
+		b.overBound[key] = struct{}{}
 		b.mu.Unlock()
-		b.cfg.Log("stream bound reached identity_home=%s max_streams=%d (registration kept and reported in status)", identityHome, b.cfg.MaxStreams)
+		b.cfg.Log("stream bound reached identity_home=%s team=%s max_streams=%d (registration kept and reported in status)", binding.IdentityHome, teamID, b.cfg.MaxStreams)
 		return false
 	}
 	b.mu.Unlock()
@@ -361,22 +393,22 @@ func (b *Broker) ensureStream(identityHome string) bool {
 	if b.cfg.OpenStream == nil {
 		return false
 	}
-	opener, err := b.cfg.OpenStream(identityHome)
+	opener, err := b.cfg.OpenStream(binding.IdentityHome, teamID)
 	if err != nil {
-		b.cfg.Log("stream unavailable identity_home=%s err=%v", identityHome, err)
+		b.cfg.Log("stream unavailable identity_home=%s team=%s err=%v", binding.IdentityHome, teamID, err)
 		return false
 	}
-	runner := newStreamRunner(identityHome, opener, func(ev awid.AgentEvent) {
-		b.dispatch(identityHome, ev)
+	runner := newStreamRunner(key, binding.IdentityHome, teamID, opener, func(ev awid.AgentEvent) {
+		b.dispatchStream(key, ev)
 	}, b.cfg.Log, b.cfg.Now, b.cfg.StreamTTL, b.cfg.BackoffMin, b.cfg.BackoffMax)
 
 	b.mu.Lock()
-	if _, ok := b.streams[identityHome]; ok {
+	if _, ok := b.streams[key]; ok {
 		b.mu.Unlock()
 		return true
 	}
-	b.streams[identityHome] = runner
-	delete(b.overBound, identityHome)
+	b.streams[key] = runner
+	delete(b.overBound, key)
 	b.mu.Unlock()
 	if ctx := b.runningContext(); ctx != nil {
 		runner.start(ctx)
@@ -396,7 +428,14 @@ func (b *Broker) pruneStreamsLocked() {
 	b.mu.Lock()
 	for _, runner := range b.instances {
 		for _, binding := range runner.receiveBindings() {
-			needed[binding.IdentityHome] = struct{}{}
+			if key, err := bindingKey(binding.IdentityHome, binding.TeamID); err == nil {
+				needed[key] = struct{}{}
+			}
+		}
+		for _, binding := range runner.pendingReceiveBindings() {
+			if key, err := bindingKey(binding.IdentityHome, binding.TeamID); err == nil {
+				needed[key] = struct{}{}
+			}
 		}
 	}
 	orphans := []*streamRunner{}
@@ -420,7 +459,7 @@ func (b *Broker) pruneStreamsLocked() {
 	pending := make([]*instanceRunner, 0)
 	for _, runner := range b.instances {
 		for _, binding := range runner.receiveBindings() {
-			if !runner.streamAdmitted(binding.IdentityHome) {
+			if !runner.streamAdmitted(binding) {
 				pending = append(pending, runner)
 				break
 			}
@@ -428,30 +467,37 @@ func (b *Broker) pruneStreamsLocked() {
 	}
 	b.mu.Unlock()
 	for _, runner := range pending {
-		for _, binding := range runner.receiveBindings() {
-			runner.setStreamAdmitted(binding.IdentityHome, b.ensureStream(binding.IdentityHome))
-		}
+		b.admitRunnerStreams(runner)
 	}
 }
 
 type dispatchTarget struct {
-	runner  *instanceRunner
-	binding ReceiveIdentity
+	runner     *instanceRunner
+	binding    ReceiveIdentity
+	generation int
 }
 
 // dispatch fans one identity's event out to every instance registered under
 // that identity home, carrying the receive binding context through the hint.
 func (b *Broker) dispatch(identityHome string, ev awid.AgentEvent) {
+	teamID, _ := effectiveTeamID(identityHome, "")
+	key, _ := bindingKey(identityHome, teamID)
+	b.dispatchStream(key, ev)
+}
+
+func (b *Broker) dispatchStream(key string, ev awid.AgentEvent) {
 	b.mu.Lock()
 	targets := make([]dispatchTarget, 0, len(b.instances))
 	for _, runner := range b.instances {
-		if binding, ok := runner.bindingForIdentityHome(identityHome); ok {
-			targets = append(targets, dispatchTarget{runner: runner, binding: binding})
+		if binding, generation, ok := runner.bindingForStreamKey(key); ok {
+			targets = append(targets, dispatchTarget{runner: runner, binding: binding, generation: generation})
 		}
 	}
 	b.mu.Unlock()
+	if len(targets) == 0 {
+		b.cfg.Log("event dropped stream_key=%s reason=no_registered_binding message_id=%s session_id=%s", key, ev.MessageID, ev.SessionID)
+	}
 
-	now := b.cfg.Now()
 	switch ev.Type {
 	case awid.AgentEventControlPause:
 		for _, target := range targets {
@@ -469,15 +515,15 @@ func (b *Broker) dispatch(identityHome string, ev awid.AgentEvent) {
 		return
 	}
 
-	hint, ok := HintFromEvent(ev, now)
+	class, ok := eventDeliveryClass(ev)
 	if !ok {
 		return
 	}
 	for _, target := range targets {
-		if !target.binding.allowsKind(hint.Kind) {
+		if !target.binding.allowsEventClass(class) {
 			continue
 		}
-		target.runner.offer(hint.WithReceiveIdentity(target.binding), ev.UnreadCount)
+		target.runner.offerEvent(ev, target.binding, target.generation)
 	}
 }
 
@@ -488,7 +534,11 @@ func (b *Broker) Register(reg Registration) error {
 		return err
 	}
 	reg.Home = canonical
-	if err := reg.Validate(); err != nil {
+	reg, err = reg.Normalized()
+	if err != nil {
+		return err
+	}
+	if err := b.refuseDuplicateBinding(reg); err != nil {
 		return err
 	}
 	if reg.RegisteredAt.IsZero() {
@@ -503,6 +553,36 @@ func (b *Broker) Register(reg Registration) error {
 		return err
 	}
 	b.Reconcile()
+	return nil
+}
+
+func (b *Broker) refuseDuplicateBinding(reg Registration) error {
+	existing, err := b.cfg.Store.ListRegistrations()
+	if err != nil {
+		return err
+	}
+	want := map[string]ReceiveIdentity{}
+	for _, binding := range reg.ReceiveBindings() {
+		key, err := bindingKey(binding.IdentityHome, binding.TeamID)
+		if err != nil {
+			return fmt.Errorf("resolve receive binding team for %s: %w", binding.IdentityHome, err)
+		}
+		want[key] = binding
+	}
+	for _, other := range existing {
+		if other.Home == reg.Home {
+			continue
+		}
+		for _, binding := range other.ReceiveBindings() {
+			key, err := bindingKey(binding.IdentityHome, binding.TeamID)
+			if err != nil {
+				continue
+			}
+			if _, ok := want[key]; ok {
+				return fmt.Errorf("receive binding identity_home=%s team=%s is already owned by registration %s", binding.IdentityHome, strings.TrimSpace(binding.TeamID), other.Home)
+			}
+		}
+	}
 	return nil
 }
 
@@ -551,8 +631,9 @@ func (b *Broker) Status() Status {
 	for _, runner := range b.streams {
 		streams = append(streams, runner.snapshot())
 	}
-	for identityHome := range b.overBound {
-		streams = append(streams, StreamStatus{IdentityHome: identityHome, Phase: "over-bound", Admitted: false})
+	for key := range b.overBound {
+		identityHome, teamID := splitBindingKey(key)
+		streams = append(streams, StreamStatus{IdentityHome: identityHome, TeamID: teamID, Phase: "over-bound", Admitted: false})
 	}
 	instances := make([]InstanceStatus, 0, len(b.instances))
 	for _, runner := range b.instances {
@@ -578,13 +659,19 @@ func (b *Broker) Status() Status {
 }
 
 func enrichInstancesWithStreamStatus(instances []InstanceStatus, streams []StreamStatus) {
-	byHome := map[string]StreamStatus{}
+	byBinding := map[string]StreamStatus{}
 	for _, stream := range streams {
-		byHome[stream.IdentityHome] = stream
+		if key, err := bindingKey(stream.IdentityHome, stream.TeamID); err == nil {
+			byBinding[key] = stream
+		}
 	}
 	for i := range instances {
 		for j := range instances[i].ReceiveIdentities {
-			stream, ok := byHome[instances[i].ReceiveIdentities[j].IdentityHome]
+			key, err := bindingKey(instances[i].ReceiveIdentities[j].IdentityHome, instances[i].ReceiveIdentities[j].TeamID)
+			if err != nil {
+				continue
+			}
+			stream, ok := byBinding[key]
 			if !ok {
 				continue
 			}
