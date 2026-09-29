@@ -1,6 +1,7 @@
 package wake
 
 import (
+	"strings"
 	"testing"
 
 	awid "github.com/awebai/aw/awid"
@@ -40,10 +41,10 @@ func TestHintIntentsMatchTheDeliveryTable(t *testing.T) {
 		{awid.AgentEvent{Type: awid.AgentEventClaimRemoved, TaskID: "t"}, KindClaimRemoved, IntentAmbient, true},
 		{awid.AgentEvent{Type: awid.AgentEventAppEvent, EventID: "e"}, KindApp, IntentAmbient, true},
 		{awid.AgentEvent{Type: awid.AgentEventAppEvent, EventID: "e", DeliveryIntent: "wake"}, KindApp, IntentWake, true},
-		{awid.AgentEvent{Type: awid.AgentEventChannelReconnected}, KindReconnect, IntentWake, true},
 
-		// Informational, and the two control signals that change durable
-		// broker state rather than announcing a waiting item.
+		// Informational transport state and the two control signals that change
+		// durable broker state rather than announcing a waiting item.
+		{awid.AgentEvent{Type: awid.AgentEventChannelReconnected}, "", "", false},
 		{awid.AgentEvent{Type: awid.AgentEventConnected}, "", "", false},
 		{awid.AgentEvent{Type: awid.AgentEventError}, "", "", false},
 		{awid.AgentEvent{Type: awid.AgentEventControlPause}, "", "", false},
@@ -82,6 +83,21 @@ func TestControlInterruptIsTransient(t *testing.T) {
 	state.AddHint(mail, DefaultHintCap)
 	if len(state.Pending) != 2 {
 		t.Fatalf("pending=%d", len(state.Pending))
+	}
+	durable := state.DurablePending()
+	if len(durable) != 1 || durable[0].Kind != KindMail {
+		t.Fatalf("durable pending=%#v", durable)
+	}
+}
+
+func TestLegacyReconnectHintsAreNeverDurableOrQueued(t *testing.T) {
+	state := InstanceState{Home: "/h"}
+	if state.AddHint(Hint{Kind: KindReconnect, Intent: IntentWake, At: at(0)}, DefaultHintCap) {
+		t.Fatal("legacy reconnect hint was queued")
+	}
+	state.Pending = []Hint{
+		{Kind: KindReconnect, Intent: IntentWake, At: at(0)},
+		{Kind: KindMail, Intent: IntentWake, MessageID: "m1", At: at(1)},
 	}
 	durable := state.DurablePending()
 	if len(durable) != 1 || durable[0].Kind != KindMail {
@@ -140,6 +156,21 @@ func TestSenderWaitingEscalatesACollapsedChatHint(t *testing.T) {
 	}
 	if !state.Pending[0].SenderWaiting || state.Pending[0].Intent != IntentSteer {
 		t.Fatalf("escalation lost: %#v", state.Pending[0])
+	}
+}
+
+func TestCollapsedChatHintRefreshesUnreadCount(t *testing.T) {
+	state := InstanceState{Home: "/h"}
+	state.AddHint(Hint{Kind: KindChat, Intent: IntentWake, SessionID: "s1", From: "alice", UnreadCount: 1, At: at(0)}, DefaultHintCap)
+	state.AddHint(Hint{Kind: KindChat, Intent: IntentWake, SessionID: "s1", From: "alice", UnreadCount: 2, At: at(1)}, DefaultHintCap)
+	if len(state.Pending) != 1 {
+		t.Fatalf("pending=%d", len(state.Pending))
+	}
+	if state.Pending[0].UnreadCount != 2 {
+		t.Fatalf("unread count was not refreshed: %#v", state.Pending[0])
+	}
+	if got := Compose(state.Pending); !strings.Contains(got, "chat from alice (2 unread)") {
+		t.Fatalf("composed chat did not use refreshed count:\n%s", got)
 	}
 }
 

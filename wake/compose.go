@@ -36,19 +36,26 @@ func Compose(hints []Hint) string {
 		return ordered[i].At.Before(ordered[j].At)
 	})
 
+	mailCount, chatCount := waitingHintCounts(ordered)
+
 	var b strings.Builder
 	b.WriteString("aweb: ")
-	b.WriteString(pluralItems(len(ordered)))
-	if hasIdentityContext(ordered) {
-		b.WriteString(" waiting. Check the listed identity contexts with aw, then handle what is there.\n")
-		for _, line := range commandLines(ordered) {
-			b.WriteString("  ")
-			b.WriteString(line)
-			b.WriteString("\n")
+	if mailCount+chatCount > 0 {
+		b.WriteString(waitingHintSummary(mailCount, chatCount))
+		if hasIdentityContext(ordered) {
+			b.WriteString(" waiting. Check the listed identity contexts with aw, then handle what is there.\n")
+			for _, line := range commandLines(ordered) {
+				b.WriteString("  ")
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
+		} else {
+			b.WriteString(" waiting. Check them from this instance with `aw mail inbox`\n")
+			b.WriteString("and `aw chat pending`, then handle what is there.\n")
 		}
 	} else {
-		b.WriteString(" waiting. Check them from this instance with `aw mail inbox`\n")
-		b.WriteString("and `aw chat pending`, then handle what is there.\n")
+		b.WriteString(pluralEvents(len(ordered)))
+		b.WriteString(" pending. Review the listed event context, then handle what is there.\n")
 	}
 
 	lines := summaryLines(ordered)
@@ -75,11 +82,48 @@ func Compose(hints []Hint) string {
 	return out
 }
 
-func pluralItems(n int) string {
-	if n == 1 {
-		return "1 item"
+func waitingHintCounts(hints []Hint) (mailCount int, chatCount int) {
+	for _, h := range hints {
+		switch h.Kind {
+		case KindMail:
+			mailCount++
+		case KindChat:
+			chatCount++
+		}
 	}
-	return fmt.Sprintf("%d items", n)
+	return mailCount, chatCount
+}
+
+func waitingHintSummary(mailCount, chatCount int) string {
+	parts := []string{}
+	if mailCount > 0 {
+		parts = append(parts, pluralMail(mailCount))
+	}
+	if chatCount > 0 {
+		parts = append(parts, pluralChats(chatCount))
+	}
+	return strings.Join(parts, " and ")
+}
+
+func pluralMail(n int) string {
+	if n == 1 {
+		return "1 mail message"
+	}
+	return fmt.Sprintf("%d mail messages", n)
+}
+
+func pluralChats(n int) string {
+	if n == 1 {
+		return "1 chat"
+	}
+	return fmt.Sprintf("%d chats", n)
+}
+
+func pluralEvents(n int) string {
+	if n == 1 {
+		return "1 event"
+	}
+	return fmt.Sprintf("%d events", n)
 }
 
 func hasIdentityContext(hints []Hint) bool {
@@ -150,11 +194,12 @@ type summaryGroup struct {
 }
 
 type groupState struct {
-	count   int
-	waiting bool
-	ids     []string
-	from    string
-	context string
+	count       int
+	waiting     bool
+	unreadCount int
+	ids         []string
+	from        string
+	context     string
 }
 
 func summaryLines(hints []Hint) []string {
@@ -180,11 +225,16 @@ func summaryLines(hints []Hint) []string {
 		context := safeToken(firstNonEmpty(h.IdentityLabel, h.TeamID, h.IdentityHome))
 		switch h.Kind {
 		case KindMail:
-			add("mail|"+contextKey+"|"+from, renderMail, func(g *groupState) { g.from = from; g.context = context })
+			add("mail|"+contextKey+"|"+from, renderMail, func(g *groupState) {
+				g.from = from
+				g.context = context
+				g.unreadCount += h.UnreadCount
+			})
 		case KindChat:
 			add("chat|"+contextKey+"|"+from, renderChat, func(g *groupState) {
 				g.from = from
 				g.context = context
+				g.unreadCount += h.UnreadCount
 				if h.SenderWaiting {
 					g.waiting = true
 				}
@@ -194,7 +244,10 @@ func summaryLines(hints []Hint) []string {
 			// typed into the terminal (§4, §6). Queued text is not an interrupt.
 			add("control", renderControl, nil)
 		case KindReconnect:
-			add("reconnect", renderReconnect, nil)
+			// Legacy persisted reconnect hints are filtered before submission.
+			// If one reaches composition from an old test helper, ignore it rather
+			// than generating transport-status model input.
+			continue
 		case KindWork:
 			add("work", renderWork, func(g *groupState) { g.ids = appendID(g.ids, safeToken(h.TaskID)) })
 		case KindClaim:
@@ -221,9 +274,9 @@ func summaryLines(hints []Hint) []string {
 func renderMail(g *groupState) string {
 	prefix := contextPrefix(g.context)
 	if g.from == "" {
-		return prefix + fmt.Sprintf("mail (%d unread)", g.count)
+		return prefix + fmt.Sprintf("mail (%d)", g.count)
 	}
-	return prefix + fmt.Sprintf("mail from %s (%d unread)", g.from, g.count)
+	return prefix + fmt.Sprintf("mail from %s (%d)", g.from, g.count)
 }
 
 func renderChat(g *groupState) string {
@@ -235,7 +288,13 @@ func renderChat(g *groupState) string {
 	if g.waiting {
 		return who + " — sender waiting"
 	}
-	return fmt.Sprintf("%s (%d)", who, g.count)
+	if g.unreadCount > 0 {
+		return fmt.Sprintf("%s (%d unread)", who, g.unreadCount)
+	}
+	if g.count == 1 {
+		return who
+	}
+	return fmt.Sprintf("%s (%d chats)", who, g.count)
 }
 
 func renderControl(g *groupState) string {
@@ -243,10 +302,6 @@ func renderControl(g *groupState) string {
 		return "control signal"
 	}
 	return fmt.Sprintf("control signals (%d)", g.count)
-}
-
-func renderReconnect(_ *groupState) string {
-	return "reconnected — earlier items may still be unread"
 }
 
 func renderWork(g *groupState) string {

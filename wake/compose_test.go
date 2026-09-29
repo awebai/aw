@@ -72,9 +72,9 @@ func TestComposedTextIsTheFixedInstructionPlusASummary(t *testing.T) {
 		{Kind: KindChat, Intent: IntentSteer, MessageID: "c1", From: "bob", SenderWaiting: true, At: at(2)},
 	}
 	got := Compose(hints)
-	want := "aweb: 3 items waiting. Check them from this instance with `aw mail inbox`\n" +
+	want := "aweb: 2 mail messages and 1 chat waiting. Check them from this instance with `aw mail inbox`\n" +
 		"and `aw chat pending`, then handle what is there.\n" +
-		"  mail from alice (2 unread)\n" +
+		"  mail from alice (2)\n" +
 		"  chat from bob — sender waiting\n"
 	if got != want {
 		t.Fatalf("composed text\n---got---\n%s\n---want---\n%s", got, want)
@@ -105,8 +105,63 @@ func TestComposeSingularAndEmpty(t *testing.T) {
 		t.Fatalf("empty hint set composed %q", got)
 	}
 	got := Compose([]Hint{{Kind: KindMail, MessageID: "m1", From: "alice", At: at(0)}})
-	if !strings.HasPrefix(got, "aweb: 1 item waiting.") {
+	if !strings.HasPrefix(got, "aweb: 1 mail message waiting.") {
 		t.Fatalf("singular header missing:\n%s", got)
+	}
+	got = Compose([]Hint{{Kind: KindWork, Intent: IntentAmbient, TaskID: "task-1", At: at(0)}})
+	if !strings.HasPrefix(got, "aweb: 1 event pending.") || strings.Contains(got, "message") {
+		t.Fatalf("ambient-only text inflated waiting messages:\n%s", got)
+	}
+}
+
+func TestComposeChatWordingDoesNotClaimUnreadMessageCount(t *testing.T) {
+	got := Compose([]Hint{{Kind: KindChat, Intent: IntentWake, MessageID: "c1", From: "bob", UnreadCount: 3, At: at(0)}})
+	if !strings.HasPrefix(got, "aweb: 1 chat waiting.") {
+		t.Fatalf("chat header should count chats, not unread messages:\n%s", got)
+	}
+	if strings.Contains(got, "unread message") {
+		t.Fatalf("chat header was labelled unread messages:\n%s", got)
+	}
+	if !strings.Contains(got, "chat from bob (3 unread)") {
+		t.Fatalf("chat unread detail missing available metadata:\n%s", got)
+	}
+
+	got = Compose([]Hint{{Kind: KindChat, Intent: IntentSteer, MessageID: "c2", From: "mia", SenderWaiting: true, UnreadCount: 0, At: at(0)}})
+	if !strings.HasPrefix(got, "aweb: 1 chat waiting.") {
+		t.Fatalf("chat header should count chats, not unread messages:\n%s", got)
+	}
+	if strings.Contains(got, "unread message") {
+		t.Fatalf("sender-waiting chat with zero unread was labelled unread messages:\n%s", got)
+	}
+	if !strings.Contains(got, "chat from mia — sender waiting") {
+		t.Fatalf("sender-waiting detail missing:\n%s", got)
+	}
+}
+
+func TestComposeMailPlusAmbientCountsOnlyMessagesInHeader(t *testing.T) {
+	got := Compose([]Hint{
+		{Kind: KindMail, Intent: IntentWake, MessageID: "m1", From: "alice", UnreadCount: 2, At: at(0)},
+		{Kind: KindWork, Intent: IntentAmbient, TaskID: "task-1", At: at(1)},
+	})
+	if !strings.HasPrefix(got, "aweb: 1 mail message waiting.") {
+		t.Fatalf("mail plus ambient header should count real message hints only:\n%s", got)
+	}
+	if !strings.Contains(got, "mail from alice (1)") || !strings.Contains(got, "work available (1): task-1") {
+		t.Fatalf("mail plus ambient details missing:\n%s", got)
+	}
+}
+
+func TestComposeMailDetailDoesNotSumInboxTotalUnread(t *testing.T) {
+	got := Compose([]Hint{
+		{Kind: KindMail, Intent: IntentWake, MessageID: "m1", From: "alice", UnreadCount: 5, At: at(0)},
+		{Kind: KindMail, Intent: IntentWake, MessageID: "m2", From: "alice", UnreadCount: 5, At: at(1)},
+		{Kind: KindMail, Intent: IntentWake, MessageID: "m3", From: "alice", UnreadCount: 5, At: at(2)},
+	})
+	if strings.Contains(got, "15 unread") {
+		t.Fatalf("mail detail summed repeated inbox totals:\n%s", got)
+	}
+	if !strings.Contains(got, "mail from alice (3)") {
+		t.Fatalf("mail detail should count mail hints in the group:\n%s", got)
 	}
 }
 

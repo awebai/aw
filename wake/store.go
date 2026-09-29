@@ -395,8 +395,6 @@ func (b ReceiveIdentity) allowsKind(kind Kind) bool {
 		return containsString(classes, EventClassMail)
 	case KindChat:
 		return containsString(classes, EventClassChat)
-	case KindReconnect:
-		return containsString(classes, EventClassMail) || containsString(classes, EventClassChat)
 	default:
 		return false
 	}
@@ -437,6 +435,9 @@ func (s InstanceState) ConfirmedLive() bool { return !s.FirstPresentAt.IsZero() 
 // Eviction is oldest-first and counted, because the note requires a backlog and
 // every eviction to be visible in status rather than silent (§4).
 func (s *InstanceState) AddHint(h Hint, cap int) bool {
+	if h.Kind == KindReconnect {
+		return false
+	}
 	if cap <= 0 {
 		cap = DefaultHintCap
 	}
@@ -445,7 +446,8 @@ func (s *InstanceState) AddHint(h Hint, cap int) bool {
 		if s.Pending[i].DedupeKey() == key {
 			// Already pending: keep the earliest arrival so the coalescing
 			// window is measured from when the item first appeared, but adopt
-			// a sender-waiting escalation.
+			// the latest count metadata and any sender-waiting escalation.
+			s.Pending[i].UnreadCount = h.UnreadCount
 			if h.SenderWaiting {
 				s.Pending[i].SenderWaiting = true
 				s.Pending[i].Intent = IntentSteer
@@ -467,7 +469,7 @@ func (s *InstanceState) AddHint(h Hint, cap int) bool {
 func (s InstanceState) DurablePending() []Hint {
 	out := make([]Hint, 0, len(s.Pending))
 	for _, h := range s.Pending {
-		if h.Transient {
+		if h.Transient || h.Kind == KindReconnect {
 			continue
 		}
 		out = append(out, h)
@@ -593,6 +595,7 @@ func (s *Store) LoadInstance(home string) (InstanceState, error) {
 		return InstanceState{Home: canonical}, nil
 	}
 	state.Home = canonical
+	state.Pending = state.DurablePending()
 	return state, nil
 }
 
