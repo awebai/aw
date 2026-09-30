@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { runOATS } from "./oats_command.js";
 import { createInterface } from "node:readline";
 import {
   consumeAgentEvents,
@@ -8,6 +8,7 @@ import {
   createRegistryResolver,
   createTerminalAwakeningHandler,
   createTerminalDeliveryReadinessGate,
+  normalizeTerminalReadiness,
   DeliveryStore,
   loadPinStore,
   SenderTrustManager,
@@ -43,11 +44,6 @@ type InputLine = InitLine
   | { type: "resume" }
   | { type: "shutdown" };
 
-interface OATSEnvelope {
-  ok?: boolean;
-  result?: { home?: string; backend?: string; present?: boolean; state?: string; submitted?: boolean };
-  error?: { code?: string; message?: string };
-}
 
 class EventQueue implements AsyncIterable<AgentEvent> {
   private items: AgentEvent[] = [];
@@ -114,56 +110,6 @@ function traceStatus(bindingID: string, entry: { stage?: string; message_id?: st
   });
 }
 
-function runOATS(bin: string, args: string[], input = ""): Promise<OATSEnvelope> {
-  return new Promise((resolve, reject) => {
-    const hasInput = input.length > 0;
-    const child = spawn(bin, args, { stdio: [hasInput ? "pipe" : "ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const fail = (error: Error) => {
-      if (settled) return;
-      settled = true;
-      abort.signal.removeEventListener("abort", onAbort);
-      reject(error);
-    };
-    const onAbort = () => {
-      child.kill("SIGTERM");
-      fail(new Error("oats command aborted"));
-    };
-    abort.signal.addEventListener("abort", onAbort, { once: true });
-    if (!child.stdout || !child.stderr) {
-      fail(new Error("oats subprocess stdout/stderr unavailable"));
-      return;
-    }
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", fail);
-    child.on("close", () => {
-      if (settled) return;
-      abort.signal.removeEventListener("abort", onAbort);
-      let envelope: OATSEnvelope;
-      try {
-        envelope = JSON.parse(stdout.trim()) as OATSEnvelope;
-      } catch (error) {
-        fail(new Error((stderr || stdout || (error instanceof Error ? error.message : String(error))).trim()));
-        return;
-      }
-      if (!envelope.ok) {
-        fail(new Error(`${envelope.error?.code || "E_OATS"}: ${envelope.error?.message || "oats command failed"}`));
-        return;
-      }
-      settled = true;
-      resolve(envelope);
-    });
-    if (hasInput && child.stdin) {
-      child.stdin.on("error", fail);
-      child.stdin.end(input);
-    }
-  });
-}
 
 async function start(init: InitLine): Promise<void> {
   paused = Boolean(init.paused);
@@ -172,7 +118,7 @@ async function start(init: InitLine): Promise<void> {
   const session = {
     async inspect(home: string): Promise<TerminalInspection> {
       status({ readiness_waiting: "inspect_start" });
-      const envelope = await runOATS(oatsBin, ["session", "inspect", "--home", home, "--json"]);
+      const envelope = await runOATS(oatsBin, ["session", "inspect", "--home", home, "--json"], "", { signal: abort.signal });
       status({ readiness_waiting: "inspect_done" });
       return { present: envelope.result?.present, state: envelope.result?.state, rawState: envelope.result?.state };
     },
@@ -183,6 +129,7 @@ async function start(init: InitLine): Promise<void> {
       status({ delivered: true });
     },
   };
+  const onInactive = (state: ReturnType<typeof normalizeTerminalReadiness>) => { inactive = state; status({ inactive: state }); };
   const awaitReady = createTerminalDeliveryReadinessGate({
     home: init.home,
     session,
@@ -191,7 +138,7 @@ async function start(init: InitLine): Promise<void> {
     rateLimitMs: init.rateLimitMs,
     inspectDelayMs: init.inspectDelayMs,
     isPaused: () => paused,
-    onInactive: (state) => { inactive = state; status({ inactive: state }); },
+    onInactive,
     onReadinessStatus: (readiness) => status({
       readiness_state: readiness.state,
       readiness_error: readiness.error,
@@ -242,11 +189,30 @@ async function start(init: InitLine): Promise<void> {
       status({ binding_id: binding.binding_id, error: message });
     }));
   }
+  // Quiet homes need one live observation too, so older brokers can retain
+  // their first_present_at after a downgrade. Delivery remains event-driven.
+  try {
+    const inspection = await session.inspect(init.home);
+    const state = normalizeTerminalReadiness(inspection.state, inspection.present ?? true);
+    status({ readiness_state: state, readiness_error: "" });
+    if (state === "stopped" || state === "not-launched") onInactive(state);
+  } catch (error) {
+    if (!abort.signal.aborted) {
+      lastError = error instanceof Error ? error.message : String(error);
+      status({ readiness_error: lastError });
+    }
+  }
   status({ ready: true });
 }
 
 async function main(): Promise<void> {
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  const shutdown = () => {
+    abort.abort();
+    rl.close();
+    process.stdin.pause();
+  };
+  process.on("SIGTERM", shutdown);
   let initialized = false;
   for await (const line of rl) {
     if (!line.trim()) continue;
@@ -291,10 +257,13 @@ async function main(): Promise<void> {
   for (const queue of queues.values()) queue.close();
   await Promise.allSettled(consumers);
   status({ stopped: true });
+  process.removeListener("SIGTERM", shutdown);
+  rl.close();
+  process.stdin.pause();
 }
 
 main().catch((error) => {
   lastError = error instanceof Error ? error.message : String(error);
   status({ fatal: true });
-  process.exitCode = 1;
+  process.stdout.write("", () => process.exit(1));
 });

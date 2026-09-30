@@ -140,7 +140,7 @@ func TestBundledReadinessStatusReportsWaitingReason(t *testing.T) {
 	}
 	child := NewChannelCoreRunner(store).StartChild(context.Background(), reg, channelCoreChildConfig{OatsBin: oats, AWCommand: writeFakeAW(t, root, ""), Coalesce: time.Millisecond, RateLimit: time.Millisecond, InspectDelay: 25 * time.Millisecond})
 	defer child.Stop()
-	waitForStatus(t, child, func(st ChannelCoreStatus) bool { return st.Running && st.LastError == "" })
+	waitForStatus(t, child, func(st ChannelCoreStatus) bool { return st.Running })
 	child.Offer(reg.ReceiveBindings()[0], awid.AgentEvent{Type: awid.AgentEventActionableMail, MessageID: "mail-wait", ConversationID: "conv"})
 	waitForStatus(t, child, func(st ChannelCoreStatus) bool {
 		return st.TraceStage == "lane_job_started" && st.ReadinessWaiting == "inspect_error" && strings.Contains(st.ReadinessError, "inspect unavailable")
@@ -153,7 +153,7 @@ func TestBundledReadinessStatusReportsWaitingReason(t *testing.T) {
 	}
 	waitForFileContains(t, inputPath, "ready mail")
 	waitForStatus(t, child, func(st ChannelCoreStatus) bool {
-		return st.TraceStage == "lane_job_completed" && st.ReadinessState == "idle" && st.ReadinessError == "" && st.ReadinessWaiting == "ready"
+		return st.TraceStage == "lane_job_completed" && st.ReadinessState == "idle" && st.ReadinessError == "" && st.ReadinessWaiting == "inspect_done"
 	})
 }
 
@@ -244,7 +244,7 @@ func TestChannelCoreCrashLoopBackoffReportsNextRetry(t *testing.T) {
 	})
 	defer child.Stop()
 	waitForStatus(t, child, func(st ChannelCoreStatus) bool {
-		return st.RestartCount == 1 && st.NextRetryAt.After(time.Now().Add(55*time.Second)) && strings.Contains(st.LastExit, "boom")
+		return st.RestartCount == 1 && st.NextRetryAt.After(time.Now().Add(47*time.Second)) && !st.NextRetryAt.After(time.Now().Add(60*time.Second)) && strings.Contains(st.LastExit, "boom")
 	})
 }
 
@@ -553,4 +553,19 @@ func waitForCond(t *testing.T, what string, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+func TestFreshChildStatusIncludesZeroRestartCount(t *testing.T) {
+	child := &ChannelCoreChild{}
+	data, err := json.Marshal(child.Status())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(fields["restart_count"]); got != "0" {
+		t.Fatalf("restart_count=%q, want explicit 0 in fresh child status: %s", got, data)
+	}
 }

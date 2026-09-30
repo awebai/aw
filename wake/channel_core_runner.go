@@ -41,7 +41,7 @@ type ChannelCoreStatus struct {
 	ReadinessError   string            `json:"readiness_error,omitempty"`
 	ReadinessPaused  bool              `json:"readiness_paused,omitempty"`
 	ReadinessWaiting string            `json:"readiness_waiting,omitempty"`
-	RestartCount     int               `json:"restart_count,omitempty"`
+	RestartCount     int               `json:"restart_count"`
 	LastExit         string            `json:"last_exit,omitempty"`
 	NextRetryAt      time.Time         `json:"next_retry_at,omitempty"`
 	TraceStage       string            `json:"trace_stage,omitempty"`
@@ -141,6 +141,7 @@ type channelCoreChildConfig struct {
 	RestartBackoffMin time.Duration
 	RestartBackoffMax time.Duration
 	RestartReadyReset time.Duration
+	ShutdownTimeout   time.Duration
 }
 
 type childBinding struct {
@@ -233,9 +234,6 @@ func (c *ChannelCoreChild) Pause(paused bool) {
 }
 
 func (c *ChannelCoreChild) Offer(binding ReceiveIdentity, ev awid.AgentEvent) {
-	if teamID, err := effectiveTeamID(binding.IdentityHome, binding.TeamID); err == nil {
-		binding.TeamID = teamID
-	}
 	c.offer(childLine{Type: "event", BindingID: bindingID(binding), Event: agentEventForChannelCore(ev)})
 }
 
@@ -245,7 +243,16 @@ func (c *ChannelCoreChild) control(line childLine) {
 		return
 	default:
 	}
-	go func() { c.ctl <- line }()
+	// Keep only the latest pending control when the bounded queue fills.
+	// The authoritative pause value is also carried by every new init line.
+	select {
+	case <-c.ctl:
+	default:
+	}
+	select {
+	case c.ctl <- line:
+	default:
+	}
 }
 
 func (c *ChannelCoreChild) offer(line childLine) {
@@ -315,7 +322,7 @@ func (c *ChannelCoreChild) run(ctx context.Context) {
 		if readyFor >= readyReset {
 			backoff = minBackoff
 		}
-		delay := jitteredBackoff(backoff)
+		delay := jitteredBackoff(backoff, maxBackoff)
 		c.setNextRetry(delay)
 		t := time.NewTimer(delay)
 		select {
@@ -345,14 +352,32 @@ func (c *ChannelCoreChild) runOnce(ctx context.Context) error {
 		c.setNode(node, "", err.Error(), false)
 		return err
 	}
-	cmd := exec.CommandContext(ctx, node, bundle)
+	childCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := exec.CommandContext(childCtx, node, bundle)
+	configureChildProcess(cmd)
 	pipes, err := openChildPipes()
 	if err != nil {
 		return err
 	}
-	cmd.Stdin = pipes.stdinReader
-	cmd.Stdout = pipes.stdoutWriter
-	cmd.Stderr = pipes.stderrWriter
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = pipes.stdinReader, pipes.stdoutWriter, pipes.stderrWriter
+	grace := c.cfg.ShutdownTimeout
+	if grace <= 0 {
+		grace = 5 * time.Second
+	}
+	cmd.WaitDelay = grace
+	writerCtx, stopWriter := context.WithCancel(context.Background())
+	defer stopWriter()
+	writerDone := make(chan struct{})
+	writerErrors := make(chan error, 1)
+	// Cancel never waits on an unbounded pipe write. Interrupt any current write,
+	// allow the sole encoder a bounded shutdown attempt, then request termination.
+	cmd.Cancel = func() error {
+		_ = pipes.stdinWriter.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+		stopWriter()
+		<-writerDone
+		return terminateChildProcess(cmd)
+	}
 	if err := cmd.Start(); err != nil {
 		pipes.closeAll()
 		c.setNode(node, bundle, err.Error(), false)
@@ -360,73 +385,99 @@ func (c *ChannelCoreChild) runOnce(ctx context.Context) error {
 	}
 	pipes.closeChildEnds()
 	c.setNode(node, bundle, "", false)
-	doneRead := make(chan struct{})
-	go c.readStatus(pipes.stdoutReader, doneRead)
-	doneStderr := make(chan struct{})
 	go func() {
-		defer close(doneStderr)
-		c.readStderr(pipes.stderrReader)
+		defer close(writerDone)
+		enc := json.NewEncoder(pipes.stdinWriter)
+		err := enc.Encode(c.initLine())
+		for err == nil && writerCtx.Err() == nil {
+			var line childLine
+			select {
+			case <-writerCtx.Done():
+				continue
+			case line = <-c.ctl:
+			default:
+				select {
+				case <-writerCtx.Done():
+					continue
+				case line = <-c.ctl:
+				case line = <-c.in:
+				}
+			}
+			err = enc.Encode(line)
+		}
+		if writerCtx.Err() != nil {
+			_ = pipes.stdinWriter.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+			_ = enc.Encode(childLine{Type: "shutdown"})
+		} else if err != nil {
+			writerErrors <- err
+		}
 	}()
+	doneRead := make(chan struct{})
+	fatal := make(chan error, 1)
+	go c.readStatus(pipes.stdoutReader, doneRead, fatal)
+	doneStderr := make(chan struct{})
+	go func() { defer close(doneStderr); c.readStderr(pipes.stderrReader) }()
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- cmd.Wait() }()
+	// Command's WaitDelay kills the direct child. Independently kill its group
+	// at the same deadline so descendants cannot survive or retain output pipes.
+	groupDone := make(chan struct{})
+	stopGroupWatch := make(chan struct{})
+	go func() {
+		defer close(groupDone)
+		select {
+		case <-childCtx.Done():
+		case <-stopGroupWatch:
+			return
+		}
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			killChildProcessGroup(cmd)
+		case <-stopGroupWatch:
+		}
+	}()
 	finish := func(err error) error {
+		close(stopGroupWatch)
+		<-groupDone
+		killChildProcessGroup(cmd)
+		stopWriter()
+		_ = pipes.stdinWriter.Close()
+		<-writerDone
 		waitForReaderEOF(doneRead, 2*time.Second)
 		waitForReaderEOF(doneStderr, 2*time.Second)
 		pipes.closeParentEnds()
+		<-doneRead
+		<-doneStderr
 		c.setRunning(false)
 		return err
 	}
-	enc := json.NewEncoder(pipes.stdinWriter)
-	if err := enc.Encode(c.initLine()); err != nil {
-		_ = cmd.Process.Kill()
+	select {
+	case <-ctx.Done():
+		cancel()
+		<-waitCh
+		return finish(ctx.Err())
+	case err := <-fatal:
+		cancel()
 		<-waitCh
 		return finish(err)
-	}
-	for {
-		select {
-		case line := <-c.ctl:
-			if err := enc.Encode(line); err != nil {
-				_ = cmd.Process.Kill()
-				<-waitCh
-				return finish(err)
-			}
-			continue
-		default:
+	case err := <-writerErrors:
+		cancel()
+		<-waitCh
+		return finish(err)
+	case err := <-waitCh:
+		if err == nil {
+			err = errors.New("channel-core child exited")
 		}
-		select {
-		case <-ctx.Done():
-			_ = enc.Encode(childLine{Type: "shutdown"})
-			<-waitCh
-			return finish(ctx.Err())
-		case err := <-waitCh:
-			if err == nil {
-				err = errors.New("channel-core child exited")
-			}
-			return finish(err)
-		case line := <-c.ctl:
-			if err := enc.Encode(line); err != nil {
-				_ = cmd.Process.Kill()
-				<-waitCh
-				return finish(err)
-			}
-		case line := <-c.in:
-			if err := enc.Encode(line); err != nil {
-				_ = cmd.Process.Kill()
-				<-waitCh
-				return finish(err)
-			}
-		}
+		return finish(err)
 	}
 }
 
 func (c *ChannelCoreChild) initLine() initLine {
 	bindings := []childBinding{}
 	for _, b := range c.reg.ReceiveBindings() {
-		teamID, err := effectiveTeamID(b.IdentityHome, b.TeamID)
-		if err != nil {
-			teamID = b.TeamID
-		}
-		b.TeamID = teamID
+		teamID := b.TeamID
 		bindings = append(bindings, childBinding{BindingID: bindingID(b), IdentityHome: b.IdentityHome, TeamID: teamID, DeliveryStorePath: filepath.Join(b.IdentityHome, "channel-delivered-ids-"+safeTeamID(teamID)+".json")})
 	}
 	c.mu.Lock()
@@ -435,13 +486,22 @@ func (c *ChannelCoreChild) initLine() initLine {
 	return initLine{Type: "init", Home: c.reg.Home, OatsBin: c.cfg.OatsBin, AWCommand: c.cfg.AWCommand, CoalesceMs: millis(c.cfg.Coalesce), RateLimitMs: millis(c.cfg.RateLimit), InspectDelayMs: millis(c.cfg.InspectDelay), Paused: paused, Bindings: bindings}
 }
 
-func (c *ChannelCoreChild) readStatus(r io.Reader, done chan<- struct{}) {
+func (c *ChannelCoreChild) readStatus(r io.Reader, done chan<- struct{}, fatalChannels ...chan<- error) {
 	defer close(done)
-	s := bufio.NewScanner(r)
-	for s.Scan() {
+	c.readChildLines(r, func(data []byte) {
 		var line childStatusLine
-		if err := json.Unmarshal(s.Bytes(), &line); err != nil {
-			continue
+		if err := json.Unmarshal(data, &line); err != nil {
+			return
+		}
+		if line.Fatal && len(fatalChannels) > 0 {
+			detail := line.LastError
+			if detail == "" {
+				detail = "channel-core child reported fatal"
+			}
+			select {
+			case fatalChannels[0] <- errors.New(detail):
+			default:
+			}
 		}
 		now := time.Now().UTC()
 		var livenessState string
@@ -508,7 +568,7 @@ func (c *ChannelCoreChild) readStatus(r io.Reader, done chan<- struct{}) {
 		if line.Inactive != "" && c.cfg.OnInactive != nil {
 			c.cfg.OnInactive(line.Inactive)
 		}
-	}
+	})
 }
 
 func waitForReaderEOF(done <-chan struct{}, timeout time.Duration) {
@@ -525,14 +585,55 @@ func waitForReaderEOF(done <-chan struct{}, timeout time.Duration) {
 }
 
 func (c *ChannelCoreChild) readStderr(r io.Reader) {
-	s := bufio.NewScanner(r)
-	for s.Scan() {
-		line := s.Text()
+	c.readChildLines(r, func(data []byte) {
+		line := string(data)
 		c.mu.Lock()
 		c.lastStderr = line
 		c.mu.Unlock()
 		if c.cfg.Log != nil {
 			c.cfg.Log("channel-core child stderr home=%s: %s", c.reg.Home, line)
+		}
+	})
+}
+
+// readChildLines bounds memory per record while continuing to drain an
+// oversized record. A scanner stops on overflow and can wedge the child writer.
+func (c *ChannelCoreChild) readChildLines(r io.Reader, consume func([]byte)) {
+	const maxLine = 1024 * 1024
+	reader := bufio.NewReaderSize(r, 32*1024)
+	var line []byte
+	dropping := false
+	for {
+		part, err := reader.ReadSlice('\n')
+		if !dropping {
+			if len(line)+len(part) > maxLine {
+				dropping = true
+				line = nil
+				c.mu.Lock()
+				c.st.LastError = "channel-core child output line exceeds 1 MiB; discarded"
+				c.mu.Unlock()
+				if c.cfg.Log != nil {
+					c.cfg.Log("channel-core child output line exceeds 1 MiB home=%s; discarded", c.reg.Home)
+				}
+			} else {
+				line = append(line, part...)
+			}
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if !dropping && len(line) > 0 {
+			consume([]byte(strings.TrimSuffix(strings.TrimSuffix(string(line), "\n"), "\r")))
+		}
+		line = line[:0]
+		dropping = false
+		if err != nil {
+			if err != io.EOF {
+				c.mu.Lock()
+				c.st.LastError = "channel-core child output read: " + err.Error()
+				c.mu.Unlock()
+			}
+			return
 		}
 	}
 }
@@ -566,17 +667,19 @@ func (c *ChannelCoreChild) resetPerRunLocked() {
 	c.lastStderr = ""
 }
 
-func jitteredBackoff(base time.Duration) time.Duration {
+func jitteredBackoff(base, cap time.Duration) time.Duration {
+	base = min(base, cap)
 	if base <= 0 {
 		return 0
 	}
-	// Add up to 20% jitter. This avoids synchronized fleet retries without
-	// shortening the configured recovery bound.
-	maxJitter := int64(base / 5)
-	if maxJitter <= 0 {
+	// Shift the 20% jitter range below the cap when necessary, rather than
+	// flattening every capped retry to the same deadline.
+	spread := base / 5
+	if spread <= 0 {
 		return base
 	}
-	return base + time.Duration(rand.Int63n(maxJitter+1))
+	lower := min(base, cap-spread)
+	return lower + time.Duration(rand.Int63n(int64(spread)+1))
 }
 
 func (c *ChannelCoreChild) readyDuration() time.Duration {
