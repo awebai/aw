@@ -22,18 +22,12 @@ const (
 	// silently dropped (§4).
 	DefaultMaxStreams = 128
 
-	// DefaultCoalesce is the short window over which a burst of hints for one
-	// instance collapses into one submission.
-	DefaultCoalesce = 2 * time.Second
-
-	// DefaultRateLimit is the floor between two submission attempts for one
-	// instance. The note fixes no number; it requires that reminders be
-	// rate-limited per instance, and that `unknown` be bounded by coalescing
-	// plus a rate limit rather than by a delay.
+	// Deprecated compatibility defaults. Terminal delivery no longer coalesces
+	// or waits between inputs; Config still accepts these legacy fields.
+	DefaultCoalesce  = 2 * time.Second
 	DefaultRateLimit = 30 * time.Second
 
-	// DefaultPollInterval is the inspect poll. Deferred hints are re-evaluated
-	// on each poll with an unbounded wait (§4).
+	// DefaultPollInterval controls broker status persistence.
 	DefaultPollInterval = 2 * time.Second
 
 	// DefaultIdleProbe is how often an instance with nothing pending is still
@@ -65,8 +59,8 @@ type Config struct {
 	OpenStream func(identityHome, teamID string) (run.EventStreamOpener, error)
 
 	MaxStreams    int
-	Coalesce      time.Duration
-	RateLimit     time.Duration
+	Coalesce      time.Duration // Deprecated: ignored.
+	RateLimit     time.Duration // Deprecated: ignored.
 	PollInterval  time.Duration
 	IdleProbe     time.Duration
 	PendingExpiry time.Duration
@@ -87,12 +81,6 @@ type Config struct {
 func (c *Config) applyDefaults() {
 	if c.MaxStreams <= 0 {
 		c.MaxStreams = DefaultMaxStreams
-	}
-	if c.Coalesce <= 0 {
-		c.Coalesce = DefaultCoalesce
-	}
-	if c.RateLimit <= 0 {
-		c.RateLimit = DefaultRateLimit
 	}
 	if c.PollInterval <= 0 {
 		c.PollInterval = DefaultPollInterval
@@ -119,14 +107,13 @@ func (c *Config) applyDefaults() {
 type Broker struct {
 	cfg Config
 
-	// reconcileMu serialises the whole reconcile step. Register, Deregister,
-	// the reconcile ticker and the expiry path can all reach it at once, and
-	// the step is a check-then-act on two maps: without this, two concurrent
-	// reconciles could each see one home as "not running" and start two
-	// runners for it, or each pass the stream bound and open one stream too
-	// many. It is held across the per-runner start/stop calls, which never
-	// take it themselves.
+	// passMu serializes disk sweeps, not controls. reconcileMu protects one
+	// home mutation at a time, including durable writes and runner stop/delete.
+	passMu      sync.Mutex
 	reconcileMu sync.Mutex
+	// Only lives for the current sweep. Controls invalidate that home's old
+	// snapshot entry; no revisions or tombstones survive the pass.
+	reconcileChanged map[string]bool
 
 	mu        sync.Mutex
 	streams   map[string]*streamRunner
@@ -231,21 +218,27 @@ func (b *Broker) shutdown() {
 }
 
 // Reconcile brings the running set in line with registry.d. It is called on
-// start, on a timer, and immediately after a socket register or deregister.
+// start and on a timer. Socket controls apply only their own home.
 func (b *Broker) Reconcile() {
+	b.passMu.Lock()
+	defer b.passMu.Unlock()
 	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
-	b.reconcileLocked()
-}
+	b.reconcileChanged = map[string]bool{}
+	b.reconcileMu.Unlock()
+	defer func() {
+		b.reconcileMu.Lock()
+		b.reconcileChanged = nil
+		b.reconcileMu.Unlock()
+	}()
 
-func (b *Broker) reconcileLocked() {
+	// Reading and normalizing every durable registration can be slow. Controls
+	// need only their own apply lock, not this whole disk snapshot.
 	registrations, err := b.cfg.Store.ListRegistrations()
 	if err != nil {
 		b.cfg.Log("reconcile failed err=%v", err)
 		return
 	}
-
-	seen := map[string]struct{}{}
+	seen := map[string]bool{}
 	bindingOwners := map[string]string{}
 	for _, reg := range registrations {
 		canonical, err := CanonicalHome(reg.Home)
@@ -254,71 +247,102 @@ func (b *Broker) reconcileLocked() {
 			continue
 		}
 		reg.Home = canonical
-		key := HomeKey(canonical)
-		if err := reg.Validate(); err != nil {
-			// A read/validation failure for an existing durable registration must
-			// not make the reconcile pass forget a running home. Keep the prior
-			// runner/state and retry on the next pass; only an explicitly absent
-			// registration file removes a registration.
-			seen[key] = struct{}{}
-			if runner, ok := b.instanceRunner(canonical); ok {
-				runner.recordRegistrationError(err)
-			}
-			b.cfg.Log("registration refused home=%s err=%v (retained for retry)", canonical, err)
+		seen[canonical] = true
+		validationErr := reg.Validate()
+		b.reconcileMu.Lock()
+		if b.reconcileChanged[canonical] {
+			b.reconcileMu.Unlock()
 			continue
 		}
-		seen[key] = struct{}{}
+		if validationErr != nil {
+			// A failed read/validation retains the last-good running home.
+			if runner, ok := b.instanceRunner(canonical); ok {
+				runner.recordRegistrationError(validationErr)
+			}
+			b.cfg.Log("registration refused home=%s err=%v (retained for retry)", canonical, validationErr)
+			b.reconcileMu.Unlock()
+			continue
+		}
+		// A control may have removed or replaced an owner since the snapshot.
+		// Its accepted bindings take precedence over that stale ownership view.
+		for key, owner := range bindingOwners {
+			if b.reconcileChanged[owner] {
+				delete(bindingOwners, key)
+			}
+		}
+		for home := range b.reconcileChanged {
+			if runner, ok := b.instanceRunner(home); ok {
+				for _, binding := range runner.registrationSnapshot().ReceiveBindings() {
+					key, _ := bindingKey(binding.IdentityHome, binding.TeamID)
+					bindingOwners[key] = home
+				}
+				for _, binding := range runner.pendingReceiveBindings() {
+					key, _ := bindingKey(binding.IdentityHome, binding.TeamID)
+					bindingOwners[key] = home
+				}
+			}
+		}
 		conflictHome := ""
 		for _, binding := range reg.ReceiveBindings() {
-			bindingKey, err := bindingKey(binding.IdentityHome, binding.TeamID)
-			if err != nil {
-				b.cfg.Log("registration binding skipped home=%s identity_home=%s err=%v", reg.Home, binding.IdentityHome, err)
-				continue
-			}
-			if owner := bindingOwners[bindingKey]; owner != "" && owner != reg.Home {
+			key, _ := bindingKey(binding.IdentityHome, binding.TeamID)
+			if owner := bindingOwners[key]; owner != "" && owner != reg.Home {
 				conflictHome = owner
 				break
 			}
 		}
-
-		b.mu.Lock()
-		runner, running := b.instances[key]
-		b.mu.Unlock()
-		if running {
-			pending := runner.updateRegistration(reg)
-			runner.setConflictHome(conflictHome)
-			if conflictHome == "" && !pending {
-				b.admitRunnerStreams(runner)
-			}
-		} else {
-			runner = b.startInstance(reg, conflictHome)
-		}
-		if conflictHome != "" {
-			b.cfg.Log("registration conflict home=%s winner=%s", reg.Home, conflictHome)
-			continue
-		}
-		for _, binding := range reg.ReceiveBindings() {
-			bindingKey, err := bindingKey(binding.IdentityHome, binding.TeamID)
-			if err == nil {
-				bindingOwners[bindingKey] = reg.Home
+		b.applyRegistrationLocked(reg, conflictHome)
+		if conflictHome == "" {
+			for _, binding := range reg.ReceiveBindings() {
+				key, _ := bindingKey(binding.IdentityHome, binding.TeamID)
+				bindingOwners[key] = reg.Home
 			}
 		}
+		b.reconcileMu.Unlock()
 	}
 
 	b.mu.Lock()
-	stale := []*instanceRunner{}
-	for key, runner := range b.instances {
-		if _, ok := seen[key]; !ok {
-			stale = append(stale, runner)
-			delete(b.instances, key)
-		}
+	candidates := make([]*instanceRunner, 0, len(b.instances))
+	for _, runner := range b.instances {
+		candidates = append(candidates, runner)
 	}
 	b.mu.Unlock()
-	for _, runner := range stale {
-		b.cfg.Log("deregistered home=%s", runner.home())
-		runner.stop()
+	for _, runner := range candidates {
+		home := runner.home()
+		b.reconcileMu.Lock()
+		if !seen[home] && !b.reconcileChanged[home] {
+			b.mu.Lock()
+			delete(b.instances, HomeKey(home))
+			b.mu.Unlock()
+			b.cfg.Log("deregistered home=%s", home)
+			runner.stop()
+		}
+		b.reconcileMu.Unlock()
 	}
-	b.pruneStreamsLocked()
+	b.pruneStreams()
+}
+
+// applyRegistrationLocked applies just one accepted home, never a disk sweep.
+func (b *Broker) applyRegistrationLocked(reg Registration, conflictHome string) {
+	if runner, ok := b.instanceRunner(reg.Home); ok {
+		pending := runner.updateRegistration(reg)
+		runner.setConflictHome(conflictHome)
+		if conflictHome == "" && !pending {
+			// Release replaced bindings before admission, including at the cap.
+			b.pruneStreamsLocked()
+			b.admitRunnerStreams(runner)
+		}
+	} else {
+		b.startInstance(reg, conflictHome)
+	}
+	if conflictHome != "" {
+		b.cfg.Log("registration conflict home=%s winner=%s", reg.Home, conflictHome)
+	}
+}
+
+func (b *Broker) registrationChangedLocked(home string) {
+	if b.reconcileChanged != nil {
+		b.reconcileChanged[home] = true
+	}
 }
 
 func (b *Broker) startInstance(reg Registration, conflictHome string) *instanceRunner {
@@ -424,8 +448,9 @@ func (b *Broker) ensureStream(binding ReceiveIdentity) bool {
 // pruneStreams stops streams no registration needs any more.
 func (b *Broker) pruneStreams() {
 	b.reconcileMu.Lock()
-	defer b.reconcileMu.Unlock()
 	b.pruneStreamsLocked()
+	b.reconcileMu.Unlock()
+	b.retryPendingStreams()
 }
 
 func (b *Broker) pruneStreamsLocked() {
@@ -459,6 +484,9 @@ func (b *Broker) pruneStreamsLocked() {
 	for _, runner := range orphans {
 		runner.stop()
 	}
+}
+
+func (b *Broker) retryPendingStreams() {
 	// A freed slot may now admit a registration that was over the bound.
 	b.mu.Lock()
 	pending := make([]*instanceRunner, 0)
@@ -472,6 +500,15 @@ func (b *Broker) pruneStreamsLocked() {
 	}
 	b.mu.Unlock()
 	for _, runner := range pending {
+		b.admitCurrentRunnerStreams(runner)
+	}
+}
+
+// Deferred admission must not recreate streams for a removed/replaced runner.
+func (b *Broker) admitCurrentRunnerStreams(runner *instanceRunner) {
+	b.reconcileMu.Lock()
+	defer b.reconcileMu.Unlock()
+	if current, ok := b.instanceRunner(runner.home()); ok && current == runner && !runner.hasPendingRegistration() && runner.snapshot().ConflictHome == "" {
 		b.admitRunnerStreams(runner)
 	}
 }
@@ -532,7 +569,7 @@ func (b *Broker) dispatchStream(key string, ev awid.AgentEvent) {
 	}
 }
 
-// Register validates and stores a registration, then reconciles.
+// Register durably stores and applies one home without waiting for a disk sweep.
 func (b *Broker) Register(reg Registration) error {
 	canonical, err := CanonicalHome(reg.Home)
 	if err != nil {
@@ -564,6 +601,7 @@ func (b *Broker) Register(reg Registration) error {
 	if err := b.cfg.Store.SaveRegistration(reg); err != nil {
 		return err
 	}
+	b.registrationChangedLocked(canonical)
 	// Live runners own their state writes; resetting the file concurrently can
 	// overwrite pause/liveness. Identical active registrations preserve lifecycle.
 	if !hadExistingRunner {
@@ -577,7 +615,7 @@ func (b *Broker) Register(reg Registration) error {
 			}
 		}
 	}
-	b.reconcileLocked()
+	b.applyRegistrationLocked(reg, "")
 	if hadExistingRunner || hadExistingRegistration {
 		if runner, ok := b.instanceRunner(reg.Home); ok && !runner.hasPendingRegistration() {
 			runner.reactivateRegistration()
@@ -591,6 +629,16 @@ func (b *Broker) refuseDuplicateBinding(reg Registration) error {
 	if err != nil {
 		return err
 	}
+	// A file-only removal/rebind may not have stopped the old consumer yet.
+	// Single-home admission must also respect retained and pending bindings.
+	b.mu.Lock()
+	for _, runner := range b.instances {
+		other := runner.registrationSnapshot()
+		other.ReceiveIdentities = append(other.ReceiveBindings(), runner.pendingReceiveBindings()...)
+		other.bindingsNormalized = true
+		existing = append(existing, other)
+	}
+	b.mu.Unlock()
 	want := map[string]ReceiveIdentity{}
 	for _, binding := range reg.ReceiveBindings() {
 		key, err := bindingKey(binding.IdentityHome, binding.TeamID)
@@ -647,6 +695,7 @@ func (b *Broker) Deregister(home string) (bool, error) {
 	}
 	b.reconcileMu.Lock()
 	defer b.reconcileMu.Unlock()
+	b.registrationChangedLocked(canonical)
 	key := HomeKey(canonical)
 	b.mu.Lock()
 	runner := b.instances[key]
@@ -665,6 +714,7 @@ func (b *Broker) Deregister(home string) (bool, error) {
 		return existed, err
 	}
 	b.pruneStreamsLocked()
+	go b.retryPendingStreams()
 	return existed, nil
 }
 

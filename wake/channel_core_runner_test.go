@@ -84,7 +84,7 @@ func TestBundledGrantMailReadOnlyUsesManualAckAndDeliveryStore(t *testing.T) {
 	runner := NewChannelCoreRunner(store)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	child := runner.StartChild(ctx, reg, channelCoreChildConfig{OatsBin: oats, AWCommand: writeFakeAW(t, root, ""), Coalesce: time.Millisecond, RateLimit: time.Millisecond, InspectDelay: time.Millisecond})
+	child := runner.StartChild(ctx, reg, channelCoreChildConfig{OatsBin: oats, AWCommand: writeFakeAW(t, root, "")})
 	waitForStatus(t, child, func(st ChannelCoreStatus) bool { return st.Running && st.LastError == "" })
 	child.Offer(reg.ReceiveBindings()[0], awid.AgentEvent{Type: awid.AgentEventActionableMail, MessageID: "mail-1", ConversationID: "conv-1"})
 	waitForFileContains(t, inputPath, "grant mail")
@@ -104,7 +104,7 @@ func TestBundledGrantMailReadOnlyUsesManualAckAndDeliveryStore(t *testing.T) {
 	before, _ := os.ReadFile(inputPath)
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
-	child2 := runner.StartChild(ctx2, reg, channelCoreChildConfig{OatsBin: oats, AWCommand: writeFakeAW(t, root, ""), Coalesce: time.Millisecond, RateLimit: time.Millisecond, InspectDelay: time.Millisecond})
+	child2 := runner.StartChild(ctx2, reg, channelCoreChildConfig{OatsBin: oats, AWCommand: writeFakeAW(t, root, "")})
 	waitForStatus(t, child2, func(st ChannelCoreStatus) bool { return st.Running && st.LastError == "" })
 	child2.Offer(reg.ReceiveBindings()[0], awid.AgentEvent{Type: awid.AgentEventActionableMail, MessageID: "mail-1", ConversationID: "conv-1"})
 	waitForStatus(t, child2, func(st ChannelCoreStatus) bool {
@@ -117,7 +117,7 @@ func TestBundledGrantMailReadOnlyUsesManualAckAndDeliveryStore(t *testing.T) {
 	}
 }
 
-func TestBundledReadinessStatusReportsWaitingReason(t *testing.T) {
+func TestBundledSafetyInspectFailureRetriesOnNormalDeliveryPath(t *testing.T) {
 	if _, err := os.Stat("channel_core_runner_bundle.mjs"); err != nil {
 		t.Skipf("bundle unavailable: %v", err)
 	}
@@ -138,15 +138,12 @@ func TestBundledReadinessStatusReportsWaitingReason(t *testing.T) {
 	if err := os.MkdirAll(reg.Home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	child := NewChannelCoreRunner(store).StartChild(context.Background(), reg, channelCoreChildConfig{OatsBin: oats, AWCommand: writeFakeAW(t, root, ""), Coalesce: time.Millisecond, RateLimit: time.Millisecond, InspectDelay: 25 * time.Millisecond})
+	child := NewChannelCoreRunner(store).StartChild(context.Background(), reg, channelCoreChildConfig{OatsBin: oats, AWCommand: writeFakeAW(t, root, "")})
 	defer child.Stop()
 	waitForStatus(t, child, func(st ChannelCoreStatus) bool { return st.Running })
 	child.Offer(reg.ReceiveBindings()[0], awid.AgentEvent{Type: awid.AgentEventActionableMail, MessageID: "mail-wait", ConversationID: "conv"})
 	waitForStatus(t, child, func(st ChannelCoreStatus) bool {
-		return st.TraceStage == "lane_job_started" && st.ReadinessWaiting == "inspect_error" && strings.Contains(st.ReadinessError, "inspect unavailable")
-	})
-	waitForStatus(t, child, func(st ChannelCoreStatus) bool {
-		return st.ReadinessWaiting == "inspect_start" && strings.Contains(st.ReadinessError, "inspect unavailable")
+		return st.ReadinessWaiting == "inspect_error" && strings.Contains(st.ReadinessError, "inspect unavailable")
 	})
 	if err := os.Remove(failPath); err != nil {
 		t.Fatal(err)
@@ -158,22 +155,31 @@ func TestBundledReadinessStatusReportsWaitingReason(t *testing.T) {
 }
 
 func TestChannelCoreRestartReportsExitAndClearsPerRunStatus(t *testing.T) {
-	root := t.TempDir()
-	marker := filepath.Join(root, "crashed-once")
-	writeFakeNode(t, root, "#!/bin/sh\nif [ ! -f "+shellQuoteForTest(marker)+" ]; then\n  printf '{\"type\":\"status\",\"ready\":true,\"trace_stage\":\"lane_job_started\",\"trace_message_id\":\"dead\",\"readiness_waiting\":\"inspect_start\",\"readiness_error\":\"dead readiness\",\"ambient_queued\":7,\"ambient_dropped\":8}\n'\n  printf 'uncaught Error: write EPIPE\n' >&2\n  printf x > "+shellQuoteForTest(marker)+"\n  exit 42\nfi\nprintf '{\"type\":\"status\",\"ready\":true}\n'\nwhile IFS= read -r line; do :; done\n")
-	store, err := NewStore(filepath.Join(root, "state"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", root)
-	child := NewChannelCoreRunner(store).StartChild(context.Background(), Registration{Home: filepath.Join(root, "terminal")}, channelCoreChildConfig{})
-	defer child.Stop()
-	waitForStatus(t, child, func(st ChannelCoreStatus) bool {
-		return st.Running && st.RestartCount == 1 && strings.Contains(st.LastExit, "exit status 42") && strings.Contains(st.LastExit, "write EPIPE")
-	})
-	st := child.Status()
-	if st.TraceStage != "" || st.TraceMessageID != "" || st.ReadinessWaiting != "" || st.ReadinessError != "" || st.AmbientQueued != 0 || st.AmbientDropped != 0 {
-		t.Fatalf("stale per-run status survived restart: %#v", st)
+	for _, tc := range []struct{ name, awCommand string }{
+		{"default-init", ""},
+		{"pipe-spanning-init", strings.Repeat("x", 1<<20)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			marker := filepath.Join(root, "crashed-once")
+			// Consume init before crashing so this exercises process exit42,
+			// not a race between an unread init pipe and the process wait.
+			writeFakeNode(t, root, "#!/bin/sh\nIFS= read -r init || exit 1\nif [ ! -f "+shellQuoteForTest(marker)+" ]; then\n  printf '{\"type\":\"status\",\"ready\":true,\"trace_stage\":\"lane_job_started\",\"trace_message_id\":\"dead\",\"readiness_waiting\":\"inspect_start\",\"readiness_error\":\"dead readiness\",\"ambient_queued\":7,\"ambient_dropped\":8}\n'\n  printf 'uncaught Error: write EPIPE\n' >&2\n  printf x > "+shellQuoteForTest(marker)+"\n  exit 42\nfi\nprintf '{\"type\":\"status\",\"ready\":true}\n'\nwhile IFS= read -r line; do :; done\n")
+			store, err := NewStore(filepath.Join(root, "state"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", root)
+			child := NewChannelCoreRunner(store).StartChild(context.Background(), Registration{Home: filepath.Join(root, "terminal")}, channelCoreChildConfig{AWCommand: tc.awCommand})
+			defer child.Stop()
+			waitForStatus(t, child, func(st ChannelCoreStatus) bool {
+				return st.Running && st.RestartCount == 1 && strings.Contains(st.LastExit, "exit status 42") && strings.Contains(st.LastExit, "write EPIPE")
+			})
+			st := child.Status()
+			if st.TraceStage != "" || st.TraceMessageID != "" || st.ReadinessWaiting != "" || st.ReadinessError != "" || st.AmbientQueued != 0 || st.AmbientDropped != 0 {
+				t.Fatalf("stale per-run status survived restart: %#v", st)
+			}
+		})
 	}
 }
 
@@ -299,7 +305,7 @@ func TestBundledGrantChatReadMarksReadWithGrantAuth(t *testing.T) {
 	grantHome := writeGrantHome(t, root, server.URL, []string{"events.read", "chat.read"})
 	reg := Registration{Home: filepath.Join(root, "terminal"), IdentityHome: grantHome, Delivery: DeliverySession}
 	_ = os.MkdirAll(reg.Home, 0o700)
-	child := NewChannelCoreRunner(store).StartChild(context.Background(), reg, channelCoreChildConfig{OatsBin: oats, AWCommand: writeFakeAW(t, root, ""), Coalesce: time.Millisecond, RateLimit: time.Millisecond, InspectDelay: time.Millisecond})
+	child := NewChannelCoreRunner(store).StartChild(context.Background(), reg, channelCoreChildConfig{OatsBin: oats, AWCommand: writeFakeAW(t, root, "")})
 	defer child.Stop()
 	waitForStatus(t, child, func(st ChannelCoreStatus) bool { return st.Running && st.LastError == "" })
 	child.Offer(reg.ReceiveBindings()[0], awid.AgentEvent{Type: awid.AgentEventActionableChat, MessageID: "chat-1", SessionID: "sess-1", ConversationID: "conv-1"})
@@ -411,7 +417,7 @@ func TestBundledEncryptedSecondaryRootUsesBindingIdentityForDecrypt(t *testing.T
 	secondary := writeGrantHome(t, root, server.URL, []string{"events.read", "mail.read"})
 	reg := Registration{Home: terminalHome, Delivery: DeliverySession, RuntimeDelivery: RuntimeDeliveryExternalSession, ReceiveIdentities: []ReceiveIdentity{{IdentityHome: secondary, TeamID: "backend:acme.com", DeliveryOwner: ReceiveOwnerSessionHints, Controls: true}}}
 	_ = os.MkdirAll(terminalHome, 0o700)
-	child := NewChannelCoreRunner(store).StartChild(context.Background(), reg, channelCoreChildConfig{OatsBin: oats, AWCommand: writeFakeAW(t, root, awLog), Coalesce: time.Millisecond, RateLimit: time.Millisecond, InspectDelay: time.Millisecond})
+	child := NewChannelCoreRunner(store).StartChild(context.Background(), reg, channelCoreChildConfig{OatsBin: oats, AWCommand: writeFakeAW(t, root, awLog)})
 	defer child.Stop()
 	waitForStatus(t, child, func(st ChannelCoreStatus) bool { return st.Running && st.LastError == "" })
 	child.Offer(reg.ReceiveBindings()[0], awid.AgentEvent{Type: awid.AgentEventActionableMail, MessageID: "mail-enc", ConversationID: "conv-1"})
@@ -426,9 +432,9 @@ func TestBundledEncryptedSecondaryRootUsesBindingIdentityForDecrypt(t *testing.T
 	}
 }
 
-func TestBundledSecondaryIdentityNotice(t *testing.T) {
+func TestBundledSecondaryIdentityFullMessage(t *testing.T) {
 	for _, kind := range []string{"mail", "chat"} {
-		for _, state := range []string{"unknown", "idle"} {
+		for _, state := range []string{"unknown", "idle", "working", "blocked"} {
 			t.Run(kind+"/"+state, func(t *testing.T) {
 				root := t.TempDir()
 				store, _ := NewStore(filepath.Join(root, "state"))
@@ -439,17 +445,22 @@ func TestBundledSecondaryIdentityNotice(t *testing.T) {
 					_ = json.NewEncoder(w).Encode(map[string]any{"messages": []any{}})
 				}))
 				defer primaryServer.Close()
+				var ackMu sync.Mutex
+				acks := 0
 				secondaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.Method == http.MethodPost {
+						ackMu.Lock()
+						acks++
+						ackMu.Unlock()
 						_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 						return
 					}
 					_ = json.NewEncoder(w).Encode(map[string]any{"messages": []map[string]any{{
-						"message_id": messageID, "from_alias": "bob", "from_agent": "bob", "body": "secondary private message", "subject": "secondary mail", "priority": "normal", "created_at": "2026-01-01T00:00:00Z", "timestamp": "2026-01-01T00:00:00Z",
+						"message_id": messageID, "from_alias": "bob", "from_agent": "bob", "body": "secondary private\u001b\u0007 message", "subject": "secondary mail", "priority": "normal", "created_at": "2026-01-01T00:00:00Z", "timestamp": "2026-01-01T00:00:00Z",
 					}}})
 				}))
 				defer secondaryServer.Close()
-				scopes := []string{"events.read", "mail.read", "chat.read"}
+				scopes := []string{"events.read", "mail.read", "mail.send", "chat.read"}
 				primary := writeGrantHome(t, filepath.Join(root, "primary"), primaryServer.URL, scopes)
 				secondary := writeGrantHome(t, filepath.Join(root, "secondary identity's home"), secondaryServer.URL, scopes)
 				reg := Registration{Home: filepath.Join(root, "terminal"), Delivery: DeliverySession, RuntimeDelivery: RuntimeDeliveryExternalSession, ReceiveIdentities: []ReceiveIdentity{
@@ -457,7 +468,7 @@ func TestBundledSecondaryIdentityNotice(t *testing.T) {
 					{IdentityHome: secondary, TeamID: "backend:acme.com", DeliveryOwner: ReceiveOwnerSessionHints},
 				}}
 				_ = os.MkdirAll(reg.Home, 0o700)
-				child := NewChannelCoreRunner(store).StartChild(context.Background(), reg, channelCoreChildConfig{OatsBin: writeStateOATS(t, root, inputPath, state), AWCommand: writeFakeAW(t, root, ""), Coalesce: time.Millisecond, RateLimit: time.Millisecond, InspectDelay: time.Millisecond})
+				child := NewChannelCoreRunner(store).StartChild(context.Background(), reg, channelCoreChildConfig{OatsBin: writeStateOATS(t, root, inputPath, state), AWCommand: writeFakeAW(t, root, "")})
 				defer child.Stop()
 				waitForStatus(t, child, func(st ChannelCoreStatus) bool { return st.ReadinessState != "" })
 				event := awid.AgentEvent{Type: awid.AgentEventActionableMail, MessageID: messageID}
@@ -475,6 +486,17 @@ func TestBundledSecondaryIdentityNotice(t *testing.T) {
 				child.Offer(reg.ReceiveBindings()[1], event)
 				waitForFileContains(t, inputPath, messageID)
 				data, _ := os.ReadFile(inputPath)
+				if !strings.Contains(string(data), "secondary private message") || !strings.Contains(string(data), "trust_status:") {
+					t.Fatalf("missing full sanitized message/trust: %s", data)
+				}
+				if strings.ContainsAny(string(data), "\x1b\x07") || strings.Contains(string(data), "waiting — run") {
+					t.Fatalf("unsafe or ID-only notice: %s", data)
+				}
+				waitForCond(t, "accepted full message marked read", func() bool {
+					ackMu.Lock()
+					defer ackMu.Unlock()
+					return acks == 1
+				})
 				canonicalSecondary, _ := filepath.EvalSymlinks(secondary)
 				command := "aw --identity-home " + shellQuoteForTest(canonicalSecondary)
 				if kind == "mail" {
@@ -482,7 +504,7 @@ func TestBundledSecondaryIdentityNotice(t *testing.T) {
 				} else {
 					command += " chat history --session-id " + sessionID + " --message-id " + messageID
 				}
-				if !strings.Contains(string(data), command) {
+				if !strings.HasSuffix(strings.TrimSpace(string(data)), "Recovery: "+command) {
 					t.Fatalf("missing receiving-binding command %q in %s", command, data)
 				}
 				if strings.Contains(string(data), primary) {
@@ -593,6 +615,11 @@ func openFDCount(t *testing.T) (int, bool) {
 
 func waitForStatus(t *testing.T, child *ChannelCoreChild, cond func(ChannelCoreStatus) bool) {
 	t.Helper()
+	defer func() {
+		if t.Failed() {
+			t.Logf("last channel-core status: %+v", child.Status())
+		}
+	}()
 	waitForCond(t, "channel-core status", func() bool { return cond(child.Status()) })
 }
 
