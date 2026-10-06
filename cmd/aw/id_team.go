@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -268,6 +269,9 @@ var (
 	teamCreateNamespace   string
 	teamCreateDisplayName string
 	teamCreateRegistryURL string
+	teamCreateHosted      bool
+	teamCreateRequestID   string
+	teamCreateShowToken   bool
 
 	teamInviteTeam                  string
 	teamInviteNamespace             string
@@ -349,14 +353,31 @@ var teamCmd = &cobra.Command{
 	Short: "Team membership plus protocol/admin certificate operations",
 	Long: "Team membership plus protocol/admin certificate operations.\n\n" +
 		"Everyday hosted setup normally uses invite and accept-invite. Controller-backed\n" +
-		"commands such as create, add-member, remove-member, register, import-request,\n" +
+		"commands such as add-member, remove-member, register, import-request,\n" +
 		"cleanup-cloud, and delete are protocol/admin primitives for BYOT, controller\n" +
 		"holders, service projection, or diagnostics.",
 }
 
 var teamCreateCmd = &cobra.Command{
+	Args: cobra.NoArgs,
+	Long: `Create a hosted sibling team using the selected team certificate, or create
+a customer-controlled AWID team using a local namespace controller key.
+
+Without --namespace, creation is hosted. An explicit --namespace selects BYOT
+and requires a local controller key and a native identity home. BYOT refuses
+--team. --hosted explicitly selects hosted creation; a namespace supplied in
+that mode must match the selected source team. The hosted service URL is printed
+to stderr before the request.
+Hosted authorization is decided by the service; no human login is performed.
+
+Hosted creation generates a request UUID. Replay with the same --request-id and
+parameters after an uncertain result; there are no automatic retries. A replay
+returns the same team and replaces its unused invite. JSON includes the secret
+invite token; text hides it unless --show-token is set. The caller is not joined.
+Accept into <fresh-directory>/.aw, then run aw init from that directory with
+AWEB_IDENTITY_HOME unset.`,
 	Use:   "create",
-	Short: "Protocol/admin: create a customer-controlled AWID team",
+	Short: "Create a hosted sibling team or a customer-controlled AWID team",
 	RunE:  runTeamCreate,
 }
 
@@ -371,9 +392,12 @@ var teamInviteCmd = &cobra.Command{
 }
 
 var teamAcceptInviteCmd = &cobra.Command{
-	Use:   "accept-invite <token>",
+	Use:   "accept-invite [token]",
 	Short: "Accept a team invite and receive a membership certificate",
 	Long: "Accept a team invite and receive a membership certificate.\n\n" +
+		"Pass the token positionally or use --token-stdin (never both). Stdin is read\n" +
+		"to EOF, up to 65536 bytes, and must contain one token line; surrounding\n" +
+		"whitespace is trimmed. Close the pipe after writing the token.\n\n" +
 		"Scope is explicit: --local is the default, and --global reuses the existing\n" +
 		"self-custodial global identity in this workspace. --address never selects\n" +
 		"global scope; pass --global when presenting an existing owned address.\n\n" +
@@ -395,7 +419,16 @@ var teamAcceptInviteCmd = &cobra.Command{
 		"or --no-address for did:aw-only membership. For cross-machine BYOT joins, use\n" +
 		"`aw id team request`, have the controller run `aw id team add-member`, then\n" +
 		"install with `aw id team fetch-cert` on the joining machine.",
-	Args: cobra.ExactArgs(1),
+	Args: func(cmd *cobra.Command, args []string) error {
+		fromStdin, _ := cmd.Flags().GetBool("token-stdin")
+		if fromStdin {
+			if len(args) != 0 {
+				return usageError("--token-stdin cannot be combined with a positional token")
+			}
+			return nil
+		}
+		return cobra.ExactArgs(1)(cmd, args)
+	},
 	RunE: runTeamAcceptInvite,
 }
 
@@ -508,10 +541,14 @@ var certCmd = &cobra.Command{
 }
 
 func init() {
+	bindTeamSelector(teamCreateCmd)
 	teamCreateCmd.Flags().StringVar(&teamCreateName, "name", "", "Team name")
 	teamCreateCmd.Flags().StringVar(&teamCreateNamespace, "namespace", "", "Namespace domain")
 	teamCreateCmd.Flags().StringVar(&teamCreateDisplayName, "display-name", "", "Team display name")
 	teamCreateCmd.Flags().StringVar(&teamCreateRegistryURL, "registry", "", "Registry origin override")
+	teamCreateCmd.Flags().BoolVar(&teamCreateHosted, "hosted", false, "Create a hosted sibling using the selected team certificate")
+	teamCreateCmd.Flags().StringVar(&teamCreateRequestID, "request-id", "", "Hosted create UUID (reuse the same UUID and parameters to replay)")
+	teamCreateCmd.Flags().BoolVar(&teamCreateShowToken, "show-token", false, "Print the hosted invite token in text output (JSON includes it)")
 	teamCmd.AddCommand(teamCreateCmd)
 
 	teamInviteCmd.Flags().StringVar(&teamInviteTeam, "team", "", "Team name")
@@ -528,6 +565,7 @@ func init() {
 	markDeprecatedHiddenFlag(teamInviteCmd, "persistent", "member-global")
 	teamCmd.AddCommand(teamInviteCmd)
 
+	teamAcceptInviteCmd.Flags().Bool("token-stdin", false, "Read one invite token from stdin through EOF (max 65536 bytes)")
 	teamAcceptInviteCmd.Flags().StringVar(&teamAcceptAlias, "name", "", "Member name for the accepting agent (defaults to identity name)")
 	teamAcceptInviteCmd.Flags().StringVar(&teamAcceptAlias, "alias", "", "Deprecated alias for --name")
 	markDeprecatedHiddenFlag(teamAcceptInviteCmd, "alias", "name")
@@ -624,14 +662,36 @@ func runTeamCreate(cmd *cobra.Command, args []string) error {
 	if name == "" {
 		return usageError("--name is required")
 	}
-	if domain == "" {
-		return usageError("--namespace is required")
+	if teamCreateHosted || domain == "" {
+		return runHostedTeamCreate(cmd, name, domain)
 	}
 
-	// Load namespace controller key for auth
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	home, err := identityHomeForDir(wd)
+	if err != nil {
+		return err
+	}
+	if home.External() {
+		return usageError("BYOT team creation does not support an external identity home; use --hosted for a hosted sibling, or run BYOT from a native home with the namespace controller key")
+	}
+	if cmd.Flags().Changed("team") {
+		return usageError("--team is only supported for hosted creation; pass --hosted or remove --team for BYOT")
+	}
+
+	// An explicit namespace selects controller authority unless --hosted was
+	// also explicit. A missing controller must not silently switch authority.
 	controllerKey, err := awconfig.LoadControllerKey(domain)
+	if errors.Is(err, os.ErrNotExist) {
+		return usageError("no local controller key for --namespace %s; pass --hosted for a hosted sibling, or install the namespace controller key for BYOT (aw id namespace prepare-controller --domain %s)", domain, domain)
+	}
 	if err != nil {
 		return fmt.Errorf("load controller key for %s: %w (run `aw id namespace prepare-controller --domain %s` first)", domain, err, domain)
+	}
+	if cmd.Flags().Changed("request-id") || teamCreateShowToken {
+		return usageError("--request-id and --show-token require hosted creation; use --hosted")
 	}
 
 	registry, err := newConfiguredRegistryClient(nil, "")
@@ -886,7 +946,54 @@ func awebURLForTeamInviteAt(workingDir, identityHome, teamID string) string {
 	return ""
 }
 
+const inviteTokenStdinLimit = 64 * 1024
+
+func readInviteTokenStdin(reader io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, inviteTokenStdinLimit+1))
+	if err != nil {
+		return "", usageError("cannot read invite token from stdin")
+	}
+	if len(data) > inviteTokenStdinLimit {
+		return "", usageError("invite token stdin exceeds 65536 bytes")
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", usageError("invite token stdin is empty")
+	}
+	if strings.ContainsAny(token, "\r\n") {
+		return "", usageError("stdin must contain one token line")
+	}
+	// All supported wire formats are unpadded base64url or aw_inv_ tokens.
+	// Validate before the acceptance path can write identity state. Never expose
+	// decoder errors, which can include bytes from the supplied secret.
+	for _, c := range token {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return "", usageError("invalid invite token on stdin")
+		}
+	}
+	if awid.IsHostedSpawnInviteToken(token) {
+		if len(token) <= len("aw_inv_") {
+			return "", usageError("invalid invite token on stdin")
+		}
+	} else if _, err := awconfig.DecodeInviteToken(token); err != nil {
+		return "", usageError("invalid invite token on stdin")
+	}
+	if _, _, err := decodeJoinToken(token); err != nil {
+		return "", usageError("invalid invite token on stdin")
+	}
+	return token, nil
+}
+
 func runTeamAcceptInvite(cmd *cobra.Command, args []string) error {
+	fromStdin, _ := cmd.Flags().GetBool("token-stdin")
+	if fromStdin {
+		// Keep the token in process memory; never construct a child command argv.
+		token, err := readInviteTokenStdin(cmd.InOrStdin())
+		if err != nil {
+			return err
+		}
+		args = []string{token}
+	}
 	return runTeamAcceptInviteWithConnect(cmd, args, false)
 }
 
