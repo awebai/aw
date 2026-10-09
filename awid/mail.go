@@ -40,6 +40,8 @@ type SendMessageRequest struct {
 	SignedPayload  string               `json:"signed_payload,omitempty"`
 	EncryptE2EE    bool                 `json:"-"`
 	E2EERecipient  *E2EERecipientKey    `json:"-"`
+
+	NewConversation bool `json:"new_conversation,omitempty"`
 }
 
 type SendMessageResponse struct {
@@ -140,7 +142,7 @@ func (c *Client) sendMessage(ctx context.Context, req *SendMessageRequest, ident
 		Body:                          payload.Body,
 		ConversationID:                strings.TrimSpace(payload.ConversationID),
 		RequireRecipientBinding:       strings.TrimSpace(payload.ToAddress) != "" && c.requireRecipientBinding,
-		AllowStoredRouteGlobalBinding: initialConversationID != "",
+		AllowStoredRouteGlobalBinding: initialConversationID != "" && !payload.NewConversation,
 	})
 	if err != nil {
 		return nil, err
@@ -717,6 +719,17 @@ func (c *Client) normalizeInboxResponse(ctx context.Context, out *InboxResponse)
 	}
 	for i := range out.Messages {
 		m := &out.Messages[i]
+		if m.ContentMode != ContentModeEncryptedV2 && m.MessageVersion != E2EEMessageVersion && m.Encrypted == nil && m.SignedPayload != "" && !c.signedMailDisplayMatches(m.SignedPayload, map[string]string{
+			"type": "mail", "body": m.Body, "subject": m.Subject,
+			"message_id": m.MessageID, "conversation_id": m.ConversationID,
+			"from_did": m.FromDID, "to_did": m.ToDID,
+		}, m.authenticatedSenderRead) {
+			// Preserve the observed response so a mismatch cannot be hidden by
+			// metadata overlay or subsequently promoted by trust normalization.
+			m.VerificationStatus = Failed
+			continue
+		}
+
 		if m.ContentMode == ContentModeEncryptedV2 || m.MessageVersion == E2EEMessageVersion || m.Encrypted != nil {
 			if m.Encrypted == nil {
 				return nil, errors.New("encrypted mail response is missing encrypted envelope")
@@ -725,6 +738,13 @@ func (c *Client) normalizeInboxResponse(ctx context.Context, out *InboxResponse)
 			if err != nil {
 				return nil, err
 			}
+			if m.MessageID != plain.MessageID || m.ConversationID != plain.ConversationID {
+				// Decryption authenticated the envelope and its inner IDs. Keep
+				// the original outer projection visible when it disagrees.
+				m.VerificationStatus = Failed
+				continue
+			}
+
 			m.Subject = plain.Subject
 			m.Body = plain.Body
 			applyE2EEPlaintextMailMetadata(m, plain)
