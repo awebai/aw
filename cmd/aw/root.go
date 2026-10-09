@@ -62,6 +62,9 @@ var rootCmd = &cobra.Command{
 			activeIdentityHome = home
 		}
 		restoreIdentityHomeAfterCommand(cmd, identityHomeEnv, hadIdentityHomeEnv, previousActiveIdentityHome)
+		if !isTeamInviteInspectCommand(cmd) && cmd.Name() != "help" {
+			maybeRenewIdentityEncryptionAssertion(cmd.Context(), mustGetwd(), currentEncryptionKeyIdentityHome(), cmd.ErrOrStderr())
+		}
 		maybeCheckLatestVersion(cmd)
 		return nil
 	},
