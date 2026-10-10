@@ -556,6 +556,7 @@ func (c *Client) mailInboxAliasTarget(msg InboxMessage) string {
 }
 
 type InboxMessage struct {
+	SenderMembership        *SenderMembership        `json:"sender_membership,omitempty"`
 	MessageID               string                   `json:"message_id"`
 	ConversationID          string                   `json:"conversation_id,omitempty"`
 	FromAgentID             string                   `json:"from_agent_id"`
@@ -731,12 +732,10 @@ func applyE2EEPlaintextMailMetadata(m *InboxMessage, plain *E2EEInnerPayload) {
 	if strings.TrimSpace(plain.From.DID) != "" {
 		m.FromDID = strings.TrimSpace(plain.From.DID)
 	}
-	if strings.TrimSpace(plain.From.StableID) != "" {
-		m.FromStableID = strings.TrimSpace(plain.From.StableID)
-	}
-	if strings.TrimSpace(plain.From.Address) != "" {
-		m.FromAddress = strings.TrimSpace(plain.From.Address)
-	}
+	m.FromStableID = strings.TrimSpace(plain.From.StableID)
+	// An authenticated empty address is meaningful; never retain a projected
+	// alias/address here. Server-attested membership remains separate.
+	m.FromAddress = strings.TrimSpace(plain.From.Address)
 	if len(plain.Recipients) == 1 {
 		recipient := plain.Recipients[0]
 		if strings.TrimSpace(recipient.DID) != "" {
@@ -799,7 +798,7 @@ func (c *Client) normalizeInboxResponse(ctx context.Context, out *InboxResponse)
 			applyE2EEPlaintextMailMetadata(m, plain)
 			m.VerificationStatus = Verified
 		}
-		if meta, ok := parseSignedEnvelopeMetadata(m.SignedPayload); ok {
+		if meta, ok := parseSignedEnvelopeMetadata(m.SignedPayload); ok && m.ContentMode != ContentModeEncryptedV2 {
 			if meta.FromDID != "" {
 				m.FromDID = meta.FromDID
 			}
@@ -812,11 +811,17 @@ func (c *Client) normalizeInboxResponse(ctx context.Context, out *InboxResponse)
 			if m.ToStableID == "" {
 				m.ToStableID = meta.ToStableID
 			}
-			if m.FromAddress == "" && meta.From != "" {
+			// A signed member name is not a public address. Preserve an explicit
+			// server projection; only suppress alias-to-address fallback.
+			stableAlias := strings.HasPrefix(meta.FromStableID, "did:aw:") && !strings.Contains(meta.From, "/")
+			if m.FromAddress == "" && meta.From != "" && !stableAlias {
 				m.FromAddress = meta.From
 			}
 			if m.ToAddress == "" && meta.To != "" {
 				m.ToAddress = meta.To
+			}
+			if stableAlias {
+				m.FromStableID = meta.FromStableID
 			}
 		}
 		from := m.FromAlias
@@ -870,7 +875,14 @@ func (c *Client) normalizeInboxResponse(ctx context.Context, out *InboxResponse)
 		if !senderRead && !c.messageAuthoredByClientDID(m.FromDID) {
 			m.VerificationStatus = c.checkRecipientBinding(m.VerificationStatus, m.ToDID, m.ToStableID)
 		}
-		m.VerificationStatus, m.IsContact = c.NormalizeSenderTrust(ctx, m.VerificationStatus, from, m.FromDID, m.FromStableID, m.RotationAnnouncement, m.ReplacementAnnouncement, m.IsContact)
+		// Own-sent reads establish authorship, not a received sender's team trust.
+		// Require the server-authorized sender view AND our stable ID AND a
+		// signature by our current resident key; a claimed stable ID is not enough.
+		ownAddressless := senderRead && strings.TrimSpace(m.FromAddress) == "" && c.stableID != "" &&
+			m.FromStableID == c.stableID && c.ParticipantDID() != "" && m.FromDID == c.ParticipantDID()
+		if !ownAddressless {
+			m.VerificationStatus, m.IsContact = c.NormalizeReceivedSenderTrust(ctx, m.VerificationStatus, m.FromAddress, m.FromAlias, m.FromDID, m.FromStableID, m.SenderMembership, m.RotationAnnouncement, m.ReplacementAnnouncement, m.IsContact)
+		}
 	}
 	return out, nil
 }
@@ -885,7 +897,7 @@ func (c *Client) messageAuthoredByClientRoutingDID(fromDID string) bool {
 	if fromDID == "" {
 		return false
 	}
-	return fromDID == strings.TrimSpace(c.did) ||
+	return fromDID == strings.TrimSpace(c.ParticipantDID()) ||
 		(strings.TrimSpace(c.stableID) != "" && fromDID == strings.TrimSpace(c.stableID))
 }
 

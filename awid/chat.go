@@ -697,6 +697,7 @@ type ChatHistoryResponse struct {
 }
 
 type ChatMessage struct {
+	SenderMembership        *SenderMembership        `json:"sender_membership,omitempty"`
 	MessageID               string                   `json:"message_id"`
 	ConversationID          string                   `json:"conversation_id,omitempty"`
 	FromAgent               string                   `json:"from_agent"`
@@ -779,7 +780,7 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 			applyE2EEPlaintextChatMetadata(m, plain)
 			m.VerificationStatus = Verified
 		}
-		if meta, ok := parseSignedEnvelopeMetadata(m.SignedPayload); ok {
+		if meta, ok := parseSignedEnvelopeMetadata(m.SignedPayload); ok && m.ContentMode != ContentModeEncryptedV2 {
 			if meta.FromDID != "" {
 				m.FromDID = meta.FromDID
 			}
@@ -792,11 +793,17 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 			if m.ToStableID == "" {
 				m.ToStableID = meta.ToStableID
 			}
-			if m.FromAddress == "" && meta.From != "" {
+			// A signed member name is not a public address. Preserve an explicit
+			// server projection; only suppress alias-to-address fallback.
+			stableAlias := strings.HasPrefix(meta.FromStableID, "did:aw:") && !strings.Contains(meta.From, "/")
+			if m.FromAddress == "" && meta.From != "" && !stableAlias {
 				m.FromAddress = meta.From
 			}
 			if m.ToAddress == "" && meta.To != "" {
 				m.ToAddress = meta.To
+			}
+			if stableAlias {
+				m.FromStableID = meta.FromStableID
 			}
 		}
 		from := m.FromAgent
@@ -839,7 +846,7 @@ func (c *Client) ChatHistory(ctx context.Context, p ChatHistoryParams) (*ChatHis
 				}
 			}
 		}
-		m.VerificationStatus, m.IsContact = c.NormalizeSenderTrust(ctx, m.VerificationStatus, from, m.FromDID, m.FromStableID, m.RotationAnnouncement, m.ReplacementAnnouncement, m.IsContact)
+		m.VerificationStatus, m.IsContact = c.NormalizeReceivedSenderTrust(ctx, m.VerificationStatus, m.FromAddress, m.FromAgent, m.FromDID, m.FromStableID, m.SenderMembership, m.RotationAnnouncement, m.ReplacementAnnouncement, m.IsContact)
 	}
 	return &out, nil
 }
@@ -851,12 +858,10 @@ func applyE2EEPlaintextChatMetadata(m *ChatMessage, plain *E2EEInnerPayload) {
 	if strings.TrimSpace(plain.From.DID) != "" {
 		m.FromDID = strings.TrimSpace(plain.From.DID)
 	}
-	if strings.TrimSpace(plain.From.StableID) != "" {
-		m.FromStableID = strings.TrimSpace(plain.From.StableID)
-	}
-	if strings.TrimSpace(plain.From.Address) != "" {
-		m.FromAddress = strings.TrimSpace(plain.From.Address)
-	}
+	m.FromStableID = strings.TrimSpace(plain.From.StableID)
+	// An authenticated empty address is meaningful; never retain a projected
+	// alias/address here. Server-attested membership remains separate.
+	m.FromAddress = strings.TrimSpace(plain.From.Address)
 }
 
 type ChatMarkReadRequest struct {
