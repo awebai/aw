@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/awebai/aw/internal/custodypath"
 	"net"
 	"net/http"
 	"net/url"
@@ -114,6 +115,14 @@ func newCustodyService(home awconfig.IdentityHome) (*custodyService, error) {
 		return nil, usageError("custody serve requires the resident identity home, not a grant home")
 	}
 	identity, err := awconfig.ResolveIdentityFromHome(wd, home.Root)
+	if err != nil && filepath.Clean(home.Root) == awconfig.WorktreeIdentityHome(wd) {
+		// Legacy local init intentionally omits identity.yaml. Reuse only this
+		// workspace's certificate/key-bound resolver, never another selected home
+		// or an existing malformed identity file.
+		if _, statErr := os.Lstat(filepath.Join(home.Root, "identity.yaml")); os.IsNotExist(statErr) {
+			identity, err = resolveLocalIdentityWithoutState(wd)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -204,6 +213,9 @@ func (s *custodyService) serve(ctx context.Context) error {
 		id, _ := awid.GenerateUUID4()
 		s.serviceID = id
 	}
+	if err := custodypath.Prepare(s.socketPath); err != nil {
+		return err
+	}
 	runDir := filepath.Dir(s.socketPath)
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		return err
@@ -291,7 +303,7 @@ func (s *custodyService) status(ctx context.Context, status string, errs []strin
 		errs = append(errs, strings.TrimSpace(s.e2eeKeyError))
 	}
 	out.Keys = map[string]any{"signing_ready": s.signingKey != nil && grantStatusReady, "encryption_ready": s.e2eeAssertion != nil && s.e2eePrivateKey != nil && grantStatusReady, "encryption_key_id": encryptionKeyID}
-	out.Ops = []string{"status.v1", "sign_plain_message.v1", "sign_app_request.v1"}
+	out.Ops = []string{"status.v1", "sign_plain_message.v1", "sign_app_request.v1", "grant_never_ttl.v1"}
 	if s.e2eeAssertion != nil && s.e2eePrivateKey != nil {
 		out.Ops = append(out.Ops, "create_e2ee_envelope.v1", "unwrap_e2ee_message.v1", "mail_reply_continuation.v1")
 	}
@@ -428,12 +440,8 @@ func (s *custodyService) signPlainMessage(ctx context.Context, req *awid.PlainMe
 	if strings.TrimSpace(st.ExpiresAt) == "" {
 		return nil, fmt.Errorf("grant_freshness_unavailable")
 	}
-	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(st.ExpiresAt))
-	if err != nil {
-		return nil, fmt.Errorf("grant_freshness_unavailable")
-	}
-	if !s.now().Before(expiresAt) {
-		return nil, fmt.Errorf("grant_expired")
+	if err := checkGrantExpiry(st.ExpiresAt, s.now()); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(st.GrantDIDKey) != strings.TrimSpace(req.SessionDIDKey) {
 		return nil, fmt.Errorf("grant_session_mismatch")
@@ -595,6 +603,9 @@ func custodyHTTP(ctx context.Context, socket, method, path string, in any, out a
 }
 
 func custodyHTTPTimeout(ctx context.Context, socket, method, path string, in any, out any, timeout time.Duration) error {
+	if err := custodypath.Check(socket); err != nil {
+		return err
+	}
 	var body strings.Reader
 	if in != nil {
 		b, _ := json.Marshal(in)
@@ -786,12 +797,8 @@ func (s *custodyService) validateE2EECommon(ctx context.Context, op string, reqF
 	if strings.TrimSpace(st.ExpiresAt) == "" {
 		return st, fmt.Errorf("grant_freshness_unavailable")
 	}
-	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(st.ExpiresAt))
-	if err != nil {
-		return st, fmt.Errorf("grant_freshness_unavailable")
-	}
-	if !s.now().Before(expiresAt) {
-		return st, fmt.Errorf("grant_expired")
+	if err := checkGrantExpiry(st.ExpiresAt, s.now()); err != nil {
+		return st, err
 	}
 	if strings.TrimSpace(st.GrantDIDKey) != strings.TrimSpace(reqFields["session_did_key"]) {
 		return st, fmt.Errorf("grant_session_mismatch")
