@@ -23,11 +23,24 @@ var initCmd = &cobra.Command{
 team-architecture flows:
 
 - connect with an existing team certificate already present in .aw/
+- add an agent to the existing team selected by AWEB_API_KEY
 - create a hosted aweb.ai account when this directory is still clean
 - use --byod to create an identity under a domain you control
 
 By default, init creates or updates the clearly marked aweb section in
-AGENTS.md or CLAUDE.md. Use --do-not-touch-agents-md to skip that file update.`,
+AGENTS.md or CLAUDE.md. Use --do-not-touch-agents-md to skip that file update.
+
+With a team API key, another dashboard-created agent or an aw team invite joins
+this same team. Without a key, creating a new account/team in a fresh directory
+creates a separate team; use aw team invite / aw team join to join this one.
+
+The channel plugin or host wake broker is the preferred notification path.
+--setup-hooks explicitly enables a Claude Code chat-only polling fallback:
+notices arrive after tool calls, with no mail or idle wake-up support.
+After confirming channel/broker delivery, use --remove-notify-hook on its own
+for backed-up removal of exact aw notify PostToolUse entries from the current
+directory's and, inside a git repo, the repository root's .claude/settings.json.
+Init and upgrades never remove them implicitly.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		// Root initialization runs first with hook traversal enabled.
 	},
@@ -45,6 +58,7 @@ var (
 	initName               string
 	initInjectDocs         bool
 	initSetupHooks         bool
+	initRemoveNotifyHook   bool
 	initSetupChannel       bool
 	initDoNotTouchAgentsMD bool
 	initHumanName          string
@@ -80,6 +94,9 @@ type initResult struct {
 	// `aw claim-human` is misleading. Other init paths leave this false
 	// and the claim-human suggestion fires per shouldSuggestClaimHuman.
 	APIKeyAuth bool
+
+	// ServerAssignedName records that API-key init omitted a requested name.
+	ServerAssignedName bool
 }
 
 func init() {
@@ -96,7 +113,8 @@ func init() {
 	initCmd.Flags().StringVar(&initName, "name", "", "Identity/member name (global address name with --global, local routing name otherwise)")
 	initCmd.Flags().BoolVar(&initInjectDocs, "inject-docs", false, "Inject aw coordination instructions into CLAUDE.md and AGENTS.md")
 	initCmd.Flags().BoolVar(&initDoNotTouchAgentsMD, "do-not-touch-agents-md", false, "Do not create or update AGENTS.md or CLAUDE.md during init")
-	initCmd.Flags().BoolVar(&initSetupHooks, "setup-hooks", false, "Set up Claude Code PostToolUse hook for aw notify")
+	initCmd.Flags().BoolVar(&initSetupHooks, "setup-hooks", false, "Enable Claude Code chat-only polling after tool calls (explicit fallback; no mail or idle wake-ups)")
+	initCmd.Flags().BoolVar(&initRemoveNotifyHook, "remove-notify-hook", false, "Remove only the exact aw notify PostToolUse hook from current directory and repository root settings, with backups (standalone local action)")
 	initCmd.Flags().BoolVar(&initSetupChannel, "setup-channel", false, "Set up Claude Code aweb-channel plugin for real-time coordination")
 	initCmd.Flags().StringVar(&initHumanName, "human-name", "", "Human name (default: AWEB_HUMAN or $USER)")
 	initCmd.Flags().StringVar(&initAgentType, "agent-type", "", "Runtime type (default: AWEB_AGENT_TYPE or agent)")
@@ -487,6 +505,12 @@ func filepathAbs(path string) (string, error) {
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
+	if initRemoveNotifyHook {
+		if len(args) != 0 {
+			return usageError("--remove-notify-hook takes no positional arguments")
+		}
+		return runRemoveClaudeNotifyHook(cmd)
+	}
 	if initSetupChannel && initSetupHooks {
 		return fmt.Errorf("--setup-channel and --setup-hooks are mutually exclusive: the channel supersedes the notify hook")
 	}
@@ -542,6 +566,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
+		requestedAlias := resolveAliasValue(resolveInitLocalName())
 		result, err := runAPIKeyBootstrapInit(apiKeyInitRequest{
 			WorkingDir:   wd,
 			IdentityHome: identityHome.Root,
@@ -549,7 +574,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 			RegistryURL:  registryURL,
 			APIKey:       apiKey,
 			Name:         resolveInitGlobalName(initGlobal),
-			Alias:        resolveAliasValue(resolveInitLocalName()),
+			Alias:        requestedAlias,
 			Role:         resolveRequestedRole(strings.TrimSpace(initRole)),
 			HumanName:    resolveHumanNameValue(strings.TrimSpace(initHumanName)),
 			AgentType:    resolveAgentTypeValue(strings.TrimSpace(initAgentType)),
@@ -563,10 +588,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 		didInjectDocs := runDefaultInitDocsInjection(wd)
 		if !jsonFlag {
 			printPostInitActions(&initResult{
-				ServerName:    hostFromBaseURL(result.AwebURL),
-				ExportBaseURL: result.AwebURL,
-				Alias:         strings.TrimSpace(result.Alias),
-				APIKeyAuth:    true,
+				ServerName:         hostFromBaseURL(result.AwebURL),
+				ExportBaseURL:      result.AwebURL,
+				Alias:              strings.TrimSpace(result.Alias),
+				APIKeyAuth:         true,
+				ServerAssignedName: !initGlobal && requestedAlias == "",
 			}, wd, didInjectDocs)
 		}
 		return nil
@@ -1079,6 +1105,9 @@ func runDefaultInitDocsInjection(workingDir string) bool {
 }
 
 func printPostInitActions(result *initResult, workingDir string, didDefaultInjectDocs bool) {
+	if !jsonFlag && result.ServerAssignedName && strings.TrimSpace(result.Alias) != "" {
+		fmt.Printf("\nYour agent is named %s.\n", strings.TrimSpace(result.Alias))
+	}
 	if initPrintExports {
 		fmt.Println("")
 		fmt.Println("# Copy/paste to configure your shell:")
@@ -1130,7 +1159,7 @@ func initNextStepLines(result *initResult, workingDir string, didInjectDocs, did
 	}
 
 	lines = append(lines, "")
-	lines = append(lines, secondAgentNextStepLines...)
+	lines = append(lines, secondAgentNextStepLines(result)...)
 	lines = append(lines, "")
 	lines = append(lines, "  Install the channel plugin once (real-time coordination in Claude Code):")
 	lines = append(lines, "    claude plugin marketplace add awebai/claude-plugins")
@@ -1151,15 +1180,27 @@ func initNextStepLines(result *initResult, workingDir string, didInjectDocs, did
 	return lines
 }
 
-// secondAgentNextStepLines tell the user how to put another agent in the team
-// this init just joined. Running aw init again in another directory creates a
-// separate account and team, whose agents cannot message this one.
-var secondAgentNextStepLines = []string{
-	"  Add another agent to THIS team (running aw init again elsewhere creates a",
-	"  separate team whose agents cannot message this one):",
-	"    aw team invite                        run here; prints a one-use token",
-	"    aw team join <token> --name <name>    run in the other agent's directory",
-	"    aw workspace add-worktree <role>      or, for a git worktree of this repo",
+// secondAgentNextStepLines distinguish existing-team API-key provisioning from
+// keyless new-account/team creation. Both dashboard provisioning and invites
+// add members to the team selected by the provisioning key.
+func secondAgentNextStepLines(result *initResult) []string {
+	var lines []string
+	if result != nil && result.APIKeyAuth {
+		lines = []string{
+			"  To add another agent to this team: create one from the dashboard,",
+			"  or run aw team invite here.",
+		}
+	} else {
+		lines = []string{
+			"  Add another agent to THIS team (running aw init again elsewhere to create a",
+			"  new account/team creates a separate team whose agents cannot message this one):",
+		}
+	}
+	return append(lines,
+		"    aw team invite                        run here; prints a one-use token",
+		"    aw team join <token> --name <name>    run in the other agent's directory",
+		"    aw workspace add-worktree <role>      or, for a git worktree of this repo",
+	)
 }
 
 func formatInitNextStep(command, description string) string {
