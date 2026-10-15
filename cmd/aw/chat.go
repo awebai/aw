@@ -162,6 +162,7 @@ var chatSendAndWaitCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// Chat send-and-wait/leave retains the protocol wait budget instead of the ordinary API budget.
 		ctx, cancel := context.WithTimeout(context.Background(), chat.MaxSendTimeout)
 		defer cancel()
 
@@ -216,6 +217,7 @@ var chatSendAndLeaveCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// Chat send-and-wait/leave retains the protocol wait budget instead of the ordinary API budget.
 		ctx, cancel := context.WithTimeout(context.Background(), chat.MaxSendTimeout)
 		defer cancel()
 
@@ -256,7 +258,7 @@ var chatPendingCmd = &cobra.Command{
 	Use:   "pending",
 	Short: "List pending chat sessions",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := commandAPIContext(cmd)
 		defer cancel()
 
 		c, sel, err := resolveClientSelection()
@@ -280,7 +282,7 @@ var chatOpenCmd = &cobra.Command{
 	Short: "Open a chat session",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := commandAPIContext(cmd)
 		defer cancel()
 
 		c, sel, err := resolveClientSelection()
@@ -320,7 +322,7 @@ var chatHistoryCmd = &cobra.Command{
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := commandAPIContext(cmd)
 		defer cancel()
 
 		c, sel, err := resolveClientSelection()
@@ -373,7 +375,7 @@ var chatSendCmd = &cobra.Command{
 			return err
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := commandAPIContext(cmd)
 		defer cancel()
 
 		c, sel, err := resolveClientSelection()
@@ -431,7 +433,7 @@ var chatReadCmd = &cobra.Command{
 		if messageID == "" {
 			return usageError("missing required flag: --message-id")
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := commandAPIContext(cmd)
 		defer cancel()
 
 		c, _, err := resolveClientSelection()
@@ -462,7 +464,7 @@ var chatExtendWaitCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := commandAPIContext(cmd)
 		defer cancel()
 
 		c, sel, err := resolveClientSelection()
@@ -509,6 +511,7 @@ var chatListenCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		timeout := chat.MaxSendTimeout
+		// Chat listen retains its protocol long-poll budget.
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
@@ -536,7 +539,7 @@ var chatShowPendingCmd = &cobra.Command{
 	Short: "Show pending messages for a recipient name or address",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := commandAPIContext(cmd)
 		defer cancel()
 
 		c, sel, err := resolveClientSelection()

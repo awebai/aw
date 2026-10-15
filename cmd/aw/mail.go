@@ -456,7 +456,7 @@ var mailSendCmd = &cobra.Command{
 			return err
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := commandAPIContext(cmd)
 		defer cancel()
 
 		sendEncryptE2EE := mailSendE2EE
@@ -683,18 +683,23 @@ var mailReplyCmd = &cobra.Command{
 		}
 		messageID := strings.TrimSpace(args[0])
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// Source reads and reply preparation share the configured API budget;
+		// a hidden shorter deadline must not defeat AWEB_HTTP_TIMEOUT.
+		ctx, cancel := commandAPIContext(cmd)
 		defer cancel()
 
 		var c *aweb.Client
 		var sel *awconfig.Selection
+		awid.RecordHTTPDiagnosticPhase("client_selection_started")
 		c, sel, err = resolveMailMessagingClientSelection()
 		if err != nil {
 			return err
 		}
+		awid.RecordHTTPDiagnosticPhase("client_selection_ready")
 		if cmd.Flags().Changed("e2ee") && (mailReplyPlaintext || mailReplyLegacyPlaintext) {
 			return usageError("--e2ee and --plaintext are mutually exclusive")
 		}
+		awid.RecordHTTPDiagnosticPhase("key_read_started")
 		if err := configureClientE2EE(ctx, c, sel, false); err != nil {
 			var unavailable *e2eeDecryptionUnavailableError
 			if !errors.As(err, &unavailable) {
@@ -703,6 +708,7 @@ var mailReplyCmd = &cobra.Command{
 			// Plaintext replies need no read key. An encrypted source fails
 			// below with its decryption error and recovery guidance.
 		}
+		awid.RecordHTTPDiagnosticPhase("key_read_ready")
 		inbox, err := c.Inbox(ctx, awid.InboxParams{
 			UnreadOnly: false,
 			Limit:      1,
@@ -1046,7 +1052,7 @@ var mailInboxCmd = &cobra.Command{
 	Long: "List inbox messages, newest first and unread only by default. Messages shown by this command are acknowledged as read.\n\n" +
 		"The response is one bounded page. Text output reports when more messages exist and prints a continuation command; JSON output carries has_more and next_cursor. Pass the returned value to --cursor to continue without overlap.",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := commandAPIContext(cmd)
 		defer cancel()
 
 		c, sel, err := resolveClientSelection()
@@ -1146,7 +1152,7 @@ var mailAckCmd = &cobra.Command{
 		if messageID == "" {
 			return usageError("message id is required")
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := commandAPIContext(cmd)
 		defer cancel()
 
 		c, _, err := resolveClientSelection()
@@ -1192,7 +1198,7 @@ var mailShowCmd = &cobra.Command{
 			return usageError("--conversation-id and --message-id are mutually exclusive")
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := commandAPIContext(cmd)
 		defer cancel()
 
 		// Same client selection as mail send/reply: certificate-authenticated
