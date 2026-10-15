@@ -23,15 +23,20 @@ func TestRefusedMessageReturnsFromFreshSnapshot(t *testing.T) {
 	for _, tc := range []struct {
 		refusal              string
 		initialSnapshotDelay time.Duration
+		slowRefusalCycle     bool
 	}{
 		{refusal: "paused"}, {refusal: "shell"}, {refusal: "blocked"},
 		{refusal: "prelaunch-not-launched"}, {refusal: "prelaunch-stopped"},
 		// Registration age is not snapshot age: slow startup must not spend
 		// the delivery budget before the refusal backoff has elapsed.
 		{refusal: "prelaunch-not-launched-delayed", initialSnapshotDelay: 3 * time.Second},
+		// A loaded host can make one refused-delivery cycle take longer than a
+		// fixed wall-clock bound while the broker behaves correctly. Every
+		// terminal inspection of the second cycle is slow.
+		{refusal: "shell-slow-cycle", slowRefusalCycle: true},
 	} {
 		t.Run(tc.refusal, func(t *testing.T) {
-			refusal := strings.TrimSuffix(tc.refusal, "-delayed")
+			refusal := strings.TrimSuffix(strings.TrimSuffix(tc.refusal, "-delayed"), "-slow-cycle")
 			root, _ := filepath.EvalSymlinks(t.TempDir())
 			store, err := NewStore(filepath.Join(root, "state"))
 			if err != nil {
@@ -54,7 +59,8 @@ func TestRefusedMessageReturnsFromFreshSnapshot(t *testing.T) {
 				setState(strings.TrimPrefix(refusal, "prelaunch-"))
 			}
 			oats := filepath.Join(root, "oats")
-			script := "#!/bin/sh\nif [ \"$1 $2\" = \"session inspect\" ]; then cat " + shellQuoteForTest(statePath) + "; else cat >> " + shellQuoteForTest(inputPath) + "; printf '{\"ok\":true,\"result\":{\"submitted\":true}}'; fi\n"
+			slowInspect := filepath.Join(root, "slow-inspect")
+			script := "#!/bin/sh\nif [ \"$1 $2\" = \"session inspect\" ]; then if [ -f " + shellQuoteForTest(slowInspect) + " ]; then sleep 1.5; fi; cat " + shellQuoteForTest(statePath) + "; else cat >> " + shellQuoteForTest(inputPath) + "; printf '{\"ok\":true,\"result\":{\"submitted\":true}}'; fi\n"
 			if err := os.WriteFile(oats, []byte(script), 0755); err != nil {
 				t.Fatal(err)
 			}
@@ -84,7 +90,14 @@ func TestRefusedMessageReturnsFromFreshSnapshot(t *testing.T) {
 			thirdSnapshot := make(chan time.Time, 1)
 			openCount := func() int { mu.Lock(); defer mu.Unlock(); return len(opens) }
 			registeredAt := time.Now()
-			broker, cancel := liveBroker(t, Config{Store: store, Session: &session.ExecClient{Bin: oats}, ChannelCore: NewChannelCoreRunner(store), OpenStream: func(string, string) (run.EventStreamOpener, error) {
+			var traceMu sync.Mutex
+			var trace []string
+			record := func(format string, args ...any) {
+				traceMu.Lock()
+				defer traceMu.Unlock()
+				trace = append(trace, time.Now().Format("15:04:05.000")+" "+fmt.Sprintf(format, args...))
+			}
+			broker, cancel := liveBroker(t, Config{Log: record, Store: store, Session: &session.ExecClient{Bin: oats}, ChannelCore: NewChannelCoreRunner(store), OpenStream: func(string, string) (run.EventStreamOpener, error) {
 				return func(ctx context.Context, _ time.Time) (awid.EventSource, error) {
 					mu.Lock()
 					openedAt := time.Now()
@@ -101,29 +114,108 @@ func TestRefusedMessageReturnsFromFreshSnapshot(t *testing.T) {
 				}, nil
 			}})
 			defer cancel()
+			// On failure, report what the broker and the channel-core child were
+			// doing, so a timeout says whether a delivery cycle was slow, its
+			// snapshot request was lost, or the child restarted.
+			sampling := make(chan struct{})
+			go func() {
+				last := ""
+				for {
+					select {
+					case <-sampling:
+						return
+					case <-time.After(20 * time.Millisecond):
+					}
+					for _, inst := range broker.Status().Instances {
+						if inst.Home != home {
+							continue
+						}
+						cc := inst.ChannelCore
+						now := fmt.Sprintf("child stage=%s running=%t restarts=%d readiness=%s/%s error=%q", cc.TraceStage, cc.Running, cc.RestartCount, cc.ReadinessState, cc.ReadinessWaiting, cc.LastError)
+						if now != last {
+							record("%s", now)
+							last = now
+						}
+					}
+				}
+			}()
+			defer func() {
+				close(sampling)
+				if !t.Failed() {
+					return
+				}
+				broker.mu.Lock()
+				for key, stream := range broker.streams {
+					stream.mu.Lock()
+					t.Logf("stream %s: timer=%t backoff=%s live=%t phase=%s", key, stream.snapshotTimer != nil, stream.snapshotBackoff, stream.streamCancel != nil, stream.phase)
+					stream.mu.Unlock()
+				}
+				broker.mu.Unlock()
+				mu.Lock()
+				t.Logf("snapshot opens=%v fetches=%d acks=%d", opens, fetches.Load(), acks.Load())
+				mu.Unlock()
+				traceMu.Lock()
+				for _, line := range trace {
+					t.Logf("trace %s", line)
+				}
+				traceMu.Unlock()
+			}()
 			// The retained trace name and HTTP fetch count do not identify
 			// completion of a particular delivery cycle. Wait for the broker
 			// to consume that cycle's exhausted-retry request and arm its timer.
-			waitForBackoff := func(next time.Duration) {
-				t.Helper()
-				waitForCond(t, "exhausted refusal scheduled its snapshot", func() bool {
-					broker.mu.Lock()
-					defer broker.mu.Unlock()
-					if len(broker.streams) != 1 {
+			scheduled := func(next time.Duration) bool {
+				broker.mu.Lock()
+				defer broker.mu.Unlock()
+				if len(broker.streams) != 1 {
+					return false
+				}
+				for _, stream := range broker.streams {
+					stream.mu.Lock()
+					armed := stream.snapshotTimer != nil && stream.snapshotBackoff == next
+					stream.mu.Unlock()
+					if !armed {
 						return false
 					}
-					for _, stream := range broker.streams {
-						stream.mu.Lock()
-						scheduled := stream.snapshotTimer != nil && stream.snapshotBackoff == next
-						stream.mu.Unlock()
-						if !scheduled {
-							return false
-						}
+				}
+				return true
+			}
+			// The cycle runs in the channel-core child: inbox fetches and
+			// terminal inspections whose duration depends on the host. Its
+			// progress is the fetch count and the child's delivery stage.
+			cycleProgress := func() string {
+				progress := fmt.Sprintf("fetches=%d", fetches.Load())
+				for _, inst := range broker.Status().Instances {
+					if inst.Home == home {
+						cc := inst.ChannelCore
+						progress += fmt.Sprintf(" stage=%s readiness=%s error=%q", cc.TraceStage, cc.ReadinessWaiting, cc.LastError)
 					}
-					return true
-				})
+				}
+				return progress
+			}
+			// Wait while the cycle makes progress. A cycle that stops moving
+			// without scheduling its snapshot, such as a lost request, fails.
+			waitForBackoff := func(next time.Duration) {
+				t.Helper()
+				const stalled = 5 * time.Second
+				const limit = 2 * time.Minute
+				start := time.Now()
+				last, lastMoved := cycleProgress(), time.Now()
+				for !scheduled(next) {
+					if now := cycleProgress(); now != last {
+						last, lastMoved = now, time.Now()
+					}
+					if time.Since(lastMoved) > stalled || time.Since(start) > limit {
+						t.Fatalf("timed out waiting for exhausted refusal scheduled its snapshot (last progress %s)", last)
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
 			}
 			waitForBackoff(2 * snapshotBackoffMin)
+			if tc.slowRefusalCycle {
+				if err := os.WriteFile(slowInspect, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			assertFileNotContains(t, inputPath, "snapshot recovery mail")
 			{
 				deadline := time.Now().Add(8 * time.Second)
