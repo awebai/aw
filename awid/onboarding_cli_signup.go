@@ -145,6 +145,28 @@ func onboardingDIDKeyHeaders(
 	}
 }
 
+// DIDKeyProofHeaders proves the caller holds signingKey on a request whose
+// Authorization header carries other authority, such as a team API key. The
+// signature is the onboarding DIDKey envelope over the exact body bytes,
+// carried in X-AWEB-DIDKey-Signature with the same "DIDKey <did> <sig>" form,
+// and the envelope's timestamp in X-AWEB-DIDKey-Timestamp. X-AWEB-Timestamp
+// is not sent: on a request whose Authorization is not DIDKey, a server's
+// team-certificate auth would read it as a malformed team-certificate call.
+func DIDKeyProofHeaders(method, path string, body []byte, signingKey ed25519.PrivateKey) map[string]string {
+	headers := onboardingDIDKeyHeaders(method, path, body, signingKey)
+	return map[string]string{
+		DIDKeyProofHeader:          headers["Authorization"],
+		DIDKeyProofTimestampHeader: headers["X-AWEB-Timestamp"],
+	}
+}
+
+// DIDKeyProofHeader and DIDKeyProofTimestampHeader carry a DIDKey proof
+// beside other authorization.
+const (
+	DIDKeyProofHeader          = "X-AWEB-DIDKey-Signature"
+	DIDKeyProofTimestampHeader = "X-AWEB-DIDKey-Timestamp"
+)
+
 // postJSONNoAuth sends a JSON POST with no authentication. Marshals once,
 // expects a JSON response body.
 func postJSONNoAuth(ctx context.Context, baseURL, path string, in, out any) error {
@@ -157,7 +179,7 @@ func postJSONNoAuth(ctx context.Context, baseURL, path string, in, out any) erro
 
 // postJSONWithHeaders sends a POST with a pre-marshaled body and a set of
 // headers (e.g. a DIDKey auth envelope). It guarantees the body bytes
-// transmitted on the wire are exactly the bytes the caller provided —
+// after HTTP decoding are exactly the bytes the caller provided —
 // critical for body_sha256-based authentication.
 func postJSONWithHeaders(
 	ctx context.Context,
@@ -181,7 +203,7 @@ func postJSONWithHeaders(
 		req.Header.Set(k, v)
 	}
 
-	resp, err := DoNoRedirect(&http.Client{Timeout: APITimeout(), Transport: NewAPITransport()}, req)
+	resp, err := DoServerRequest(&http.Client{Timeout: APITimeout(), Transport: NewAPITransport()}, req, baseURL)
 	if err != nil {
 		return err
 	}

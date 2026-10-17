@@ -70,6 +70,10 @@ func newLocalHTTPServerWithURL(t *testing.T, build func(url string) http.Handler
 	return newHTTPTestServerWithURL(t, func(url string) http.Handler {
 		handler := build(url)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// These legacy fixtures do not advertise request compression.
+			if serveUnadvertisedHealth(w, r) {
+				return
+			}
 			// aw probes for aweb by calling GET /v1/agents/heartbeat on candidate bases.
 			// Return any non-404 to indicate "endpoint exists" without side effects.
 			// Only intercept GET; POST is the actual heartbeat and should reach the inner handler.
@@ -2257,38 +2261,14 @@ func TestDefaultAwebURL(t *testing.T) {
 	}
 }
 
-func TestResolveBaseURLForInitFallsBackToDefault(t *testing.T) {
-	// Cannot use t.Parallel() — needs env and cwd control.
-
-	tmp := t.TempDir()
-
-	origCfg := os.Getenv("AW_CONFIG_PATH")
-	origURL := os.Getenv("AWEB_URL")
-	origWd, _ := os.Getwd()
-	os.Setenv("AW_CONFIG_PATH", "")
-	os.Setenv("AWEB_URL", "")
-	os.Chdir(tmp)
-	defer func() {
-		os.Setenv("AW_CONFIG_PATH", origCfg)
-		os.Setenv("AWEB_URL", origURL)
-		os.Chdir(origWd)
-	}()
-
-	// resolveBaseURLForInit should fall back to the default URL.
-	// If the server is reachable, we get a URL back; if not, the error
-	// should mention app.aweb.ai. Either way, the default was used.
-	baseURL, serverName, err := resolveBaseURLForInit("", "")
+func TestInitBaseURLSelectionFallsBackToDefaultWithoutIO(t *testing.T) {
+	t.Setenv("AWEB_URL", "")
+	baseURL, serverName, err := selectInitBaseURL("", "")
 	if err != nil {
-		if !strings.Contains(err.Error(), "app.aweb.ai") {
-			t.Fatalf("expected error to reference default URL app.aweb.ai, got: %v", err)
-		}
-		return
+		t.Fatal(err)
 	}
-	if !strings.Contains(baseURL, "app.aweb.ai") {
-		t.Fatalf("expected baseURL to contain app.aweb.ai, got %q", baseURL)
-	}
-	if !strings.Contains(serverName, "app.aweb.ai") {
-		t.Fatalf("expected serverName to contain app.aweb.ai, got %q", serverName)
+	if baseURL != DefaultAwebURL || serverName != "app.aweb.ai" {
+		t.Fatalf("default selection: base=%q server=%q", baseURL, serverName)
 	}
 }
 
@@ -2314,4 +2294,12 @@ func TestMCPConfigRequiresChannelForCertificateAuth(t *testing.T) {
 	if !strings.Contains(string(out), "use `aw mcp-config --channel`") {
 		t.Fatalf("unexpected output:\n%s", string(out))
 	}
+}
+
+func serveUnadvertisedHealth(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/health") {
+		w.WriteHeader(http.StatusNotFound)
+		return true
+	}
+	return false
 }

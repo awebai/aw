@@ -24,6 +24,7 @@ import (
 	"github.com/awebai/aw/awconfig"
 	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/internal/identityutil"
+	"github.com/awebai/aw/internal/termtext"
 	"github.com/joho/godotenv"
 	"golang.org/x/term"
 )
@@ -1109,6 +1110,9 @@ type baseURLFallbackTransport struct {
 	state *baseURLFallbackState
 }
 
+// Compression is negotiated after requestForBase selects the actual mount.
+func (t *baseURLFallbackTransport) HandlesServerRequestCompression() bool { return true }
+
 func (t *baseURLFallbackTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	base := t.base
 	if base == nil {
@@ -1125,7 +1129,7 @@ func (t *baseURLFallbackTransport) RoundTrip(req *http.Request) (*http.Response,
 	if err != nil {
 		return nil, err
 	}
-	resp, err := base.RoundTrip(prepared)
+	resp, err := awid.RoundTripServerRequest(base, prepared, current)
 	if !shouldRetryBaseURLRequest(req.Method, resp, err) {
 		return resp, err
 	}
@@ -1144,7 +1148,7 @@ func (t *baseURLFallbackTransport) RoundTrip(req *http.Request) (*http.Response,
 	if err != nil {
 		return nil, err
 	}
-	resp, err = base.RoundTrip(retried)
+	resp, err = awid.RoundTripServerRequest(base, retried, fresh)
 	if err == nil && t.state.persist != nil {
 		t.state.persist(fresh)
 	}
@@ -1263,6 +1267,20 @@ func joinURLPath(basePath, relPath string) string {
 }
 
 func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName string, err error) {
+	baseURL, serverName, err = selectInitBaseURL(urlVal, serverVal)
+	if err != nil {
+		return "", "", err
+	}
+	baseURL, err = resolveWorkingBaseURL(baseURL)
+	if err != nil {
+		return "", "", err
+	}
+	return baseURL, serverName, nil
+}
+
+// Select the requested/default URL without contacting it. Reachability and
+// API-mount discovery belong to resolveBaseURLForInit's separate network step.
+func selectInitBaseURL(urlVal, serverVal string) (baseURL string, serverName string, err error) {
 	baseURL = strings.TrimSpace(urlVal)
 	serverName = strings.TrimSpace(serverVal)
 
@@ -1283,10 +1301,6 @@ func resolveBaseURLForInit(urlVal, serverVal string) (baseURL string, serverName
 		}
 	}
 	if err := awconfig.ValidateBaseURL(baseURL); err != nil {
-		return "", "", err
-	}
-	baseURL, err = resolveWorkingBaseURL(baseURL)
-	if err != nil {
 		return "", "", err
 	}
 	return baseURL, serverName, nil
@@ -1540,7 +1554,7 @@ func writeOutput(w io.Writer, v any, formatter func(v any) string) error {
 		_, err := fmt.Fprintln(w, formatJSONOutput(v))
 		return err
 	}
-	_, err := fmt.Fprint(w, formatter(v))
+	_, err := fmt.Fprint(w, termtext.Body(formatter(v)))
 	return err
 }
 

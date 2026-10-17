@@ -1734,6 +1734,9 @@ func TestTeamHumanCreateExistingSelfCustodialIdentityCreatesTeam(t *testing.T) {
 	var gotTeam map[string]any
 	var gotCert map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveUnadvertisedHealth(w, r) {
+			return
+		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/namespaces/acme.com":
 			http.NotFound(w, r)
@@ -1840,6 +1843,10 @@ func TestTeamHumanCreateBYOTWithAgentsCreatesTeamAndRoster(t *testing.T) {
 	var certAliases []string
 	var server *httptest.Server
 	server = newHTTPTestServerHandlerWithURL(t, func(serverURL string, w http.ResponseWriter, r *http.Request) {
+		if serveUnadvertisedHealth(w, r) {
+			return
+		}
+
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/discovery":
 			_ = json.NewEncoder(w).Encode(map[string]any{"aweb_url": serverURL, "registry_url": serverURL})
@@ -1983,6 +1990,9 @@ func TestTeamHumanCreateBYOTFirstAgentGlobalMintsWithNamespaceAuthority(t *testi
 	var namespaceCreated bool
 	var claimCalls, certCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveUnadvertisedHealth(w, r) {
+			return
+		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/namespaces/acme.com":
 			if !namespaceCreated {
@@ -2098,6 +2108,9 @@ func TestTeamHumanCreateBYOTEnrollsCreatorAndPreservesExistingMembership(t *test
 	}
 	var certCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveUnadvertisedHealth(w, r) {
+			return
+		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/namespaces/acme.com":
 			http.NotFound(w, r)
@@ -2210,6 +2223,10 @@ func TestTeamHumanAddProfileMaterializeFailureRollsBackCreatedHome(t *testing.T)
 	var revokedCertID string
 	var server *httptest.Server
 	server = newHTTPTestServerHandlerWithURL(t, func(serverURL string, w http.ResponseWriter, r *http.Request) {
+		if serveUnadvertisedHealth(w, r) {
+			return
+		}
+
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/discovery":
 			_ = json.NewEncoder(w).Encode(map[string]any{"aweb_url": serverURL, "registry_url": serverURL})

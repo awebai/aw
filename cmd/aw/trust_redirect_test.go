@@ -79,7 +79,7 @@ func TestDirectTrustRequestsDoNotFollowRedirects(t *testing.T) {
 			name:             "API key workspace init",
 			expectsAuthority: true,
 			invoke: func(sourceURL string) error {
-				_, err := postAPIKeyWorkspaceInit(context.Background(), sourceURL, "secret-api-key", apiKeyBootstrapRequest{})
+				_, err := postAPIKeyWorkspaceInit(context.Background(), sourceURL, "secret-api-key", apiKeyBootstrapRequest{}, testWorkspaceInitKey)
 				return err
 			},
 		},
@@ -108,6 +108,9 @@ func TestDirectTrustRequestsDoNotFollowRedirects(t *testing.T) {
 
 			var sourceHits atomic.Int32
 			source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveUnadvertisedHealth(w, r) {
+					return
+				}
 				sourceHits.Add(1)
 				if test.expectsAuthority && r.Header.Get("Authorization") == "" {
 					t.Error("production request did not carry the expected authority header")
@@ -148,7 +151,7 @@ func TestDirectTrustRequestsEnforcePinnedBoundAndStrictJSON(t *testing.T) {
 			return postTeamCleanupCloud(context.Background(), sourceURL, map[string]any{"controller_signature": "signed-authority"}, &map[string]any{})
 		}},
 		{name: "API key workspace init", invoke: func(sourceURL string) error {
-			_, err := postAPIKeyWorkspaceInit(context.Background(), sourceURL, "secret-api-key", apiKeyBootstrapRequest{})
+			_, err := postAPIKeyWorkspaceInit(context.Background(), sourceURL, "secret-api-key", apiKeyBootstrapRequest{}, testWorkspaceInitKey)
 			return err
 		}},
 		{name: "public runnable profile", responsePrefix: `{"blueprint_ref":"aweb.team","blueprint_version":"1","profile_ref":"developer","version":"1","digest":"digest","files":[{"path":"AGENTS.md","content_utf8":"x"}]}`, invoke: func(sourceURL string) error {

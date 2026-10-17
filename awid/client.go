@@ -1453,7 +1453,7 @@ func (c *Client) DoRawWithHeaders(ctx context.Context, method, path, accept stri
 			return nil, err
 		}
 		TraceHTTPRequest(req, bodyBytes)
-		resp, err := DoNoRedirectWithTimeout(c.httpClient, req, APITimeout())
+		resp, err := DoServerRequestWithTimeout(c.httpClient, req, c.baseURL, APITimeout())
 		if err != nil {
 			decorated := decorateTimeoutError(method, err)
 			if shouldRetryAPITransportError(ctx, method, path, bodyBytes, attempt, err) {
@@ -1664,7 +1664,7 @@ func traceHeaders(prefix string, headers http.Header, redact bool) {
 
 func shouldRedactTraceHeader(key string) bool {
 	switch http.CanonicalHeaderKey(strings.TrimSpace(key)) {
-	case "Authorization", "Cookie", "Set-Cookie", "X-Aweb-Signed-Payload", "X-Awid-Team-Certificate", "X-Aweb-Grant-Id", "X-AWEB-Signed-Payload", "X-AWID-Team-Certificate", "X-AWEB-Grant-ID":
+	case "Authorization", "X-Aweb-Didkey-Signature", "Cookie", "Set-Cookie", "X-Aweb-Signed-Payload", "X-Awid-Team-Certificate", "X-Aweb-Grant-Id", "X-AWEB-Signed-Payload", "X-AWID-Team-Certificate", "X-AWEB-Grant-ID":
 		return true
 	default:
 		return false
