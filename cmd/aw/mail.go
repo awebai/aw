@@ -487,7 +487,7 @@ var mailSendCmd = &cobra.Command{
 				return err
 			}
 			if agent, found, findErr := clientAgentForAlias(ctx, c, targetValue); findErr != nil {
-				debugLog("list agents for mail auto-threading: %v", findErr)
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: recipient lookup failed; automatic mail threading unavailable: %v\n", findErr)
 				req.ToAlias = targetValue
 			} else if found {
 				if agentMatchesSelection(agent, sel) {
@@ -527,6 +527,10 @@ var mailSendCmd = &cobra.Command{
 			} else if liveFound {
 				kind, value := liveTarget.identityTarget()
 				applyMailRecipientTarget(req, kind, value)
+				// The live team roster already binds the member's current key.
+				// Keep it with the stable ID instead of treating the member as
+				// an external bare-DID first contact. /v1/agents omits humans.
+				req.ToDID = strings.TrimSpace(liveTarget.DIDKey)
 				if mailRecipientTargetApplied(req) {
 					targetKind = kind
 					targetValue = value

@@ -75,6 +75,10 @@ var rootCmd = &cobra.Command{
 			activeIdentityHome = home
 		}
 		restoreIdentityHomeAfterCommand(cmd, identityHomeEnv, hadIdentityHomeEnv, previousActiveIdentityHome)
+		if cmd == idCreateCmd && (cmd.Flags().Changed("org") || cmd.Flags().Changed("owner-identity-home")) {
+			// Validate the original creation association before any key renewal or network work.
+			return nil
+		}
 		if isAgentStatusCommand(cmd) || isActivityCommand(cmd) {
 			return nil // Producer commands never renew encryption keys or check updates.
 		}
@@ -169,7 +173,7 @@ func init() {
 	rootCmd.SetCompletionCommandGroupID(groupUtility)
 
 	rootCmd.PersistentFlags().StringVar(&serverFlag, "server-name", "", "Override the server host or name for this command")
-	rootCmd.PersistentFlags().StringVar(&identityHomeFlag, "identity-home", "", "Use identity authority from this absolute credential root")
+	rootCmd.PersistentFlags().StringVar(&identityHomeFlag, "identity-home", "", "Use this absolute credential directory (contains signing.key or grant.yaml; usually <workspace>/.aw, not its parent)")
 	rootCmd.PersistentFlags().BoolVar(&debugFlag, "debug", false, "Log background errors to stderr")
 	rootCmd.PersistentFlags().BoolVar(&traceFlag, "trace", false, "Trace redacted HTTP requests and responses to stderr")
 	rootCmd.PersistentFlags().BoolVar(&jsonFlag, "json", false, "Output as JSON")
