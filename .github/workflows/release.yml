@@ -32,6 +32,9 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A final can name the same commit as its release candidate; build
+          # the pushed tag, not whichever tag git describe picks.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
 
       - name: Arrange goreleaser archives for the npm publisher
         run: |
