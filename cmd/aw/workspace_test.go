@@ -1134,6 +1134,13 @@ func TestAwWorkspaceAddWorktreeCreatesLocalSelfCustodialCLIWorkspaceWithTeamKey(
 		t.Fatal(err)
 	}
 
+	parentPub, parentKey, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentDID := awid.ComputeDIDKey(parentPub)
+	parentStableID := awid.ComputeStableID(parentPub)
+
 	var registeredCert map[string]any
 	var connectBody map[string]any
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1141,6 +1148,12 @@ func TestAwWorkspaceAddWorktreeCreatesLocalSelfCustodialCLIWorkspaceWithTeamKey(
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/did/" + parentStableID + "/key":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did_aw":          parentStableID,
+				"current_did_key": parentDID,
+				"id_tree":         map[string]any{"enrolled": false},
+			})
 		case "/v1/roles/active":
 			requireCertificateAuthForTest(t, r)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1204,18 +1217,7 @@ func TestAwWorkspaceAddWorktreeCreatesLocalSelfCustodialCLIWorkspaceWithTeamKey(
 	buildAwBinary(t, ctx, bin)
 
 	writeTeamKeyForTest(t, tmp, "source", "backend", teamKey)
-	if err := awconfig.SaveWorktreeIdentityTo(filepath.Join(repo, ".aw", "identity.yaml"), &awconfig.WorktreeIdentity{
-		DID:            "did:key:z6MkParent",
-		StableID:       "did:aw:parent",
-		Address:        "source/alice",
-		Custody:        awid.CustodySelf,
-		IdentityScope:  awid.IdentityModeGlobal,
-		RegistryURL:    server.URL,
-		RegistryStatus: "registered",
-		CreatedAt:      "2026-04-08T00:00:00Z",
-	}); err != nil {
-		t.Fatalf("seed identity.yaml: %v", err)
-	}
+	writeStandaloneSelfCustodyIdentity(t, repo, "source/alice", parentDID, parentStableID, server.URL, parentKey)
 	binding := workspaceBinding(server.URL, teamID, "alice", "source-1")
 	binding.HumanName = "Wendy"
 	binding.AgentType = "agent"
@@ -1651,6 +1653,9 @@ func TestAPIKeyBootstrapAddWorktreeMailRoundTrip(t *testing.T) {
 	)
 
 	awebServer := newRawLocalHTTPServerForTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveAPIKeyCreationTeamRead(w, r, teamID) {
+			return
+		}
 		if serveUnadvertisedHealth(w, r) {
 			return
 		}
@@ -1936,6 +1941,13 @@ func TestAwWorkspaceAddWorktreeRevokesCertificateWhenConnectFails(t *testing.T) 
 		t.Fatal(err)
 	}
 
+	parentPub, parentKey, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentDID := awid.ComputeDIDKey(parentPub)
+	parentStableID := awid.ComputeStableID(parentPub)
+
 	var registeredCert map[string]any
 	var revokedCert map[string]any
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1943,6 +1955,12 @@ func TestAwWorkspaceAddWorktreeRevokesCertificateWhenConnectFails(t *testing.T) 
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/did/" + parentStableID + "/key":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did_aw":          parentStableID,
+				"current_did_key": parentDID,
+				"id_tree":         map[string]any{"enrolled": false},
+			})
 		case "/v1/roles/active":
 			requireCertificateAuthForTest(t, r)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1989,18 +2007,7 @@ func TestAwWorkspaceAddWorktreeRevokesCertificateWhenConnectFails(t *testing.T) 
 	buildAwBinary(t, ctx, bin)
 
 	writeTeamKeyForTest(t, tmp, "source", "backend", teamKey)
-	if err := awconfig.SaveWorktreeIdentityTo(filepath.Join(repo, ".aw", "identity.yaml"), &awconfig.WorktreeIdentity{
-		DID:            "did:key:z6MkParent",
-		StableID:       "did:aw:parent",
-		Address:        "source/alice",
-		Custody:        awid.CustodySelf,
-		IdentityScope:  awid.IdentityModeGlobal,
-		RegistryURL:    server.URL,
-		RegistryStatus: "registered",
-		CreatedAt:      "2026-04-08T00:00:00Z",
-	}); err != nil {
-		t.Fatalf("seed identity.yaml: %v", err)
-	}
+	writeStandaloneSelfCustodyIdentity(t, repo, "source/alice", parentDID, parentStableID, server.URL, parentKey)
 	writeWorkspaceBindingForTest(t, repo, workspaceBinding(server.URL, teamID, "alice", "source-1"))
 	if err := awconfig.SaveWorktreeContextTo(filepath.Join(repo, ".aw", "context"), &awconfig.WorktreeContext{}); err != nil {
 		t.Fatalf("seed .aw/context: %v", err)
@@ -2041,6 +2048,13 @@ func TestAwWorkspaceAddWorktreeRevokesCertificateWhenConnectAliasMismatches(t *t
 		t.Fatal(err)
 	}
 
+	parentPub, parentKey, err := awid.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentDID := awid.ComputeDIDKey(parentPub)
+	parentStableID := awid.ComputeStableID(parentPub)
+
 	var registeredCert map[string]any
 	var revokedCert map[string]any
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -2048,6 +2062,12 @@ func TestAwWorkspaceAddWorktreeRevokesCertificateWhenConnectAliasMismatches(t *t
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/did/" + parentStableID + "/key":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"did_aw":          parentStableID,
+				"current_did_key": parentDID,
+				"id_tree":         map[string]any{"enrolled": false},
+			})
 		case "/v1/roles/active":
 			requireCertificateAuthForTest(t, r)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -2102,18 +2122,7 @@ func TestAwWorkspaceAddWorktreeRevokesCertificateWhenConnectAliasMismatches(t *t
 	buildAwBinary(t, ctx, bin)
 
 	writeTeamKeyForTest(t, tmp, "source", "backend", teamKey)
-	if err := awconfig.SaveWorktreeIdentityTo(filepath.Join(repo, ".aw", "identity.yaml"), &awconfig.WorktreeIdentity{
-		DID:            "did:key:z6MkParent",
-		StableID:       "did:aw:parent",
-		Address:        "source/alice",
-		Custody:        awid.CustodySelf,
-		IdentityScope:  awid.IdentityModeGlobal,
-		RegistryURL:    server.URL,
-		RegistryStatus: "registered",
-		CreatedAt:      "2026-04-08T00:00:00Z",
-	}); err != nil {
-		t.Fatalf("seed identity.yaml: %v", err)
-	}
+	writeStandaloneSelfCustodyIdentity(t, repo, "source/alice", parentDID, parentStableID, server.URL, parentKey)
 	writeWorkspaceBindingForTest(t, repo, workspaceBinding(server.URL, teamID, "alice", "source-1"))
 	if err := awconfig.SaveWorktreeContextTo(filepath.Join(repo, ".aw", "context"), &awconfig.WorktreeContext{}); err != nil {
 		t.Fatalf("seed .aw/context: %v", err)
@@ -2258,6 +2267,8 @@ func TestAwWorkspaceAddWorktreeExternalIdentityHomeUsesHostedInviteWithoutTeamKe
 				Namespace:     "acme.aweb.ai",
 				ServerURL:     "http://" + r.Host,
 			})
+		case "/api/v1/spawn/invite-preview":
+			writeLegacyHostedPreviewForTest(t, w, r, teamID, "http://"+r.Host)
 		case "/api/v1/spawn/accept-invite":
 			if didFromDIDKeyAuthorizationForTest(r.Header.Get("Authorization")) == "" {
 				t.Fatalf("accept-invite missing DIDKey auth")
@@ -2420,6 +2431,9 @@ func TestAwWorkspaceAddWorktreeExternalIdentityHomeUsesParentAPIKey(t *testing.T
 	defer cancel()
 
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveAPIKeyCreationTeamRead(w, r, teamID) {
+			return
+		}
 		switch r.URL.Path {
 		case "/v1/roles/active":
 			_ = json.NewEncoder(w).Encode(map[string]any{
