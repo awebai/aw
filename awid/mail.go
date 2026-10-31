@@ -42,7 +42,11 @@ type SendMessageRequest struct {
 	SignedPayload    string               `json:"signed_payload,omitempty"`
 	ReplyToMessageID string               `json:"-"`
 	EncryptE2EE      bool                 `json:"-"`
-	E2EERecipient    *E2EERecipientKey    `json:"-"`
+	// E2EEInherited marks EncryptE2EE as inherited from the message being
+	// replied to rather than requested: it does not apply to a recipient whose
+	// verified key assertion says aweb's hosted service holds the key.
+	E2EEInherited bool              `json:"-"`
+	E2EERecipient *E2EERecipientKey `json:"-"`
 
 	NewConversation bool `json:"new_conversation,omitempty"`
 }
@@ -97,6 +101,32 @@ func (c *Client) sendMessage(ctx context.Context, req *SendMessageRequest, ident
 			strings.TrimSpace(payload.ToStableID) != "" ||
 			strings.TrimSpace(payload.ToAddress) != ""
 	}
+	if payload.EncryptE2EE && payload.E2EEInherited {
+		// Inherited encryption is not a request for end to end: to a recipient
+		// whose verified key says aweb's hosted service holds it, send the
+		// reply server-readable to that same recipient, decided before any
+		// request. Unknown custody keeps the inherited encryption.
+		recipient, err := c.e2eeMailRecipient(ctx, &payload)
+		if err != nil {
+			return nil, err
+		}
+		payload.E2EERecipient = &recipient
+		if recipientKeyIsHosted(recipient, time.Now().UTC()) {
+			payload.EncryptE2EE = false
+			payload.E2EERecipient = nil
+			if !hasRecipient {
+				switch {
+				case strings.TrimSpace(recipient.Address) != "":
+					payload.ToAddress = strings.TrimSpace(recipient.Address)
+				case strings.TrimSpace(recipient.StableID) != "":
+					payload.ToStableID = strings.TrimSpace(recipient.StableID)
+				default:
+					payload.ToDID = strings.TrimSpace(recipient.DID)
+				}
+				hasRecipient = true
+			}
+		}
+	}
 	initialConversationID := strings.TrimSpace(payload.ConversationID)
 	if c.canAttachPlainMessageSignature() && initialConversationID == "" && hasRecipient {
 		conversationID, err := GenerateUUID4()
@@ -126,7 +156,7 @@ func (c *Client) sendMessage(ctx context.Context, req *SendMessageRequest, ident
 		}
 		var out SendMessageResponse
 		if err := c.Post(ctx, "/v1/messages", &payload, &out); err != nil {
-			return nil, err
+			return nil, serverCustodialRefusal(err, payload.Encrypted)
 		}
 		return &out, nil
 	}
@@ -188,6 +218,9 @@ func (c *Client) prepareE2EEMail(ctx context.Context, payload *SendMessageReques
 		return err
 	}
 	now := time.Now().UTC().Truncate(time.Second)
+	if err := refuseCustodialRecipients([]E2EERecipientKey{recipient}, now); err != nil {
+		return err
+	}
 	messageID := strings.TrimSpace(payload.MessageID)
 	if messageID == "" {
 		messageID, err = GenerateUUID4()
@@ -366,7 +399,7 @@ func (c *Client) e2eeMailRecipient(ctx context.Context, payload *SendMessageRequ
 		return E2EERecipientKey{}, err
 	}
 	if identity.EncryptionKey == nil {
-		return E2EERecipientKey{}, errors.New("recipient has no published E2E encryption key; ask them to upgrade aw/Pi/channel and run `aw id encryption-key setup`, or explicitly send a server-readable upgrade note with --plaintext")
+		return E2EERecipientKey{}, errNoPublishedEncryptionKey
 	}
 	return E2EERecipientKey{
 		Address:        strings.TrimSpace(identity.Address),

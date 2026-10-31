@@ -64,7 +64,16 @@ func (e *RecipientResolutionError) Error() string {
 	if e.Err == nil {
 		return fmt.Sprintf("resolve recipient %q for signed %s", e.Target, msgType)
 	}
+	if code, ok := HTTPStatusCode(e.Err); ok && code == http.StatusNotFound && isRoutableAddressTarget(e.Target) {
+		return fmt.Sprintf("resolve recipient %q for signed %s: %s (%v)", e.Target, msgType, UnreachableAddressText(e.Target), e.Err)
+	}
 	return fmt.Sprintf("resolve recipient %q for signed %s: %v", e.Target, msgType, e.Err)
+}
+
+// UnreachableAddressText says that an address has no registered identity and
+// how local and global identities are reached.
+func UnreachableAddressText(address string) string {
+	return fmt.Sprintf("%s is not a registered address. A local identity has no address and is reachable only from inside its own team, by alias; a global identity is reachable by address once one is assigned", address)
 }
 
 func (e *RecipientResolutionError) Unwrap() error {

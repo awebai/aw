@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -745,16 +746,14 @@ var mailReplyCmd = &cobra.Command{
 		if conversationID == "" {
 			return fmt.Errorf("message %s is legacy mail without a conversation; send a new message instead", messageID)
 		}
-		subject := mailReplySubject
-		if strings.TrimSpace(subject) == "" {
-			subject = "Re"
-		}
+		subject := replySubject(mailReplySubject, inbox.Messages[0].Subject)
 		req := &awid.SendMessageRequest{
 			ConversationID: conversationID,
 			Subject:        subject,
 			Body:           body,
 			Priority:       awid.MessagePriority(mailReplyPriority),
 			EncryptE2EE:    encryptReply,
+			E2EEInherited:  encryptReply && !cmd.Flags().Changed("e2ee"),
 		}
 		if encryptReply && inbox.Messages[0].Encrypted != nil {
 			source := inbox.Messages[0]
@@ -1031,10 +1030,43 @@ func e2eeAssertionIdentityForSelection(sel *awconfig.Selection) *awconfig.Resolv
 // mail inbox
 
 var (
-	mailInboxShowAll bool
-	mailInboxLimit   int
-	mailInboxCursor  string
+	mailInboxCountOnly bool
+	mailInboxShowAll   bool
+	mailInboxLimit     int
+	mailInboxCursor    string
 )
+
+// countUnreadMail walks read-only inbox pages without decrypting, verifying,
+// presenting, logging or acknowledging their content. Older servers need no
+// new endpoint; a failed continuation never becomes a partial successful count.
+func countUnreadMail(ctx context.Context, client *aweb.Client) (int, error) {
+	count := 0
+	cursor := ""
+	seen := map[string]bool{}
+	for {
+		path := "/v1/messages/inbox?unread_only=true&limit=200"
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		var page struct {
+			Messages   []json.RawMessage `json:"messages"`
+			HasMore    bool              `json:"has_more"`
+			NextCursor string            `json:"next_cursor"`
+		}
+		if err := client.Get(ctx, path, &page); err != nil {
+			return 0, err
+		}
+		count += len(page.Messages)
+		if !page.HasMore {
+			return count, nil
+		}
+		cursor = strings.TrimSpace(page.NextCursor)
+		if cursor == "" || seen[cursor] {
+			return 0, errors.New("unread mail count: invalid inbox continuation")
+		}
+		seen[cursor] = true
+	}
+}
 
 func presentAndAcknowledgeMailInbox(
 	ctx context.Context,
@@ -1058,7 +1090,22 @@ var mailInboxCmd = &cobra.Command{
 	Use:   "inbox",
 	Short: "List inbox messages (unread only by default)",
 	Long: "List inbox messages, newest first and unread only by default. Messages shown by this command are acknowledged as read.\n\n" +
-		"The response is one bounded page. Text output reports when more messages exist and prints a continuation command; JSON output carries has_more and next_cursor. Pass the returned value to --cursor to continue without overlap.",
+		"Use --count-only to count all unread mail without acknowledging or displaying messages. This read-only count walks inbox pages and does not decrypt message content.\n\n" +
+		"Without --count-only, the response is one bounded page. Text output reports when more messages exist and prints a continuation command; JSON output carries has_more and next_cursor. Pass the returned value to --cursor to continue without overlap.",
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		if cmd.Flags().Changed("count-only") {
+			for _, flag := range []string{"show-all", "limit", "cursor"} {
+				if cmd.Flags().Changed(flag) {
+					scope := "every page"
+					if flag == "show-all" {
+						scope = "unread messages"
+					}
+					return fmt.Errorf("--count-only counts %s, so it cannot be combined with --%s.", scope, flag)
+				}
+			}
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := commandAPIContext(cmd)
 		defer cancel()
@@ -1066,6 +1113,22 @@ var mailInboxCmd = &cobra.Command{
 		c, sel, err := resolveClientSelection()
 		if err != nil {
 			return err
+		}
+		if mailInboxCountOnly {
+			count, err := countUnreadMail(ctx, c)
+			if err != nil {
+				return err
+			}
+			result := struct {
+				UnreadCount int `json:"unread_count"`
+			}{count}
+			return writeOutput(cmd.OutOrStdout(), result, func(any) string {
+				unit := "messages"
+				if count == 1 {
+					unit = "message"
+				}
+				return fmt.Sprintf("%d unread %s\n", count, unit)
+			})
 		}
 		if err := configureClientE2EEForRead(cmd, ctx, c, sel); err != nil {
 			return err
@@ -1268,15 +1331,16 @@ func init() {
 	mailSendCmd.Flags().BoolVar(&mailSendLegacyPlaintext, "legacy-plaintext", false, "Deprecated alias for --plaintext")
 	_ = mailSendCmd.Flags().MarkHidden("legacy-plaintext")
 
+	mailInboxCmd.Flags().BoolVar(&mailInboxCountOnly, "count-only", false, "Count all unread mail without acknowledging or displaying messages")
 	mailInboxCmd.Flags().BoolVar(&mailInboxShowAll, "show-all", false, "Show all messages including already-read")
 	mailInboxCmd.Flags().IntVar(&mailInboxLimit, "limit", 50, "Max messages per page")
 	mailInboxCmd.Flags().StringVar(&mailInboxCursor, "cursor", "", "Continue from next_cursor in a previous inbox response")
-	mailReplyCmd.Flags().StringVar(&mailReplySubject, "subject", "", "Subject")
+	mailReplyCmd.Flags().StringVar(&mailReplySubject, "subject", "", "Subject (default: Re: <original subject>)")
 	mailReplyCmd.Flags().StringVar(&mailReplyBody, "body", "", shellExpandedInlineHelp("Body", "--body-file"))
 	mailReplyCmd.Flags().StringVar(&mailReplyBodyFile, "body-file", "", safeFileInputHelp("message body"))
 	mailReplyCmd.Flags().StringVar(&mailReplyPriority, "priority", "normal", "Priority: low|normal|high|urgent")
 	mailReplyCmd.Flags().BoolVar(&mailReplyPlaintext, "plaintext", false, "Send explicit server-readable plaintext mail, even when replying to encrypted mail")
-	mailReplyCmd.Flags().BoolVar(&mailReplyE2EE, "e2ee", false, "Send E2E encrypted mail (default for an encrypted source); fails closed if encryption keys are missing")
+	mailReplyCmd.Flags().BoolVar(&mailReplyE2EE, "e2ee", false, "Send E2E encrypted mail (default for an encrypted source, except to a recipient on aweb's hosted service, which gets server-readable mail); fails closed if encryption keys are missing")
 	mailReplyCmd.Flags().BoolVar(&mailReplyLegacyPlaintext, "legacy-plaintext", false, "Deprecated alias for --plaintext")
 	_ = mailReplyCmd.Flags().MarkHidden("legacy-plaintext")
 	mailShowCmd.Flags().StringVar(&mailShowConversationID, "conversation-id", "", "Mail conversation to inspect")
@@ -1285,4 +1349,21 @@ func init() {
 
 	mailCmd.AddCommand(mailSendCmd, mailReplyCmd, mailInboxCmd, mailShowCmd, mailAckCmd)
 	rootCmd.AddCommand(mailCmd)
+}
+
+// replySubject is the subject of a reply: the explicit one when given,
+// otherwise "Re: <original>", never prefixed twice.
+func replySubject(explicit, original string) string {
+	if subject := strings.TrimSpace(explicit); subject != "" {
+		return subject
+	}
+	original = strings.TrimSpace(original)
+	switch {
+	case original == "":
+		return "Re"
+	case len(original) >= 3 && strings.EqualFold(original[:3], "re:"):
+		return original
+	default:
+		return "Re: " + original
+	}
 }
