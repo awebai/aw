@@ -1,0 +1,41 @@
+name: Promote the deployed aw final to npm latest
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  promote-latest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+
+      - name: Promote seven published aw packages and verify
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(aw-linux-x64 aw-linux-arm64 aw-darwin-x64 aw-darwin-arm64 aw-windows-x64 aw-windows-arm64 aw)
+          for package in "${packages[@]}"; do
+            npm dist-tag add "@awebai/${package}@1.36.54" latest
+          done
+          for package in "${packages[@]}"; do
+            for attempt in 1 2 3 4 5 6; do
+              tags_json="$(npm view "@awebai/${package}" dist-tags --json)"
+              if node -e 'const tags=JSON.parse(process.argv[2]); console.log(process.argv[1]+" "+JSON.stringify(tags)); process.exit(tags.latest==="1.36.54" ? 0 : 1);' "@awebai/${package}" "$tags_json"; then
+                break
+              fi
+              if [[ "$attempt" == 6 ]]; then
+                echo "latest readback did not converge for @awebai/${package}" >&2
+                exit 1
+              fi
+              sleep 2
+            done
+          done
