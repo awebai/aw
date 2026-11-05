@@ -1,3 +1,4 @@
+# Maintained in aweb cli/go; copied to awebai/aw by aw-release.yml.
 name: release
 
 # Tag-triggered publisher: one goreleaser run creates the GitHub Release with
@@ -16,7 +17,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,7 +54,7 @@ jobs:
           node-version: "22"
           registry-url: https://registry.npmjs.org
 
-      - name: Publish the seven npm packages
+      - name: Publish and verify all seven npm packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: ./npm/publish.sh
