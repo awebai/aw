@@ -31,6 +31,9 @@ func TestAcceptInviteAliasTakenIsAPlainSentence(t *testing.T) {
 			aliasTaken.Store(true)
 			var memberDIDKey, memberStableID string
 			server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveExplicitLegacyInviteTeam(t, w, r, "backend:acme.com") {
+					return
+				}
 				switch {
 				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/certificates"):
 					if aliasTaken.Load() {
@@ -224,7 +227,8 @@ func TestLocalTeamBootstrapNameTakenIsAPlainSentence(t *testing.T) {
 		}
 	}))
 	t.Setenv("HOME", t.TempDir())
-	registry, err := newConfiguredRegistryClient(nil, "")
+	t.Setenv("AWID_REGISTRY_URL", server.URL)
+	registry, err := newConfiguredRegistryClient(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

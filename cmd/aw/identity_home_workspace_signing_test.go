@@ -46,6 +46,9 @@ func TestExternalIdentityHomeWorkspaceAndSigningLifecycle(t *testing.T) {
 	claimRequests := make(chan signedClaim, 1)
 	certificateRequests := make(chan map[string]any, 1)
 	registryServer := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveExplicitLegacyInviteTeam(t, w, r, "backend:alice.aweb.ai") {
+			return
+		}
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/did/"+principalStableID+"/key" {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did_aw":          principalStableID,
@@ -177,7 +180,7 @@ func TestExternalIdentityHomeWorkspaceAndSigningLifecycle(t *testing.T) {
 		t.Helper()
 		fullArgs := append([]string{"--identity-home", identityHome}, args...)
 		command := exec.CommandContext(ctx, bin, fullArgs...)
-		command.Env = testCommandEnv(tmp)
+		command.Env = append(testCommandEnv(tmp), "AWID_REGISTRY_URL="+registryServer.URL)
 		command.Dir = instance
 		out, err := command.CombinedOutput()
 		if err != nil {

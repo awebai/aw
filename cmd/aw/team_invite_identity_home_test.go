@@ -209,6 +209,9 @@ func TestSelectedIdentityControllerInviteAndAcceptRoundTrip(t *testing.T) {
 			writeTeamKeyForTest(t, userHome, "acme.com", "backend", controller)
 			var registrations, assertions atomic.Int32
 			server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveExplicitLegacyInviteTeam(t, w, r, team) {
+					return
+				}
 				switch {
 				case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/certificates"):
 					var payload struct {
@@ -225,7 +228,7 @@ func TestSelectedIdentityControllerInviteAndAcceptRoundTrip(t *testing.T) {
 						w.WriteHeader(400)
 						return
 					}
-					if cert.MemberDIDKey != did || cert.MemberDIDAW != stable || cert.Team != team || awid.VerifyTeamCertificate(cert, controller.Public().(ed25519.PublicKey)) != nil {
+					if cert.MemberDIDKey != did || cert.MemberDIDAW != stable || cert.Team != team || awid.CheckDecodedTeamCertificate(cert, awid.ComputeDIDKey(controller.Public().(ed25519.PublicKey))) != nil {
 						t.Error("accepted certificate did not bind the selected principal to the selected controller team")
 						w.WriteHeader(400)
 						return

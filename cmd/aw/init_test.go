@@ -756,6 +756,9 @@ func runControllerKeyJoinFromForTest(t *testing.T, asJSON bool) (string, string,
 	}
 	var sawRegistry, sawConnect bool
 	registry := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveExplicitLegacyInviteTeam(t, w, r, "backend:source") {
+			return
+		}
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/namespaces/source/teams/backend/certificates" {
 			sawRegistry = true
 			w.WriteHeader(http.StatusCreated)
@@ -965,6 +968,7 @@ func TestInitGlobalHostedJoinWithExistingIdentityInstallsGlobalCert(t *testing.T
 	memberDID := awid.ComputeDIDKey(memberPub)
 	stableID := awid.ComputeStableID(memberPub)
 	registryURL := realAWIDFixture(t)
+	t.Setenv("AWID_REGISTRY_URL", registryURL)
 	registry := awid.NewAWIDRegistryClient(nil, nil)
 	if _, err := registry.RegisterIdentity(context.Background(), registryURL, memberDID, stableID, memberKey); err != nil {
 		t.Fatalf("register real AWID fixture identity: %v", err)
@@ -1912,6 +1916,7 @@ func TestImplicitLocalInitProvisioningAgainstLocalServers(t *testing.T) {
 	}))
 
 	tmp := t.TempDir()
+	t.Setenv("AWID_REGISTRY_URL", registryServer.URL)
 	result, err := runImplicitLocalInit(implicitLocalInitRequest{
 		WorkingDir:  tmp,
 		AwebURL:     awebServer.URL,
