@@ -1352,9 +1352,6 @@ func testTeamInviteAndAcceptInviteFlow(t *testing.T, tokenStdin bool) {
 	var memberDIDKey string
 	var memberStableID string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if serveExplicitLegacyInviteTeam(t, w, r, "backend:acme.com") {
-			return
-		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/namespaces/acme.com/addresses/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1526,9 +1523,6 @@ func TestTeamInviteJoinConnectsWorkspaceByDefault(t *testing.T) {
 	var failConnect atomic.Bool
 	var server *httptest.Server
 	server = newLocalHTTPServerHandlerWithURL(t, func(serverURL string, w http.ResponseWriter, r *http.Request) {
-		if serveExplicitLegacyInviteTeam(t, w, r, "backend:acme.com") {
-			return
-		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/discovery":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -3288,9 +3282,6 @@ func TestTeamAcceptInviteGlobalDefaultClaimUsesNamespaceAuthority(t *testing.T) 
 	var events []string
 	var sawCert bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if serveExplicitLegacyInviteTeam(t, w, r, "backend:acme.com") {
-			return
-		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/did/"+memberDIDAW+"/key":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -3426,9 +3417,6 @@ func TestTeamAcceptInviteGlobalDefaultClaimResumesAfterClaimRollbackFailure(t *t
 	deleteAttempts := 0
 	var events []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if serveExplicitLegacyInviteTeam(t, w, r, "backend:acme.com") {
-			return
-		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/did/"+memberDIDAW+"/key":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -3605,9 +3593,6 @@ func TestTeamAcceptInviteAddressOverrideUsesRegisteredAddress(t *testing.T) {
 	var memberDIDKey string
 	var memberStableID string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if serveExplicitLegacyInviteTeam(t, w, r, "backend:acme.com") {
-			return
-		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/namespaces/otherco.com/addresses/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -3781,9 +3766,6 @@ func TestTeamAcceptInviteAddressOverrideRejectsDifferentDID(t *testing.T) {
 	var memberStableID string
 	otherDIDAW := "did:aw:other"
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if serveExplicitLegacyInviteTeam(t, w, r, "backend:acme.com") {
-			return
-		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/namespaces/otherco.com/addresses/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -4091,6 +4073,13 @@ func TestTeamFetchCertInstallsFetchedCertificate(t *testing.T) {
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/v1/namespaces/acme.com/teams/backend/certificates/") {
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if strings.HasSuffix(r.URL.Path, "/status") {
+			// fetch-cert checks the fetched certificate against the team's current key.
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"team_id": "backend:acme.com", "team_did_key": teamDID, "status": "active", "revoked_at": nil,
+			})
+			return
 		}
 		gotAuth.set(strings.TrimSpace(r.Header.Get("Authorization")))
 		certificateID := strings.TrimPrefix(r.URL.Path, "/v1/namespaces/acme.com/teams/backend/certificates/")
@@ -4479,7 +4468,7 @@ func TestTeamAddMemberByDIDIssuesLocalCertificate(t *testing.T) {
 	if got["member"] != memberDID {
 		t.Fatalf("member=%v", got["member"])
 	}
-	if _, ok := got["member_address"]; ok {
+	if got["member_address"] != nil {
 		t.Fatalf("member_address should be omitted in DID path: %v", got["member_address"])
 	}
 	if registeredCert["member_did_key"] != memberDID {
@@ -4491,10 +4480,10 @@ func TestTeamAddMemberByDIDIssuesLocalCertificate(t *testing.T) {
 	if registeredCert["identity_scope"] != awid.IdentityModeLocal {
 		t.Fatalf("registry cert identity_scope=%v", registeredCert["identity_scope"])
 	}
-	if _, ok := registeredCert["member_did_aw"]; ok {
+	if registeredCert["member_did_aw"] != nil {
 		t.Fatalf("registry cert member_did_aw=%v", registeredCert["member_did_aw"])
 	}
-	if _, ok := registeredCert["member_address"]; ok {
+	if registeredCert["member_address"] != nil {
 		t.Fatalf("registry cert member_address=%v", registeredCert["member_address"])
 	}
 }
@@ -4853,9 +4842,6 @@ func TestTeamAddSwitchListLeaveFlow(t *testing.T) {
 	var memberDIDKey string
 	var memberStableID string
 	server := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if serveExplicitLegacyInviteTeam(t, w, r, "ops:acme.com") {
-			return
-		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/namespaces/acme.com/addresses/alice":
 			_ = json.NewEncoder(w).Encode(map[string]any{

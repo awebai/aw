@@ -113,7 +113,11 @@ var mailSendCmd = &cobra.Command{
 		"that conversation; its title stays the first message's subject, so --subject\n" +
 		"is refused there. JSON returns message_id and conversation_id. A server that\n" +
 		"answers a new thread with another conversation_id fails without retry; the\n" +
-		"message may already have been sent into that conversation.",
+		"message may already have been sent into that conversation.\n\n" +
+		"With --human, unlock once at a real terminal for this command; each signature\n" +
+		"is described on stderr and the key is wiped at exit. Ordinary human mail\n" +
+		"carries the ID chain and no saved enrollment or creation evidence.\n" +
+		"Use aw id proof to export that evidence for someone else to verify.",
 	Args: func(cmd *cobra.Command, args []string) error {
 		recipient := strings.TrimSpace(mailSendTo+mailSendToDID+mailSendToAddress) != ""
 		if strings.TrimSpace(mailSendConversationID) != "" {
@@ -178,15 +182,13 @@ var mailSendCmd = &cobra.Command{
 			// /v1/agents lists the team's agents; a name it lacks may be a
 			// human on the live roster, which binds the member's current key.
 			if _, found, findErr := clientAgentForAlias(ctx, c, targetValue); findErr != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: recipient lookup failed: %v\n", findErr)
-				req.ToAlias = targetValue
+				return recipientLookupError(targetValue, "agent list", findErr)
 			} else if found || sendEncryptE2EE {
 				// Key discovery for a human is scoped to the selected team,
 				// using its original identity-signed assertion.
 				req.ToAlias = targetValue
 			} else if liveTarget, liveFound, liveErr := resolveLiveTeamMemberAliasTarget(ctx, sel, targetValue); liveErr != nil {
-				debugLog("resolve live team member %s/%s: %v", strings.TrimSpace(sel.TeamID), targetValue, liveErr)
-				req.ToAlias = targetValue
+				return recipientLookupError(targetValue, "live roster", liveErr)
 			} else if liveFound {
 				kind, value := liveTarget.identityTarget()
 				applyMailRecipientTarget(req, kind, value)
@@ -844,6 +846,7 @@ var (
 	mailShowConversationID string
 	mailShowMessageID      string
 	mailShowLimit          int
+	mailShowEnvelope       bool
 )
 
 func formatMailAck(v any) string {
@@ -890,7 +893,8 @@ var mailShowCmd = &cobra.Command{
 	// I miss something recent" needs it BEFORE they run it and believe the result.
 	Long: "Show mail by conversation or exact message ID.\n\n" +
 		"With --message-id, one unique message is selected. The conversation-window " +
-		"direction and 500-message ceiling below do not apply.\n\n" +
+		"direction and 500-message ceiling below do not apply. Add --envelope to export " +
+		"its original signed envelope as JSON for aw verify, without acknowledging it.\n\n" +
 		"With --conversation-id, --limit caps how many messages are returned and defaults " +
 		"to 200. The messages returned are the OLDEST ones, so on a conversation longer " +
 		"than the limit the newest messages are the ones missing - which is the opposite " +
@@ -910,6 +914,9 @@ var mailShowCmd = &cobra.Command{
 		}
 		if conversationID != "" && messageID != "" {
 			return usageError("--conversation-id and --message-id are mutually exclusive")
+		}
+		if mailShowEnvelope && messageID == "" {
+			return usageError("--envelope requires --message-id")
 		}
 
 		// A page fetch and each custody unwrap retain their individual bounds.
@@ -944,6 +951,13 @@ var mailShowCmd = &cobra.Command{
 				return mailShowConversationError(err, conversationID)
 			}
 			return networkError(err, messageID)
+		}
+		if mailShowEnvelope {
+			export, err := exportMailEnvelope(resp.Messages, messageID)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(commandStdout).Encode(export)
 		}
 		// The text formatter carries this notice inline. JSON output must stay a
 		// clean parseable document, so it goes to stderr - where a human still sees
@@ -995,6 +1009,7 @@ func init() {
 	mailShowCmd.Flags().StringVar(&mailShowConversationID, "conversation-id", "", "Mail conversation to inspect")
 	mailShowCmd.Flags().StringVar(&mailShowMessageID, "message-id", "", "Legacy mail message to inspect")
 	mailShowCmd.Flags().IntVar(&mailShowLimit, "limit", 200, "For --conversation-id, max messages from the OLDEST end; exact --message-id reads are not windowed")
+	mailShowCmd.Flags().BoolVar(&mailShowEnvelope, "envelope", false, "Export an exact message's original signed envelope as JSON for aw verify")
 
 	mailThreadsCmd.Flags().IntVar(&mailThreadsLimit, "limit", 50, "Max threads per page")
 	mailThreadsCmd.Flags().StringVar(&mailThreadsCursor, "cursor", "", "Continue from next_cursor in a previous threads response")

@@ -708,6 +708,14 @@ func TestInitJoinFromHostedSuccessPreservesSourceAndConnectsTarget(t *testing.T)
 		t.Fatalf("create=%t accept=%t connect=%t", sawCreateInvite, sawAccept, sawConnect)
 	}
 	assertInitJoinTarget(t, target, teamID, "target", acceptedDID, sourceBefore, source)
+	chain, err := awconfig.LoadInstalledIDChain(filepath.Join(target, ".aw"))
+	if err != nil || chain != nil {
+		t.Fatalf("chainless source unexpectedly issued a chain: chain=%+v err=%v", chain, err)
+	}
+	verdict, err := executeWho(context.Background(), whoOptions{WorkingDir: target})
+	if err != nil || verdict.Outcome != "unknown" {
+		t.Fatalf("chainless source ancestry=%+v err=%v", verdict, err)
+	}
 }
 
 func TestInitJoinFromControllerKeySuccessPreservesSourceAndConnectsTarget(t *testing.T) {
@@ -756,9 +764,6 @@ func runControllerKeyJoinFromForTest(t *testing.T, asJSON bool) (string, string,
 	}
 	var sawRegistry, sawConnect bool
 	registry := newLocalHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if serveExplicitLegacyInviteTeam(t, w, r, "backend:source") {
-			return
-		}
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/namespaces/source/teams/backend/certificates" {
 			sawRegistry = true
 			w.WriteHeader(http.StatusCreated)
@@ -894,6 +899,13 @@ func TestInitAdmissionTeamIDIssuesAcceptsAndConnects(t *testing.T) {
 			}
 			if !uuidV4PatternForTest.MatchString(req.RequestID) {
 				t.Fatalf("admission request_id %q is not a random (version 4) UUID", req.RequestID)
+			}
+			raw, _ := json.Marshal(req)
+			var wire map[string]any
+			json.Unmarshal(raw, &wire)
+			creation, _ := wire["creation"].(map[string]any)
+			if creation["name"] != "target" || creation["identity_scope"] != "local" {
+				t.Errorf("admission lost named intent: %v", wire)
 			}
 			if req.AliasHint != "target" || req.ExpectedAccountID != "acct-test" {
 				t.Fatalf("admission req=%+v", req)
@@ -1941,11 +1953,11 @@ func TestImplicitLocalInitProvisioningAgainstLocalServers(t *testing.T) {
 	if gotCertPayload["identity_scope"] != awid.IdentityModeLocal {
 		t.Fatalf("cert identity_scope=%v", gotCertPayload["identity_scope"])
 	}
-	if _, ok := gotCertPayload["member_did_aw"]; ok {
-		t.Fatalf("local cert should not include member_did_aw: %v", gotCertPayload["member_did_aw"])
+	if gotCertPayload["member_did_aw"] != nil {
+		t.Fatalf("local cert should carry no member_did_aw: %v", gotCertPayload["member_did_aw"])
 	}
-	if _, ok := gotCertPayload["member_address"]; ok {
-		t.Fatalf("local cert should not include member_address: %v", gotCertPayload["member_address"])
+	if gotCertPayload["member_address"] != nil {
+		t.Fatalf("local cert should carry no member_address: %v", gotCertPayload["member_address"])
 	}
 	if gotConnectBody["role"] != "developer" {
 		t.Fatalf("connect role=%v", gotConnectBody["role"])

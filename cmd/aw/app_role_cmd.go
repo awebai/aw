@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	aweb "github.com/awebai/aw"
 	"github.com/awebai/aw/awconfig"
 	"github.com/awebai/aw/awid"
 	"github.com/awebai/aw/internal/handoff"
@@ -99,11 +98,7 @@ func init() {
 		cmd.Flags().StringVar(&appCredentialFileFlag, "credential", "", "The holder's export from aw app credential register")
 		cmd.Flags().StringVar(&appNoticeContactFlag, "notice-contact", "", "The notice contact, for a role that declares one")
 	}
-	appRoleRevokeCmd.Flags().StringVar(&appProtectedProfileFlag, "protected-profile", "", "Prepare the act at the protected service this operator-provisioned profile names; the controlling human approves it there")
-	appRoleRevokeCmd.Flags().StringVar(&appApproverFlag, "approver", "", "With --protected-profile, the did:aw of the human who approves the act")
-	appRoleRevokeCmd.Flags().StringVar(&appRoleReplaceFlag, "replace", "", "With --protected-profile, the id of an earlier unfinished request for this same act, which stays kept, to ask for a separately approved act")
-	appRoleResumeCmd.Flags().StringVar(&appProtectedProfileFlag, "protected-profile", "", "The profile the operation was prepared through")
-	appRoleCmd.AddCommand(appRoleDesignateCmd, appRoleRevokeCmd, appRoleResumeCmd)
+	appRoleCmd.AddCommand(appRoleDesignateCmd, appRoleRevokeCmd)
 	appCredentialCmd.AddCommand(appCredentialRegisterCmd, appCredentialReplaceCmd)
 	appCmd.AddCommand(appRoleCmd, appCredentialCmd)
 	appCmd.GroupID = groupUtility
@@ -218,19 +213,13 @@ func runHumanRoleAct(cmd *cobra.Command, act, appName string) error {
 	if err != nil {
 		return err
 	}
-	// Through a protected service, the act is approved by the controlling
-	// human there; aw needs no controller key.
-	protected := strings.TrimSpace(appProtectedProfileFlag) != ""
-	if !protected && strings.TrimSpace(appRoleReplaceFlag) != "" {
-		return usageError("--replace applies only with --protected-profile")
+	teamKey, err := loadOwnerTeamKey(selection.TeamID)
+	if err != nil {
+		return err
 	}
-	var teamKey ed25519.PrivateKey
-	if !protected {
-		if teamKey, err = loadOwnerTeamKey(selection.TeamID); err != nil {
-			return err
-		}
-	}
-	installationID, err := roleActInstallation(cmd, app, client, selection.TeamID, protected)
+	ctx, cancel := commandAPIContext(cmd)
+	installationID, err := app.installation(ctx, client, selection.TeamID)
+	cancel()
 	if err != nil {
 		return err
 	}
@@ -261,9 +250,6 @@ func runHumanRoleAct(cmd *cobra.Command, act, appName string) error {
 	subject, err := request.subject()
 	if err != nil {
 		return err
-	}
-	if protected {
-		return runProtectedHumanRoleAct(cmd, act, selection.TeamID, app.Origins.Human, subject)
 	}
 	fields, err := newOwnerAct(act, selection.TeamID, app.Origins.Human, teamKey, subject, time.Now())
 	if err != nil {
@@ -365,7 +351,7 @@ func verifyHolderEvidence(ctx context.Context, e *holderCredentialExport, select
 	if !current {
 		return nil, notMember("the certificate is not an active certificate of the team")
 	}
-	kind, err := holderKind(ctx, e, cert)
+	kind, err := holderKind(ctx, e, cert, whoOptions{TXTResolver: &awid.NetTXTResolver{}})
 	if err != nil {
 		return nil, err
 	}
@@ -374,7 +360,7 @@ func verifyHolderEvidence(ctx context.Context, e *holderCredentialExport, select
 
 // holderKind verifies the holder's ID chain for its certified key and
 // returns its kind, which must be human.
-func holderKind(ctx context.Context, e *holderCredentialExport, cert *awid.TeamCertificate) (string, error) {
+func holderKind(ctx context.Context, e *holderCredentialExport, cert *awid.TeamCertificate, opts whoOptions) (string, error) {
 	certificates, _ := e.IDChain["certificates"].([]any)
 	domain := ""
 	if len(certificates) > 0 {
@@ -382,7 +368,29 @@ func holderKind(ctx context.Context, e *holderCredentialExport, cert *awid.TeamC
 		inner, _ := last["certificate"].(map[string]any)
 		domain, _ = inner["domain"].(string)
 	}
-	out, err := verifyWhoPresentation(ctx, awid.IDChainSubject{ID: e.Principal, DIDKey: cert.MemberDIDKey}, e.IDChain, domain, whoOptions{TXTResolver: &awid.NetTXTResolver{}})
+	opts.ReceivedEnrollment = func(ctx context.Context, principal, key string) awid.IDTreeEnrollmentResult {
+		unknown := awid.IDTreeEnrollmentResult{State: "unknown"}
+		registry, err := newConfiguredRegistryClient(nil)
+		if err != nil {
+			return unknown
+		}
+		registry.Resolver.DNSResolver = opts.TXTResolver
+		registryURL := registry.DefaultRegistryURL
+		// The active certificate's holder address locates this principal's key
+		// route independently of the exported chain and the acting team owner.
+		if addressDomain, _, ok := strings.Cut(cert.MemberAddress, "/"); ok {
+			registryURL, err = registry.DiscoverRegistry(ctx, addressDomain)
+			if err != nil {
+				return unknown
+			}
+		}
+		resolution, err := registry.ResolveKeyAt(ctx, registryURL, principal)
+		if err != nil {
+			return unknown
+		}
+		return resolution.IDTreeEnrollmentOf(principal, key, time.Now())
+	}
+	out, err := verifyWhoPresentation(ctx, awid.IDChainSubject{ID: e.Principal, DIDKey: cert.MemberDIDKey}, e.IDChain, domain, opts)
 	if err != nil {
 		return "", withErrorCode("principal_status_unavailable", err)
 	}
@@ -427,26 +435,6 @@ var ownerActTransport = func() http.RoundTripper { return awid.NewAPITransport()
 // exact act took effect on an earlier delivery. No other answer means that,
 // whatever its body says.
 var errOwnerActAppliedEarlier = errors.New("the app already applied this act")
-
-// roleActInstallation is app's active installation for a role act. Through a
-// protected service the lookup waits out the service's explicit throttle
-// hints within its own bound, handoff.DefaultRetryWithin from now and never
-// past the command's own deadline, before the prepare, which then has a bound
-// of its own. A local act reads it once within the API timeout.
-func roleActInstallation(cmd *cobra.Command, app *holderApp, client *aweb.Client, teamID string, protected bool) (string, error) {
-	if !protected {
-		ctx, cancel := commandAPIContext(cmd)
-		defer cancel()
-		return app.installation(ctx, client, teamID)
-	}
-	parent := cmd.Context()
-	if parent == nil {
-		parent = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(parent, handoff.DefaultRetryWithin)
-	defer cancel()
-	return app.installationWithinBound(ctx, client, teamID)
-}
 
 // deliverOwnerAct posts a signed act to the app's human origin, with no
 // team-auth and no redirect, and returns the app's answer.

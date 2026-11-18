@@ -34,7 +34,20 @@ var rootCmd = &cobra.Command{
 	Short: "aweb CLI",
 	Long:  "aweb CLI\n\nSet AW_NO_UPDATE_CHECK=1 to disable automatic update checks.",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		if humanSelectionRequested() {
+		if _, independent := offlineCommands[cmd]; independent {
+			return nil // Export verification never selects or unlocks an acting human.
+		}
+		idSelection, err := prepareIDHumanSelection(cmd)
+		if err != nil {
+			return err
+		}
+		if idSelection && humanFlag != "" {
+			return nil
+		}
+		if cmd.Annotations[humanCommandAnnotation] != "" && !humanSelectionRequested() {
+			return usageError("select your human key with --human ID --human-domain DOMAIN; prepare it with aw id human init")
+		}
+		if humanSelectionRequested() && !idSelection {
 			return prepareHumanParticipation(cmd)
 		}
 		// Offline key preparation validates its explicit destination itself.
@@ -63,6 +76,10 @@ var rootCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		pendingExchange, err := pendingHostedExchangeTarget(cmd, home)
+		if err != nil {
+			return err
+		}
 		if home.External() {
 			// A fresh destination is meaningful only when explicitly named for an
 			// operation which creates identity state. An inherited selector is
@@ -75,7 +92,7 @@ var rootCmd = &cobra.Command{
 					keyOnlyTarget, _ = teamRequestKeyOnly(home.Root, path)
 				}
 			}
-			if !freshTarget && !keyOnlyTarget {
+			if !freshTarget && !keyOnlyTarget && !pendingExchange {
 				if err := validateSelectedIdentityHome(home); err != nil {
 					return err
 				}
@@ -87,6 +104,9 @@ var rootCmd = &cobra.Command{
 			activeIdentityHome = home
 		}
 		restoreIdentityHomeAfterCommand(cmd, identityHomeEnv, hadIdentityHomeEnv, previousActiveIdentityHome)
+		if pendingExchange {
+			return nil
+		}
 		if cmd == idCreateCmd && (cmd.Flags().Changed("org") || cmd.Flags().Changed("owner-identity-home") || cmd.Flags().Changed("no-address") || cmd.Flags().Changed("local")) {
 			// Validate the original creation association before any key renewal or network work.
 			return nil
@@ -461,10 +481,10 @@ func reportCLIError(err error, msg string, asJSON bool) {
 func codedRefusalText(err error, msg string) string {
 	refusal, message, ok := awid.CodedRefusal(err)
 	if !ok || !strings.Contains(msg, refusal) {
-		return protectedBoundaryRefusalText(err, msg)
+		return msg
 	}
 	debugLog("%s", refusal)
-	return protectedBoundaryRefusalText(err, strings.Replace(msg, refusal, message, 1))
+	return strings.Replace(msg, refusal, message, 1)
 }
 
 // commandStdout is the stdout every command writes through, so the error

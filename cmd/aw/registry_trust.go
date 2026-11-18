@@ -16,13 +16,13 @@ import (
 func commandLineRegistryOrigins() []string {
 	values := []string{
 		a2aCardRegistry, a2aPublishRegistry, initAWIDRegistry,
-		idAddressClaimRegistryURL, idChildRegistry, idCreateRegistryURL, idHumanInitRegistry,
+		idAddressClaimRegistryURL, idChildRegistry, idCreateRegistryURL, idHumanInitRegistry, idHumanRegisterRegistry,
 		idNamespaceDeleteAddressRegistry, idNamespaceDeleteRegistry, idNamespacePrepareControllerRegistryURL,
 		idNamespaceReaffirmRegistry, idParentRegistry,
 		teamCreateRegistryURL, teamDeleteRegistryURL, teamFetchCertRegistry, teamHumanCreateRegistryURL,
 		teamHumanRemoveRegistryURL, teamHumanReplaceKeyRegistryURL, teamMembersRegistryURL,
 		teamRegisterRegistryURL, teamReissueCertRegistryURL, teamRemoveRegistryURL, teamRotateKeyRegistryURL,
-		teamSetServerRegistryURL, teamShowServerRegistry, whoRegistry,
+		teamSetServerRegistryURL, teamShowServerRegistry, whoRegistry, verifyRegistry,
 	}
 	origins := make([]string, 0, len(values))
 	for _, value := range values {
